@@ -10,13 +10,14 @@ import CrossfadeBackground from './components/CrossfadeBackground'
 import MiniPlayer from './components/MiniPlayer'
 import Toast from './components/Toast'
 import { extractDominantColor, useColorThief } from './hooks/useColorThief'
-import { useAudioPlayer } from './hooks/useAudioPlayer'
+import { useAudioPlayer, type AudioGraphHandle } from './hooks/useAudioPlayer'
 import { useAudioAnalyzer } from './hooks/useAudioAnalyzer'
 import { useAudioPulseStore, type AudioPulseStore } from './hooks/useAudioPulse'
 import { Song, getSongUrl, invalidateSongUrl, getLyrics, getProxiedImageUrl, getLocalAlbumIdentifier, resolveSongAlbumIdentifier, LyricLine } from './services/musicApi'
 import { cacheManager } from './services/cacheManager'
 import { indexedDBCache } from './services/indexedDBCache'
 import { autoMixAnalysisService } from './services/autoMixAnalysisService'
+import { AudioEffectsEngine } from './services/audioEffects/AudioEffectsEngine'
 import { sequenceTracksHam2, type SequencingEntry } from './services/playlistSequencing'
 import { likeSong, addSongToPlaylist, getUserPlaylists, updateCachedUserPlaylists } from './services/playlistService'
 import { fetchExploreRecommendationBatch } from './services/exploreApi'
@@ -40,6 +41,8 @@ const LazySearchPanel = lazy(loadSearchPanel)
 const LazyUpNextNotification = lazy(loadUpNextNotification)
 const loadSettingsPanel = () => import('./components/SettingsPanel')
 const LazySettingsPanel = lazy(loadSettingsPanel)
+const loadMixingStudio = () => import('./components/MixingStudio')
+const LazyMixingStudio = lazy(loadMixingStudio)
 const loadPlaylistPanel = () => import('./components/PlaylistPanel')
 const loadLoginView = () => import('./components/LoginView')
 const loadProfileView = () => import('./components/ProfileView')
@@ -376,6 +379,7 @@ function App() {
   const [volume, setVolume] = useState(1.0) // 默认音量100%
   const [showSearch, setShowSearch] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showMixingStudio, setShowMixingStudio] = useState(false)
   useEffect(() => {
     const idleId = window.requestIdleCallback(() => {
       void Promise.allSettled([
@@ -1125,6 +1129,15 @@ function App() {
   const handleNextRef = useRef<() => void>(() => undefined)
   const dominantColorRef = useRef<string>('#3B82F6')
   
+  // 调音室音效引擎（懒创建一次，音频图就绪后 attach）
+  const audioEffectsEngineRef = useRef<AudioEffectsEngine | null>(null)
+  if (audioEffectsEngineRef.current === null) {
+    audioEffectsEngineRef.current = new AudioEffectsEngine()
+  }
+  const handleAudioGraphReady = useCallback((handle: AudioGraphHandle) => {
+    audioEffectsEngineRef.current?.attach(handle)
+  }, [])
+  
   // 播放器状态监听器
   const audioPlayer = useAudioPlayer(
     useCallback((state) => {
@@ -1286,7 +1299,8 @@ function App() {
       skipSilence: autoMixSkipSilence,
       minDuration: autoMixMinDuration,
       maxDuration: autoMixMaxDuration,
-    }
+    },
+    handleAudioGraphReady
   )
   audioPlayerCacheControlRef.current = audioPlayer
   // 保持最新 audioPlayer 引用的 ref，供 useCallback 处理器读取，避免处理器身份随渲染变化
@@ -3657,6 +3671,19 @@ function App() {
             } as any)} />
           </Suspense>
         )}
+
+        {/* 调音室 */}
+        <AnimatePresence>
+          {showMixingStudio && (
+            <Suspense fallback={null}>
+              <LazyMixingStudio
+                engine={audioEffectsEngineRef.current!}
+                onClose={() => setShowMixingStudio(false)}
+                playerTheme={playerTheme}
+              />
+            </Suspense>
+          )}
+        </AnimatePresence>
         
         {/* 主内容区 */}
         <div className="relative flex-1 flex items-center justify-center overflow-hidden">
@@ -3752,6 +3779,7 @@ function App() {
               {/* 沉浸模式控制按钮 - 右上角 */}
               <LazyImmersiveControls
                 onHomeClick={handlePlayerHome}
+                onOpenMixingStudio={() => setShowMixingStudio(true)}
                 onTranslationToggle={handleTranslationToggle}
                 translationEnabled={translationEnabled}
                 hasTranslation={hasTranslation}

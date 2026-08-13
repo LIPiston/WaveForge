@@ -1,10 +1,11 @@
 import { motion } from 'framer-motion'
-import { Captions, Home, Languages } from 'lucide-react'
+import { AudioLines, Captions, Home, Languages } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import QuickSettings from './QuickSettings'
 
 interface ImmersiveControlsProps {
   onHomeClick: () => void
+  onOpenMixingStudio?: () => void
   onTranslationToggle: () => void
   translationEnabled: boolean
   hasTranslation: boolean
@@ -17,6 +18,7 @@ interface ImmersiveControlsProps {
 
 export default function ImmersiveControls({
   onHomeClick,
+  onOpenMixingStudio,
   onTranslationToggle,
   translationEnabled,
   hasTranslation,
@@ -70,6 +72,7 @@ export default function ImmersiveControls({
   const featureButtonCount = (hasTranslation ? 1 : 0) + (hasRoman ? 1 : 0)
   const romanButtonTop = hasTranslation ? '8rem' : '4rem'
   const quickSettingsTop = `${4 + featureButtonCount * 4}rem`
+  const mixingStudioTop = `${8 + featureButtonCount * 4}rem`
   const featureButtonTransition = {
     duration: 0.48,
     ease: [0.22, 1, 0.36, 1] as const,
@@ -80,7 +83,7 @@ export default function ImmersiveControls({
       className="fixed top-[34px] right-0 z-40"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      style={{ width: '120px', height: `${150 + featureButtonCount * 50}px` }}
+      style={{ width: '120px', height: `${214 + featureButtonCount * 50}px` }}
     >
       {/* Home按钮 */}
       <motion.button
@@ -230,6 +233,27 @@ export default function ImmersiveControls({
           isPureMusic={isPureMusic} // 传递纯音乐标识
         />
       </motion.div>
+
+      {/* 调音室按钮 */}
+      {onOpenMixingStudio && (
+        <motion.button
+          initial={{ x: 0, opacity: 1 }}
+          animate={{ x: isVisible ? 0 : 60, opacity: isVisible ? 1 : 0 }}
+          transition={{ type: 'spring', damping: 25, stiffness: 300, mass: 0.8, delay: 0.16 }}
+          whileHover={{ scale: 1.1, x: -2 }}
+          whileTap={{ scale: 0.9 }}
+          onClick={onOpenMixingStudio}
+          className={`absolute right-6 p-3 rounded-full backdrop-blur-md border transition-colors ${
+            playerTheme === 'dark'
+              ? 'bg-black/40 hover:bg-black/60 border-white/20'
+              : 'bg-white/50 hover:bg-white/70 border-black/20'
+          }`}
+          style={{ top: mixingStudioTop }}
+          aria-label="打开调音室"
+        >
+          <AudioLines className={`w-6 h-6 ${playerTheme === 'dark' ? 'text-white' : 'text-black'}`} />
+        </motion.button>
+      )}
     </div>
   )
 }

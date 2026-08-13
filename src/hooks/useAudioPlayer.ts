@@ -36,6 +36,13 @@ export interface AutoMixSettings {
   maxDuration?: number
 }
 
+// 音频图就绪后交给外部（音效引擎）的句柄
+export interface AudioGraphHandle {
+  audioContext: AudioContext
+  masterGain: GainNode
+  analyser: AnalyserNode
+}
+
 interface DeckMetadata extends PreloadTrack {
   analysis?: TrackAnalysis
 }
@@ -121,7 +128,8 @@ export function useAudioPlayer(
     mode: 'auto',
     enableBeatMatching: true,
     skipSilence: true,
-  }
+  },
+  onAudioGraphReady?: (handle: AudioGraphHandle) => void
 ) {
   const primaryRef = useRef<HTMLAudioElement | null>(null)
   const secondaryRef = useRef<HTMLAudioElement | null>(null)
@@ -131,6 +139,7 @@ export function useAudioPlayer(
   const crossfadeRef = useRef(crossfadeSettings)
   const gaplessRef = useRef(gaplessSettings)
   const autoMixRef = useRef(autoMixSettings)
+  const onAudioGraphReadyRef = useRef(onAudioGraphReady)
   const volumeRef = useRef(DEFAULT_VOLUME)
   const transitionStateRef = useRef<TransitionState>('idle')
   const transitionPlanRef = useRef<TransitionPlan | null>(null)
@@ -166,6 +175,7 @@ export function useAudioPlayer(
   useEffect(() => { crossfadeRef.current = crossfadeSettings }, [crossfadeSettings])
   useEffect(() => { gaplessRef.current = gaplessSettings }, [gaplessSettings])
   useEffect(() => { autoMixRef.current = autoMixSettings }, [autoMixSettings])
+  useEffect(() => { onAudioGraphReadyRef.current = onAudioGraphReady }, [onAudioGraphReady])
 
   const emit = useCallback((state: Partial<AudioPlayerState>) => {
     if (state.currentTime !== undefined || state.duration !== undefined || state.isPlaying !== undefined) {
@@ -236,6 +246,9 @@ export function useAudioPlayer(
       if (gaplessIntegrationRef.current) {
         gaplessIntegrationRef.current.initAudioContext(context, analyser)
       }
+      
+      // 通知外部音效引擎：音频图已就绪（在 masterGain 与 analyser 之间插入效果链）
+      onAudioGraphReadyRef.current?.({ audioContext: context, masterGain: master, analyser })
       
       if (context.state === 'suspended') await context.resume().catch(() => undefined)
     } catch (error) {
