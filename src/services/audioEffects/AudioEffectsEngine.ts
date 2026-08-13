@@ -1,4 +1,6 @@
 import { debugLog } from '../../utils/debugLog'
+import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
+import processorUrl from '@soundtouchjs/audio-worklet/processor?url'
 
 // ============ 设置类型 ============
 
@@ -191,6 +193,9 @@ export class AudioEffectsEngine {
   private input: GainNode | null = null
   private output: GainNode | null = null
 
+  // 变调/变速（SoundTouch AudioWorklet，异步注册）
+  private soundtouchNode: SoundTouchNode | null = null
+
   // 人声/伴奏比例（M/S 矩阵）
   private voiceMatrix: MsMatrix | null = null
 
@@ -339,10 +344,36 @@ export class AudioEffectsEngine {
     masterGain.disconnect(analyser)
     masterGain.connect(input)
 
+    // 异步注册 SoundTouch（变调/变速），成功后插入到 masterGain 与 input 之间
+    void this.initSoundtouch(context, masterGain, input)
+
     // 应用当前设置
     this.rebuildFromSettings()
 
     debugLog('[AudioEffects] 效果链已插入 masterGain 与 analyser 之间')
+  }
+
+  private async initSoundtouch(context: AudioContext, masterGain: GainNode, input: GainNode): Promise<void> {
+    try {
+      await SoundTouchNode.register(context, processorUrl)
+      const node = new SoundTouchNode({ context, outputChannelCount: 2 })
+      this.soundtouchNode = node
+      masterGain.disconnect(input)
+      masterGain.connect(node)
+      node.connect(input)
+      this.applyPitchSettings()
+      debugLog('[AudioEffects] SoundTouch 已就绪（变调/变速可用）')
+    } catch (error) {
+      console.warn('[AudioEffects] SoundTouch 注册失败，变调/变速不可用:', error)
+      this.soundtouchNode = null
+    }
+  }
+
+  private applyPitchSettings(): void {
+    if (!this.soundtouchNode || !this.context) return
+    const t = this.context.currentTime
+    this.soundtouchNode.pitchSemitones.setTargetAtTime(this.settings.pitch.semitones, t, 0.02)
+    this.soundtouchNode.playbackRate.setTargetAtTime(this.settings.pitch.rate, t, 0.02)
   }
 
   dispose(): void {
@@ -411,6 +442,9 @@ export class AudioEffectsEngine {
       this.pannerDryGain.gain.setTargetAtTime(effects.surround3d.enabled ? 0 : 1, t, 0.03)
     }
     this.syncSurroundRotation()
+
+    // 变调/变速
+    this.applyPitchSettings()
 
     // 均衡器
     this.rebuildEq()

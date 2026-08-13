@@ -476,7 +476,7 @@ export default function MixingStudio({ engine, onClose, playerTheme }: MixingStu
                   {renderRange('变调', settings.pitch.semitones, -10, 10, 0.5, (v) => patchPitch({ semitones: v }), `${settings.pitch.semitones > 0 ? '+' : ''}${settings.pitch.semitones} 半音`)}
                   {renderRange('倍速', settings.pitch.rate, 0.25, 3, 0.05, (v) => patchPitch({ rate: v }), `${settings.pitch.rate.toFixed(2)}x`)}
                   <div className={`${textTertiary} text-xs flex items-center gap-1`}>
-                    <Info className="w-3.5 h-3.5" /> 变调与变速即将接入 SoundTouch 引擎，当前先保存设置。
+                    <Info className="w-3.5 h-3.5" /> 基于 SoundTouch 实时处理，变调与变速互相独立。
                   </div>
                 </div>
               </motion.div>
