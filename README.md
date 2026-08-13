@@ -15,6 +15,7 @@ npm run dev:electron           # 一键启动：Vite(3000) + API(3001) + Electro
 ## 核心功能
 
 - **双平台搜索与推荐**：QQ 音乐 + 网易云实时搜索、每日推荐、热歌榜/飙升榜、猜你喜欢
+- **QQ 音乐 API Key 领取**：内置引导窗口直达 y.qq.com 领取 qmk API Key（独立隔离 session，每次打开清空登录态）
 - **无缝衔接播放**：三种模式 —— Smart AutoMix（智能节拍匹配+BPM 同步，需 Python）/ Beat Crossfade（节拍交叉淡化）/ Fixed Crossfade（固定时长，默认）
 - **歌词系统**：LRC 解析、逐字歌词（QQ）、实时滚动、点击跳转
 - **可视化**：频谱柱 / 波形 / 环形 / 3D 可视化
@@ -58,7 +59,11 @@ npm run dev:api         # 仅 API（3001）
 npm run lint            # TypeScript 类型检查（tsc --noEmit）
 npm run build           # 生产构建 -> dist/
 npm run build:electron  # 打包 NSIS 安装包 -> release/
+npm run build:full      # 完整发布：bundle-python + build:electron
+npm run build:electron:dir  # 构建 + 未打包目录（便于调试）
 npm run bundle-python   # 重建嵌入式 Python 运行时（3.13.15）
+npm run test:license    # 设备授权自测
+npm run sync:sponsors   # 刷新爱发电赞助名单（构建前会自动以可选模式运行）
 test-python-service.bat # 检测节拍服务（3002）
 ```
 
@@ -84,6 +89,8 @@ test-python-service.bat # 检测节拍服务（3002）
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) — 故障排除
 - [CACHE_SYSTEM.md](./CACHE_SYSTEM.md) — 缓存系统设计
 - [LICENSE_SYSTEM.md](./LICENSE_SYSTEM.md) — 设备授权机制
+- [AFDIAN_SPONSORS.md](./AFDIAN_SPONSORS.md) — 爱发电赞助名单同步说明
+- [CODEX_RECENT_PLAYBACK_CHECKPOINT.md](./CODEX_RECENT_PLAYBACK_CHECKPOINT.md) — 最近播放功能检查点
 - [WALLPAPER_GUIDE.md](./WALLPAPER_GUIDE.md) / [DESKTOP_MODE.md](./DESKTOP_MODE.md) — 壁纸与桌面模式
 - [PROJECT_HISTORY.md](./PROJECT_HISTORY.md) — 历史开发记录与 Phase 2 规划
 - [PYTHON_EMBEDDING_GUIDE.md](./PYTHON_EMBEDDING_GUIDE.md) — 嵌入式 Python 构建

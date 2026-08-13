@@ -8,8 +8,9 @@
 ## 1. 项目状态（2026-08-13）
 
 - **阶段**：功能基本完整，处于维护/收尾阶段。核心功能（双平台搜索/播放/歌词/无缝衔接/桌面模式/壁纸联动）均已实现且通过自动化验证。
+- **代码基线**：当前仓库来自远程 `YoshinoRinn/WaveForge` 的**朋友优化合并版**（`f5d59b9`）——本地 git 历史已重置为远程 2 条提交（原本地 11 条提交被清除，其成果绝大部分已并入远程版）。
 - **稳定性**：最近一次完整回归通过 —— `npm run lint` 0 报错、`vite build` 成功、Python 节拍服务与分析/渲染 worker 在嵌入式 3.13 上端到端实测通过（分析→渲染全链路）、后端安全修复点复测通过、Playwright 生产构建冒烟通过（首页加载/标签切换/播放/进度推进）。
-- **代码规模**：前端 142 个 TS/TSX，后端 `local-server.mjs` 单文件约 8k 行，Python 服务 2.1k 行。
+- **代码规模**：前端 137 个 TS/TSX，后端 `local-server.mjs` 单文件约 8.2k 行，Python 服务约 2.1k 行。
 
 ## 2. 环境（重要）
 
@@ -35,13 +36,14 @@
 
 ## 4. 已知问题 / 踩坑记录
 
-1. **网易云 xeapi 公钥**：`/api/netease/song/url` 报 `xeapi public key is missing` 时，说明 `os.tmpdir()/xeapi_public_key` 被系统清理了 —— 重启后端即可（`initNeteaseAPI()` 启动时自动 `generateConfig()` 重新拉取）。已提交 `d367cf9`。
+1. **网易云 xeapi 公钥**：`/api/netease/song/url` 报 `xeapi public key is missing` 时，说明 `os.tmpdir()/xeapi_public_key` 被系统清理了 —— 重启后端即可（`initNeteaseAPI()` 启动时自动 `generateConfig()` 重新拉取）。此修复已合入远程基线 `f5d59b9`（本地历史已重置，旧提交号 `d367cf9` 不再存在于本地）。
 2. **SSRF 守卫与内部代理链**：`proxy-image → cover`（`localhost:3001`）是本应用合法内部代理链，SSRF 守卫必须放行本服务自身端口 3001，否则评论区/歌单封面裂。**不要在守卫中一刀切封 localhost**。见 `local-server.mjs` 中 `isBlockedFetchUrl` 内的放行分支。
 3. **wallpaper-engine 路径穿越防护**：`/api/wallpaper-engine/preview|media` 用 `resolve + startsWith(base+sep)` 校验，改动时保持。
-4. **Electron will-navigate 守卫**：主/播放器/歌词三窗口已加导航白名单（dev: localhost:3000/127.0.0.1:3000；prod: 三个 file:// 入口）。QQ 登录窗**不能**加（它要导航 y.qq.com）。
+4. **Electron will-navigate 守卫**：主/播放器/歌词三窗口已加导航白名单（dev: localhost:3000/127.0.0.1:3000；prod: 三个 file:// 入口）。**QQ 音乐 QMK API Key 领取窗口是唯一被允许打开 `y.qq.com` 的窗口**（`QMK_SESSION_PARTITION = 'waveforge-qq-skill-key'`，独立 session 且每次打开前清空避免复用登录态）——不要为其他窗口放宽守卫。
 5. **热路径日志**：播放/动画热路径必须用 `debugLog()`（`src/utils/debugLog.ts`），裸 console.log 会造成内存增长。`PlaylistGrid3D.tsx` 已全部改用。
 6. **音频格式白名单**：`beat_analyzer.py` 仅接受 `.mp3/.flac/.wav/.ogg`（运行时 libsndfile 不支持 m4a/aac/opus/webm，且无 ffmpeg）。
 7. **离线安装**：`start.bat` 的 `--no-index --find-links=packages` 依赖 `packages/` 里的 cp313 wheels —— 若再升级 Python 主版本，需重建 wheel 集（`pip download --only-binary=:all: -d packages`）。
+8. **prebuild 钩子**：`npm run build` 会自动执行 `sync:sponsors --optional`，依赖 `WaveForge-Afdian.env` 中的爱发电 Token；未配置时软失败，不影响构建（详见 `AFDIAN_SPONSORS.md`）。
 
 ## 5. 未决事项（可选做）
 
@@ -58,6 +60,7 @@
 - 2026-07-24~25：无缝衔接三模式（Fixed/Beat/Smart AutoMix）落地，Python 服务独立化 + 降级策略
 - 2026-07-31：Phase 1（Beat This 集成）完成，Phase 2（智能过渡点）规划在案
 - 2026-08-13：代码安全修复（SSRF/路径穿越/IPC 启动通道/will-navigate）→ 运行时升级 3.13.15 → 全链路回归 → 文档整理（29→13 个 md）
+- 2026-08-13：合并朋友优化版（WaveForge(4)）—— 安全加固 + 音频/渲染修复 + **QQ 音乐 QMK API Key 领取功能** + 打包修复；本地仓库重置为远程基线（2 条提交）
 
 ## 7. 常用操作速查
 
@@ -69,10 +72,14 @@ test-python-service.bat       # 检查节拍服务 3002
 # 验证
 npm run lint                  # 类型检查
 npm run build                 # 生产构建
+npm run test:license          # 设备授权自测
 ./resources/python-embed/python.exe -m pip install --no-index --find-links=python-beat-service/packages --dry-run -r python-beat-service/requirements.txt  # 验证离线安装可解析
 
 # 运行时重建
 npm run bundle-python         # 重建嵌入式 3.13.15（需联网）
+
+# 爱发电赞助名单
+npm run sync:sponsors         # 手动刷新 src/data/afdianSponsors.generated.json
 
 # 回滚
 git log --oneline             # 查看历史；git reset --hard <sha> 回退
