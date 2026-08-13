@@ -217,7 +217,8 @@ function useSpringCamera(worldRef: React.RefObject<HTMLDivElement | null>, targe
       }
 
       // 静止检测：速度与位置误差都足够小时停止循环，目标变化会重新 startLoop
-      const settled = Math.abs(state.velocityX) < 0.05
+      const settled = state.overviewUntil === 0
+        && Math.abs(state.velocityX) < 0.05
         && Math.abs(state.velocityY) < 0.05
         && Math.abs(state.velocityScale) < 0.001
         && Math.abs(state.targetX - state.x) < 0.1

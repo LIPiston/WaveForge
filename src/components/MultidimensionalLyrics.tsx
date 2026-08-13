@@ -165,7 +165,7 @@ function useDimensionCamera(worldRef: React.RefObject<HTMLDivElement | null>, de
       const positionError = Math.abs(state.target.x - state.x) + Math.abs(state.target.y - state.y)
         + Math.abs(state.target.z - state.z) + Math.abs(state.target.rotateX - state.rotateX)
         + Math.abs(state.target.rotateY - state.rotateY)
-      if (speed < 0.05 && positionError < 0.1) {
+      if (state.overviewUntil === 0 && speed < 0.05 && positionError < 0.1) {
         runningRef.current = false
         return
       }
