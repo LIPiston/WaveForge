@@ -61,6 +61,7 @@
 - 2026-07-31：Phase 1（Beat This 集成）完成，Phase 2（智能过渡点）规划在案
 - 2026-08-13：代码安全修复（SSRF/路径穿越/IPC 启动通道/will-navigate）→ 运行时升级 3.13.15 → 全链路回归 → 文档整理（29→13 个 md）
 - 2026-08-13：合并朋友优化版（WaveForge(4)）—— 安全加固 + 音频/渲染修复 + **QQ 音乐 QMK API Key 领取功能** + 打包修复；本地仓库重置为远程基线（2 条提交）
+- 2026-08-14：无缝衔接三方案分流（专辑直接拼接/非专辑 60ms 淡入淡出）、调音室（3D 环绕无声修复 + liquid glass UI + 锚点动画）、设置页 Tab 蓝色滑动指示条、启动 splash 黑/白屏修复（软件合成适配）；确立 **Releases 只发安装版** 的发布策略
 
 ## 7. 常用操作速查
 
@@ -80,6 +81,12 @@ npm run bundle-python         # 重建嵌入式 3.13.15（需联网）
 
 # 爱发电赞助名单
 npm run sync:sponsors         # 手动刷新 src/data/afdianSponsors.generated.json
+
+# 发布（⚠️ Releases 只发 NSIS 安装版，不发便携版 win-unpacked/）
+npm run build:electron        # 构建安装版 release/WaveForge-<version>-Setup.exe
+git tag v<version> && git push origin v<version>
+gh release create v<version> release/WaveForge-<version>-Setup.exe --title "v<version>" --notes "changelog"
+# 安装版每用户安装、不携带用户数据；用户配置生成于各机 %APPDATA%\WaveForge 澜音工坊\
 
 # 回滚
 git log --oneline             # 查看历史；git reset --hard <sha> 回退

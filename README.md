@@ -58,13 +58,23 @@ npm run dev             # 仅 Vite（3000）
 npm run dev:api         # 仅 API（3001）
 npm run lint            # TypeScript 类型检查（tsc --noEmit）
 npm run build           # 生产构建 -> dist/
-npm run build:electron  # 打包 NSIS 安装包 -> release/
+npm run build:electron  # 打包 NSIS 安装版 -> release/（发布用）
 npm run build:full      # 完整发布：bundle-python + build:electron
-npm run build:electron:dir  # 构建 + 未打包目录（便于调试）
+npm run build:electron:dir  # 构建 + 未打包目录（本地调试用，不发布）
 npm run bundle-python   # 重建嵌入式 Python 运行时（3.13.15）
 npm run test:license    # 设备授权自测
 npm run sync:sponsors   # 刷新爱发电赞助名单（构建前会自动以可选模式运行）
 test-python-service.bat # 检测节拍服务（3002）
+```
+
+## 发布（GitHub Releases）
+
+**只发 NSIS 安装版**（`release/WaveForge-<version>-Setup.exe`），**不发便携版**（`release/win-unpacked/` 仅本地调试）。安装版为每用户安装、**不携带任何用户数据/配置**——首次运行在该机 `%APPDATA%\WaveForge 澜音工坊\` 自动生成全新配置并适配当前用户。
+
+```bash
+npm run build:electron          # 构建安装版
+git tag v<version> && git push origin v<version>
+gh release create v<version> release/WaveForge-<version>-Setup.exe --title "v<version>" --notes "..."
 ```
 
 ## 端口一览
