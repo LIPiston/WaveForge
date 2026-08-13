@@ -3342,10 +3342,84 @@ function App() {
   }
 
 
+  // ===== GPU 设置变更确认：用户修改显卡/关闭 GPU 加速后重启需确认，否则自动回退到安全默认值 =====
+  const [pendingGpuChange, setPendingGpuChange] = useState<{ type: 'preference' | 'acceleration' } | null>(null)
+  const [gpuConfirmCountdown, setGpuConfirmCountdown] = useState(15)
+  const gpuCountdownRef = useRef(15)
+
+  const confirmGpuChange = useCallback(async () => {
+    try {
+      await window.electron?.system.confirmGpuChange()
+    } catch {}
+    setPendingGpuChange(null)
+  }, [])
+
+  const revertGpuChange = useCallback(async () => {
+    try {
+      await window.electron?.system.revertGpuChange()
+    } catch {}
+    setPendingGpuChange(null)
+    window.dispatchEvent(new CustomEvent('showToast', {
+      detail: { message: '已恢复为安全默认设置（独显 / 开启 GPU 加速），重启后生效', type: 'info' }
+    }))
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void window.electron?.system.getHardwareAcceleration().then(result => {
+      if (cancelled) return
+      if (result.pendingGpuChange) setPendingGpuChange(result.pendingGpuChange)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    if (!pendingGpuChange) return
+    gpuCountdownRef.current = 15
+    setGpuConfirmCountdown(15)
+    const timer = window.setInterval(() => {
+      gpuCountdownRef.current -= 1
+      if (gpuCountdownRef.current <= 0) {
+        window.clearInterval(timer)
+        void revertGpuChange()
+      } else {
+        setGpuConfirmCountdown(gpuCountdownRef.current)
+      }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [pendingGpuChange, revertGpuChange])
+
   return (
     <>
       {/* 自定义窗口标题栏 */}
       <TitleBar />
+
+      {/* GPU 设置变更确认横幅 */}
+      {pendingGpuChange && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-[99999] w-[min(92vw,560px)] pointer-events-auto">
+          <div className={`rounded-xl border p-4 shadow-2xl ${playerTheme === 'dark' ? 'bg-[#0b1220]/95 border-red-500/40' : 'bg-white/95 border-red-500/40'}`}>
+            <div className={`text-sm font-medium leading-relaxed ${playerTheme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+              {pendingGpuChange.type === 'preference'
+                ? '您在此前修改过 GPU 加速设备，若无异常请点击确认，否则将在 15 秒后自动修改为独显'
+                : '您在此前关闭了 GPU 加速，若无异常请点击确认，否则将在 15 秒后自动打开 GPU 加速'}
+            </div>
+            <div className="mt-3 flex items-center gap-3">
+              <button
+                onClick={() => void confirmGpuChange()}
+                className="rounded-lg bg-red-500 hover:bg-red-600 px-5 py-2 text-sm font-semibold text-white transition-colors"
+              >
+                确认
+              </button>
+              <button
+                onClick={() => void revertGpuChange()}
+                className={`rounded-lg px-5 py-2 text-sm transition-colors ${playerTheme === 'dark' ? 'text-white/70 hover:text-white bg-white/10' : 'text-gray-600 hover:text-gray-900 bg-black/5'}`}
+              >
+                取消（{gpuConfirmCountdown} 秒倒计时）
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* 固定背景层 - 防止切换时白屏 */}
       <div className="fixed inset-0 bg-black" />

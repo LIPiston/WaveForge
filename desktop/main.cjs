@@ -26,15 +26,17 @@ const performanceSettingsPath = path.join(app.getPath('userData'), 'performance-
 const shortcutSettingsPath = path.join(app.getPath('userData'), 'shortcut-settings.json')
 
 function readPerformanceSettings() {
-  const defaults = { hardwareAcceleration: true, gpuPreference: 'discrete' }
+  const defaults = { hardwareAcceleration: true, gpuPreference: 'discrete', pendingGpuChange: null }
   try {
     const parsed = JSON.parse(fs.readFileSync(performanceSettingsPath, 'utf8'))
     const gpuPreference = ['auto', 'discrete', 'integrated'].includes(parsed?.gpuPreference)
       ? parsed.gpuPreference
       : defaults.gpuPreference
+    const pending = parsed?.pendingGpuChange
     return {
       hardwareAcceleration: parsed?.hardwareAcceleration !== false,
       gpuPreference,
+      pendingGpuChange: (pending && (pending.type === 'preference' || pending.type === 'acceleration')) ? pending : null,
     }
   } catch {
     return { ...defaults }
@@ -2344,6 +2346,7 @@ ipcMain.handle('get-hardware-acceleration', async () => {
   return {
     enabled: performanceSettings.hardwareAcceleration,
     gpuPreference: performanceSettings.gpuPreference,
+    pendingGpuChange: performanceSettings.pendingGpuChange,
     actualEnabled: app.isHardwareAccelerationEnabled(),
     featureStatus: app.getGPUFeatureStatus(),
     gpu: activeGpu ? {
@@ -2361,6 +2364,8 @@ ipcMain.handle('get-hardware-acceleration', async () => {
 
 ipcMain.handle('set-hardware-acceleration', (_event, enabled) => {
   performanceSettings.hardwareAcceleration = enabled !== false
+  // 关闭 GPU 加速属于风险操作，重启后需要用户确认，否则 15 秒自动恢复
+  performanceSettings.pendingGpuChange = performanceSettings.hardwareAcceleration ? null : { type: 'acceleration' }
   writePerformanceSettings(performanceSettings)
   return { success: true, enabled: performanceSettings.hardwareAcceleration, requiresRestart: true }
 })
@@ -2368,8 +2373,34 @@ ipcMain.handle('set-hardware-acceleration', (_event, enabled) => {
 ipcMain.handle('set-gpu-preference', (_event, preference) => {
   const next = ['auto', 'discrete', 'integrated'].includes(preference) ? preference : 'discrete'
   performanceSettings.gpuPreference = next
+  // 切换显卡（非独显）属于风险操作，重启后需要用户确认，否则 15 秒自动恢复为独显
+  performanceSettings.pendingGpuChange = next === 'discrete' ? null : { type: 'preference' }
   writePerformanceSettings(performanceSettings)
   return { success: true, gpuPreference: next, requiresRestart: true }
+})
+
+// 用户确认新的 GPU 设置可用（保留当前设置，清除待确认标记）
+ipcMain.handle('confirm-gpu-change', () => {
+  performanceSettings.pendingGpuChange = null
+  writePerformanceSettings(performanceSettings)
+  return { success: true }
+})
+
+// 用户未确认 / 点击取消：回退到安全默认值（独显 / 开启 GPU 加速）
+ipcMain.handle('revert-gpu-change', () => {
+  const pending = performanceSettings.pendingGpuChange
+  if (pending?.type === 'acceleration') {
+    performanceSettings.hardwareAcceleration = true
+  } else if (pending?.type === 'preference') {
+    performanceSettings.gpuPreference = 'discrete'
+  }
+  performanceSettings.pendingGpuChange = null
+  writePerformanceSettings(performanceSettings)
+  return {
+    success: true,
+    hardwareAcceleration: performanceSettings.hardwareAcceleration,
+    gpuPreference: performanceSettings.gpuPreference,
+  }
 })
 
 // IPC 处理：窗口控制
