@@ -1059,7 +1059,10 @@ export function useAudioPlayer(
       }
       let buffered = 0
       if (active.buffered.length) buffered = active.buffered.end(active.buffered.length - 1)
-      emit({ currentTime: active.currentTime, duration: active.duration || 0, buffered })
+      // 量化播放时间到 ~250ms，避免高频 timeupdate 触发多个大组件重渲染；
+      // 进度条/歌词内部已有各自的平滑插值，视觉无变化。
+      const quantizedTime = Math.round(active.currentTime * 4) / 4
+      emit({ currentTime: quantizedTime, duration: active.duration || 0, buffered })
     }
 
     const handlePlay = (event: Event) => {

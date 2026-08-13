@@ -87,6 +87,17 @@ export default function DesktopSettingsModal({
     const saved = localStorage.getItem('gpuAcceleration')
     return saved !== null ? JSON.parse(saved) : false
   })
+
+  // 启动时从主进程同步真实 GPU 加速状态，避免与设置面板不一致
+  useEffect(() => {
+    let cancelled = false
+    void window.electron?.system.getHardwareAcceleration().then(result => {
+      if (cancelled) return
+      setGpuAcceleration(result.enabled)
+      localStorage.setItem('gpuAcceleration', JSON.stringify(result.enabled))
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
   
   // 歌词组件模式设置
   const [lyricsComponentMode, setLyricsComponentMode] = useState<'virtualized' | 'standard'>(() => {
@@ -383,17 +394,24 @@ export default function DesktopSettingsModal({
     window.dispatchEvent(new CustomEvent('desktopPlaylistCardSizeChanged', { detail: size }))
   }
   
-  // GPU 加速开关处理
-  const handleGpuAccelerationToggle = (enabled: boolean) => {
-    setGpuAcceleration(enabled)
-    localStorage.setItem('gpuAcceleration', JSON.stringify(enabled))
-    window.dispatchEvent(new CustomEvent('gpuAccelerationChanged', { detail: enabled }))
-    
-    // 显示 Toast 提示
-    const message = enabled ? 'GPU加速已打开，重启软件以生效' : 'GPU加速已关闭，重启软件以生效'
-    window.dispatchEvent(new CustomEvent('showToast', { 
-      detail: { message, type: 'info' }
-    }))
+  // GPU 加速开关处理（与主进程同步，重启后生效）
+  const handleGpuAccelerationToggle = async (enabled: boolean) => {
+    try {
+      const result = await window.electron?.system.setHardwareAcceleration(enabled)
+      if (!result?.success) throw new Error('主进程未保存设置')
+      setGpuAcceleration(result.enabled)
+      localStorage.setItem('gpuAcceleration', JSON.stringify(result.enabled))
+      window.dispatchEvent(new CustomEvent('gpuAccelerationChanged', { detail: result.enabled }))
+      const message = result.enabled ? 'GPU加速已打开，重启软件以生效' : 'GPU加速已关闭，重启软件以生效'
+      window.dispatchEvent(new CustomEvent('showToast', { 
+        detail: { message, type: 'info' }
+      }))
+    } catch (error) {
+      console.error('保存 GPU 加速设置失败:', error)
+      window.dispatchEvent(new CustomEvent('showToast', { 
+        detail: { message: 'GPU 加速设置保存失败', type: 'error' }
+      }))
+    }
   }
   
   // 歌词组件模式切换处理

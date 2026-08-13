@@ -1289,6 +1289,9 @@ function App() {
     }
   )
   audioPlayerCacheControlRef.current = audioPlayer
+  // 保持最新 audioPlayer 引用的 ref，供 useCallback 处理器读取，避免处理器身份随渲染变化
+  const audioPlayerRef = useRef(audioPlayer)
+  audioPlayerRef.current = audioPlayer
   
   // 封面律动效果
   const [coverPulseEnabled, setCoverPulseEnabled] = useState(() => {
@@ -2704,9 +2707,9 @@ function App() {
     }, 4000)
   }
 
-  const handlePlayPause = () => {
-    audioPlayer.togglePlay()
-  }
+  const handlePlayPause = useCallback(() => {
+    audioPlayerRef.current.togglePlay()
+  }, [])
 
   // ===== 桌面播放器：独立置顶小窗口的状态桥接 =====
   const isPlayingRef = useRef(isPlaying)
@@ -3029,13 +3032,13 @@ function App() {
     }
   }, [isPlaying, desktopPlayerWindowEnabled, desktopLyricsWindowEnabled])
 
-  const handleSeek = (time: number) => {
-    audioPlayer.seek(time)
-  }
+  const handleSeek = useCallback((time: number) => {
+    audioPlayerRef.current.seek(time)
+  }, [])
 
-  const handleVolumeChange = (newVolume: number) => {
-    audioPlayer.setVolume(newVolume)
-  }
+  const handleVolumeChange = useCallback((newVolume: number) => {
+    audioPlayerRef.current.setVolume(newVolume)
+  }, [])
 
   const handleDesktopQueueRemove = useCallback((index: number) => {
     if (index < 0 || index === currentIndexRef.current) return

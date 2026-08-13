@@ -259,7 +259,7 @@ class WeatherWindParticleLayer extends L.Layer {
     map.on('movestart zoomstart', this.handleMoveStart)
     map.on('moveend zoomend resize', this.handleMoveEnd)
     this.resetCanvas()
-    this.animationFrame = window.requestAnimationFrame(this.animate)
+    this.restart()
     return this
   }
 
@@ -357,6 +357,14 @@ class WeatherWindParticleLayer extends L.Layer {
     }
     this.vectorGrid = grid
     this.lastVectorHour = this.hourOffset
+    this.restart()
+  }
+
+  // 在画布/网格就绪且未移动时重启粒子循环（空闲时 animate 会自行停止）
+  private restart = () => {
+    if (this.animationFrame !== 0) return
+    if (this.moving || !this.canvas || !this.context || this.vectorGrid.length === 0) return
+    this.animationFrame = window.requestAnimationFrame(this.animate)
   }
 
   private fieldAt = (x: number, y: number): WeatherWindGridCell => {
@@ -383,10 +391,16 @@ class WeatherWindParticleLayer extends L.Layer {
   }
 
   private animate = (timestamp: number) => {
-    this.animationFrame = window.requestAnimationFrame(this.animate)
-    if (this.moving || !this.context || !this.canvas || this.vectorGrid.length === 0) return
+    // 空闲/移动/无数据时停止循环，避免空转；由 rebuildVectorField 触发 restart 重新开始
+    if (this.moving || !this.context || !this.canvas || this.vectorGrid.length === 0) {
+      this.animationFrame = 0
+      return
+    }
     const frameInterval = this.reducedMotion ? 120 : 32
-    if (timestamp - this.lastFrameTime < frameInterval) return
+    if (timestamp - this.lastFrameTime < frameInterval) {
+      this.animationFrame = window.requestAnimationFrame(this.animate)
+      return
+    }
     this.lastFrameTime = timestamp
     const context = this.context
     context.globalCompositeOperation = 'destination-in'
@@ -420,6 +434,8 @@ class WeatherWindParticleLayer extends L.Layer {
         this.resetParticle(particle, index + Math.round(timestamp))
       }
     })
+
+    this.animationFrame = window.requestAnimationFrame(this.animate)
   }
 }
 

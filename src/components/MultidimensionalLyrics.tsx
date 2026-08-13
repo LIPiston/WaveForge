@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import type { LyricLine } from '../services/musicApi'
 import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
@@ -126,36 +126,13 @@ function useDimensionCamera(worldRef: React.RefObject<HTMLDivElement | null>, de
     overviewUntil: 0,
   })
 
-  useEffect(() => {
-    const state = stateRef.current
-    state.finalTarget = desired
-    if (reducedMotion) {
-      Object.assign(state, desired, { target: desired, overviewUntil: 0 })
-      if (worldRef.current) {
-        worldRef.current.style.transform = `translate3d(${-desired.x}px, ${-desired.y}px, ${desired.z}px) rotateX(${desired.rotateX}deg) rotateY(${desired.rotateY}deg)`
-      }
-      return
-    }
+  const rafIdRef = useRef(0)
+  const runningRef = useRef(false)
 
-    const distance = Math.hypot(desired.x - state.x, desired.y - state.y, desired.z - state.z)
-    if (distance > 920) {
-      state.target = {
-        x: (state.x + desired.x) * 0.5,
-        y: (state.y + desired.y) * 0.5,
-        z: Math.min(state.z, desired.z) - 520,
-        rotateX: (state.rotateX + desired.rotateX) * 0.28,
-        rotateY: (state.rotateY + desired.rotateY) * 0.28,
-      }
-      state.overviewUntil = performance.now() + 480
-    } else {
-      state.target = desired
-      state.overviewUntil = 0
-    }
-  }, [desired.rotateX, desired.rotateY, desired.x, desired.y, desired.z, reducedMotion, worldRef])
-
-  useEffect(() => {
-    if (reducedMotion) return
-    let frame = 0
+  // 启动/重启弹簧循环；静止时自动停止，目标变化时由下方 effect 重新触发，避免空转消耗 CPU
+  const startLoop = useCallback(() => {
+    if (runningRef.current) return
+    runningRef.current = true
     let previous = performance.now()
     const tick = (now: number) => {
       const state = stateRef.current
@@ -181,11 +158,53 @@ function useDimensionCamera(worldRef: React.RefObject<HTMLDivElement | null>, de
       if (worldRef.current) {
         worldRef.current.style.transform = `translate3d(${-state.x.toFixed(2)}px, ${-state.y.toFixed(2)}px, ${state.z.toFixed(2)}px) rotateX(${state.rotateX.toFixed(3)}deg) rotateY(${state.rotateY.toFixed(3)}deg)`
       }
-      frame = requestAnimationFrame(tick)
+
+      // 静止检测：速度与位置误差都足够小时停止循环（目标变化会重新 startLoop）
+      const speed = Math.abs(state.velocityX) + Math.abs(state.velocityY) + Math.abs(state.velocityZ)
+        + Math.abs(state.velocityRotateX) + Math.abs(state.velocityRotateY)
+      const positionError = Math.abs(state.target.x - state.x) + Math.abs(state.target.y - state.y)
+        + Math.abs(state.target.z - state.z) + Math.abs(state.target.rotateX - state.rotateX)
+        + Math.abs(state.target.rotateY - state.rotateY)
+      if (speed < 0.05 && positionError < 0.1) {
+        runningRef.current = false
+        return
+      }
+      rafIdRef.current = requestAnimationFrame(tick)
     }
-    frame = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(frame)
-  }, [reducedMotion, worldRef])
+    rafIdRef.current = requestAnimationFrame(tick)
+  }, [worldRef])
+
+  useEffect(() => {
+    const state = stateRef.current
+    state.finalTarget = desired
+    if (reducedMotion) {
+      Object.assign(state, desired, { target: desired, overviewUntil: 0 })
+      if (worldRef.current) {
+        worldRef.current.style.transform = `translate3d(${-desired.x}px, ${-desired.y}px, ${desired.z}px) rotateX(${desired.rotateX}deg) rotateY(${desired.rotateY}deg)`
+      }
+      return
+    }
+
+    const distance = Math.hypot(desired.x - state.x, desired.y - state.y, desired.z - state.z)
+    if (distance > 920) {
+      state.target = {
+        x: (state.x + desired.x) * 0.5,
+        y: (state.y + desired.y) * 0.5,
+        z: Math.min(state.z, desired.z) - 520,
+        rotateX: (state.rotateX + desired.rotateX) * 0.28,
+        rotateY: (state.rotateY + desired.rotateY) * 0.28,
+      }
+      state.overviewUntil = performance.now() + 480
+    } else {
+      state.target = desired
+      state.overviewUntil = 0
+    }
+    startLoop()
+  }, [desired.rotateX, desired.rotateY, desired.x, desired.y, desired.z, reducedMotion, worldRef, startLoop])
+
+  useEffect(() => {
+    return () => cancelAnimationFrame(rafIdRef.current)
+  }, [])
 }
 
 export default function MultidimensionalLyrics({

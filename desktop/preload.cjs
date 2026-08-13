@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('electron', {
     getLocation: () => ipcRenderer.invoke('get-system-location'),
     getHardwareAcceleration: () => ipcRenderer.invoke('get-hardware-acceleration'),
     setHardwareAcceleration: (enabled) => ipcRenderer.invoke('set-hardware-acceleration', enabled),
+    setGpuPreference: (preference) => ipcRenderer.invoke('set-gpu-preference', preference),
   },
 
   mediaKeys: {

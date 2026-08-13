@@ -26,11 +26,18 @@ const performanceSettingsPath = path.join(app.getPath('userData'), 'performance-
 const shortcutSettingsPath = path.join(app.getPath('userData'), 'shortcut-settings.json')
 
 function readPerformanceSettings() {
+  const defaults = { hardwareAcceleration: true, gpuPreference: 'discrete' }
   try {
     const parsed = JSON.parse(fs.readFileSync(performanceSettingsPath, 'utf8'))
-    return { hardwareAcceleration: parsed?.hardwareAcceleration !== false }
+    const gpuPreference = ['auto', 'discrete', 'integrated'].includes(parsed?.gpuPreference)
+      ? parsed.gpuPreference
+      : defaults.gpuPreference
+    return {
+      hardwareAcceleration: parsed?.hardwareAcceleration !== false,
+      gpuPreference,
+    }
   } catch {
-    return { hardwareAcceleration: true }
+    return { ...defaults }
   }
 }
 
@@ -42,7 +49,15 @@ function writePerformanceSettings(settings) {
 }
 
 const performanceSettings = readPerformanceSettings()
-if (!performanceSettings.hardwareAcceleration) app.disableHardwareAcceleration()
+if (!performanceSettings.hardwareAcceleration) {
+  app.disableHardwareAcceleration()
+} else if (performanceSettings.gpuPreference === 'discrete') {
+  // 强制使用独立显卡（高性能 GPU）
+  app.commandLine.appendSwitch('force_high_performance_gpu')
+} else if (performanceSettings.gpuPreference === 'integrated') {
+  // 强制使用核显/集成显卡（低功耗 GPU）
+  app.commandLine.appendSwitch('force_low_power_gpu')
+}
 
 app.on('child-process-gone', (_event, details) => {
   const processType = String(details?.type || '').toLowerCase()
@@ -2296,6 +2311,7 @@ ipcMain.handle('get-hardware-acceleration', async () => {
 
   return {
     enabled: performanceSettings.hardwareAcceleration,
+    gpuPreference: performanceSettings.gpuPreference,
     actualEnabled: app.isHardwareAccelerationEnabled(),
     featureStatus: app.getGPUFeatureStatus(),
     gpu: activeGpu ? {
@@ -2314,6 +2330,13 @@ ipcMain.handle('set-hardware-acceleration', (_event, enabled) => {
   performanceSettings.hardwareAcceleration = enabled !== false
   writePerformanceSettings(performanceSettings)
   return { success: true, enabled: performanceSettings.hardwareAcceleration, requiresRestart: true }
+})
+
+ipcMain.handle('set-gpu-preference', (_event, preference) => {
+  const next = ['auto', 'discrete', 'integrated'].includes(preference) ? preference : 'discrete'
+  performanceSettings.gpuPreference = next
+  writePerformanceSettings(performanceSettings)
+  return { success: true, gpuPreference: next, requiresRestart: true }
 })
 
 // IPC 处理：窗口控制

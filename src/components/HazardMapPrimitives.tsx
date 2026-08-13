@@ -334,7 +334,17 @@ export function WindParticleLayer({ samples }: { samples: ProjectedWindSample[] 
     }
 
     let frame = 0
-    const draw = () => {
+    let lastFrameTime = 0
+    let animationFrame = 0
+    const frameInterval = 33 // ~30fps，降低连续绘制的 CPU 占用
+
+    const draw = (timestamp = 0) => {
+      if (!reducedMotion && timestamp - lastFrameTime < frameInterval) {
+        animationFrame = window.requestAnimationFrame(draw)
+        return
+      }
+      if (!reducedMotion) lastFrameTime = timestamp
+
       context.globalCompositeOperation = 'destination-in'
       context.fillStyle = reducedMotion ? 'rgba(0,0,0,.80)' : 'rgba(0,0,0,.95)'
       context.fillRect(0, 0, HAZARD_MAP_WIDTH, HAZARD_MAP_HEIGHT)
@@ -364,7 +374,6 @@ export function WindParticleLayer({ samples }: { samples: ProjectedWindSample[] 
       if (!reducedMotion) animationFrame = window.requestAnimationFrame(draw)
     }
 
-    let animationFrame = 0
     draw()
     return () => window.cancelAnimationFrame(animationFrame)
   }, [stableSamples])

@@ -450,12 +450,14 @@ export default function SettingsPanel({
     featureStatus: Record<string, string>
     gpu: { deviceString?: string; vendorString?: string; driverVersion?: string } | null
   } | null>(null)
+  const [gpuPreference, setGpuPreference] = useState<'auto' | 'discrete' | 'integrated'>('discrete')
 
   useEffect(() => {
     let cancelled = false
     void window.electron?.system.getHardwareAcceleration().then(result => {
       if (cancelled) return
       setGpuAcceleration(result.enabled)
+      setGpuPreference(result.gpuPreference || 'discrete')
       setGpuStatus({
         actualEnabled: result.actualEnabled,
         featureStatus: result.featureStatus,
@@ -580,6 +582,27 @@ export default function SettingsPanel({
       console.error('保存硬件加速设置失败:', error)
       window.dispatchEvent(new CustomEvent('showToast', {
         detail: { message: '硬件加速设置保存失败', type: 'error' }
+      }))
+    }
+  }
+
+  const handleGpuPreferenceChange = async (preference: 'auto' | 'discrete' | 'integrated') => {
+    try {
+      const result = await window.electron?.system.setGpuPreference(preference)
+      if (!result?.success) throw new Error('主进程未保存设置')
+      setGpuPreference(result.gpuPreference)
+      const labels: Record<'auto' | 'discrete' | 'integrated', string> = {
+        auto: '自动',
+        discrete: '独立显卡',
+        integrated: '核显',
+      }
+      window.dispatchEvent(new CustomEvent('showToast', {
+        detail: { message: `已切换为${labels[result.gpuPreference]}，重启软件后生效`, type: 'info' }
+      }))
+    } catch (error) {
+      console.error('保存显卡偏好设置失败:', error)
+      window.dispatchEvent(new CustomEvent('showToast', {
+        detail: { message: '显卡偏好设置保存失败', type: 'error' }
       }))
     }
   }
@@ -2177,6 +2200,27 @@ export default function SettingsPanel({
                             {gpuStatus.actualEnabled !== gpuAcceleration && <span className="text-amber-400">当前设置尚未生效，请重启软件</span>}
                           </div>
                         )}
+                      </div>
+                    </div>
+
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`}>
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <div className={`${textPrimary} font-medium mb-1`}>显卡选择</div>
+                          <div className={`${textSecondary} text-sm`}>优先使用哪块显卡进行加速渲染</div>
+                        </div>
+                        <select
+                          value={gpuPreference}
+                          onChange={(e) => void handleGpuPreferenceChange(e.target.value as 'auto' | 'discrete' | 'integrated')}
+                          className={`${bgCard} ${textPrimary} border ${borderColor} rounded-lg px-3 py-2 text-sm outline-none`}
+                        >
+                          <option value="discrete">独立显卡（默认）</option>
+                          <option value="integrated">核显 / 集成显卡</option>
+                          <option value="auto">自动</option>
+                        </select>
+                      </div>
+                      <div className={`${textTertiary} text-xs mt-3 p-3 rounded-lg`} style={{ backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
+                        默认使用独立显卡以获得最佳动画流畅度；笔记本想省电或独显驱动异常时可切换为核显或自动。切换后需重启软件生效。
                       </div>
                     </div>
 

@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import type { LyricLine } from '../services/musicApi'
 import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
@@ -183,37 +183,12 @@ function useSpringCamera(worldRef: React.RefObject<HTMLDivElement | null>, targe
     overviewUntil: 0,
   })
 
-  useEffect(() => {
-    const state = cameraRef.current
-    state.finalTarget = target
-    if (reducedMotion) {
-      Object.assign(state, target, { targetX: target.x, targetY: target.y, targetScale: target.scale, overviewUntil: 0 })
-      if (worldRef.current) worldRef.current.style.transform = `translate3d(${target.x}px, ${target.y}px, 0) scale(${target.scale})`
-      return
-    }
+  const rafIdRef = useRef(0)
+  const runningRef = useRef(false)
 
-    const distance = Math.hypot(target.x - state.x, target.y - state.y) / Math.max(1, Math.min(viewport.width, viewport.height))
-    if (distance > 2.75) {
-      const overviewScale = clamp(Math.min(state.scale, target.scale) * 0.58, 0.34, 0.68)
-      const currentCenterX = -state.x / Math.max(0.001, state.scale)
-      const currentCenterY = -state.y / Math.max(0.001, state.scale)
-      const targetCenterX = -target.x / Math.max(0.001, target.scale)
-      const targetCenterY = -target.y / Math.max(0.001, target.scale)
-      state.targetScale = overviewScale
-      state.targetX = -((currentCenterX + targetCenterX) * 0.5) * overviewScale
-      state.targetY = -((currentCenterY + targetCenterY) * 0.5) * overviewScale
-      state.overviewUntil = performance.now() + 470
-    } else {
-      state.targetX = target.x
-      state.targetY = target.y
-      state.targetScale = target.scale
-      state.overviewUntil = 0
-    }
-  }, [reducedMotion, target.scale, target.x, target.y, viewport.height, viewport.width, worldRef])
-
-  useEffect(() => {
-    if (reducedMotion) return
-    let frame = 0
+  const startLoop = useCallback(() => {
+    if (runningRef.current) return
+    runningRef.current = true
     let previousTime = performance.now()
     const tick = (now: number) => {
       const state = cameraRef.current
@@ -240,11 +215,55 @@ function useSpringCamera(worldRef: React.RefObject<HTMLDivElement | null>, targe
       if (worldRef.current) {
         worldRef.current.style.transform = `translate3d(${state.x.toFixed(2)}px, ${state.y.toFixed(2)}px, 0) scale(${state.scale.toFixed(4)})`
       }
-      frame = requestAnimationFrame(tick)
+
+      // 静止检测：速度与位置误差都足够小时停止循环，目标变化会重新 startLoop
+      const settled = Math.abs(state.velocityX) < 0.05
+        && Math.abs(state.velocityY) < 0.05
+        && Math.abs(state.velocityScale) < 0.001
+        && Math.abs(state.targetX - state.x) < 0.1
+        && Math.abs(state.targetY - state.y) < 0.1
+        && Math.abs(state.targetScale - state.scale) < 0.001
+      if (settled) {
+        runningRef.current = false
+        return
+      }
+      rafIdRef.current = requestAnimationFrame(tick)
     }
-    frame = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(frame)
-  }, [reducedMotion, worldRef])
+    rafIdRef.current = requestAnimationFrame(tick)
+  }, [worldRef])
+
+  useEffect(() => {
+    const state = cameraRef.current
+    state.finalTarget = target
+    if (reducedMotion) {
+      Object.assign(state, target, { targetX: target.x, targetY: target.y, targetScale: target.scale, overviewUntil: 0 })
+      if (worldRef.current) worldRef.current.style.transform = `translate3d(${target.x}px, ${target.y}px, 0) scale(${target.scale})`
+      return
+    }
+
+    const distance = Math.hypot(target.x - state.x, target.y - state.y) / Math.max(1, Math.min(viewport.width, viewport.height))
+    if (distance > 2.75) {
+      const overviewScale = clamp(Math.min(state.scale, target.scale) * 0.58, 0.34, 0.68)
+      const currentCenterX = -state.x / Math.max(0.001, state.scale)
+      const currentCenterY = -state.y / Math.max(0.001, state.scale)
+      const targetCenterX = -target.x / Math.max(0.001, target.scale)
+      const targetCenterY = -target.y / Math.max(0.001, target.scale)
+      state.targetScale = overviewScale
+      state.targetX = -((currentCenterX + targetCenterX) * 0.5) * overviewScale
+      state.targetY = -((currentCenterY + targetCenterY) * 0.5) * overviewScale
+      state.overviewUntil = performance.now() + 470
+    } else {
+      state.targetX = target.x
+      state.targetY = target.y
+      state.targetScale = target.scale
+      state.overviewUntil = 0
+    }
+    startLoop()
+  }, [reducedMotion, target.scale, target.x, target.y, viewport.height, viewport.width, worldRef, startLoop])
+
+  useEffect(() => {
+    return () => cancelAnimationFrame(rafIdRef.current)
+  }, [])
 }
 
 export default function WallpaperLyrics({

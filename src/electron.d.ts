@@ -88,6 +88,7 @@ export type DeviceRedeemResult =
 
 export interface HardwareAccelerationStatus {
   enabled: boolean
+  gpuPreference: 'auto' | 'discrete' | 'integrated'
   actualEnabled: boolean
   featureStatus: Record<string, string>
   gpu: {
@@ -122,6 +123,7 @@ export interface ElectronAPI {
     }>
     getHardwareAcceleration: () => Promise<HardwareAccelerationStatus>
     setHardwareAcceleration: (enabled: boolean) => Promise<{ success: boolean; enabled: boolean; requiresRestart: boolean }>
+    setGpuPreference: (preference: 'auto' | 'discrete' | 'integrated') => Promise<{ success: boolean; gpuPreference: 'auto' | 'discrete' | 'integrated'; requiresRestart: boolean }>
   }
   mediaKeys: {
     setEnabled: (enabled: boolean) => Promise<{

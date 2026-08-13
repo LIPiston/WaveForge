@@ -52,11 +52,13 @@ export default function ModernAudioVisualizer({
     const applyPulse = () => {
       const surface = pulseSurfaceRef.current
       const glow = pulseGlowRef.current
+      const canvas = canvasRef.current
       if (!surface || !glow) return
       const restlessPulse = pulseStore.getSnapshot().restless
       const scale = 1 + restlessPulse * 0.028
       surface.style.transform = `translate3d(0, 0, 0) scale(${scale})`
-      surface.style.filter = `brightness(${1 + restlessPulse * 0.08})`
+      // 亮度改作用到画布（无 backdrop-filter），避免每次脉冲重栅格化 blur(28px) 背景
+      if (canvas) canvas.style.filter = `brightness(${1 + restlessPulse * 0.08})`
       glow.style.opacity = String(Math.min(0.62, restlessPulse * 0.48))
       glow.style.transform = `translate3d(0, 0, 0) scale(${1 + restlessPulse * 0.04})`
     }
