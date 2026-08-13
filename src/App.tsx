@@ -3414,7 +3414,7 @@ function App() {
                 onClick={() => void revertGpuChange()}
                 className={`rounded-lg px-5 py-2 text-sm transition-colors ${playerTheme === 'dark' ? 'text-white/70 hover:text-white bg-white/10' : 'text-gray-600 hover:text-gray-900 bg-black/5'}`}
               >
-                取消（{gpuConfirmCountdown} 秒倒计时）
+                取消（{gpuConfirmCountdown}）
               </button>
             </div>
           </div>
