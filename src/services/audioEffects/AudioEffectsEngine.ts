@@ -111,7 +111,7 @@ function loadSettings(): AudioEffectsSettings {
 // ============ 工具函数 ============
 
 // 生成一个简单的立体声大厅脉冲响应（指数衰减噪声），用于卷积混响
-function generateHallImpulseResponse(context: AudioContext, seconds = 2.8, decay = 3.2): AudioBuffer {
+function generateHallImpulseResponse(context: BaseAudioContext, seconds = 2.8, decay = 3.2): AudioBuffer {
   const sampleRate = context.sampleRate
   const length = Math.max(1, Math.floor(sampleRate * seconds))
   const buffer = context.createBuffer(2, length, sampleRate)
@@ -528,4 +528,138 @@ export class AudioEffectsEngine {
       this.surroundAnimationFrame = 0
     }
   }
+
+  // 把当前音效（EQ + 低音/人声/伴奏 + 全景声厅混响）离线渲染成 WAV 并下载。
+  // 说明：这是个人处理用途，涉及版权曲目请勿分发。
+  async exportToWav(sourceUrl: string, durationSeconds: number): Promise<void> {
+    if (!this.context) throw new Error('音频引擎尚未就绪')
+    const sampleRate = this.context.sampleRate
+
+    // 1. 拉取并解码源音频
+    const response = await fetch(sourceUrl)
+    if (!response.ok) throw new Error(`拉取音频失败：${response.status}`)
+    const arrayBuffer = await response.arrayBuffer()
+    const decoded = await this.context.decodeAudioData(arrayBuffer)
+
+    // 2. 离线渲染长度（至少 1 秒，最长不超过源长度）
+    const length = Math.max(1, Math.min(Math.floor(durationSeconds * sampleRate), decoded.length))
+
+    const offline = new OfflineAudioContext(2, length, sampleRate)
+    const source = offline.createBufferSource()
+    source.buffer = decoded
+
+    // 3. 搭建与实时链一致的核心效果：EQ → 低音 → 人声 → 伴奏 → 全景声厅（干湿）
+    const { eq, effects } = this.settings
+    let prev: AudioNode = source
+
+    if (eq.enabled) {
+      const bands = eq.mode === 'simple'
+        ? SIMPLE_EQ_BANDS.map((band, i) => ({ frequency: band.frequency, gain: eq.simpleBands[i] || 0, q: 1.0 }))
+        : eq.proBands
+      for (const band of bands) {
+        const f = offline.createBiquadFilter()
+        f.type = 'peaking'
+        f.frequency.value = band.frequency
+        f.gain.value = band.gain
+        f.Q.value = band.q
+        prev.connect(f)
+        prev = f
+      }
+    }
+
+    if (effects.bassBoost.enabled) {
+      const f = offline.createBiquadFilter()
+      f.type = 'lowshelf'
+      f.frequency.value = effects.bassBoost.depth
+      f.gain.value = effects.bassBoost.intensity
+      prev.connect(f)
+      prev = f
+    }
+    if (effects.vocalBoost.enabled) {
+      const f = offline.createBiquadFilter()
+      f.type = 'peaking'
+      f.frequency.value = 2500
+      f.Q.value = 1.1
+      f.gain.value = effects.vocalBoost.intensity
+      prev.connect(f)
+      prev = f
+    }
+    if (effects.accompanimentBoost.enabled) {
+      const f = offline.createBiquadFilter()
+      f.type = 'peaking'
+      f.frequency.value = 2500
+      f.Q.value = 1.4
+      f.gain.value = -effects.accompanimentBoost.intensity
+      prev.connect(f)
+      prev = f
+    }
+
+    // 全景声厅：干路 + 卷积混响湿路
+    const dry = offline.createGain()
+    dry.gain.value = 1
+    prev.connect(dry)
+    dry.connect(offline.destination)
+
+    if (effects.hall.enabled) {
+      const convolver = offline.createConvolver()
+      convolver.buffer = generateHallImpulseResponse(offline, 2.8, 3.2)
+      const wet = offline.createGain()
+      wet.gain.value = Math.min(1, effects.hall.level / 6) * 0.9
+      prev.connect(convolver)
+      convolver.connect(wet)
+      wet.connect(offline.destination)
+    }
+
+    source.start(0)
+    const rendered = await offline.startRendering()
+
+    // 4. 编码为 WAV 并下载
+    const wavBlob = encodeWav(rendered)
+    const url = URL.createObjectURL(wavBlob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `waveforge-mix-${Date.now()}.wav`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 10_000)
+  }
+}
+
+// 把 AudioBuffer 编码为 16-bit PCM WAV
+function encodeWav(buffer: AudioBuffer): Blob {
+  const numChannels = Math.min(2, buffer.numberOfChannels)
+  const sampleRate = buffer.sampleRate
+  const length = buffer.length * numChannels * 2
+  const arrayBuffer = new ArrayBuffer(44 + length)
+  const view = new DataView(arrayBuffer)
+
+  const writeString = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i))
+  }
+
+  writeString(0, 'RIFF')
+  view.setUint32(4, 36 + length, true)
+  writeString(8, 'WAVE')
+  writeString(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true) // PCM
+  view.setUint16(22, numChannels, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * numChannels * 2, true)
+  view.setUint16(32, numChannels * 2, true)
+  view.setUint16(34, 16, true)
+  writeString(36, 'data')
+  view.setUint32(40, length, true)
+
+  let offset = 44
+  for (let i = 0; i < buffer.length; i += 1) {
+    for (let ch = 0; ch < numChannels; ch += 1) {
+      const sample = Math.max(-1, Math.min(1, buffer.getChannelData(ch)[i]))
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+      offset += 2
+    }
+  }
+
+  return new Blob([arrayBuffer], { type: 'audio/wav' })
 }

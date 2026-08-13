@@ -14,6 +14,8 @@ interface MixingStudioProps {
   engine: AudioEffectsEngine
   onClose: () => void
   playerTheme: 'dark' | 'light'
+  sourceUrl?: string
+  sourceDuration?: number
 }
 
 type Tab = 'effects' | 'eq' | 'tuner'
@@ -45,13 +47,14 @@ function savePresets(presets: EqPreset[]): void {
   }
 }
 
-export default function MixingStudio({ engine, onClose, playerTheme }: MixingStudioProps) {
+export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, sourceDuration }: MixingStudioProps) {
   const [activeTab, setActiveTab] = useState<Tab>('effects')
   const [settings, setSettings] = useState<AudioEffectsSettings>(engine.getSettings())
   const [presets, setPresets] = useState<EqPreset[]>(loadPresets())
   const [presetName, setPresetName] = useState('')
   const [importText, setImportText] = useState('')
   const [exportText, setExportText] = useState('')
+  const [exporting, setExporting] = useState(false)
 
   const dark = playerTheme === 'dark'
   const textPrimary = dark ? 'text-white' : 'text-black'
@@ -138,6 +141,23 @@ export default function MixingStudio({ engine, onClose, playerTheme }: MixingStu
       }
     } catch {
       window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '导入失败：JSON 格式无效', type: 'error' } }))
+    }
+  }
+
+  const handleExportWav = async () => {
+    if (!sourceUrl) {
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '当前没有正在播放的歌曲', type: 'error' } }))
+      return
+    }
+    setExporting(true)
+    try {
+      await engine.exportToWav(sourceUrl, sourceDuration || 0)
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '已导出处理后的音频（WAV）', type: 'info' } }))
+    } catch (error) {
+      console.error('[MixingStudio] 导出失败:', error)
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '导出失败：' + (error instanceof Error ? error.message : '未知错误'), type: 'error' } }))
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -478,6 +498,20 @@ export default function MixingStudio({ engine, onClose, playerTheme }: MixingStu
                   <div className={`${textTertiary} text-xs flex items-center gap-1`}>
                     <Info className="w-3.5 h-3.5" /> 基于 SoundTouch 实时处理，变调与变速互相独立。
                   </div>
+                </div>
+
+                <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                  <div className={`${textPrimary} font-medium mb-1`}>导出处理后的音乐</div>
+                  <div className={`${textSecondary} text-xs mb-3`}>把当前音效与均衡器离线渲染成 WAV 文件下载（个人处理用途，涉及版权曲目请勿分发）</div>
+                  <button
+                    type="button"
+                    onClick={() => void handleExportWav()}
+                    disabled={exporting || !sourceUrl}
+                    className="w-full py-2.5 rounded-lg text-sm font-medium text-white disabled:opacity-40 transition-opacity"
+                    style={{ backgroundColor: accentColor }}
+                  >
+                    {exporting ? '导出中…' : '导出 WAV'}
+                  </button>
                 </div>
               </motion.div>
             )}

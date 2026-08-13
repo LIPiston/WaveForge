@@ -3680,6 +3680,8 @@ function App() {
                 engine={audioEffectsEngineRef.current!}
                 onClose={() => setShowMixingStudio(false)}
                 playerTheme={playerTheme}
+                sourceUrl={audioPlayer.audioElement?.src || undefined}
+                sourceDuration={audioPlayer.audioElement?.duration || undefined}
               />
             </Suspense>
           )}
