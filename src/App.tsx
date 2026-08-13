@@ -1120,6 +1120,11 @@ function App() {
   const hasTranslation = useMemo(() => lyrics.some(lyric => Boolean(lyric.translation?.trim())), [lyrics])
   const hasRoman = useMemo(() => lyrics.some(lyric => Boolean(lyric.roman?.trim()) || Boolean(lyric.romanWords?.length)), [lyrics])
   
+  // handleNext 与 dominantColor 的声明位置在 useAudioPlayer 之后，无法放入其回调的依赖数组，
+  // 因此用 ref 保存最新引用，供回调在运行时读取，避免陈旧闭包。
+  const handleNextRef = useRef<() => void>(() => undefined)
+  const dominantColorRef = useRef<string>('#3B82F6')
+  
   // 播放器状态监听器
   const audioPlayer = useAudioPlayer(
     useCallback((state) => {
@@ -1211,7 +1216,7 @@ function App() {
           coverUrl: normalizedFromSong.album?.picUrl || '',
           title: normalizedFromSong.name,
           artist: normalizedFromSong.artists.map(artist => artist.name).join(', '),
-          dominantColor: dominantColor, // 使用当前的主色调
+          dominantColor: dominantColorRef.current, // 使用当前的主色调
         })
       }
       
@@ -1268,10 +1273,10 @@ function App() {
         audioPlayer.togglePlay()
       } else {
         // 防止在歌曲变化时快速连续调用导致竞态条件
-        handleNext()
+        handleNextRef.current()
       }
     }
-  }, [duration, upNextTime, upNextEnabled, showUpNext, playMode, deterministicNextIndex, autoMixEnabled, gaplessEnabled, transitionStartTime, canShowUpNextOnCurrentSurface]),
+  }, [duration, upNextTime, upNextEnabled, showUpNext, playMode, deterministicNextIndex, autoMixEnabled, gaplessEnabled, transitionStartTime, canShowUpNextOnCurrentSurface, playlist, showSettings, showProfile, showSearch, handleNextRef, dominantColorRef]),
     { enabled: crossfadeEnabled, duration: crossfadeDuration },
     { enabled: gaplessEnabled, albumGapless: albumGaplessEnabled },
     {
@@ -1707,6 +1712,7 @@ function App() {
   const { dominantColor: extractedColor, palette: coverPalette } = useColorThief(currentTrack.coverUrl)
   // 提取失败时使用默认强调色，过渡期间保留来源颜色以避免闪烁。
   const dominantColor = extractedColor || '#3B82F6'
+  dominantColorRef.current = dominantColor
   const isVisualTransitioning = isTransitioning || Boolean(transitionToTrack && transitionProgress > 0)
   // AutoMix 过渡时，播放页过渡指示显示 AutoMix 以与无缝衔接(Gapless)区分
   const isAutoMixTransition = autoMixEnabled && transitionStrategy !== 'gapless' && transitionStrategy !== 'none'
@@ -2640,6 +2646,7 @@ function App() {
     setCurrentIndex(newIndex)
     loadAndPlaySong(playlist[newIndex], newIndex)
   }
+  handleNextRef.current = handleNext
   
   // 获取下一首歌曲（不播放，仅用于显示）
   const nextSongToShow = useMemo((): Song | undefined => {

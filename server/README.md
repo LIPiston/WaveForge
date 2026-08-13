@@ -21,12 +21,6 @@ cd server
 python -m pip install -r requirements.txt
 ```
 
-或者使用自动化安装脚本：
-
-```bash
-python setup_python_env.py
-```
-
 ### 2. 验证安装
 
 运行测试脚本：

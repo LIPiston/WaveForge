@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, type MouseEvent as ReactMouseEven
 import { motion } from 'framer-motion'
 import { Play, Clock } from 'lucide-react'
 import { Song, resolveSongAlbumIdentifier } from '../services/musicApi'
+import { debugLog } from '../utils/debugLog'
 import ScrollToTop from './ScrollToTop'
 import ScrollToCurrentSong from './ScrollToCurrentSong'
 import SongContextMenu from './SongContextMenu'
@@ -192,8 +193,8 @@ export default function PlaylistGrid3D({
   
   // 调试日志
   useEffect(() => {
-    console.log(`🎵 [PlaylistGrid3D] 接收到 ${songs.length} 首歌曲`)
-    console.log(`📐 [PlaylistGrid3D] 容器尺寸: ${containerSize.width}x${containerSize.height}`)
+    debugLog(`🎵 [PlaylistGrid3D] 接收到 ${songs.length} 首歌曲`)
+    debugLog(`📐 [PlaylistGrid3D] 容器尺寸: ${containerSize.width}x${containerSize.height}`)
   }, [songs.length, containerSize])
 
   // 从 localStorage 读取卡片大小设置
@@ -223,7 +224,7 @@ export default function PlaylistGrid3D({
           width: containerElement.clientWidth,
           height: containerElement.clientHeight,
         }
-        console.log(`📏 [PlaylistGrid3D] 更新容器尺寸: ${newSize.width}x${newSize.height}`)
+        debugLog(`📏 [PlaylistGrid3D] 更新容器尺寸: ${newSize.width}x${newSize.height}`)
         setContainerSize(newSize)
       }
     }
@@ -269,7 +270,7 @@ export default function PlaylistGrid3D({
     const maxCards = Math.floor(availableWidth / cardTotalWidth)
     const result = Math.max(2, maxCards) // 至少显示2张
     
-    console.log(`🔢 [PlaylistGrid3D] 每行卡片数计算:`, {
+    debugLog(`🔢 [PlaylistGrid3D] 每行卡片数计算:`, {
       容器宽度: availableWidth,
       卡片宽度: CARD_WIDTH,
       间隙: CARD_GAP_X,
@@ -287,7 +288,7 @@ export default function PlaylistGrid3D({
     const totalRows = Math.ceil(songs.length / cardsPerRow)
     const totalHeight = totalRows * rowHeight + 64 // 加上 padding
 
-    console.log(`📊 [PlaylistGrid3D] 虚拟滚动计算:`, {
+    debugLog(`📊 [PlaylistGrid3D] 虚拟滚动计算:`, {
       歌曲总数: songs.length,
       每行卡片数: cardsPerRow,
       总行数: totalRows,
@@ -319,7 +320,7 @@ export default function PlaylistGrid3D({
     const startIndex = visibleStartRow * cardsPerRow
     const endIndex = Math.min(songs.length, visibleEndRow * cardsPerRow)
     
-    console.log(`👁️ [PlaylistGrid3D] 可见范围:`, {
+    debugLog(`👁️ [PlaylistGrid3D] 可见范围:`, {
       可见行范围: `${visibleStartRow} - ${visibleEndRow}`,
       可见索引范围: `${startIndex} - ${endIndex}`,
       实际渲染歌曲数: endIndex - startIndex
@@ -339,19 +340,19 @@ export default function PlaylistGrid3D({
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container) {
-      console.log('⚠️ [PlaylistGrid3D] 滚动容器未就绪，无法添加滚动监听')
+      debugLog('⚠️ [PlaylistGrid3D] 滚动容器未就绪，无法添加滚动监听')
       return
     }
 
     const handleScroll = () => {
       setScrollTop(container.scrollTop)
-      console.log(`📜 [PlaylistGrid3D] 滚动事件触发，当前位置: ${container.scrollTop}px`)
+      debugLog(`📜 [PlaylistGrid3D] 滚动事件触发，当前位置: ${container.scrollTop}px`)
     }
 
-    console.log('✅ [PlaylistGrid3D] 已添加滚动监听')
+    debugLog('✅ [PlaylistGrid3D] 已添加滚动监听')
     container.addEventListener('scroll', handleScroll, { passive: true })
     return () => {
-      console.log('🗑️ [PlaylistGrid3D] 移除滚动监听')
+      debugLog('🗑️ [PlaylistGrid3D] 移除滚动监听')
       container.removeEventListener('scroll', handleScroll)
     }
   }, [containerElement])
@@ -428,7 +429,7 @@ export default function PlaylistGrid3D({
           setContainerElement(el)
           scrollContainerRef.current = el
           if (el) {
-            console.log(`📦 [PlaylistGrid3D] 容器元素已设置:`, {
+            debugLog(`📦 [PlaylistGrid3D] 容器元素已设置:`, {
               实际宽度: el.clientWidth,
               实际高度: el.clientHeight,
               滚动高度: el.scrollHeight,

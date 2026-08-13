@@ -122,27 +122,34 @@ class RenderWorker:
         
         with AudioFile(target_path) as f:
             sr_target = f.samplerate
-            start_frame = int(target_start * sr_target)
-            end_frame = int(target_end * sr_target)
-            f.seek(start_frame)
-            target_audio = f.read(end_frame - start_frame)
+            if sr != sr_target and not LIBROSA_AVAILABLE:
+                # 采样率不匹配且 librosa 不可用：在文件打开期间用 pedalboard 自带重采样读取，
+                # 避免静默地以不同采样率混音导致输出错位
+                print(f"Warning: Sample rate mismatch {sr} vs {sr_target}, using pedalboard resample", file=sys.stderr)
+                resampled = f.resampled_to(sr)
+                resampled.seek(int(target_start * sr))
+                target_audio = resampled.read(
+                    int(target_end * sr) - int(target_start * sr)
+                )
+                sr_target = sr  # 已按源采样率读取，后续无需再重采样
+            else:
+                start_frame = int(target_start * sr_target)
+                end_frame = int(target_end * sr_target)
+                f.seek(start_frame)
+                target_audio = f.read(end_frame - start_frame)
         
         # Ensure same sample rate
         if sr != sr_target:
             print(f"Warning: Sample rate mismatch {sr} vs {sr_target}, using {sr}", file=sys.stderr)
-            # Resample target if needed (simplified)
-            target_audio = librosa.resample(target_audio, orig_sr=sr_target, target_sr=sr) if LIBROSA_AVAILABLE else target_audio
+            # Resample target if needed
+            target_audio = librosa.resample(target_audio, orig_sr=sr_target, target_sr=sr)
         
-        # Convert to mono if stereo
-        if source_audio.ndim > 1 and source_audio.shape[0] == 2:
+        # Convert to mono if stereo (pedalboard AudioFile.read() always returns 2D (channels, frames))
+        if source_audio.shape[0] == 2:
             source_audio = np.mean(source_audio, axis=0, keepdims=True)
-        elif source_audio.ndim == 1:
-            source_audio = source_audio.reshape(1, -1)
         
-        if target_audio.ndim > 1 and target_audio.shape[0] == 2:
+        if target_audio.shape[0] == 2:
             target_audio = np.mean(target_audio, axis=0, keepdims=True)
-        elif target_audio.ndim == 1:
-            target_audio = target_audio.reshape(1, -1)
         
         print(f"Source audio: {source_audio.shape}, Target audio: {target_audio.shape}", file=sys.stderr)
         

@@ -24,7 +24,7 @@ const __dirname = path.dirname(__filename)
 
 const PROJECT_ROOT = path.resolve(__dirname, '..')
 const PYTHON_EMBED_DIR = path.join(PROJECT_ROOT, 'resources', 'python-embed')
-const PYTHON_VERSION = '3.11.9' // 使用稳定版本
+const PYTHON_VERSION = '3.13.15' // 使用稳定版本
 const PYTHON_ARCH = 'amd64' // 64位
 
 // Python 嵌入式版本下载 URL
@@ -86,7 +86,7 @@ function extractZip(zipPath, destDir) {
 function enablePip(pythonDir) {
   console.log('🔧 配置 pip 支持...')
   
-  // 修改 python311._pth 文件以启用 site-packages
+  // 修改 python313._pth 文件以启用 site-packages
   const pthFile = path.join(pythonDir, `python${PYTHON_VERSION.split('.').slice(0, 2).join('')}._pth`)
   
   if (fs.existsSync(pthFile)) {

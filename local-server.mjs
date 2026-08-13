@@ -1,8 +1,9 @@
 import express from 'express'
 import { fileURLToPath } from 'url'
-import { dirname, join, extname } from 'path'
+import { dirname, join, extname, resolve, sep } from 'path'
 import { readdir, stat, readFile } from 'fs/promises'
 import { existsSync, createReadStream } from 'fs'
+import dns from 'node:dns'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import qqMusicApi from 'qq-music-api'
@@ -935,6 +936,71 @@ function parseTimeToMs(timeStr) {
 // ========== TTML解析器结束 ==========
 
 
+// 图片代理常量与 SSRF 防护（/api/cover 与 /api/proxy-image 共用）
+const FETCH_TIMEOUT_MS = 8000
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+// 判断地址是否属于内网/本机/链路本地等不允许代理访问的网段
+function isPrivateNetworkAddress(address) {
+  if (address.includes(':')) {
+    const lower = address.toLowerCase()
+    // ::、::1 及全零形式的本机/未指定地址
+    if (lower === '::' || lower === '::1' || lower === '0:0:0:0:0:0:0:0' || lower === '0:0:0:0:0:0:0:1') return true
+    // fc00::/7 唯一本地地址、fe80::/10 链路本地地址
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return true
+    if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) return true
+    return false
+  }
+  const parts = address.split('.').map(Number)
+  if (parts.length !== 4) return false
+  const [a, b] = parts
+  return a === 0 || a === 127 || a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254)
+}
+
+// SSRF 防护：返回 true 表示该 URL 指向内网/本机地址或无法安全解析，应拒绝
+async function isBlockedFetchUrl(rawUrl) {
+  let parsed
+  try {
+    parsed = new URL(rawUrl)
+  } catch (error) {
+    return true // URL 解析失败，直接拒绝
+  }
+  const hostname = String(parsed.hostname || '').replace(/^\[|\]$/g, '')
+  if (!hostname) return true
+
+  // 放行代理到本服务自身（如 /api/proxy-image → /api/cover 的内部代理链）。
+  // 内层 /api/cover 仍会对最终目标做 CDN 公网校验，因此不会绕过 SSRF 防护。
+  const port = String(parsed.port || (parsed.protocol === 'https:' ? '443' : '80'))
+  if ((hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') && port === '3001') {
+    return false
+  }
+
+  // 字面 IPv4 / IPv6 地址：直接判断网段
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
+    if (hostname.split('.').some(part => Number(part) > 255)) return true
+    return isPrivateNetworkAddress(hostname)
+  }
+  if (hostname.includes(':')) {
+    return isPrivateNetworkAddress(hostname)
+  }
+
+  // DNS 名称：解析后只要有一个地址落在私网网段即拒绝
+  const name = hostname.toLowerCase()
+  if (name === 'localhost' || name.endsWith('.local')) return true
+  try {
+    const addresses = await Promise.race([
+      dns.promises.lookup(name, { all: true, verbatim: true }),
+      new Promise((resolve, reject) => setTimeout(() => reject(new Error('DNS lookup timeout')), 3000)),
+    ])
+    return addresses.some(({ address }) => isPrivateNetworkAddress(address))
+  } catch (error) {
+    return true // 解析失败或超时：保守拒绝
+  }
+}
+
 // 图片代理（解决防盗链和CORS）
 app.get('/api/cover', async (req, res) => {
   try {
@@ -948,6 +1014,13 @@ app.get('/api/cover', async (req, res) => {
       return
     }
 
+    // SSRF 防护：拒绝指向内网/本机/链路本地地址的 URL
+    if (await isBlockedFetchUrl(url)) {
+      console.error('Blocked cover URL:', url)
+      res.status(400).set('Access-Control-Allow-Origin', '*').send('Invalid cover url')
+      return
+    }
+
     if (isDev) console.log('Fetching cover:', url)
 
     // 重试机制：最多尝试3次
@@ -957,15 +1030,22 @@ app.get('/api/cover', async (req, res) => {
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        // 转发请求，添加必要的 headers
-        response = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Referer': 'https://music.163.com/',
-            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          }
-        })
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+        try {
+          // 转发请求，添加必要的 headers
+          response = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+              'Referer': 'https://music.163.com/',
+              'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+              'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            }
+          })
+        } finally {
+          clearTimeout(timeoutId)
+        }
         
         // 成功获取响应，跳出循环
         if (attempt > 1 && isDev) {
@@ -1012,8 +1092,21 @@ app.get('/api/cover', async (req, res) => {
       return
     }
 
+    // 响应大小限制，防止代理下载超大文件
+    const contentLength = Number(response.headers.get('content-length'))
+    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+      console.error('Cover content-length too large:', contentLength)
+      res.status(502).set('Access-Control-Allow-Origin', '*').send('Cover too large')
+      return
+    }
+
     const contentType = response.headers.get('content-type') || 'image/jpeg'
     const buffer = await response.arrayBuffer()
+    if (buffer.byteLength > MAX_IMAGE_BYTES) {
+      console.error('Cover too large:', buffer.byteLength)
+      res.status(502).set('Access-Control-Allow-Origin', '*').send('Cover too large')
+      return
+    }
     
     if (isDev) console.log('Cover fetched successfully, size:', buffer.byteLength)
     
@@ -1042,6 +1135,13 @@ app.get('/api/proxy-image', async (req, res) => {
       res.status(400).set('Access-Control-Allow-Origin', '*').send('Invalid image url')
       return
     }
+
+    // SSRF 防护：拒绝指向内网/本机/链路本地地址的 URL
+    if (await isBlockedFetchUrl(url)) {
+      console.error('Blocked image URL:', url)
+      res.status(400).set('Access-Control-Allow-Origin', '*').send('Invalid image url')
+      return
+    }
     // 重试机制：最多尝试3次
     let response
     let lastError
@@ -1049,15 +1149,22 @@ app.get('/api/proxy-image', async (req, res) => {
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        // 转发请求，添加必要的 headers
-        response = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Referer': url.includes('music.163.com') ? 'https://music.163.com/' : 'https://y.qq.com/',
-            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          }
-        })
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+        try {
+          // 转发请求，添加必要的 headers
+          response = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+              'Referer': url.includes('music.163.com') ? 'https://music.163.com/' : 'https://y.qq.com/',
+              'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+              'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            }
+          })
+        } finally {
+          clearTimeout(timeoutId)
+        }
         
         // 成功获取响应，跳出循环
         if (attempt > 1) {
@@ -1088,8 +1195,21 @@ app.get('/api/proxy-image', async (req, res) => {
       return
     }
 
+    // 响应大小限制，防止代理下载超大文件
+    const contentLength = Number(response.headers.get('content-length'))
+    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+      console.error('Image content-length too large:', contentLength)
+      res.status(502).set('Access-Control-Allow-Origin', '*').send('Image too large')
+      return
+    }
+
     const contentType = response.headers.get('content-type') || 'image/jpeg'
     const buffer = await response.arrayBuffer()
+    if (buffer.byteLength > MAX_IMAGE_BYTES) {
+      console.error('Image too large:', buffer.byteLength)
+      res.status(502).set('Access-Control-Allow-Origin', '*').send('Image too large')
+      return
+    }
     res.set({
       'Content-Type': contentType,
       'Access-Control-Allow-Origin': '*',
@@ -1111,6 +1231,16 @@ async function initNeteaseAPI() {
   try {
     const module = await import('@neteasecloudmusicapienhanced/api')
     NeteaseAPI = module.default
+    
+    // 网易云 xeapi 需先注册匿名 token（生成 deviceId）并拉取 xeapi 公钥缓存到系统临时目录，
+    // 否则 /api/netease/song/url 会报 "xeapi public key is missing"（公钥随系统重启可能被清空）。
+    try {
+      const { default: generateConfig } = await import('@neteasecloudmusicapienhanced/api/generateConfig.js')
+      await generateConfig()
+      console.log('✅ 网易云 API 初始化完成（匿名 token + xeapi 公钥）')
+    } catch (initError) {
+      console.warn('⚠️ 网易云 API 初始化未完全成功（可能影响网易云高音质播放）:', initError.message)
+    }
     
     // 配置网易云 API 的默认超时时间
     if (NeteaseAPI && typeof NeteaseAPI === 'object') {
@@ -7319,6 +7449,10 @@ app.get('/api/wallpaper-engine/preview', async (req, res) => {
     let previewPath = null
     for (const basePath of possiblePaths) {
       const fullPath = join(basePath, id, file)
+      // 路径穿越防护：规范化后必须仍位于 basePath 内，否则跳过该候选路径
+      const resolved = resolve(fullPath)
+      const base = resolve(basePath)
+      if (!resolved.startsWith(base + sep)) continue
       if (existsSync(fullPath)) {
         previewPath = fullPath
         break
@@ -7363,6 +7497,10 @@ app.get('/api/wallpaper-engine/media', async (req, res) => {
     let mediaPath = null
     for (const basePath of possiblePaths) {
       const fullPath = join(basePath, id, file)
+      // 路径穿越防护：规范化后必须仍位于 basePath 内，否则跳过该候选路径
+      const resolved = resolve(fullPath)
+      const base = resolve(basePath)
+      if (!resolved.startsWith(base + sep)) continue
       if (existsSync(fullPath)) {
         mediaPath = fullPath
         break

@@ -459,6 +459,10 @@ class AutoMixAnalysisService {
     }
 
     let analysis: TrackAnalysis
+    // Transient failures (Python service down/timed out, Electron analysis
+    // empty) must not be cached or persisted; doing so would permanently
+    // replace a later good analysis until cache eviction.
+    let isTransientFallback = false
     try {
       // 优先尝试独立的 Python API 服务
       debugLog('🔍 [AutoMix] 尝试使用 Python Beat Service...')
@@ -484,10 +488,12 @@ class AutoMixAnalysisService {
             // decodeAudioData 整首音频。失败时使用保守元数据计划，避免数百 MB
             // PCM/ArrayBuffer 在播放和切歌热路径中堆积。
             debugLog('⚠️ [AutoMix] Electron 分析未返回结果，使用元数据回退')
+            isTransientFallback = true
             analysis = metadataOnly(input, 'electron-unavailable')
           }
         } else if (window.electron?.analysis) {
           debugLog('⚠️ [AutoMix] Electron 分析不可用，跳过 Renderer 整曲解码')
+          isTransientFallback = true
           analysis = metadataOnly(input, 'electron-unavailable')
         } else {
           // Web 版没有独立分析进程，才使用浏览器本地检测。
@@ -498,14 +504,22 @@ class AutoMixAnalysisService {
     } catch (error) {
       if (input.signal?.aborted) throw error
       console.warn('⚠️ [AutoMix] 所有分析方法失败，使用保守回退方案', error)
+      isTransientFallback = true
       analysis = metadataOnly(input, window.electron?.analysis ? 'electron-unavailable' : 'metadata-only')
     }
 
-    cacheInMemory(key, analysis)
-    try {
-      await window.electron?.analysis?.saveTrackAnalysis(analysis)
-    } catch {
-      // Browser mode and read-only runtimes intentionally use memory cache only.
+    // Only cache/persist genuine analyses. A transient metadata-only fallback
+    // is still returned so the current transition keeps working via the
+    // fallback, but it is not stored under the normal key: caching it would pin
+    // the track to an empty beat grid (fixed-crossfade) until eviction and mask
+    // any later good analysis.
+    if (!isTransientFallback) {
+      cacheInMemory(key, analysis)
+      try {
+        await window.electron?.analysis?.saveTrackAnalysis(analysis)
+      } catch {
+        // Browser mode and read-only runtimes intentionally use memory cache only.
+      }
     }
     return analysis
   }

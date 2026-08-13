@@ -29,14 +29,19 @@
     "directories": {
       "output": "release"
     },
+    "electronDist": "node_modules/electron/dist",
     "files": [
       "desktop/**/*",
       "dist/**/*",
       "server/**/*",
+      "python-beat-service/**/*",
+      "!python-beat-service/packages/**/*",
       "local-server.mjs",
       "requirements.txt",
       "install-python-deps.bat",
-      "package.json"
+      "package.json",
+      "logo.png",
+      "build/**/*"
     ],
     "extraResources": [
       {
@@ -51,7 +56,8 @@
     "asarUnpack": [
       "resources/python-embed/**/*",
       "desktop/workers/**/*.py",
-      "server/**/*.py"
+      "server/**/*.py",
+      "python-beat-service/**/*.py"
     ],
     "win": {
       "icon": "build/icon.ico",

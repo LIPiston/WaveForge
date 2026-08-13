@@ -138,6 +138,9 @@ class AnalysisWorker:
                     beat_frame_indices = np.asarray(beat_frame_indices, dtype=int)
                     beat_times = librosa.frames_to_time(beat_frame_indices, sr=sr, hop_length=512)
                     result['beats'] = beat_times.astype(float).tolist()
+                    # 静音音频时 librosa 返回 tempo=0.0，需回退为默认 BPM
+                    if tempo == 0 or not np.asarray(beat_frame_indices).size:
+                        tempo = 120.0
                     result['estimatedBpm'] = float(np.asarray(tempo).reshape(-1)[0])
                     result['provider'] = 'librosa-fallback'
 

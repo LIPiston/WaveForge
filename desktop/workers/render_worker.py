@@ -17,6 +17,12 @@ import os
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
+try:
+    import librosa
+    LIBROSA_AVAILABLE = True
+except ImportError:
+    LIBROSA_AVAILABLE = False
+
 
 def common_output_beat_durations(
     source_beat_times: list[float],
@@ -56,6 +62,23 @@ def progressive_beat_stretch(
 ) -> np.ndarray:
     """Pitch-preserve each input beat and place it on the shared output grid."""
     import librosa
+
+    # 拉伸前校验 beat 网格是否落在已加载片段范围内（网格长度已由调用方校验），
+    # 避免静默裁剪导致 "beat is too short" / "unsafe stretch rate" 等误导性错误
+    segment_duration = audio.shape[1] / sample_rate
+    epsilon = 1e-6
+    if beat_times[0] < 0:
+        raise ValueError(
+            f"{track_label} beat grid starts before segment start: "
+            f"beat 0 at {beat_times[0]:.2f}s"
+        )
+    last_beat_time = beat_times[len(output_beat_durations)]
+    if last_beat_time > segment_duration + epsilon:
+        raise ValueError(
+            f"{track_label} beat grid extends past loaded segment: "
+            f"beat {len(output_beat_durations)} at {last_beat_time:.2f}s "
+            f"> segment end {segment_duration:.2f}s"
+        )
 
     stretched_beats = []
     for n, target_duration in enumerate(output_beat_durations):
@@ -404,12 +427,20 @@ def render_transition(params: dict) -> dict:
         # Ensure same sample rate
         if source_sample_rate != target_sample_rate:
             logger.warning(f"⚠️ Sample rate mismatch: {source_sample_rate} vs {target_sample_rate}")
-            from scipy import signal
-            target_audio = signal.resample(
-                target_audio,
-                int(target_audio.shape[1] * source_sample_rate / target_sample_rate),
-                axis=1
-            )
+            if LIBROSA_AVAILABLE:
+                # librosa 0.11+ 默认使用 soxr_hq，质量优于裸 FFT 重采样（减少振铃/混叠）
+                target_audio = librosa.resample(
+                    target_audio,
+                    orig_sr=target_sample_rate,
+                    target_sr=source_sample_rate,
+                )
+            else:
+                # librosa 不可用时回退到 scipy FFT 重采样，保证 worker 仍可用
+                target_audio = signal.resample(
+                    target_audio,
+                    int(target_audio.shape[1] * source_sample_rate / target_sample_rate),
+                    axis=1
+                )
         
         output_sample_rate = source_sample_rate
         

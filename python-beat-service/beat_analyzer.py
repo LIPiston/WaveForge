@@ -46,6 +46,13 @@ ANALYSIS_VERSION = "librosa-dsp-v2"
 CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 CACHE_MAX_SIZE_BYTES = 512 * 1024 * 1024
 
+# 允许分析的本地音频格式（小写扩展名）
+ALLOWED_AUDIO_EXTENSIONS = {
+    '.mp3', '.flac', '.wav', '.ogg',
+}
+# 音频文件大小上限（300MB），防止超大文件被整体读入内存导致资源耗尽
+MAX_AUDIO_FILE_SIZE_BYTES = 300 * 1024 * 1024
+
 
 def cleanup_cache():
     """删除过期缓存，并按最近使用时间把总量限制在 512MB。"""
@@ -198,6 +205,9 @@ def analyze_audio_file(file_path: str, track_key: str) -> dict:
         hop_length=hop_length,
         units='frames',
     )
+    # 静音音频时 librosa 返回 tempo=0.0，需回退为默认 BPM
+    if tempo == 0 or not np.asarray(beat_frames).size:
+        tempo = 120.0
     tempo = float(np.asarray(tempo).reshape(-1)[0]) if np.asarray(tempo).size else 120.0
     beat_frames = np.asarray(beat_frames, dtype=int)
     beats = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop_length).astype(float).tolist()
@@ -303,6 +313,25 @@ def health():
         'version': ANALYSIS_VERSION
     })
 
+def _validate_audio_path(audio_path: str):
+    """校验音频路径：扩展名必须在允许列表内，且文件大小不超过上限。
+
+    返回 (是否通过, 错误消息)，通过时错误消息为 None。
+    """
+    ext = os.path.splitext(audio_path)[1].lower()
+    if ext not in ALLOWED_AUDIO_EXTENSIONS:
+        allowed = ', '.join(sorted(ALLOWED_AUDIO_EXTENSIONS))
+        return False, f'Unsupported audio format: {ext or "(no extension)"}. Allowed formats: {allowed}'
+    try:
+        size = os.path.getsize(audio_path)
+    except OSError:
+        return False, f'Unable to access file size: {audio_path}'
+    if size > MAX_AUDIO_FILE_SIZE_BYTES:
+        limit_mb = MAX_AUDIO_FILE_SIZE_BYTES // (1024 * 1024)
+        return False, f'File too large: {size / (1024 * 1024):.1f} MB exceeds the {limit_mb} MB limit'
+    return True, None
+
+
 @app.route('/analyze', methods=['POST'])
 def analyze():
     """分析音频文件"""
@@ -320,6 +349,10 @@ def analyze():
         
         if not track_key or not audio_path:
             return jsonify({'error': 'Missing trackKey or audioPath'}), 400
+
+        # 校验 audioPath 必须是字符串（而非数字/布尔等被 str() 强转的值）
+        if not isinstance(data.get('audioPath'), str):
+            return jsonify({'error': 'audioPath must be a string'}), 400
         
         # 检查缓存
         cache_key = get_cache_key(track_key, duration)
@@ -338,6 +371,12 @@ def analyze():
             return jsonify({'error': f'File not found: {audio_path}'}), 404
         
         print(f"✅ 文件存在，开始分析...")
+        
+        # 校验扩展名与文件大小，防止非音频文件或超大文件导致资源耗尽
+        valid, validation_error = _validate_audio_path(audio_path)
+        if not valid:
+            print(f"❌ 音频路径校验失败: {validation_error}")
+            return jsonify({'error': validation_error}), 400
         
         # 分析音频
         result = analyze_audio_file(audio_path, track_key)

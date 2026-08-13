@@ -88,8 +88,11 @@ export class TransitionRenderer {
 
     // Route to appropriate renderer
     let audioBuffer: AudioBuffer
+    let renderedPlan: TransitionPlan = plan
     if (plan.strategy === 'smart-rendered') {
-      audioBuffer = await this.renderSmartTransition(plan, sourceUrl, targetUrl, onProgress)
+      const rendered = await this.renderSmartTransition(plan, sourceUrl, targetUrl, onProgress)
+      audioBuffer = rendered.audioBuffer
+      renderedPlan = rendered.plan
     } else {
       // Fallback to browser crossfade if buffers are provided
       if (!sourceBuffer || !targetBuffer) {
@@ -101,10 +104,10 @@ export class TransitionRenderer {
     const renderTime = performance.now() - startTime
     debugLog(`[TransitionRenderer] Rendered in ${renderTime.toFixed(2)}ms`)
 
-    // Cache the result
-    this.addToCache(plan, audioBuffer)
+    // Cache the result (a copy of the plan, never the caller's live object)
+    this.addToCache(renderedPlan, audioBuffer)
 
-    return { audioBuffer, plan, renderTime }
+    return { audioBuffer, plan: renderedPlan, renderTime }
   }
 
   private async renderSmartTransition(
@@ -112,7 +115,7 @@ export class TransitionRenderer {
     sourceUrl: string,
     targetUrl: string,
     onProgress?: (progress: RenderProgress) => void
-  ): Promise<AudioBuffer> {
+  ): Promise<{ audioBuffer: AudioBuffer; plan: TransitionPlan }> {
     onProgress?.({ stage: 'analyzing', progress: 0.1 })
 
     // Step 1: Download audio files to local disk
@@ -146,9 +149,12 @@ export class TransitionRenderer {
     if (plan.djEffects?.enabled && result.djEffectsApplied !== true) {
       throw new Error('DJ effects were planned but not applied')
     }
-    if (typeof result.targetResumeTime === 'number' && Number.isFinite(result.targetResumeTime)) {
-      plan.targetEndTime = result.targetResumeTime
-    }
+    // Never mutate the caller's shared TransitionPlan. Compute a shallow copy
+    // carrying the resolved resume time so the cache and playback hook share
+    // one consistent object while the caller's plan stays untouched.
+    const renderedPlan = (typeof result.targetResumeTime === 'number' && Number.isFinite(result.targetResumeTime))
+      ? { ...plan, targetEndTime: result.targetResumeTime }
+      : plan
 
     onProgress?.({ stage: 'finalizing', progress: 0.9 })
 
@@ -173,7 +179,7 @@ export class TransitionRenderer {
     const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer)
 
     onProgress?.({ stage: 'finalizing', progress: 1 })
-    return audioBuffer
+    return { audioBuffer, plan: renderedPlan }
   }
 
   private async renderCrossfade(
@@ -184,7 +190,15 @@ export class TransitionRenderer {
   ): Promise<AudioBuffer> {
     onProgress?.({ stage: 'mixing', progress: 0 })
 
-    const duration = plan.sourceEndTime - plan.sourceStartTime
+    // The output buffer must cover the TARGET window span so the resume point
+    // (plan.targetEndTime) matches what the listener heard at handoff. When
+    // source and target BPM differ the spans differ, so the source window is
+    // scaled across the output span below to keep beat alignment. Degenerate
+    // target spans (targetEndTime <= targetStartTime) fall back to the previous
+    // source-span behavior.
+    const sourceSpan = plan.sourceEndTime - plan.sourceStartTime
+    const targetSpan = plan.targetEndTime - plan.targetStartTime
+    const duration = targetSpan > 0 ? targetSpan : sourceSpan
     const sampleRate = sourceBuffer.sampleRate
     const samples = Math.floor(duration * sampleRate)
     const channels = Math.max(sourceBuffer.numberOfChannels, targetBuffer.numberOfChannels)
@@ -210,7 +224,10 @@ export class TransitionRenderer {
         const sourceGainValue = sourceGain[curveIndex]
         const targetGainValue = targetGain[curveIndex]
 
-        const sourceSample = sourceData ? (sourceData[sourceStart + i] || 0) : 0
+        const sourceIndex = targetSpan > 0
+          ? sourceStart + Math.floor(i * sourceSpan / targetSpan)
+          : sourceStart + i
+        const sourceSample = sourceData ? (sourceData[sourceIndex] || 0) : 0
         const targetSample = targetData ? (targetData[targetStart + i] || 0) : 0
 
         output[i] = sourceSample * sourceGainValue + targetSample * targetGainValue

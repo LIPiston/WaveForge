@@ -10,7 +10,7 @@ if (process.stderr && typeof process.stderr.setDefaultEncoding === 'function') {
 
 // Avoid spawning chcp/cmd.exe here. Electron is a GUI process, and the child
 // console can flash visibly whenever the main process is initialized.
-const { app, BrowserWindow, ipcMain, protocol, shell, session, safeStorage, dialog, globalShortcut, clipboard } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, shell, session, safeStorage, dialog, globalShortcut, clipboard, utilityProcess } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const startupTimingLogPath = process.env.WAVEFORGE_STARTUP_LOG || ''
@@ -61,7 +61,7 @@ app.on('child-process-gone', (_event, details) => {
 app.setName('WaveForge 澜音工坊')
 app.setAppUserModelId('com.waveforge.desktop')
 
-const { execFile, execFileSync } = require('child_process')
+const { execFile, execFileSync, spawn } = require('child_process')
 const os = require('os')
 const { pathToFileURL } = require('url')
 const { createAnalysisRuntime } = require('./analysis-runtime.cjs')
@@ -137,6 +137,41 @@ function readDesktopWidgetDisks() {
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 const devServerUrl = process.env.WAVEFORGE_DEV_SERVER_URL || 'http://127.0.0.1:3000'
+
+// 导航白名单：只允许应用自身的地址（开发模式 Vite 服务器 / 生产模式打包产物），
+// 阻止同窗口被任意外部页面导航——特权 preload 桥一旦跟到外部站点就会被滥用。
+const ALLOWED_DEV_SERVER_ORIGINS = new Set([
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+])
+const ALLOWED_APP_FILE_URLS = new Set([
+  pathToFileURL(path.join(__dirname, '../dist/index.html')).href,
+  pathToFileURL(path.join(__dirname, '../dist/desktop-player.html')).href,
+  pathToFileURL(path.join(__dirname, '../dist/desktop-lyrics.html')).href,
+])
+
+function isAllowedNavigationTarget(url) {
+  try {
+    const parsed = new URL(String(url || ''))
+    if (parsed.protocol === 'file:') {
+      return ALLOWED_APP_FILE_URLS.has(parsed.href)
+    }
+    if (isDev && (parsed.protocol === 'http:' || parsed.protocol === 'https:')) {
+      return ALLOWED_DEV_SERVER_ORIGINS.has(parsed.origin)
+    }
+  } catch {
+    // 无法解析的 URL 一律不放行
+  }
+  return false
+}
+
+function guardAgainstExternalNavigation(webContents) {
+  webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedNavigationTarget(url)) {
+      event.preventDefault()
+    }
+  })
+}
 
 let mainWindow = null
 let wallpaperWatcher = null
@@ -386,6 +421,7 @@ function createDesktopPlayerWindow() {
   desktopPlayerWindow.webContents.once('did-finish-load', () => {
     broadcastDesktopPlayerState()
   })
+  guardAgainstExternalNavigation(desktopPlayerWindow.webContents)
   desktopPlayerWindow.on('closed', () => {
     desktopPlayerWindow = null
   })
@@ -547,6 +583,7 @@ function createDesktopLyricsWindow() {
     broadcastDesktopPlayerState()
     broadcastDesktopLyricsSettings()
   })
+  guardAgainstExternalNavigation(desktopLyricsWindow.webContents)
   desktopLyricsWindow.on('closed', () => {
     desktopLyricsWindow = null
     desktopLyricsPanelRestoreBounds = null
@@ -1114,6 +1151,9 @@ function createWindow() {
     },
   })
 
+  // 阻止同窗口被导航到外部站点（特权 preload 桥只允许停留在应用自身地址）
+  guardAgainstExternalNavigation(mainWindow.webContents)
+
   // 开发模式加载 Vite 服务器
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     console.error('[ProcessHealth] Main renderer exited:', {
@@ -1590,6 +1630,11 @@ ipcMain.handle('desktop-widgets:pick-launcher-target', async (_event, kind) => {
   return result.canceled ? null : result.filePaths[0] || null
 })
 
+// 启动器组件合法的可执行/快捷方式类型；扩展名不在白名单内的一律拒绝打开。
+const ALLOWED_LAUNCHER_EXTENSIONS = new Set([
+  '.exe', '.bat', '.cmd', '.lnk', '.url', '.msi', '.appref-ms',
+])
+
 ipcMain.handle('desktop-widgets:open-launcher-target', async (_event, target, kind) => {
   const value = String(target || '').trim()
   if (!value) return { success: false, error: '目标为空' }
@@ -1602,6 +1647,11 @@ ipcMain.handle('desktop-widgets:open-launcher-target', async (_event, target, ki
   }
   const resolved = path.resolve(value)
   if (!fs.existsSync(resolved)) return { success: false, error: '文件或目录不存在' }
+  // 仅允许启动器组件合法的可执行/快捷方式类型，阻止任意文件被当作程序启动。
+  const extension = path.extname(resolved).toLowerCase()
+  if (!ALLOWED_LAUNCHER_EXTENSIONS.has(extension)) {
+    return { success: false, error: '不支持的文件类型' }
+  }
   const error = await shell.openPath(resolved)
   return error ? { success: false, error } : { success: true }
 })
@@ -2404,6 +2454,88 @@ ipcMain.handle('get-system-location', async () => {
   }
 })
 
+/**
+ * 启动本地后端服务（仅打包版需要；开发模式由 scripts/dev-electron.mjs 负责）。
+ * 1) Express API（local-server.mjs，端口 3001）——通过 utilityProcess.fork 启动，
+ *    传入开发模式 API 进程会用到的同款缓存路径参数（app.getPath('userData')/cache）。
+ * 2) Python 节拍服务（beat_analyzer.py，端口 3002）——优先使用嵌入式 python，
+ *    启动失败仅告警（应用会自动降级到 Fixed Crossfade）。
+ */
+let localApiChild = null
+let localPythonChild = null
+
+function startLocalBackend() {
+  if (!app.isPackaged) return // 开发模式由 dev-electron.mjs 启动
+  if (process.env.WAVEFORGE_DISABLE_LOCAL_BACKEND === '1') return
+
+  // 1) Express API（3001）
+  try {
+    const serverEntry = path.join(process.resourcesPath, 'app.asar', 'local-server.mjs')
+    localApiChild = utilityProcess.fork(serverEntry, [], {
+      env: {
+        ...process.env,
+        WAVEFORGE_USERDATA: app.getPath('userData'),
+      },
+      stdio: 'pipe',
+    })
+    localApiChild.stdout?.on('data', (chunk) => {
+      const text = String(chunk).trim()
+      if (text) console.log('[LocalAPI]', text)
+    })
+    localApiChild.stderr?.on('data', (chunk) => {
+      const text = String(chunk).trim()
+      if (text) console.error('[LocalAPI:err]', text)
+    })
+    localApiChild.on('exit', (code) => {
+      console.error('[LocalAPI] exited with code', code)
+      localApiChild = null
+    })
+    console.log('[LocalAPI] starting local-server.mjs via utilityProcess')
+  } catch (error) {
+    console.error('[LocalAPI] failed to start:', error)
+  }
+
+  // 2) Python 节拍服务（3002）——仅当嵌入式 python 存在时启动
+  try {
+    const pythonExe = path.join(process.resourcesPath, 'python-embed', 'python.exe')
+    const beatAnalyzer = path.join(process.resourcesPath, 'app.asar.unpacked', 'python-beat-service', 'beat_analyzer.py')
+    if (!fs.existsSync(pythonExe)) {
+      console.warn('[BeatService] 未找到嵌入式 Python，跳过节拍服务（将使用 Fixed Crossfade 降级）')
+      return
+    }
+    if (!fs.existsSync(beatAnalyzer)) {
+      console.warn('[BeatService] 未找到 beat_analyzer.py，跳过节拍服务')
+      return
+    }
+    localPythonChild = spawn(pythonExe, [beatAnalyzer], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
+    })
+    localPythonChild.stdout?.on('data', (chunk) => {
+      const text = String(chunk).trim()
+      if (text) console.log('[BeatService]', text)
+    })
+    localPythonChild.stderr?.on('data', (chunk) => {
+      const text = String(chunk).trim()
+      if (text) console.error('[BeatService:err]', text)
+    })
+    localPythonChild.on('exit', (code) => {
+      console.warn('[BeatService] exited with code', code)
+      localPythonChild = null
+    })
+    console.log('[BeatService] starting beat_analyzer.py on port 3002')
+  } catch (error) {
+    console.error('[BeatService] failed to start:', error)
+  }
+}
+
+// 应用退出时一并结束本地子进程
+app.on('will-quit', () => {
+  try { localApiChild?.kill() } catch {}
+  try { localPythonChild?.kill() } catch {}
+})
+
 app.whenReady().then(() => {
   logStartupTiming('Electron app ready')
   // Electron 默认不会自动放行渲染进程的定位权限。
@@ -2433,6 +2565,11 @@ app.whenReady().then(() => {
       console.log('📁 [Config] 创建目录:', dir)
     }
   })
+  
+  // 启动本地后端 API 服务（端口 3001）与 Python 节拍服务（端口 3002）。
+  // 开发模式下由 scripts/dev-electron.mjs 启动；打包版必须由主进程自行启动，
+  // 否则渲染进程请求 localhost:3001 全部失败，应用只剩空壳 UI。
+  startLocalBackend()
   
   // 传入缓存路径给 analysis runtime
   analysisRuntime = createAnalysisRuntime(app, ipcMain, () => mainWindow, cachePath)

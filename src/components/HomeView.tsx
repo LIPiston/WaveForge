@@ -319,6 +319,7 @@ export default function HomeView({
   
   // AbortController instances used to clean up pending requests
   const activeRequestsRef = useRef<Set<AbortController>>(new Set())
+  const refreshHomeModuleControllerRef = useRef<AbortController | null>(null)
   const playlistLoadIdRef = useRef(0)
   const playlistDetailControllerRef = useRef<AbortController | null>(null)
   const playlistDetailRequestIdRef = useRef(0)
@@ -1190,7 +1191,8 @@ export default function HomeView({
         const radar = payload.playlists.find(item => /雷达|私人/.test(item.name)) ||
           payload.playlists.find(item => item.source === 'personalized')
         if (radar) {
-          const detail = await fetchExplorePlaylist(radar)
+          const detail = await fetchExplorePlaylist(radar, signal)
+          if (signal?.aborted) return
           songs = detail.songs.slice(0, 50)
         }
         break
@@ -1228,7 +1230,10 @@ export default function HomeView({
         const rising = moduleId.endsWith('rising_songs')
         const pattern = rising ? /飙升|上升/ : /热歌|流行指数/
         const chart = payload.charts.find(item => pattern.test(item.name)) || payload.charts[rising ? 1 : 0]
-        if (chart) songs = (await fetchExploreChart(chart)).songs
+        if (chart) {
+          songs = (await fetchExploreChart(chart, signal)).songs
+          if (signal?.aborted) return
+        }
         break
       }
     }
@@ -1252,6 +1257,7 @@ export default function HomeView({
     if ((visibleSongs.length > 0 || visiblePlaylists.length > 0) && canCacheSnapshot) {
       saveHomeModuleSession(sessionKey, { songs: visibleSongs, playlists: visiblePlaylists })
     }
+    if (signal?.aborted) return
     setModuleSongs(visibleSongs)
     setModulePlaylists(visiblePlaylists)
 
@@ -1432,7 +1438,16 @@ export default function HomeView({
       : qqModules[currentQQIndex]
     if (!currentModule) return
 
-    void loadModuleData(currentModule, undefined, true)
+    // 取消上一次刷新的在途请求，避免旧响应覆盖新内容
+    if (refreshHomeModuleControllerRef.current) {
+      refreshHomeModuleControllerRef.current.abort()
+      activeRequestsRef.current.delete(refreshHomeModuleControllerRef.current)
+    }
+    const controller = new AbortController()
+    refreshHomeModuleControllerRef.current = controller
+    activeRequestsRef.current.add(controller)
+
+    void loadModuleData(currentModule, controller.signal, true)
   }
 
   const getChartIcon = (type: ChartType) => {

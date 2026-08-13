@@ -78,8 +78,7 @@
 ## ✅ 文档
 
 - [x] README.md（主文档）
-- [x] 无缝衔接完整使用指南.md
-- [x] PROJECT_STATUS.md（项目状态）
+- [x] PROJECT_HISTORY.md（项目历史存档）
 - [x] CHECKLIST.md（本文档）
 
 ## ✅ 启动脚本

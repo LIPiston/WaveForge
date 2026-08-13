@@ -239,7 +239,7 @@ npm run dev:electron
 
 2. **查看项目文档**
    - README.md（主文档）
-   - 无缝衔接完整使用指南.md（详细功能说明）
+   - PROJECT_HISTORY.md（项目历史存档）
    - CHECKLIST.md（功能检查清单）
 
 3. **系统要求**
