@@ -1,0 +1,2025 @@
+﻿import { motion, AnimatePresence } from 'framer-motion'
+import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudioPulse'
+import { useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { reconcileBoundaryParentheses } from '../utils/lyricBoundaryParentheses'
+import { normalizeSequentialWordTiming, prepareLyricWords } from '../utils/lyricWordTiming'
+
+interface LyricWord {
+  word: string
+  startTime: number
+  duration: number
+}
+
+interface LyricLine {
+  time: number
+  text: string
+  content?: string
+  words?: LyricWord[]
+  translation?: string
+  roman?: string
+  romanWords?: LyricWord[]
+  isGeneratedInterlude?: boolean
+  interludeStartTime?: number
+  interludeEndTime?: number
+}
+
+type WordByWordEffectMode = 'clear' | 'soft'
+type ImmersiveLyricEffect = 'soft-focus' | 'float' | 'breathe' | 'cinematic' | 'minimal'
+type BackgroundEffect = 'transparent' | 'blur' | 'immersive'
+
+const LYRIC_TIMING_LEAD_SECONDS = 0.28
+const LYRIC_FRAME_INTERVAL_MS = 1000 / 30
+const INTERLUDE_HIDE_BEFORE_NEXT_SECONDS = 1
+const INTERLUDE_MIN_GAP_SECONDS = 5
+
+const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, value))
+
+interface SmoothPlaybackTimeStore {
+  getSnapshot: () => number
+  subscribe: (listener: () => void) => () => void
+  publish: (time: number) => void
+}
+
+const createSmoothPlaybackTimeStore = (initialTime: number): SmoothPlaybackTimeStore => {
+  let snapshot = initialTime
+  const listeners = new Set<() => void>()
+
+  return {
+    getSnapshot: () => snapshot,
+    subscribe: listener => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    publish: time => {
+      if (Math.abs(snapshot - time) < 0.0005) return
+      snapshot = time
+      listeners.forEach(listener => listener())
+    },
+  }
+}
+
+function SmoothPlaybackTime({
+  store,
+  children,
+}: {
+  store: SmoothPlaybackTimeStore
+  children: (time: number) => ReactNode
+}) {
+  const time = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
+  return <>{children(time)}</>
+}
+
+interface SustainGlowProfile {
+  glowStartTime: number
+  endTime: number
+  strength: number
+}
+
+interface SustainWordMetric {
+  index: number
+  startTime: number
+  duration: number
+  complexity: number
+  normalizedDuration: number
+  characterCount: number
+  isLatinWord: boolean
+}
+
+interface PreparedLyricWord {
+  word: LyricWord
+  originalIndex: number
+}
+
+interface PreparedLyricLine {
+  lyric: LyricLine
+  wordsWithIndex: PreparedLyricWord[]
+  sustainProfiles: Map<number, SustainGlowProfile>
+  romanWordsToRender: LyricWord[]
+}
+
+const EMPTY_SUSTAIN_PROFILES = new Map<number, SustainGlowProfile>()
+
+interface RgbColor {
+  red: number
+  green: number
+  blue: number
+}
+
+const stripSustainMarkup = (text: string) => text
+  .replace(/([\u4e00-\u9fff]+)\s*[锛?]([\u3040-\u309f\u30a0-\u30ff]+)[锛?]/g, '$1')
+  .trim()
+
+const countVocalCharacters = (text: string) => Array.from(text)
+  .filter(character => /[\p{L}\p{N}]/u.test(character))
+  .length
+
+const lowerMedian = (values: number[]) => {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((left, right) => left - right)
+  return sorted[Math.floor((sorted.length - 1) / 2)]
+}
+
+const buildSustainGlowProfiles = (words: LyricWord[], lineText: string) => {
+  const metrics = words.flatMap<SustainWordMetric>((word, index) => {
+    const text = stripSustainMarkup(word.word || '')
+    const characterCount = countVocalCharacters(text)
+    if (characterCount === 0 || !Number.isFinite(word.duration) || word.duration <= 8) return []
+    const isLatinWord = /^[A-Za-z?-??-??-??-?'?-]+$/u.test(text)
+    const complexity = isLatinWord
+      ? clamp(Math.sqrt(characterCount) * 0.82, 1, 2.35)
+      : clamp(Math.sqrt(characterCount), 1, 1.8)
+    const duration = Math.max(1, word.duration)
+
+    return [{
+      index,
+      startTime: Math.max(0, word.startTime),
+      duration,
+      complexity,
+      normalizedDuration: duration / complexity,
+      characterCount,
+      isLatinWord,
+    }]
+  })
+
+  if (metrics.length === 0) return new Map<number, SustainGlowProfile>()
+
+  // 閮ㄥ垎鏅€?LRC/TTML 浼氭妸鏁磋鍖呰鎴愪竴涓甫琛屾椂闀跨殑浼?word銆備弗鏍兼帓闄よ繖绉嶆暟鎹紝
+  // Avoid classifying every character as a sustain when timing data is sparse.
+  if (metrics.length === 1) {
+    const normalizedWord = stripSustainMarkup(words[metrics[0].index].word).replace(/\s+/gu, '')
+    const normalizedLine = stripSustainMarkup(lineText).replace(/\s+/gu, '')
+    if (metrics[0].characterCount > 1 && normalizedWord === normalizedLine) {
+      return new Map<number, SustainGlowProfile>()
+    }
+  }
+
+  const baselineNormalizedDuration = metrics.length === 1
+    ? 420
+    : clamp(lowerMedian(metrics.map(metric => metric.normalizedDuration)), 180, 1050)
+  const candidates = metrics.flatMap(metric => {
+    const expectedDuration = baselineNormalizedDuration * metric.complexity
+    const isFinalVocalWord = metric.index === metrics[metrics.length - 1].index
+    const relativeMultiplier = isFinalVocalWord ? 1.5 : 1.7
+    const minimumExcess = isFinalVocalWord ? 480 : 430
+    const absoluteMinimum = metric.isLatinWord
+      ? 1100 + Math.min(440, Math.max(0, metric.characterCount - 1) * 55)
+      : 1050 + Math.min(360, Math.max(0, metric.characterCount - 1) * 110)
+    const requiredDuration = Math.max(
+      absoluteMinimum,
+      expectedDuration * relativeMultiplier,
+      expectedDuration + minimumExcess,
+    )
+
+    if (metric.duration < requiredDuration) return []
+
+    const excessDuration = metric.duration - expectedDuration
+    const score = metric.normalizedDuration / Math.max(1, baselineNormalizedDuration)
+      + excessDuration / 1000
+      + (isFinalVocalWord ? 0.08 : 0)
+    const articulationDuration = clamp(expectedDuration, 360, metric.duration - 320)
+
+    return [{
+      metric,
+      score,
+      profile: {
+        glowStartTime: metric.startTime + articulationDuration,
+        endTime: metric.startTime + metric.duration,
+        strength: clamp(0.76 + (metric.duration - requiredDuration) / 1200, 0.76, 1),
+      } satisfies SustainGlowProfile,
+    }]
+  })
+  // Limit sustain highlights to the strongest quarter of the line.
+  const maximumProfiles = Math.max(1, Math.round(metrics.length * 0.25))
+  return new Map(
+    candidates
+      .sort((left, right) => right.score - left.score)
+      .slice(0, maximumProfiles)
+      .map(candidate => [candidate.metric.index, candidate.profile]),
+  )
+}
+
+const smoothStep = (value: number) => {
+  const progress = clamp(value)
+  return progress * progress * (3 - 2 * progress)
+}
+
+const getSustainGlowIntensity = (profile: SustainGlowProfile | undefined, currentMs: number) => {
+  if (!profile || currentMs < profile.glowStartTime || currentMs >= profile.endTime) return 0
+  const ramp = smoothStep((currentMs - profile.glowStartTime) / 220)
+  const release = smoothStep((profile.endTime - currentMs) / 170)
+  const breath = 0.95 + Math.sin((currentMs - profile.glowStartTime) / 620) * 0.05
+  return clamp(ramp * release * breath * profile.strength)
+}
+
+const parseLyricAccentColor = (color: string): RgbColor | null => {
+  const hex = color.trim().match(/^#([\da-f]{3}|[\da-f]{6})$/i)?.[1]
+  if (hex) {
+    const expanded = hex.length === 3 ? hex.split('').map(character => character + character).join('') : hex
+    return {
+      red: Number.parseInt(expanded.slice(0, 2), 16),
+      green: Number.parseInt(expanded.slice(2, 4), 16),
+      blue: Number.parseInt(expanded.slice(4, 6), 16),
+    }
+  }
+
+  const rgb = color.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i)
+  if (!rgb) return null
+  return {
+    red: clamp(Number(rgb[1]), 0, 255),
+    green: clamp(Number(rgb[2]), 0, 255),
+    blue: clamp(Number(rgb[3]), 0, 255),
+  }
+}
+
+const resolveReadableSustainColor = (accentColor: string) => {
+  const parsed = parseLyricAccentColor(accentColor)
+  if (!parsed) return { css: 'rgb(188, 207, 255)', rgb: { red: 188, green: 207, blue: 255 } }
+
+  const luminance = (parsed.red * 0.2126 + parsed.green * 0.7152 + parsed.blue * 0.0722) / 255
+  const whiteMix = clamp((0.62 - luminance) / 0.72, 0.08, 0.64)
+  const mixChannel = (value: number) => Math.round(value + (255 - value) * whiteMix)
+  const rgb = {
+    red: mixChannel(parsed.red),
+    green: mixChannel(parsed.green),
+    blue: mixChannel(parsed.blue),
+  }
+  return { css: `rgb(${rgb.red}, ${rgb.green}, ${rgb.blue})`, rgb }
+}
+
+const getSustainTextShadow = (color: RgbColor, intensity: number) => {
+  const alpha = clamp(intensity)
+  return [
+    `0 0 ${5 + alpha * 5}px rgba(255,255,255,${0.3 + alpha * 0.45})`,
+    `0 0 ${13 + alpha * 11}px rgba(${color.red},${color.green},${color.blue},${0.42 + alpha * 0.38})`,
+    `0 0 ${30 + alpha * 26}px rgba(${color.red},${color.green},${color.blue},${0.18 + alpha * 0.3})`,
+    '0 4px 16px rgba(0,0,0,0.68)',
+  ].join(', ')
+}
+
+const isStandaloneInterludeMarker = (text: string) => {
+  const compactText = text.trim().replace(/\s+/g, '')
+  return compactText === '' || /^(?:\.{3,}|鈥?|[路鈥兓]{3,})$/.test(compactText)
+}
+
+const estimateLyricEndTime = (lyric: LyricLine, nextLyricTime: number) => {
+  const timedWordEndMs = lyric.words?.reduce((latestEnd, word) => {
+    if (!Number.isFinite(word.startTime) || !Number.isFinite(word.duration)) return latestEnd
+    return Math.max(latestEnd, word.startTime + Math.max(0, word.duration))
+  }, 0) || 0
+
+  if (timedWordEndMs >= 400) {
+    return Math.min(nextLyricTime, lyric.time + timedWordEndMs / 1000)
+  }
+
+  // Plain LRC has no line-end timestamp, so estimate conservatively from the visible text.
+  const characterCount = Math.max(1, Array.from(lyric.text.trim()).length)
+  const estimatedDuration = clamp(1.15 + characterCount * 0.25, 1.8, 5.8)
+  return Math.min(nextLyricTime, lyric.time + estimatedDuration)
+}
+
+const buildLyricsWithGeneratedInterludes = (lyrics: LyricLine[]) => {
+  const sourceLyrics = lyrics.filter(lyric => !isStandaloneInterludeMarker(lyric.text || ''))
+  const result: LyricLine[] = []
+
+  sourceLyrics.forEach((lyric, index) => {
+    result.push(lyric)
+    const nextLyric = sourceLyrics[index + 1]
+    if (!nextLyric) return
+
+    const interludeStartTime = estimateLyricEndTime(lyric, nextLyric.time)
+    const interludeEndTime = nextLyric.time - INTERLUDE_HIDE_BEFORE_NEXT_SECONDS
+    if (nextLyric.time - interludeStartTime <= INTERLUDE_MIN_GAP_SECONDS) return
+
+    // Compensate for the normal lyric lead so the temporary row starts at the real line end.
+    result.push({
+      time: interludeStartTime + LYRIC_TIMING_LEAD_SECONDS,
+      text: '',
+      isGeneratedInterlude: true,
+      interludeStartTime,
+      interludeEndTime,
+    })
+  })
+
+  return result
+}
+
+const alignRomanWordsToLyricTiming = (romanWords: LyricWord[], lyricWords: LyricWord[] = []) => {
+  const roman = romanWords.filter(word => word.word?.trim())
+  const source = lyricWords.filter(word => word.word?.trim())
+  if (roman.length === 0 || source.length === 0) return roman
+
+  if (roman.length === source.length) {
+    return roman.map((word, index) => ({
+      ...word,
+      startTime: source[index].startTime,
+      duration: Math.max(1, source[index].duration),
+    }))
+  }
+
+  const sourceEnd = source.reduce(
+    (end, word) => Math.max(end, word.startTime + Math.max(1, word.duration)),
+    0
+  )
+  const hasIncreasingRomanTimes = roman.some((word, index) => (
+    index > 0 && word.startTime > roman[index - 1].startTime
+  ))
+
+  if (hasIncreasingRomanTimes) {
+    return roman.map((word, index) => {
+      const startTime = Math.max(0, word.startTime)
+      const nextStart = roman.slice(index + 1).find(next => next.startTime > startTime)?.startTime
+      const rawEnd = startTime + Math.max(1, word.duration)
+      const endTime = Math.min(rawEnd, nextStart ?? sourceEnd)
+      return { ...word, startTime, duration: Math.max(1, endTime - startTime) }
+    })
+  }
+
+  const totalCharacters = Math.max(1, roman.reduce((count, word) => count + Array.from(word.word).length, 0))
+  let elapsedCharacters = 0
+  return roman.map(word => {
+    const characterCount = Math.max(1, Array.from(word.word).length)
+    const startTime = sourceEnd * elapsedCharacters / totalCharacters
+    elapsedCharacters += characterCount
+    const endTime = sourceEnd * elapsedCharacters / totalCharacters
+    return { ...word, startTime, duration: Math.max(1, endTime - startTime) }
+  })
+}
+
+const prepareLyricLine = (lyric: LyricLine, sustainGlowEnabled: boolean): PreparedLyricLine => {
+  const sequentialWords = prepareLyricWords(lyric)
+  const sourceWords = normalizeSequentialWordTiming(lyric.words || [])
+  const fixedRomanWords = lyric.romanWords
+    ? reconcileBoundaryParentheses(lyric.roman || '', lyric.romanWords)
+    : undefined
+  const romanWordsToRender = lyric.romanWords?.length
+    ? normalizeSequentialWordTiming(
+        alignRomanWordsToLyricTiming(fixedRomanWords || lyric.romanWords, sourceWords)
+      ).filter(word => Boolean(word.word?.trim()))
+    : []
+
+  return {
+    lyric,
+    wordsWithIndex: sequentialWords.map((word, originalIndex) => ({ word, originalIndex })),
+    sustainProfiles: sustainGlowEnabled
+      ? buildSustainGlowProfiles(sequentialWords, lyric.text || lyric.content || '')
+      : EMPTY_SUSTAIN_PROFILES,
+    romanWordsToRender,
+  }
+}
+
+const estimateTextColumns = (text: string) => {
+  return Array.from(text.trim()).reduce((columns, char) => {
+    if (/\s/.test(char)) return columns + 0.35
+    if (/[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]/.test(char)) return columns + 2
+    return columns + 1
+  }, 0)
+}
+
+const getLongestTokenLength = (text: string) => Math.max(0, ...text.trim().split(/\s+/).map(token => token.length))
+
+const isCrowdedLyricLine = (text: string, lyricSize: number) => {
+  const columns = estimateTextColumns(text)
+  const longestToken = getLongestTokenLength(text)
+  return (
+    columns > 24
+    || longestToken > 22
+    || (lyricSize >= 2.6 && columns > 18)
+    || (lyricSize >= 3.2 && columns > 14)
+    || (lyricSize >= 3.8 && columns > 12)
+  )
+}
+
+interface LyricsDisplayProps {
+  currentTime: number
+  isPlaying: boolean
+  accentColor: string
+  lyrics?: LyricLine[]
+  translationEnabled?: boolean
+  translationPosition?: 'traditional' | 'bottom-right'
+  onCurrentTranslationChange?: (translation: string) => void
+  onSeek?: (time: number) => void
+  romanEnabled?: boolean
+  displayMode?: 'scroll' | 'single'
+  scrollAlignment?: 'left' | 'center'
+  layoutContext?: 'player' | 'desktop'
+  lyricSizeOverride?: number
+  wordByWordEnabledOverride?: boolean
+  wordByWordEffectModeOverride?: WordByWordEffectMode
+  lyricGlowOverride?: boolean
+  sustainGlowEnabled?: boolean
+  animationModeOverride?: 'elegant' | 'normal' | 'dynamic'
+  singlePlacementMode?: 'dynamic' | 'centered'
+  immersiveEffect?: ImmersiveLyricEffect
+  immersiveAvoidTopLeft?: boolean
+  backgroundEffect?: BackgroundEffect
+  isTransitioning?: boolean
+  trackId?: string | number
+  pulseStore?: AudioPulseStore
+}
+
+export default function LyricsDisplay({ 
+  currentTime, 
+  isPlaying, 
+  accentColor, 
+  lyrics,
+  translationEnabled = true,
+  translationPosition = 'traditional',
+  onCurrentTranslationChange,
+  onSeek,
+  romanEnabled = false,
+  displayMode = 'scroll',
+  scrollAlignment = 'left',
+  layoutContext = 'player',
+  lyricSizeOverride,
+  wordByWordEnabledOverride,
+  wordByWordEffectModeOverride,
+  lyricGlowOverride,
+  sustainGlowEnabled = false,
+  animationModeOverride,
+  singlePlacementMode = 'dynamic',
+  immersiveEffect,
+  immersiveAvoidTopLeft = true,
+  backgroundEffect = 'blur',
+  isTransitioning = false,
+  trackId,
+  pulseStore = EMPTY_AUDIO_PULSE_STORE,
+}: LyricsDisplayProps) {
+  const [currentIndex, setCurrentIndex] = useState(-1)
+  const [, setManualScrollOffset] = useState(0) // 
+  const [isManualScrolling, setIsManualScrolling] = useState(false)
+  const [isJumping, setIsJumping] = useState(false)
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+  const [hoverTimer, setHoverTimer] = useState<ReturnType<typeof setTimeout> | null>(null)
+  const [blinkingIndex, setBlinkingIndex] = useState<number | null>(null) // 
+  const [showGlassFrame, setShowGlassFrame] = useState(false)
+  const [jumpTargetIndex, setJumpTargetIndex] = useState<number | null>(null)
+  const [wordByWordEnabled, setWordByWordEnabled] = useState(() => {
+    const saved = localStorage.getItem('wordByWordLyrics')
+    return saved !== null ? JSON.parse(saved) : true
+  })
+  const [wordByWordEffectMode, setWordByWordEffectMode] = useState<WordByWordEffectMode>(() => {
+    const saved = localStorage.getItem('wordByWordEffectMode')
+    return saved === 'soft' ? 'soft' : 'clear'
+  })
+  const [lyricSize, setLyricSize] = useState(() => {
+    const saved = localStorage.getItem('lyricSize')
+    return saved ? parseFloat(saved) : 2.8
+  })
+  const [lyricGlow, setLyricGlow] = useState(() => {
+    const saved = localStorage.getItem('lyricGlow')
+    return saved !== null ? JSON.parse(saved) : true
+  })
+  const [lyricOffset, setLyricOffset] = useState(() => {
+    const saved = localStorage.getItem('lyricOffset')
+    return saved ? parseFloat(saved) : 0
+  })
+  const [animationMode, setAnimationMode] = useState<'elegant' | 'normal' | 'dynamic'>(() => {
+    const saved = localStorage.getItem('animationMode')
+    return (saved as 'elegant' | 'normal' | 'dynamic') || 'elegant'
+  })
+  const [storedImmersiveEffect, setStoredImmersiveEffect] = useState<ImmersiveLyricEffect>(() => {
+    const saved = localStorage.getItem('immersiveLyricEffect')
+    return (saved as ImmersiveLyricEffect) || 'soft-focus'
+  })
+  const effectiveLyricSize = lyricSizeOverride ?? lyricSize
+  const effectiveWordByWordEnabled = wordByWordEnabledOverride ?? wordByWordEnabled
+  const effectiveWordByWordEffectMode = wordByWordEffectModeOverride ?? wordByWordEffectMode
+  const effectiveLyricGlow = lyricGlowOverride ?? lyricGlow
+  const sustainGlowColor = useMemo(() => resolveReadableSustainColor(accentColor), [accentColor])
+  const effectiveAnimationMode = animationModeOverride ?? animationMode
+  const isDesktopLayout = layoutContext === 'desktop'
+  const containerRef = useRef<HTMLDivElement>(null)
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const jumpAnimationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const returnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isPointerInsideRef = useRef(false)
+  const isManualScrollingRef = useRef(isManualScrolling)
+  const currentIndexRef = useRef(currentIndex)
+  const rafTimeRef = useRef({ time: currentTime, startedAt: performance.now() })
+  const lastLyricFrameRef = useRef(0)
+  const wordRafRef = useRef<number | null>(null)
+  const smoothTimeStoreRef = useRef<SmoothPlaybackTimeStore | null>(null)
+  if (!smoothTimeStoreRef.current) {
+    smoothTimeStoreRef.current = createSmoothPlaybackTimeStore(currentTime)
+  }
+  const activePulseLineRef = useRef<HTMLDivElement>(null)
+  const lyricTextRefs = useRef<Record<number, HTMLParagraphElement | null>>({})
+
+  currentIndexRef.current = currentIndex
+  isManualScrollingRef.current = isManualScrolling
+
+  const displayLyricsData = useMemo(
+    () => buildLyricsWithGeneratedInterludes(lyrics || []),
+    [lyrics]
+  )
+  const preparedLyricsData = useMemo(
+    () => displayLyricsData.map(lyric => prepareLyricLine(lyric, sustainGlowEnabled)),
+    [displayLyricsData, sustainGlowEnabled]
+  )
+
+  useEffect(() => {
+    const updatePulseScale = () => {
+      const node = activePulseLineRef.current
+      if (!node) return
+      const restlessPulse = pulseStore.getSnapshot().restless
+      node.style.setProperty('--restless-lyric-scale', String(1.008 + restlessPulse * 0.021))
+    }
+
+    updatePulseScale()
+    return pulseStore.subscribe(updatePulseScale)
+  }, [pulseStore, currentIndex, displayMode])
+
+  useEffect(() => {
+    rafTimeRef.current = { time: currentTime, startedAt: performance.now() }
+    smoothTimeStoreRef.current!.publish(currentTime)
+  }, [currentTime])
+
+  useEffect(() => {
+    if (!isPlaying) {
+      if (wordRafRef.current !== null) {
+        cancelAnimationFrame(wordRafRef.current)
+        wordRafRef.current = null
+      }
+      return
+    }
+
+    const tick = () => {
+      const now = performance.now()
+      if (now - lastLyricFrameRef.current >= LYRIC_FRAME_INTERVAL_MS) {
+        const elapsed = (now - rafTimeRef.current.startedAt) / 1000
+        smoothTimeStoreRef.current!.publish(rafTimeRef.current.time + elapsed)
+        lastLyricFrameRef.current = now
+      }
+      wordRafRef.current = requestAnimationFrame(tick)
+    }
+
+    wordRafRef.current = requestAnimationFrame(tick)
+
+    return () => {
+      if (wordRafRef.current !== null) {
+        cancelAnimationFrame(wordRafRef.current)
+        wordRafRef.current = null
+      }
+    }
+  }, [isPlaying])
+
+  const clearReturnTimer = () => {
+    if (returnTimerRef.current) {
+      clearTimeout(returnTimerRef.current)
+      returnTimerRef.current = null
+    }
+  }
+
+  const scheduleReturnAfterPointerLeave = () => {
+    clearReturnTimer()
+    returnTimerRef.current = setTimeout(() => {
+      returnTimerRef.current = null
+      if (isPointerInsideRef.current) return
+
+      isManualScrollingRef.current = false
+      setIsManualScrolling(false)
+      setManualScrollOffset(0)
+      const activeIndex = currentIndexRef.current
+      if (activeIndex >= 0) {
+        scheduleScrollLineToCenter(activeIndex, 'smooth')
+      }
+    }, 2000)
+  }
+
+  const getCenteredScrollTop = (container: HTMLElement, el: HTMLElement) => {
+    const containerRect = container.getBoundingClientRect()
+    const elRect = el.getBoundingClientRect()
+    const currentDelta = (elRect.top + elRect.height / 2) - (containerRect.top + containerRect.height / 2)
+    const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight)
+    return clamp(container.scrollTop + currentDelta, 0, maxScroll)
+  }
+
+  const scrollLineToCenter = (index: number, behavior: ScrollBehavior = 'smooth') => {
+    const container = containerRef.current
+    const el = container?.querySelector(`[data-index="${index}"]`) as HTMLElement | null
+    if (!container || !el) return
+
+    container.scrollTo({ top: getCenteredScrollTop(container, el), behavior })
+  }
+
+  const scheduleScrollLineToCenter = (index: number, behavior: ScrollBehavior = 'smooth') => {
+    requestAnimationFrame(() => {
+      scrollLineToCenter(index, behavior)
+      requestAnimationFrame(() => scrollLineToCenter(index, behavior))
+    })
+  }
+  
+  // 澶勭悊榧犳爣婊氳疆婊氬姩
+  const handleWheel = (e: React.WheelEvent) => {
+    // React onWheel may be passive, so this handler does not call preventDefault
+    // Handle only the lyric scrolling state here
+    
+    // 璺宠浆鏈熼棿绂佺敤婊氬姩
+    if (isJumping) return
+    
+    isManualScrollingRef.current = true
+    setIsManualScrolling(true)
+    setManualScrollOffset(prev => {
+      const delta = e.deltaY / 300 // Move roughly one line per 300 pixels
+      const newOffset = prev + delta
+      
+      // Keep the target between the first and last lyric lines
+      // Playing index plus manual offset gives the visual center line
+      const targetIndex = currentIndex + newOffset
+      
+      if (targetIndex < 0) {
+        // Do not scroll before the first line
+        return -currentIndex
+      } else if (targetIndex >= displayLyricsData.length - 1) {
+        // Do not scroll after the final line
+        return displayLyricsData.length - 1 - currentIndex
+      }
+      
+      return newOffset
+    })
+    
+    // Never auto-return while the pointer is inside the lyric panel.
+    clearReturnTimer()
+  }
+
+  const handleContainerMouseEnter = () => {
+    isPointerInsideRef.current = true
+    clearReturnTimer()
+  }
+  
+  // 澶勭悊瀹瑰櫒榧犳爣绉诲嚭
+  const handleContainerMouseLeave = () => {
+    isPointerInsideRef.current = false
+    if (isManualScrollingRef.current) {
+      scheduleReturnAfterPointerLeave()
+    }
+  }
+  
+  // 澶勭悊姝岃瘝鎮仠
+  const handleLyricMouseEnter = (index: number) => {
+    setHoveredIndex(index)
+    setShowGlassFrame(false)
+    setBlinkingIndex(null)
+    
+    // Clear the scroll return timer
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current)
+      scrollTimeoutRef.current = null
+    }
+    
+    // Clear the automatic return timer
+    clearReturnTimer()
+    
+    // 娓呴櫎涔嬪墠鐨勬偓鍋滆鏃跺櫒
+    if (hoverTimer) {
+      clearTimeout(hoverTimer)
+    }
+    
+    // Show delayed blink feedback only during manual scrolling
+    if (isManualScrolling) {
+      const timer = setTimeout(() => {
+        setBlinkingIndex(index)
+      }, 2000)
+      
+      setHoverTimer(timer)
+    }
+  }
+  
+  // 澶勭悊姝岃瘝绉诲嚭
+  const handleLyricMouseLeave = () => {
+    if (hoverTimer) {
+      clearTimeout(hoverTimer)
+      setHoverTimer(null)
+    }
+    setShowGlassFrame(false)
+    setBlinkingIndex(null)
+    
+    setTimeout(() => {
+      setHoveredIndex(null)
+    }, 300)
+    
+    // Keep the current position until the automatic return timer runs
+  }
+  
+  // 澶勭悊鐐瑰嚮璺宠浆
+  const handleLyricClick = (time: number, index: number) => {
+    if (onSeek && time >= 0) {
+      onSeek(time)
+      
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current)
+        scrollTimeoutRef.current = null
+      }
+      if (hoverTimer) {
+        clearTimeout(hoverTimer)
+        setHoverTimer(null)
+      }
+      clearReturnTimer()
+      if (jumpAnimationTimerRef.current) {
+        clearTimeout(jumpAnimationTimerRef.current)
+      }
+      
+      setShowGlassFrame(false)
+      setHoveredIndex(null)
+      setBlinkingIndex(null)
+      setJumpTargetIndex(index)
+      
+      // Mark this as an animated jump
+      setIsJumping(true)
+      isManualScrollingRef.current = false
+      setIsManualScrolling(false)
+      setManualScrollOffset(0)
+      scheduleScrollLineToCenter(index, 'smooth')
+
+      jumpAnimationTimerRef.current = setTimeout(() => {
+        setIsJumping(false)
+        setJumpTargetIndex(null)
+        jumpAnimationTimerRef.current = null
+      }, 700)
+    }
+  }
+  
+  // Watch lyric preferences stored in localStorage
+  useEffect(() => {
+    const handleStorageChange = () => {
+      const saved = localStorage.getItem('wordByWordLyrics')
+      setWordByWordEnabled(saved !== null ? JSON.parse(saved) : true)
+    }
+    
+    const handleLyricSizeChange = (e: Event) => {
+      const customEvent = e as CustomEvent
+      setLyricSize(customEvent.detail)
+    }
+    
+    const handleLyricGlowChange = () => {
+      const saved = localStorage.getItem('lyricGlow')
+      setLyricGlow(saved !== null ? JSON.parse(saved) : true)
+    }
+
+    const handleWordByWordEffectModeChange = (e: Event) => {
+      const customEvent = e as CustomEvent<WordByWordEffectMode>
+      setWordByWordEffectMode(customEvent.detail === 'soft' ? 'soft' : 'clear')
+    }
+    
+    const handleLyricOffsetChange = (e: Event) => {
+      const customEvent = e as CustomEvent
+      setLyricOffset(customEvent.detail)
+    }
+    
+    const handleAnimationModeChange = (e: Event) => {
+      const customEvent = e as CustomEvent
+      setAnimationMode(customEvent.detail)
+    }
+
+    const handleImmersiveEffectChange = (e: Event) => {
+      const customEvent = e as CustomEvent<ImmersiveLyricEffect>
+      setStoredImmersiveEffect(customEvent.detail || 'soft-focus')
+    }
+    
+    window.addEventListener('storage', handleStorageChange)
+    window.addEventListener('wordByWordLyricsChanged', handleStorageChange)
+    window.addEventListener('wordByWordEffectModeChanged', handleWordByWordEffectModeChange as EventListener)
+    window.addEventListener('lyricSizeChanged', handleLyricSizeChange as EventListener)
+    window.addEventListener('lyricGlowChanged', handleLyricGlowChange)
+    window.addEventListener('lyricOffsetChanged', handleLyricOffsetChange as EventListener)
+    window.addEventListener('animationModeChanged', handleAnimationModeChange as EventListener)
+    window.addEventListener('immersiveLyricEffectChanged', handleImmersiveEffectChange as EventListener)
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange)
+      window.removeEventListener('wordByWordLyricsChanged', handleStorageChange)
+      window.removeEventListener('wordByWordEffectModeChanged', handleWordByWordEffectModeChange as EventListener)
+      window.removeEventListener('lyricSizeChanged', handleLyricSizeChange as EventListener)
+      window.removeEventListener('lyricGlowChanged', handleLyricGlowChange)
+      window.removeEventListener('lyricOffsetChanged', handleLyricOffsetChange as EventListener)
+      window.removeEventListener('animationModeChanged', handleAnimationModeChange as EventListener)
+      window.removeEventListener('immersiveLyricEffectChanged', handleImmersiveEffectChange as EventListener)
+    }
+  }, [translationEnabled, translationPosition])
+  
+  // Keep the lyric cursor atomic with a song/lyric payload change. Resetting to
+  // -1 for one painted frame made a naturally transitioned song briefly show
+  // its not-yet-playing opening lines before the next timeupdate corrected it.
+  useLayoutEffect(() => {
+    const adjustedTime = currentTime + LYRIC_TIMING_LEAD_SECONDS + lyricOffset
+    let nextIndex = -1
+    for (let index = displayLyricsData.length - 1; index >= 0; index -= 1) {
+      if (adjustedTime >= displayLyricsData[index].time) {
+        const line = displayLyricsData[index]
+        const shouldPreselectNextLine = line.isGeneratedInterlude
+          && line.interludeEndTime !== undefined
+          && currentTime + lyricOffset >= line.interludeEndTime
+          && index + 1 < displayLyricsData.length
+        nextIndex = shouldPreselectNextLine ? index + 1 : index
+        break
+      }
+    }
+
+    currentIndexRef.current = nextIndex
+    setCurrentIndex(nextIndex)
+    onCurrentTranslationChange?.(nextIndex >= 0 ? (displayLyricsData[nextIndex].translation ?? '') : '')
+    // Old lyric lines are unmounted on song change, but their DOM nodes stay
+    // referenced in this record forever. Clear it so refs don't accumulate
+    // across songs.
+    lyricTextRefs.current = {}
+    // The lyric nodes already exist for the new payload during this layout
+    // phase, so center synchronously before the browser can paint its top.
+    if (nextIndex >= 0) scrollLineToCenter(nextIndex, 'auto')
+  }, [displayLyricsData, trackId])
+
+  useEffect(() => {
+    return () => {
+      if (returnTimerRef.current) {
+        clearTimeout(returnTimerRef.current)
+      }
+      if (jumpAnimationTimerRef.current) {
+        clearTimeout(jumpAnimationTimerRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (displayLyricsData.length === 0) return
+    const adjustedTime = currentTime + LYRIC_TIMING_LEAD_SECONDS + lyricOffset
+    
+    // Keep index at -1 before the first lyric begins
+    if (adjustedTime < displayLyricsData[0].time) {
+      if (currentIndex !== -1) {
+        setCurrentIndex(-1)
+        if (onCurrentTranslationChange) {
+          onCurrentTranslationChange('')
+        }
+      }
+      return
+    }
+    
+    for (let i = displayLyricsData.length - 1; i >= 0; i--) {
+      if (adjustedTime >= displayLyricsData[i].time) {
+        const activeLine = displayLyricsData[i]
+        const realPlaybackTime = currentTime + lyricOffset
+        const shouldPreselectNextLine = activeLine.isGeneratedInterlude
+          && activeLine.interludeEndTime !== undefined
+          && realPlaybackTime >= activeLine.interludeEndTime
+          && i + 1 < displayLyricsData.length
+        const nextIndex = shouldPreselectNextLine ? i + 1 : i
+
+        if (currentIndex !== nextIndex) {
+          setCurrentIndex(nextIndex)
+          if (onCurrentTranslationChange) {
+            const translation = displayLyricsData[nextIndex].translation ?? ''
+            onCurrentTranslationChange(translation)
+          }
+        }
+        break
+      }
+    }
+  }, [currentTime, displayLyricsData, currentIndex, onCurrentTranslationChange, lyricOffset])
+
+  // Automatically scroll to the active lyric
+  useEffect(() => {
+    if (isManualScrolling) return
+    if (currentIndex >= 0) {
+      scheduleScrollLineToCenter(currentIndex, 'smooth')
+    }
+  }, [
+    currentIndex,
+    isManualScrolling,
+    effectiveLyricSize,
+    romanEnabled,
+    translationEnabled,
+    translationPosition,
+    effectiveWordByWordEnabled,
+    effectiveWordByWordEffectMode,
+  ])
+
+  useEffect(() => {
+    if (isManualScrolling || currentIndex < 0 || typeof ResizeObserver === 'undefined') return
+
+    const container = containerRef.current
+    const el = container?.querySelector(`[data-index="${currentIndex}"]`) as HTMLElement | null
+    if (!container || !el) return
+
+    let frame: number | null = null
+    const recenter = () => {
+      if (frame !== null) cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => scrollLineToCenter(currentIndex, 'auto'))
+    }
+    const observer = new ResizeObserver(recenter)
+    observer.observe(container)
+    observer.observe(el)
+    recenter()
+
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame)
+      observer.disconnect()
+    }
+  }, [
+    currentIndex,
+    isManualScrolling,
+    effectiveLyricSize,
+    romanEnabled,
+    translationEnabled,
+    translationPosition,
+    effectiveWordByWordEnabled,
+    effectiveWordByWordEffectMode,
+  ])
+
+  if (!lyrics || lyrics.length === 0) {
+    return null
+  }
+
+  // Render every lyric line without trimming the collection
+  const displayLyrics = displayLyricsData
+
+  const getLineTiming = (lineIndex: number, playbackTime = currentTime) => {
+    const line = displayLyricsData[lineIndex]
+    const nextLine = displayLyricsData[lineIndex + 1]
+    const adjustedTime = playbackTime + LYRIC_TIMING_LEAD_SECONDS + lyricOffset
+    const lineStart = line?.time ?? 0
+    const lineEnd = nextLine?.time ?? lineStart + 4.2
+    const duration = Math.max(1.2, lineEnd - lineStart)
+    const progress = clamp((adjustedTime - lineStart) / duration)
+    const upcomingProgress = lineIndex === currentIndex + 1
+      ? clamp(1 - ((lineStart - adjustedTime) / Math.min(1.45, duration)))
+      : 0
+    const releaseElapsed = lineIndex === currentIndex - 1
+      ? adjustedTime - lineEnd
+      : -1
+    const releaseProgress = releaseElapsed >= 0 && releaseElapsed <= 0.72
+      ? clamp(releaseElapsed / 0.72)
+      : 0
+
+    return {
+      progress,
+      upcomingProgress,
+      releaseProgress,
+      glowPulse: Math.sin(progress * Math.PI),
+    }
+  }
+
+  const getWordEffectConfig = (mode: WordByWordEffectMode) => {
+    switch (mode) {
+      case 'soft':
+        return {
+          isSoft: true,
+          wordRowGap: '0.12em',
+          wordPaddingX: '0',
+          linePaddingX: '0.12em',
+          wordLineHeight: 1.28,
+          inactiveColor: 'rgba(255, 255, 255, 0.38)',
+          inactiveFilter: 'blur(0.3px)',
+          fillExtension: 42,
+          baseTextShadow: '0 2px 9px rgba(0,0,0,0.24)',
+          activeTextShadow: '0 0 14px rgba(255,255,255,0.25), 0 3px 12px rgba(0,0,0,0.36)',
+          completedTextShadow: '0 2px 9px rgba(0,0,0,0.3)',
+        }
+      case 'clear':
+      default:
+        return {
+          isSoft: false,
+          wordRowGap: '0.14em',
+          wordPaddingX: '0',
+          linePaddingX: '0.1em',
+          wordLineHeight: 1.3,
+          inactiveColor: 'rgba(255, 255, 255, 0.4)',
+          inactiveFilter: 'none',
+          fillExtension: 0,
+          baseTextShadow: '0 2px 9px rgba(0,0,0,0.28)',
+          activeTextShadow: '0 0 22px rgba(255,255,255,0.42), 0 3px 12px rgba(0,0,0,0.4)',
+          completedTextShadow: '0 0 6px rgba(255,255,255,0.1), 0 2px 9px rgba(0,0,0,0.3)',
+        }
+    }
+  }
+
+  // 瑙ｆ瀽鏃ヨ娉ㄩ煶鏂囨湰锛堟尟銈婁划鍚嶏級
+  const parseRubyText = (text: string): Array<{ base: string; ruby?: string }> => {
+    const parts: Array<{ base: string; ruby?: string }> = []
+    // 鍖归厤妯″紡锛氫竴涓垨澶氫釜姹夊瓧鍚庤窡锛堝钩鍋囧悕/鐗囧亣鍚嶏級
+    // 浣跨敤鏇翠弗鏍肩殑鍖归厤锛氭眽瀛楀悗绱ц窡鎷彿鍐呯殑鍋囧悕锛屾敮鎸佸叏瑙掑拰鍗婅鎷彿
+    const rubyPattern = /([\u4e00-\u9fff]+)\s*[锛?]([\u3040-\u309f\u30a0-\u30ff]+)[锛?]/g
+    
+    let lastIndex = 0
+    let match: RegExpExecArray | null
+    
+    while ((match = rubyPattern.exec(text)) !== null) {
+      // Add plain text before the ruby annotation.
+      if (match.index > lastIndex) {
+        parts.push({ base: text.slice(lastIndex, match.index) })
+      }
+      
+      // 娣诲姞甯︽敞闊崇殑姹夊瓧
+      parts.push({
+        base: match[1], // 姹夊瓧
+        ruby: match[2]  // 鍋囧悕娉ㄩ煶
+      })
+      
+      lastIndex = rubyPattern.lastIndex
+    }
+    
+    // Add remaining plain text.
+    
+    if (lastIndex < text.length) {
+      parts.push({ base: text.slice(lastIndex) })
+    }
+    
+    return parts.length > 0 ? parts : [{ base: text }]
+  }
+
+  // 娓叉煋甯︽敞闊崇殑鏂囨湰
+  const renderTextWithRuby = (text: string) => {
+    const parts = parseRubyText(text)
+    
+    return parts.map((part, index) => {
+      if (part.ruby) {
+        // 浣跨敤 ruby 鏍囩鏄剧ず娉ㄩ煶锛孋SS 浼氱敤 column-reverse 鍙嶈浆
+        // 鎵€浠ヨ繖閲?base 鍐欏湪鍓嶉潰锛宺t 鍐欏湪鍚庨潰锛屾覆鏌撳悗 rt 浼氬湪涓婃柟
+        return (
+          <ruby key={index}>
+            {part.base}
+            <rt>{part.ruby}</rt>
+          </ruby>
+        )
+      }
+      return <span key={index}>{part.base}</span>
+    })
+  }
+  
+  // 浠庢枃鏈腑绉婚櫎娉ㄩ煶鎷彿锛屽彧淇濈暀姹夊瓧
+  const removeRubyAnnotations = (text: string): string => {
+    // 鍙Щ闄ゆ眽瀛楀悗闈㈢殑鍋囧悕娉ㄩ煶鎷彿锛屼笉绉婚櫎鏅€氭嫭鍙?    // 鍖归厤妯″紡锛氫竴涓垨澶氫釜姹夊瓧鍚庤窡鎷彿鍐呯殑鍋囧悕
+    return text.replace(/([\u4e00-\u9fff]+)\s*[锛?]([\u3040-\u309f\u30a0-\u30ff]+)[锛?]/g, '$1')
+  }
+  // 浼樺寲鐨勯€愬瓧娓叉煋
+  const renderLyricLine = (
+    preparedLyric: PreparedLyricLine,
+    isCurrent: boolean,
+    lineIndex: number,
+    minimalWordEffect = false,
+    playbackTime = currentTime
+  ) => {
+    const { lyric, wordsWithIndex, sustainProfiles } = preparedLyric
+    if (effectiveWordByWordEnabled && isCurrent && lyric.words && lyric.words.length > 0) {
+      // 璁＄畻鐩稿浜庤寮€濮嬬殑褰撳墠鏃堕棿锛堟绉掞級
+      const lineStartTime = lyric.time * 1000
+      const absoluteCurrentMs = (playbackTime + lyricOffset) * 1000
+      
+      // 鈿狅笍 淇锛氶€愬瓧楂樹寒寤惰繜200ms锛岃楂樹寒鏇村噯纭湴璺熼殢婕斿敱
+      const WORD_BY_WORD_DELAY_MS = 200
+      const currentMs = Math.max(0, absoluteCurrentMs - lineStartTime - WORD_BY_WORD_DELAY_MS)
+      
+      const effectConfig = getWordEffectConfig(effectiveWordByWordEffectMode)
+      const getFillOverlayStyle = (fillWidth: number) => {
+        if (!effectConfig.isSoft) {
+          return {
+            width: `${fillWidth}%`,
+          }
+        }
+
+        const extendedWidth = Math.min(100, fillWidth + effectConfig.fillExtension)
+        const fillEdge = extendedWidth > 0 ? fillWidth / extendedWidth * 100 : 0
+        const featherStart = Math.max(0, fillEdge - 18)
+        const featherShoulder = Math.max(featherStart, fillEdge - 6)
+        const featherTail = fillEdge + (100 - fillEdge) * 0.54
+        const fillMask = `linear-gradient(90deg,
+          black 0%,
+          black ${featherStart}%,
+          rgba(0,0,0,0.94) ${featherShoulder}%,
+          rgba(0,0,0,0.76) ${fillEdge}%,
+          rgba(0,0,0,0.28) ${featherTail}%,
+          transparent 100%)`
+        return {
+          width: `${extendedWidth}%`,
+          WebkitMaskImage: fillMask,
+          maskImage: fillMask,
+        }
+      }
+      
+      // Repair missing boundary parentheses in QQ YRC data.
+      
+      
+      const renderSequencedCharacters = () => (
+        wordsWithIndex.map(({ word, originalIndex }) => {
+          // 鈿狅笍 瀹夊叏妫€鏌ワ細纭繚 word.word 瀛樺湪
+          if (!word.word) {
+            return null
+          }
+          
+          const originalWordText = word.word
+          
+          const wordText = removeRubyAnnotations(originalWordText) // 绉婚櫎娉ㄩ煶鎷彿锛屽彧淇濈暀姹夊瓧
+          const parsedParts = parseRubyText(originalWordText) // 瑙ｆ瀽娉ㄩ煶缁撴瀯
+          const hasRuby = parsedParts.some(part => part.ruby) // 妫€鏌ユ槸鍚︽湁娉ㄩ煶
+          const isSpace = wordText.trim() === ''
+
+          if (isSpace) {
+            return (
+              <span
+                key={`space-${lineIndex}-${originalIndex}`}
+                aria-hidden="true"
+                className="inline-block shrink-0"
+                style={{ width: `${Math.max(1, Array.from(wordText).length) * 0.24}em` }}
+              />
+            )
+          }
+
+          const safeDuration = Math.max(word.duration, 1)
+          const startTime = word.startTime
+          const endTime = startTime + safeDuration
+          const sustainGlowIntensity = effectiveLyricGlow
+            ? getSustainGlowIntensity(sustainProfiles.get(originalIndex), currentMs)
+            : 0
+          const isSustainGlowActive = sustainGlowIntensity > 0.015
+          const sustainTextShadow = isSustainGlowActive
+            ? getSustainTextShadow(sustainGlowColor.rgb, sustainGlowIntensity)
+            : ''
+          
+          // 鈿狅笍 淇锛氭娴嬫槸鍚︽槸鑻辨枃鍗曡瘝锛堣繛缁殑鎷変竵瀛楁瘝锛?          // 鑻辨枃鍗曡瘝涔熼渶瑕佹媶鍒嗘垚瀛楁瘝杩涜閫愬瓧楂樹寒
+          const isEnglishWord = /^[a-zA-Z]+$/.test(wordText)
+          
+          // Split annotated text by ruby units, otherwise by visible characters.
+          
+          const renderUnits: Array<{ base: string; ruby?: string }> = hasRuby
+            ? parsedParts
+            : effectConfig.isSoft
+            ? [{ base: wordText }]
+            : Array.from(wordText).map(char => ({ base: char }))
+          const charCount = renderUnits.reduce((sum, unit) => sum + unit.base.length, 0)
+          const softLiftRaw = effectConfig.isSoft
+            ? clamp((currentMs - (startTime - 180)) / 520)
+            : 0
+          const softLiftProgress = 1 - Math.pow(1 - softLiftRaw, 3)
+          const softLiftStyle = effectConfig.isSoft
+            ? {
+                transform: `translateY(${-0.075 * softLiftProgress}em)`,
+                transformOrigin: 'center bottom',
+                willChange: 'transform' as const,
+              }
+            : undefined
+          
+          // Split timing across multi-character words.
+          
+          const shouldSplitTime = wordText.length > 1
+          const charDuration = shouldSplitTime ? safeDuration / charCount : safeDuration
+          
+          // Preserve the original animation for a single character
+          if (charCount === 1) {
+            const entryDuration = Math.min(240, Math.max(130, safeDuration * 0.34))
+            const releaseDuration = Math.min(420, Math.max(220, safeDuration * 0.5))
+            const entryProgress = clamp((currentMs - (startTime - entryDuration)) / entryDuration)
+            const releaseProgress = clamp((currentMs - endTime) / releaseDuration)
+            const activeProgress = isSpace ? 0 : Math.sin(clamp(entryProgress * (1 - releaseProgress)) * Math.PI / 2)
+            const fillProgress = isSpace ? 0 : clamp((currentMs - startTime) / safeDuration)
+            const fillWidth = fillProgress * 100
+            const fullyFilled = currentMs >= endTime
+            // 鍏夋檿鏁堟灉鍙湪鍗曡瘝鐨勬椂闂磋寖鍥村唴鏄剧ず
+            const isInTimeRange = currentMs >= startTime && currentMs < endTime
+            const isActiveCharacter = !minimalWordEffect && activeProgress > 0.015 && isInTimeRange
+            const isRecentlyCompleted = fullyFilled && releaseProgress < 1
+            // 濉厖鏁堟灉锛氭鍦ㄦ挱鏀炬椂鏄剧ず杩涘害锛屾挱鏀惧畬鎴愬悗鏄剧ず100%
+            const shouldShowFill = !isSpace && fillWidth > 0 && (isInTimeRange || fullyFilled)
+            const displayFillWidth = fullyFilled ? 100 : fillWidth
+
+            return (
+              <span
+                key={`word-${lineIndex}-${originalIndex}`}
+                className={`lyric-word-effect inline-block relative py-[0.02em] ${isSustainGlowActive ? 'lyric-word-sustain-glow' : ''}`}
+                data-sustain-glow={isSustainGlowActive ? 'true' : undefined}
+                style={{
+                  ['--word-progress' as string]: `${fillWidth}%`,
+                  ['--word-accent' as string]: sustainGlowColor.css,
+                  color: isSpace ? 'transparent' : (fullyFilled ? 'rgba(255, 255, 255, 1)' : effectConfig.inactiveColor),
+                  opacity: isSpace ? 0 : 1,
+                  textShadow: isSustainGlowActive
+                    ? sustainTextShadow
+                    : isActiveCharacter && effectiveLyricGlow
+                    ? effectConfig.activeTextShadow
+                    : fullyFilled
+                    ? effectConfig.completedTextShadow
+                    : effectConfig.baseTextShadow,
+                  marginRight: isSpace ? '0.24em' : 0,
+                  minWidth: 0,
+                  filter: isSustainGlowActive
+                    ? `brightness(${1.04 + sustainGlowIntensity * 0.12}) saturate(${1.05 + sustainGlowIntensity * 0.2})`
+                    : isRecentlyCompleted && releaseProgress < 1
+                    ? `blur(${0.5 * (1 - releaseProgress)}px)`
+                    : fullyFilled ? 'none' : effectConfig.inactiveFilter,
+                  ...softLiftStyle,
+                }}
+              >
+                 <span className="relative z-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                   {hasRuby ? parsedParts.map((part, idx) => 
+                     part.ruby ? (
+                       <ruby key={idx}>
+                         {part.base}
+                         <rt>{part.ruby}</rt>
+                       </ruby>
+                     ) : (
+                       <span key={idx}>{part.base}</span>
+                     )
+                   ) : wordText}
+                  </span>
+                  {shouldShowFill && displayFillWidth > 0 && !fullyFilled && (
+                    <span
+                     aria-hidden="true"
+                     className="absolute left-0 top-0 z-10 overflow-hidden whitespace-nowrap pointer-events-none"
+                     style={{
+                       ...getFillOverlayStyle(displayFillWidth),
+                       color: 'rgba(255, 255, 255, 1)',
+                       textShadow: 'none',
+                       transition: 'none',
+                     }}
+                   >
+                     {hasRuby ? parsedParts.map((part, idx) => 
+                       part.ruby ? (
+                         <ruby key={idx}>
+                           {part.base}
+                           <rt>{part.ruby}</rt>
+                         </ruby>
+                       ) : (
+                         <span key={idx}>{part.base}</span>
+                       )
+                     ) : wordText}
+                   </span>
+                 )}
+              </span>
+            )
+          }
+          
+          // Render multi-character lyrics with per-character animation
+          return (
+             <span
+              key={`word-${lineIndex}-${originalIndex}`}
+              className="inline-flex"
+              style={{ marginRight: 0, ...softLiftStyle }}
+            >
+              {(() => {
+                let currentCharIndex = 0
+                return renderUnits.map((unit, unitIndex) => {
+                  const unitChars = Array.from(unit.base)
+                  const unitCharCount = unitChars.length
+                  const unitStartCharIndex = currentCharIndex
+                  currentCharIndex += unitCharCount
+                  
+                  // Calculate the timing range for the complete unit.
+                  
+                  const unitStartTime = startTime + unitStartCharIndex * charDuration
+                  const unitEndTime = startTime + currentCharIndex * charDuration
+                  const unitDuration = unitEndTime - unitStartTime
+                  
+                  const entryDuration = Math.min(240, Math.max(130, unitDuration * 0.34))
+                  const releaseDuration = Math.min(420, Math.max(220, unitDuration * 0.5))
+                  const entryProgress = clamp((currentMs - (unitStartTime - entryDuration)) / entryDuration)
+                  const releaseProgress = clamp((currentMs - unitEndTime) / releaseDuration)
+                  const activeProgress = Math.sin(clamp(entryProgress * (1 - releaseProgress)) * Math.PI / 2)
+                  const fillProgress = clamp((currentMs - unitStartTime) / unitDuration)
+                  const fillWidth = fillProgress * 100
+                  const fullyFilled = currentMs >= unitEndTime
+                  // 鍏夋檿鏁堟灉鍙湪瀛楃鐨勬椂闂磋寖鍥村唴鏄剧ず
+                  const isInTimeRange = currentMs >= unitStartTime && currentMs < unitEndTime
+                  const isActiveCharacter = !minimalWordEffect && activeProgress > 0.015 && isInTimeRange
+                  const isRecentlyCompleted = fullyFilled && releaseProgress < 1
+                  // 濉厖鏁堟灉锛氭鍦ㄦ挱鏀炬椂鏄剧ず杩涘害锛屾挱鏀惧畬鎴愬悗鏄剧ず100%
+                  const shouldShowFill = fillWidth > 0 && (isInTimeRange || fullyFilled)
+                  const displayFillWidth = fullyFilled ? 100 : fillWidth
+
+                   return (
+                    <span
+                      key={`unit-${lineIndex}-${originalIndex}-${unitIndex}`}
+                      className={`lyric-word-effect inline-block relative py-[0.02em] ${isSustainGlowActive ? 'lyric-word-sustain-glow' : ''}`}
+                      data-sustain-glow={isSustainGlowActive ? 'true' : undefined}
+                      style={{
+                        ['--word-progress' as string]: `${fillWidth}%`,
+                        ['--word-accent' as string]: sustainGlowColor.css,
+                        color: fullyFilled ? 'rgba(255, 255, 255, 1)' : effectConfig.inactiveColor,
+                        opacity: 1,
+                        textShadow: isSustainGlowActive
+                          ? sustainTextShadow
+                          : isActiveCharacter && effectiveLyricGlow
+                          ? effectConfig.activeTextShadow
+                          : fullyFilled
+                          ? effectConfig.completedTextShadow
+                          : effectConfig.baseTextShadow,
+                        paddingLeft: effectConfig.wordPaddingX,
+                        paddingRight: effectConfig.wordPaddingX,
+                        minWidth: 0,
+                        filter: isSustainGlowActive
+                          ? `brightness(${1.04 + sustainGlowIntensity * 0.12}) saturate(${1.05 + sustainGlowIntensity * 0.2})`
+                          : isRecentlyCompleted && releaseProgress < 1
+                          ? `blur(${0.5 * (1 - releaseProgress)}px)`
+                          : fullyFilled ? 'none' : effectConfig.inactiveFilter,
+                      }}
+                    >
+                      <span className="relative z-0">
+                        {unit.ruby ? (
+                          <ruby>
+                            {unit.base}
+                            <rt>{unit.ruby}</rt>
+                          </ruby>
+                        ) : (
+                          unit.base
+                        )}
+                       </span>
+                       {shouldShowFill && displayFillWidth > 0 && !fullyFilled && (
+                         <span
+                          aria-hidden="true"
+                          className="absolute left-0 top-0 z-10 overflow-hidden whitespace-nowrap pointer-events-none"
+                          style={{
+                            ...getFillOverlayStyle(displayFillWidth),
+                            color: 'rgba(255, 255, 255, 1)',
+                            textShadow: 'none',
+                            transition: 'none',
+                          }}
+                        >
+                          {unit.ruby ? (
+                            <ruby>
+                              {unit.base}
+                              <rt>{unit.ruby}</rt>
+                            </ruby>
+                          ) : (
+                            unit.base
+                          )}
+                        </span>
+                      )}
+                    </span>
+                  )
+                })
+              })()}
+            </span>
+          )
+        })
+      )
+      
+      return (
+        <span
+          className={`relative inline-flex w-full min-w-0 flex-wrap whitespace-normal break-words [overflow-wrap:anywhere] ${scrollAlignment === 'center' ? 'justify-center text-center' : ''}`}
+          style={{
+            columnGap: 0,
+            rowGap: effectConfig.wordRowGap,
+            paddingLeft: effectConfig.linePaddingX,
+            paddingRight: effectConfig.linePaddingX,
+            lineHeight: effectConfig.wordLineHeight,
+          }}
+        >
+          {renderSequencedCharacters()}
+        </span>
+      )
+    }
+    
+    if (lyric.isGeneratedInterlude && isCurrent) {
+      const startTime = lyric.interludeStartTime ?? lyric.time
+      const endTime = lyric.interludeEndTime ?? startTime + INTERLUDE_MIN_GAP_SECONDS
+      const interludeProgress = clamp(
+        (playbackTime + lyricOffset - startTime) / Math.max(0.1, endTime - startTime)
+      )
+
+      return (
+        <motion.span
+          className="inline-flex items-center justify-center py-[0.12em] leading-none"
+          style={{ gap: '0.34em', fontSize: '0.68em' }}
+          aria-label="闂村"
+          animate={{ scale: [1, 1.045, 1] }}
+          transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+        >
+          {[0, 1, 2].map((index) => {
+            const dotProgress = clamp(interludeProgress * 3 - index)
+            const edge = dotProgress * 100
+            const featherStart = Math.max(0, edge - 28)
+            const featherEnd = Math.min(100, edge + 38)
+            const dotMask = `linear-gradient(90deg, black 0%, black ${featherStart}%, rgba(0,0,0,0.78) ${edge}%, transparent ${featherEnd}%)`
+
+            return (
+              <span
+                key={index}
+                className="relative inline-block rounded-full bg-white/25"
+                style={{ width: '0.84em', height: '0.84em' }}
+              >
+                {dotProgress > 0 && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-0 rounded-full bg-white"
+                    style={{
+                      WebkitMaskImage: dotProgress >= 1 ? 'none' : dotMask,
+                      maskImage: dotProgress >= 1 ? 'none' : dotMask,
+                      filter: `drop-shadow(0 0 0.22em ${accentColor}99) blur(0.015em)`,
+                    }}
+                  />
+                )}
+              </span>
+            )
+          })}
+        </motion.span>
+      )
+    }
+
+    if (lyric.isGeneratedInterlude) return null
+    // Non-word-timed mode still renders ruby annotations.
+    return <>{renderTextWithRuby(lyric.text)}</>
+  }
+
+  // 鏍规嵁鍔ㄧ敾妯″紡鑾峰彇杩囨浮閰嶇疆
+  const getTransitionConfig = () => {
+    switch (effectiveAnimationMode) {
+      case 'elegant':
+        // 浼橀泤锛氭鍦ㄦ挱鏀锯啋宸叉挱鏄笎闅愶紝鏈挱鈫掓鍦ㄦ挱鏄€愭笎鏄剧幇
+        return {
+          layout: { duration: 0.95, ease: [0.25, 0.1, 0.25, 1] as const },
+          opacity: { duration: 0.82, ease: [0.25, 0.1, 0.25, 1] as const },
+          y: { duration: 0.9, ease: [0.25, 0.1, 0.25, 1] as const },
+          scale: { duration: 0.86, ease: [0.25, 0.1, 0.25, 1] as const },
+          fontSize: { duration: 0.95, ease: [0.25, 0.1, 0.25, 1] as const },
+          fontWeight: { duration: 0.62, ease: [0.25, 0.1, 0.25, 1] as const },
+        }
+      case 'normal':
+        // Normal transition preset
+        return {
+          layout: { duration: 0.62, ease: [0.25, 0.1, 0.25, 1] as const },
+          opacity: { duration: 0.56, ease: [0.25, 0.1, 0.25, 1] as const },
+          y: { duration: 0.6, ease: [0.25, 0.1, 0.25, 1] as const },
+          scale: { duration: 0.56, ease: [0.25, 0.1, 0.25, 1] as const },
+          fontSize: { duration: 0.62, ease: [0.25, 0.1, 0.25, 1] as const },
+          fontWeight: { duration: 0.42, ease: [0.25, 0.1, 0.25, 1] as const },
+        }
+      case 'dynamic':
+        // 鐏靛姩锛氭洿鏈夋椿鍔涚殑杩囨浮鏁堟灉
+        return {
+          layout: { duration: 0.58, ease: [0.2, 0.8, 0.2, 1] as const },
+          opacity: { duration: 0.48, ease: [0.2, 0.8, 0.2, 1] as const },
+          y: { duration: 0.56, ease: [0.2, 0.8, 0.2, 1] as const },
+          scale: { duration: 0.52, ease: [0.2, 0.8, 0.2, 1] as const },
+          fontSize: { duration: 0.58, ease: [0.2, 0.8, 0.2, 1] as const },
+          fontWeight: { duration: 0.34, ease: [0.2, 0.8, 0.2, 1] as const },
+        }
+    }
+  }
+
+  // Build the transition config from the selected preset
+  const transitionConfig = getTransitionConfig()
+
+  if (displayMode === 'single') {
+    const activeImmersiveEffect = immersiveEffect || storedImmersiveEffect
+    const immersiveEffectConfig = {
+      'soft-focus': {
+        initial: { opacity: 0, x: 0, y: 10, scale: 0.9, filter: 'blur(28px) brightness(0.72)' },
+        animate: { opacity: 1, y: 0, scale: 1, filter: 'blur(0px) brightness(1)' },
+        exit: { opacity: 0, x: 0, y: -8, scale: 1.05, filter: 'blur(24px) brightness(0.78)' },
+        transition: { duration: 0.72, ease: [0.16, 1, 0.3, 1] as const },
+        ambient: { y: [0, -3, 0], scale: [1, 1.014, 1], filter: ['brightness(1)', 'brightness(1.1)', 'brightness(1)'] },
+        ambientTransition: { duration: 4.8, repeat: Infinity, ease: 'easeInOut' as const },
+        textShadow: `0 0 38px ${accentColor}a8, 0 0 82px ${accentColor}58, 0 10px 36px rgba(0,0,0,0.76)`,
+        letterSpacing: '0',
+        fontScale: 1,
+        textAlign: 'center' as const,
+        widthScale: 1,
+        showSweep: false,
+      },
+      float: {
+        initial: { opacity: 0, x: 0, y: 64, scale: 0.9, filter: 'blur(8px) brightness(0.82)' },
+        animate: { opacity: 1, y: 0, scale: 1, filter: 'blur(0px) brightness(1)' },
+        exit: { opacity: 0, x: 0, y: -48, scale: 1.04, filter: 'blur(7px) brightness(0.86)' },
+        transition: { duration: 0.46, ease: [0.16, 1, 0.3, 1] as const },
+        ambient: { y: [0, -12, 0], rotateZ: [0, -0.35, 0.25, 0], scale: [1, 1.012, 1] },
+        ambientTransition: { duration: 4.9, repeat: Infinity, ease: 'easeInOut' as const },
+        textShadow: `0 16px 42px rgba(0,0,0,0.7), 0 0 24px ${accentColor}50`,
+        letterSpacing: '0',
+        fontScale: 1,
+        textAlign: 'center' as const,
+        widthScale: 1,
+        showSweep: false,
+      },
+      breathe: {
+        initial: { opacity: 0, x: 0, y: 0, scale: 0.72, filter: 'blur(14px) brightness(0.62)' },
+        animate: { opacity: 1, y: 0, scale: 1, filter: 'blur(0px) brightness(1)' },
+        exit: { opacity: 0, x: 0, y: 0, scale: 1.18, filter: 'blur(16px) brightness(1.28)' },
+        transition: { duration: 0.5, ease: [0.34, 1.56, 0.64, 1] as const },
+        ambient: { scale: [0.98, 1.055, 0.98], filter: ['brightness(0.96)', 'brightness(1.24)', 'brightness(0.96)'] },
+        ambientTransition: { duration: 2.45, repeat: Infinity, ease: 'easeInOut' as const },
+        textShadow: `0 0 28px rgba(255,255,255,0.5), 0 0 70px ${accentColor}88, 0 8px 30px rgba(0,0,0,0.72)`,
+        letterSpacing: '0',
+        fontScale: 1,
+        textAlign: 'center' as const,
+        widthScale: 1,
+        showSweep: false,
+      },
+      cinematic: {
+        initial: { opacity: 0, x: -96, y: 0, scale: 1.08, filter: 'blur(4px) brightness(0.72)', clipPath: 'inset(0 100% 0 0 round 0.5rem)' },
+        animate: { opacity: 1, x: 0, y: 0, scale: 1, filter: 'blur(0px) brightness(1)', clipPath: 'inset(0 0% 0 0 round 0.5rem)' },
+        exit: { opacity: 0, x: 104, y: 0, scale: 0.96, filter: 'blur(5px) brightness(0.76)', clipPath: 'inset(0 0 0 100% round 0.5rem)' },
+        transition: { duration: 0.64, ease: [0.22, 1, 0.36, 1] as const },
+        ambient: { scale: [1, 1.045], x: [0, 18] },
+        ambientTransition: { duration: 8.5, repeat: Infinity, repeatType: 'mirror' as const, ease: 'linear' as const },
+        textShadow: `0 12px 34px rgba(0,0,0,0.86), 0 0 28px ${accentColor}35`,
+        letterSpacing: '0.055em',
+        fontScale: 0.9,
+        textAlign: 'left' as const,
+        widthScale: 1.14,
+        showSweep: true,
+      },
+      minimal: {
+        initial: { opacity: 0, x: 0, y: 0, scale: 1, filter: 'none' },
+        animate: { opacity: 1, x: 0, y: 0, scale: 1, filter: 'none' },
+        exit: { opacity: 0, x: 0, y: 0, scale: 1, filter: 'none' },
+        transition: { duration: 0.18, ease: 'linear' as const },
+        ambient: { y: 0, scale: 1, filter: 'brightness(1)' },
+        ambientTransition: { duration: 0 },
+        textShadow: '0 2px 10px rgba(0,0,0,0.58)',
+        letterSpacing: '0',
+        fontScale: 0.72,
+        textAlign: 'center' as const,
+        widthScale: 0.78,
+        showSweep: false,
+      },
+    }[activeImmersiveEffect]
+    let singleIndex = currentIndex
+    const activeSingleLine = displayLyricsData[singleIndex]
+    if (singleIndex < 0 || (!activeSingleLine?.text?.trim() && !activeSingleLine?.isGeneratedInterlude)) {
+      const fallbackIndex = displayLyricsData.findIndex(lyric => lyric.text?.trim() || lyric.isGeneratedInterlude)
+      singleIndex = fallbackIndex >= 0 ? fallbackIndex : currentIndex
+    }
+    const singleLyric = singleIndex >= 0 ? displayLyricsData[singleIndex] : null
+    const singleLyricFontSize = singlePlacementMode === 'centered'
+      ? Math.max(2.15, effectiveLyricSize * 1.3)
+      : Math.max(3.2, effectiveLyricSize * 1.65)
+    const singleLyricColumns = estimateTextColumns(singleLyric?.text || '')
+    const singleLyricLongestToken = getLongestTokenLength(singleLyric?.text || '')
+    const isLongImmersiveLine = singleLyricColumns > 32 || singleLyricLongestToken > 20
+    const isMediumImmersiveLine = singleLyricColumns > 20 || singleLyricLongestToken > 13
+    const placementSeed = Array.from(displayLyricsData[0]?.text || '').reduce(
+      (hash, char) => ((hash * 31) + (char.codePointAt(0) || 0)) >>> 0,
+      7
+    )
+    const compactPlacements = immersiveAvoidTopLeft
+      ? [
+          { left: 68, top: 25, width: 48 },
+          { left: 34, top: 64, width: 52 },
+          { left: 70, top: 48, width: 46 },
+          { left: 50, top: 34, width: 60 },
+          { left: 65, top: 65, width: 52 },
+          { left: 35, top: 46, width: 48 },
+        ]
+      : [
+          { left: 30, top: 27, width: 46 },
+          { left: 70, top: 62, width: 48 },
+          { left: 68, top: 34, width: 48 },
+          { left: 34, top: 62, width: 50 },
+          { left: 51, top: 45, width: 60 },
+          { left: 30, top: 45, width: 46 },
+        ]
+    const mediumPlacements = [
+      { left: 65, top: 31, width: 60 },
+      { left: 39, top: 62, width: 64 },
+      { left: 61, top: 52, width: 62 },
+      { left: 48, top: 38, width: 68 },
+    ]
+    const longPlacements = [
+      { left: 55, top: 39, width: 80 },
+      { left: 50, top: 61, width: 84 },
+      { left: 62, top: 49, width: 72 },
+    ]
+    const immersivePlacements = isLongImmersiveLine
+      ? longPlacements
+      : isMediumImmersiveLine
+      ? mediumPlacements
+      : compactPlacements
+    const baseImmersivePlacement = immersivePlacements[
+      Math.abs(singleIndex + placementSeed) % immersivePlacements.length
+    ]
+    const dynamicImmersivePlacement = activeImmersiveEffect === 'cinematic'
+      ? {
+          left: baseImmersivePlacement.left < 50 ? 42 : 59,
+          top: baseImmersivePlacement.top,
+          width: Math.max(66, baseImmersivePlacement.width),
+        }
+      : activeImmersiveEffect === 'minimal'
+      ? {
+          left: baseImmersivePlacement.left,
+          top: Math.min(62, Math.max(34, baseImmersivePlacement.top)),
+          width: baseImmersivePlacement.width,
+        }
+      : baseImmersivePlacement
+    const immersivePlacement = singlePlacementMode === 'centered'
+      ? {
+          left: 50,
+          top: 50,
+          width: isLongImmersiveLine ? 88 : isMediumImmersiveLine ? 82 : 76,
+        }
+      : dynamicImmersivePlacement
+
+    return (
+      <div className={`relative h-full w-full overflow-hidden text-center ${isDesktopLayout ? 'min-h-[280px]' : 'min-h-[360px]'}`}>
+        <AnimatePresence mode="sync" initial={false}>
+          {singleLyric && (
+            <motion.div
+              key={`single-${singleIndex}-${singleLyric.time}-${singleLyric.text}`}
+              data-index={singleIndex}
+              initial={immersiveEffectConfig.initial}
+              animate={immersiveEffectConfig.animate}
+              exit={immersiveEffectConfig.exit}
+              transition={immersiveEffectConfig.transition}
+              onClick={() => handleLyricClick(singleLyric.interludeStartTime ?? singleLyric.time, singleIndex)}
+              className="absolute max-h-full cursor-pointer px-5 sm:px-8"
+              style={{
+                left: `${immersivePlacement.left}%`,
+                top: `${immersivePlacement.top}%`,
+                width: `${Math.min(88, immersivePlacement.width * immersiveEffectConfig.widthScale)}%`,
+                maxWidth: '68rem',
+                translate: '-50% -50%',
+                transformOrigin: 'center bottom',
+                textAlign: immersiveEffectConfig.textAlign,
+              }}
+            >
+              <motion.div
+                animate={immersiveEffectConfig.ambient}
+                transition={immersiveEffectConfig.ambientTransition}
+                className="relative overflow-visible"
+                style={{
+                  transformOrigin: activeImmersiveEffect === 'cinematic' ? 'left center' : 'center center',
+                }}
+              >
+                {immersiveEffectConfig.showSweep && (
+                  <motion.span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute bottom-[-0.16em] top-[-0.12em] z-20 w-[16%]"
+                    initial={{ left: '-24%', opacity: 0 }}
+                    animate={{ left: ['-24%', '112%'], opacity: [0, 0.5, 0] }}
+                    transition={{ duration: 2.8, delay: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                    style={{
+                      background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent)',
+                      filter: 'blur(12px)',
+                      transform: 'skewX(-12deg)',
+                    }}
+                  />
+                )}
+                <motion.p
+                  className="font-bold leading-tight text-white drop-shadow-[0_8px_34px_rgba(0,0,0,0.72)] whitespace-normal break-words [overflow-wrap:anywhere]"
+                  animate={{
+                    fontSize: `clamp(1.9rem, ${singleLyricFontSize * immersiveEffectConfig.fontScale}rem, min(11vw, 18vh))`,
+                  }}
+                  transition={{ fontSize: transitionConfig.fontSize }}
+                  style={{
+                    textShadow: effectiveLyricGlow || activeImmersiveEffect !== 'minimal'
+                      ? immersiveEffectConfig.textShadow
+                      : '0 3px 12px rgba(0,0,0,0.62)',
+                    maxWidth: '100%',
+                    letterSpacing: immersiveEffectConfig.letterSpacing,
+                  }}
+                >
+                  <SmoothPlaybackTime store={smoothTimeStoreRef.current!}>
+                    {playbackTime => renderLyricLine(
+                      preparedLyricsData[singleIndex],
+                      true,
+                      singleIndex,
+                      activeImmersiveEffect === 'minimal',
+                      playbackTime
+                    )}
+                  </SmoothPlaybackTime>
+                </motion.p>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    )
+  }
+
+  return (
+    <div className={`relative h-full w-full overflow-hidden ${isDesktopLayout ? 'min-h-[320px] max-h-full' : 'min-h-[520px] max-h-[72vh]'}`}>
+      <div 
+        ref={containerRef}
+        data-is-playing={isPlaying}
+        className="w-full h-full relative overflow-y-auto overflow-x-hidden scrollbar-hide"
+        onWheel={handleWheel}
+        onMouseEnter={handleContainerMouseEnter}
+        onMouseLeave={handleContainerMouseLeave}
+        style={{
+          WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%)',
+          maskImage: 'linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%)',
+        }}
+      >
+      {/* 姝岃瘝婊氬姩瀹瑰櫒 */}
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={trackId}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: isTransitioning ? 0 : 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.4, ease: 'easeInOut' }}
+          className={`absolute inset-0 flex min-w-0 flex-col justify-start px-8 ${scrollAlignment === 'center' ? 'items-center' : 'items-start'}`}
+          style={{
+            paddingTop: '0',
+            paddingBottom: '0',
+          }}
+        >
+        <div
+          aria-hidden="true"
+          className="w-full shrink-0 pointer-events-none"
+          style={{ height: '46%' }}
+        />
+        {!isTransitioning && preparedLyricsData.map((preparedLyric, index) => {
+          const lyric = preparedLyric.lyric
+          const globalIndex = index
+          const isCurrent = globalIndex === currentIndex
+          const isInactiveGeneratedInterlude = Boolean(lyric.isGeneratedInterlude && !isCurrent)
+          const isHovered = hoveredIndex === globalIndex
+          const lineTiming = getLineTiming(globalIndex)
+          
+          // Distance from the active lyric line
+          const distanceFromCurrent = Math.abs(globalIndex - currentIndex)
+          
+          const isBlinking = blinkingIndex === globalIndex
+          // Keep the active line highlighted in every scroll mode
+          let opacityValue = 0.3
+          
+          if (isCurrent) {
+            // The active line remains fully highlighted
+            opacityValue = 1.0
+          } else if (distanceFromCurrent === 1) {
+            // 绱ч偦鐨勪笂涓嬪彞
+            opacityValue = 0.7
+          } else if (distanceFromCurrent === 2) {
+            // Fade lines that are two positions away
+            opacityValue = 0.5
+          }
+          
+          // During manual scrolling, keep other lines at least half visible
+          if (isManualScrolling && !isCurrent) {
+            opacityValue = Math.max(opacityValue, 0.5)
+          }
+
+          if (!isCurrent && lineTiming.upcomingProgress > 0) {
+            opacityValue = Math.max(opacityValue, 0.46 + lineTiming.upcomingProgress * 0.28)
+          }
+          
+          const lyricKey = `lyric-${globalIndex}-${lyric.time ?? 'notime'}`
+          const crowdedCurrentLine = isCurrent && isCrowdedLyricLine(lyric.text, effectiveLyricSize)
+          const skiaY = lineTiming.upcomingProgress > 0 ? 5 * (1 - lineTiming.upcomingProgress) : 0
+          const timingBlur = backgroundEffect === 'immersive'
+            ? 0
+            : isCurrent
+            ? 0
+            : lineTiming.releaseProgress > 0
+            ? Math.min(2.5, 0.5 + lineTiming.releaseProgress * 2.0)
+            : lineTiming.upcomingProgress > 0
+            ? Math.max(0, 1.05 - lineTiming.upcomingProgress * 1.05)
+            : 0
+          const immersiveDistanceBlur = 0
+          const lineFilter = `blur(${Math.max(timingBlur, immersiveDistanceBlur)}px)`
+          const lineFontSize = isCurrent ? `${effectiveLyricSize}rem` : `${effectiveLyricSize * 0.63}rem`
+          const lineFontWeight = isCurrent ? 700 : 400
+          
+          return (
+            <motion.div
+              ref={isCurrent ? activePulseLineRef : undefined}
+              data-index={globalIndex}
+              key={lyricKey}
+              className={`${scrollAlignment === 'center' ? 'text-center mx-auto' : 'text-left'} w-full ${isDesktopLayout ? 'max-w-[62rem]' : 'max-w-[54rem]'} min-w-0 relative cursor-pointer ${
+                isInactiveGeneratedInterlude
+                  ? 'h-0 mb-0 overflow-hidden pointer-events-none'
+                  : isDesktopLayout ? 'mb-5 pointer-events-auto' : 'mb-7 pointer-events-auto'
+              }`}
+              onMouseEnter={() => handleLyricMouseEnter(globalIndex)}
+              onMouseLeave={handleLyricMouseLeave}
+              onClick={() => handleLyricClick(lyric.interludeStartTime ?? lyric.time, globalIndex)}
+              initial={{ opacity: 0, y: 18, filter: 'blur(8px)' }}
+              animate={{ 
+                opacity: isBlinking ? [opacityValue, 0.95, opacityValue] : opacityValue,
+                y: skiaY,
+                filter: lineFilter,
+              }}
+              style={{
+                transformOrigin: scrollAlignment === 'center' ? 'center center' : 'left center',
+                scale: isCurrent ? 'var(--restless-lyric-scale, 1.008)' : 1,
+                transition: 'scale 140ms cubic-bezier(0.22, 1, 0.36, 1)',
+                zIndex: isCurrent ? 2 : lineTiming.upcomingProgress > 0 ? 1 : 0,
+              }}
+              transition={{ 
+                opacity: isBlinking 
+                  ? { duration: 2.0, repeat: Infinity, ease: [0.4, 0, 0.6, 1] }
+                  : transitionConfig.opacity,
+                y: { duration: 0.04, ease: 'linear' },
+                filter: { duration: 0.5, ease: [0.22, 1, 0.36, 1] },
+              }}
+            >
+              {/* 娑叉€佺幓鐠冩 */}
+              <AnimatePresence>
+                {isHovered && showGlassFrame && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    transition={{ duration: 0.4, ease: [0.34, 1.56, 0.64, 1] }}
+                    className="absolute inset-0 -m-4 rounded-2xl pointer-events-none z-0"
+                    style={{
+                      background: `linear-gradient(135deg, ${accentColor}15, ${accentColor}08)`,
+                      backdropFilter: 'blur(20px) saturate(180%)',
+                      WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+                      border: `1px solid ${accentColor}40`,
+                      boxShadow: `
+                        0 0 0 1px ${accentColor}20,
+                        0 8px 32px ${accentColor}30,
+                        inset 0 1px 0 rgba(255, 255, 255, 0.1),
+                        inset 0 -1px 0 rgba(0, 0, 0, 0.1)
+                      `,
+                    }}
+                  >
+                    {/* 鍐呴儴楂樺厜 */}
+                    <div 
+                      className="absolute inset-0 rounded-2xl opacity-50"
+                      style={{
+                        background: `radial-gradient(circle at 50% 0%, ${accentColor}30, transparent 70%)`,
+                      }}
+                    />
+                    {/* 娴佸姩鏁堟灉 */}
+                    <motion.div
+                      className="absolute inset-0 rounded-2xl"
+                      animate={{
+                        background: [
+                          `linear-gradient(45deg, ${accentColor}00, ${accentColor}20, ${accentColor}00)`,
+                          `linear-gradient(225deg, ${accentColor}00, ${accentColor}20, ${accentColor}00)`,
+                        ],
+                      }}
+                      transition={{
+                        duration: 2,
+                        repeat: Infinity,
+                        ease: 'linear',
+                      }}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <div
+                className={[
+                  'relative z-10 will-change-transform lyric-skia-line',
+                  isCurrent ? 'lyric-skia-line-current' : '',
+                  crowdedCurrentLine ? 'lyric-skia-line-crowded' : '',
+                  lineTiming.upcomingProgress > 0 ? 'lyric-skia-line-upcoming' : '',
+                ].filter(Boolean).join(' ')}
+                style={{
+                  ['--lyric-accent' as string]: accentColor,
+                  ['--lyric-line-progress' as string]: lineTiming.progress,
+                  ['--lyric-progress-position' as string]: '50%',
+                  ['--lyric-glow-shift' as string]: '0px',
+                  ['--lyric-glow-scale' as string]: 1,
+                  ['--lyric-glow-opacity' as string]: 0,
+                  ['--lyric-upcoming-opacity' as string]: lineTiming.upcomingProgress,
+                }}
+              >
+              <motion.p
+                ref={(node) => {
+                  lyricTextRefs.current[globalIndex] = node
+                }}
+                className={`${scrollAlignment === 'center' ? 'text-center' : 'text-left'} font-medium leading-relaxed whitespace-normal break-words [overflow-wrap:anywhere] relative z-10 lyric-skia-text`}
+                initial={false}
+                animate={{
+                  scale: isCurrent ? 1.006 : 1,
+                  y: isCurrent ? 0 : lineTiming.releaseProgress > 0 ? -3 * lineTiming.releaseProgress : 0,
+                }}
+                transition={{
+                  scale: isBlinking 
+                    ? { duration: 0 }
+                    : transitionConfig.scale,
+                  y: { duration: 0.04, ease: 'linear' },
+                }}
+                style={{
+                  color: isCurrent
+                    ? '#ffffff' 
+                    : isBlinking
+                    ? 'rgba(255, 255, 255, 0.85)'
+                    : lineTiming.upcomingProgress > 0
+                    ? `rgba(255, 255, 255, ${0.5 + lineTiming.upcomingProgress * 0.22})`
+                    : 'rgba(255, 255, 255, 0.5)',
+                  textShadow: isBlinking
+                    ? `0 0 50px ${accentColor}dd, 0 0 80px ${accentColor}99, 0 0 120px ${accentColor}55, 0 4px 20px rgba(0,0,0,0.7)`
+                    : '0 2px 4px rgba(0,0,0,0.3)',
+                  filter: isBlinking
+                    ? 'brightness(1.15) saturate(1.2)'
+                    : isCurrent
+                    ? 'brightness(1.08)'
+                    : 'none',
+                  maxWidth: '100%',
+                  fontSize: lineFontSize,
+                  fontWeight: lineFontWeight,
+                  wordBreak: 'break-word',
+                  overflowWrap: 'anywhere',
+                  WebkitTextStroke: 'none',
+                }}
+              >
+                {isCurrent ? (
+                  <SmoothPlaybackTime store={smoothTimeStoreRef.current!}>
+                    {playbackTime => renderLyricLine(preparedLyric, true, globalIndex, false, playbackTime)}
+                  </SmoothPlaybackTime>
+                ) : renderLyricLine(preparedLyric, false, globalIndex)}
+              </motion.p>
+              
+              {/* Romanization is shown only for the active line */}
+              {romanEnabled && lyric.roman && isCurrent && (
+                <motion.p
+                  initial={{ opacity: 0, y: -5 }}
+                  animate={{ 
+                    opacity: 0.6, 
+                    y: 0 
+                  }}
+                  exit={{ opacity: 0, y: -5 }}
+                  transition={{ duration: 0.3 }}
+                  className="text-white/60 mt-2 font-light relative z-10 whitespace-normal break-words [overflow-wrap:anywhere]"
+                  style={{
+                    fontSize: `${effectiveLyricSize * 0.45}rem`,
+                    textShadow: '0 1px 4px rgba(0,0,0,0.4)',
+                    letterSpacing: '0.05em',
+                  }}
+                >
+                  {(() => {
+                    // 濡傛灉鏈夐€愬瓧缃楅┈闊筹紝浣跨敤閫愬瓧娓叉煋
+                    if (effectiveWordByWordEnabled && lyric.romanWords && lyric.romanWords.length > 0) {
+                      const lineStartTime = lyric.time * 1000
+
+                      // Keep the romanized fill on the same isolated clock as the main active line.
+                      return (
+                        <SmoothPlaybackTime store={smoothTimeStoreRef.current!}>
+                          {playbackTime => {
+                            const absoluteCurrentMs = (playbackTime + lyricOffset) * 1000
+                            const currentMs = Math.max(0, absoluteCurrentMs - lineStartTime - 200)
+
+                            return (
+                              <span className="inline-flex flex-wrap gap-x-1">
+                                {preparedLyric.romanWordsToRender.map((word, idx) => {
+                                  const startTime = word.startTime
+                                  const endTime = startTime + Math.max(word.duration, 1)
+                                  const fillProgress = clamp((currentMs - startTime) / Math.max(word.duration, 1))
+                                  const fullyFilled = currentMs >= endTime
+                                  const isInTimeRange = currentMs >= startTime && currentMs < endTime
+
+                                  return (
+                                    <span
+                                      key={`roman-${idx}`}
+                                      className="inline-block relative"
+                                      style={{
+                                        color: 'rgba(255, 255, 255, 0.4)',
+                                      }}
+                                    >
+                                      {word.word}
+                                      {(isInTimeRange || fullyFilled) && (
+                                        <span
+                                          aria-hidden="true"
+                                          className="absolute left-0 top-0 overflow-hidden whitespace-nowrap pointer-events-none"
+                                          style={{
+                                            width: fullyFilled ? '100%' : `${fillProgress * 100}%`,
+                                            color: 'rgba(255, 255, 255, 0.95)',
+                                          }}
+                                        >
+                                          {word.word}
+                                        </span>
+                                      )}
+                                    </span>
+                                  )
+                                })}
+                              </span>
+                            )
+                          }}
+                        </SmoothPlaybackTime>
+                      )
+                    }
+                    
+                    // 鍚﹀垯鏄剧ず绾枃鏈綏椹煶
+                    return lyric.roman
+                  })()}
+                </motion.p>
+              )}
+              
+              {/* Traditional translation is shown only for the active line */}
+              {translationEnabled && translationPosition === 'traditional' && lyric.translation && lyric.translation.trim() !== '' && lyric.translation.trim() !== '//' && isCurrent && (
+                <motion.p
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ 
+                    opacity: 0.7, 
+                    y: 0 
+                  }}
+                  exit={{ opacity: 0, y: -10 }}
+                  transition={{ duration: 0.3 }}
+                  className="inline-block max-w-full text-white/70 text-lg mt-3 font-light italic relative z-10 whitespace-normal break-words [overflow-wrap:anywhere]"
+                  style={{
+                    textShadow: '0 2px 8px rgba(0,0,0,0.5)',
+                    letterSpacing: '0.02em',
+                    paddingLeft: '0.5rem',
+                    borderLeft: '3px solid rgba(255, 255, 255, 0.3)',
+                  }}
+                >
+                  {lyric.translation}
+                </motion.p>
+              )}
+              </div>
+            </motion.div>
+          )
+        })}
+        <div
+          aria-hidden="true"
+          className="w-full shrink-0 pointer-events-none"
+          style={{ height: '56%' }}
+        />
+        </motion.div>
+        </AnimatePresence>
+      </div>
+    </div>
+  )
+}
+

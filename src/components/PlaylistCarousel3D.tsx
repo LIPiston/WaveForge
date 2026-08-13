@@ -1,0 +1,473 @@
+import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { motion, useMotionValue, animate } from 'framer-motion'
+import { Heart, History } from 'lucide-react'
+
+interface Playlist {
+  id: string | number
+  name: string
+  coverImgUrl: string
+  trackCount?: number
+  playCount?: number
+  description?: string
+  isLike?: boolean
+  isRecent?: boolean
+  covers?: string[]
+}
+
+interface PlaylistCarousel3DProps {
+  playlists: Playlist[]
+  onPlaylistSelect: (playlist: Playlist) => void
+  platform: 'netease' | 'qq'
+  initialFocusedIndex?: number
+}
+
+const CARD_GAP = 280
+const DRAG_PIXELS_PER_CARD = 150
+const VISIBLE_RADIUS = 4
+
+function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocusedIndex = 0 }: PlaylistCarousel3DProps) {
+  const [focusedIndex, setFocusedIndex] = useState(initialFocusedIndex)
+  const wheelTimeout = useRef<NodeJS.Timeout | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const isDraggingRef = useRef(false)
+  const focusedIndexRef = useRef(0)
+  const pointerStartXRef = useRef(0)
+  const dragStartIndexRef = useRef(0)
+  const didDragRef = useRef(false)
+  const pressedPlaylistIndexRef = useRef<number | null>(null)
+  const progressPointerStartXRef = useRef(0)
+  const isProgressDraggingRef = useRef(false)
+  const dragOffsetX = useMotionValue(0)
+
+  const navigateTo = useCallback((requestedIndex: number) => {
+    if (playlists.length === 0) return
+    const currentIndex = focusedIndexRef.current
+    const nextIndex = Math.max(0, Math.min(playlists.length - 1, requestedIndex))
+    if (nextIndex === currentIndex) return
+
+    dragOffsetX.stop()
+    const distance = nextIndex - currentIndex
+    // 邻近切换保留连续位移；大跨度跳转直接换页，避免跨越数百张卡片。
+    dragOffsetX.set(Math.abs(distance) <= VISIBLE_RADIUS ? distance * CARD_GAP : 0)
+    focusedIndexRef.current = nextIndex
+    setFocusedIndex(nextIndex)
+    requestAnimationFrame(() => {
+      animate(dragOffsetX, 0, { duration: 0.34, ease: [0.22, 1, 0.36, 1] })
+    })
+  }, [dragOffsetX, playlists.length])
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    const pressedCard = (event.target as HTMLElement).closest<HTMLElement>('[data-playlist-index]')
+    const pressedIndex = pressedCard ? Number(pressedCard.dataset.playlistIndex) : Number.NaN
+    pressedPlaylistIndexRef.current = Number.isInteger(pressedIndex) ? pressedIndex : null
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dragOffsetX.stop()
+    dragOffsetX.set(0)
+    pointerStartXRef.current = event.clientX
+    dragStartIndexRef.current = focusedIndexRef.current
+    didDragRef.current = false
+    isDraggingRef.current = true
+    setIsDragging(true)
+  }
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return
+    const rawDelta = event.clientX - pointerStartXRef.current
+    if (Math.abs(rawDelta) > 9) didDragRef.current = true
+
+    // 连续浮点索引：拖动过程中卡片实时跟随指针移动，焦点随取整自然切换，
+    // 一次拖动可以连续跨过多张歌单；卡片绝对位置始终等于 (i - floatIndex) * CARD_GAP，
+    // 因此焦点切换瞬间位置连续，不会出现整卡跳变/闪烁。
+    const floatIndex = Math.max(0, Math.min(
+      playlists.length - 1,
+      dragStartIndexRef.current - rawDelta / DRAG_PIXELS_PER_CARD
+    ))
+    const nextIndex = Math.round(floatIndex)
+    if (focusedIndexRef.current !== nextIndex) {
+      focusedIndexRef.current = nextIndex
+      setFocusedIndex(nextIndex)
+    }
+    dragOffsetX.set((focusedIndexRef.current - floatIndex) * CARD_GAP)
+  }
+
+  const finishPointerDrag = (event?: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return
+    const wasDrag = didDragRef.current
+    const pressedIndex = pressedPlaylistIndexRef.current
+    if (event && event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+
+    isDraggingRef.current = false
+    didDragRef.current = false
+    pressedPlaylistIndexRef.current = null
+    setIsDragging(false)
+    dragOffsetX.stop()
+
+    if (wasDrag) {
+      // 焦点已在拖动过程中实时更新（round(floatIndex)），松手只需平滑归中。
+      requestAnimationFrame(() => {
+        animate(dragOffsetX, 0, { duration: 0.36, ease: [0.22, 1, 0.36, 1] })
+      })
+      return
+    }
+
+    requestAnimationFrame(() => {
+      animate(dragOffsetX, 0, { duration: 0.36, ease: [0.22, 1, 0.36, 1] })
+    })
+
+    // Pointer capture makes the container the click target. Resolve the originally
+    // pressed card here so a stationary click remains reliable after dragging support.
+    if (pressedIndex !== null && playlists[pressedIndex]) {
+      if (pressedIndex === focusedIndexRef.current) {
+        onPlaylistSelect(playlists[pressedIndex])
+      } else {
+        navigateTo(pressedIndex)
+      }
+    }
+  }
+
+  // 处理鼠标滚轮
+  const handleWheel = useCallback((e: WheelEvent) => {
+    e.preventDefault()
+    if (wheelTimeout.current) clearTimeout(wheelTimeout.current)
+    
+    wheelTimeout.current = setTimeout(() => {
+      const delta = e.deltaX !== 0 ? e.deltaX : e.deltaY
+      if (Math.abs(delta) > 20) {
+        navigateTo(focusedIndexRef.current + (delta > 0 ? 1 : -1))
+      }
+    }, 70)
+  }, [navigateTo])
+
+  // 处理键盘方向键
+  useEffect(() => {
+    let lastTime = 0
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault()
+        
+        const now = Date.now()
+        if (now - lastTime < 100) return // 100ms 节流
+        lastTime = now
+        
+        navigateTo(focusedIndexRef.current + (e.key === 'ArrowLeft' ? -1 : 1))
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [navigateTo])
+
+  // 添加滚轮监听
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    container.addEventListener('wheel', handleWheel, { passive: false })
+    return () => container.removeEventListener('wheel', handleWheel)
+  }, [handleWheel])
+
+  useEffect(() => {
+    focusedIndexRef.current = initialFocusedIndex
+    setFocusedIndex(initialFocusedIndex)
+    dragOffsetX.set(0)
+  }, [dragOffsetX, platform, initialFocusedIndex])
+
+  useEffect(() => {
+    const clampedIndex = Math.max(0, Math.min(playlists.length - 1, focusedIndexRef.current))
+    focusedIndexRef.current = clampedIndex
+    setFocusedIndex(clampedIndex)
+  }, [playlists.length])
+
+  useEffect(() => () => {
+    if (wheelTimeout.current) clearTimeout(wheelTimeout.current)
+    dragOffsetX.stop()
+  }, [dragOffsetX])
+
+  const visiblePlaylists = useMemo(() => {
+    const start = Math.max(0, focusedIndex - VISIBLE_RADIUS)
+    const end = Math.min(playlists.length, focusedIndex + VISIBLE_RADIUS + 1)
+    return playlists.slice(start, end).map((playlist, offset) => ({
+      playlist,
+      index: start + offset,
+    }))
+  }, [focusedIndex, playlists])
+
+  if (playlists.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <p className="text-white/40 text-sm">暂无歌单</p>
+      </div>
+    )
+  }
+
+  const handleProgressClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (Math.abs(event.clientX - progressPointerStartXRef.current) > 5) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width))
+    navigateTo(Math.round(ratio * Math.max(0, playlists.length - 1)))
+  }
+
+  return (
+    <div 
+      ref={containerRef}
+      className="group relative flex items-center justify-center overflow-hidden pb-12"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={finishPointerDrag}
+      onPointerCancel={finishPointerDrag}
+      style={{ 
+        perspective: '1200px',
+        cursor: isDragging ? 'grabbing' : 'grab',
+        userSelect: 'none',
+        height: '370px',
+        paddingBottom: '48px',
+        transform: 'translate3d(0, 0, 0)',
+        isolation: 'isolate',
+        contain: 'layout paint style',
+        touchAction: 'pan-y',
+      }}
+    >
+      {/* 固定窗口只渲染当前歌单前后少量卡片，歌单数量不再影响拖拽性能。 */}
+      <motion.div className="absolute inset-x-0 bottom-16 top-0 flex items-center justify-center" style={{ x: dragOffsetX, willChange: 'transform' }}>
+      {visiblePlaylists.map(({ playlist, index: i }) => {
+        const distance = i - focusedIndex
+        const isActive = distance === 0
+        
+        // 计算位置和状态
+        const scale = isActive ? 1.1 : 1 - Math.abs(distance) * 0.15
+        const opacity = isActive ? 1 : Math.max(0.3, 0.6 - Math.abs(distance) * 0.15)
+        const xOffset = distance * 280 // 280px 偏移
+        const zIndex = 10 - Math.abs(distance)
+        const rotateY = distance > 0 ? -15 : distance < 0 ? 15 : 0 // Y轴旋转
+
+        return (
+          <PlaylistCard
+            key={playlist.id || `playlist-${i}`}
+            index={i}
+            playlist={playlist}
+            platform={platform}
+            isActive={isActive}
+            scale={scale}
+            opacity={opacity}
+            xOffset={xOffset}
+            zIndex={zIndex}
+            rotateY={rotateY}
+            onKeyboardActivate={() => {
+              if (isActive) {
+                onPlaylistSelect(playlist)
+              } else {
+                // 点击任意侧边卡片时，只将它平滑移动到舞台中央，不直接打开详情。
+                navigateTo(i)
+              }
+            }}
+          />
+        )
+      })}
+      </motion.div>
+
+      {/* 固定复杂度的页码与进度条，替代按歌单数量生成的圆点。 */}
+      <div className="absolute bottom-1 left-1/2 z-20 flex -translate-x-1/2 items-center gap-3 rounded-full border border-white/10 bg-black/30 px-3 py-2">
+        <span className="min-w-[4.8rem] text-center text-[11px] font-medium tabular-nums text-white/62">
+          {focusedIndex + 1} / {playlists.length}
+        </span>
+        <button
+          type="button"
+          onPointerDown={event => {
+            progressPointerStartXRef.current = event.clientX
+            isProgressDraggingRef.current = true
+            event.currentTarget.setPointerCapture(event.pointerId)
+            event.stopPropagation()
+          }}
+          onPointerMove={event => {
+            if (!isProgressDraggingRef.current) return
+            const bounds = event.currentTarget.getBoundingClientRect()
+            const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width))
+            navigateTo(Math.round(ratio * Math.max(0, playlists.length - 1)))
+          }}
+          onPointerUp={event => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId)
+            }
+            isProgressDraggingRef.current = false
+          }}
+          onPointerCancel={event => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId)
+            }
+            isProgressDraggingRef.current = false
+          }}
+          onClick={handleProgressClick}
+          className="relative h-1.5 w-44 overflow-hidden rounded-full bg-white/18"
+          role="slider"
+          aria-valuemin={1}
+          aria-valuemax={playlists.length}
+          aria-valuenow={focusedIndex + 1}
+          aria-label={`当前第 ${focusedIndex + 1} 个歌单，共 ${playlists.length} 个`}
+        >
+          <motion.span
+            className="absolute inset-y-0 w-7 rounded-full bg-white/90"
+            animate={{
+              left: playlists.length <= 1
+                ? '0px'
+                : `calc(${(focusedIndex / (playlists.length - 1)) * 100}% - ${(focusedIndex / (playlists.length - 1)) * 28}px)`,
+            }}
+            transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+          />
+        </button>
+      </div>
+
+      {/* 箭头使用纯 CSS 显隐，不再在每次鼠标移动时触发 React 重渲染。 */}
+      {focusedIndex > 0 && (
+        <button
+          type="button"
+          onPointerDown={event => event.stopPropagation()}
+          onClick={() => navigateTo(focusedIndex - 1)}
+          className="absolute left-4 top-1/2 z-20 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/30 opacity-0 transition-[opacity,background-color] hover:bg-black/45 group-hover:opacity-100"
+        >
+          <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+      )}
+      {focusedIndex < playlists.length - 1 && (
+        <button
+          type="button"
+          onPointerDown={event => event.stopPropagation()}
+          onClick={() => navigateTo(focusedIndex + 1)}
+          className="absolute right-4 top-1/2 z-20 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/30 opacity-0 transition-[opacity,background-color] hover:bg-black/45 group-hover:opacity-100"
+        >
+          <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+      )}
+    </div>
+  )
+}
+
+// 单个歌单卡片组件
+interface PlaylistCardProps {
+  playlist: Playlist
+  platform: 'netease' | 'qq'
+  index: number
+  isActive: boolean
+  scale: number
+  opacity: number
+  xOffset: number
+  zIndex: number
+  rotateY: number
+  onKeyboardActivate: () => void
+}
+
+const PlaylistCard = memo(function PlaylistCard({ playlist, platform, index, isActive, scale, opacity, xOffset, zIndex, rotateY, onKeyboardActivate }: PlaylistCardProps) {
+  return (
+    <motion.div
+      data-playlist-index={index}
+      initial={false}
+      animate={{
+        scale: scale,
+        opacity: opacity,
+        rotateY: rotateY,
+      }}
+      transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+      role="button"
+      tabIndex={isActive ? 0 : -1}
+      aria-label={playlist.name}
+      onKeyDown={event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onKeyboardActivate()
+        }
+      }}
+      className="absolute cursor-pointer rounded-[18px] shadow-[0_18px_48px_rgba(0,0,0,0.24)]"
+      style={{
+        x: xOffset,
+        zIndex,
+        width: '240px',
+        height: '240px',
+        transformStyle: 'preserve-3d',
+        willChange: 'transform, opacity',
+      }}
+    >
+      <motion.div
+        className="relative isolate h-full w-full overflow-hidden rounded-[18px]"
+        style={{
+          clipPath: 'inset(0 round 18px)',
+          WebkitClipPath: 'inset(0 round 18px)',
+          backgroundColor: 'transparent',
+        }}
+        whileHover={isActive ? { scale: 1.05 } : {}}
+        whileTap={{ scale: 0.98 }}
+      >
+        {/* 封面图片：最近播放使用 2x2 封面宫格，与简约模式一致 */}
+        {playlist.isRecent ? (
+          <div className="grid h-full w-full grid-cols-2 grid-rows-2">
+            {Array.from({ length: 4 }).map((_, coverIndex) => {
+              const cover = playlist.covers?.[coverIndex]
+              return cover ? (
+                <img key={coverIndex} src={cover} alt="" className="h-full w-full object-cover" draggable={false} />
+              ) : (
+                <div key={coverIndex} className="flex h-full w-full items-center justify-center bg-white/10">
+                  <History className="h-6 w-6 text-white/30" />
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <img
+            src={playlist.coverImgUrl}
+            alt={playlist.name}
+            className="block h-full w-full rounded-[18px] object-cover"
+            loading={isActive ? 'eager' : 'lazy'}
+            decoding="async"
+            draggable={false}
+          />
+        )}
+
+        {platform === 'qq' && playlist.isLike && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center" aria-hidden="true">
+            <Heart
+              className="h-[42%] w-[42%] fill-white/75 text-white/75"
+              strokeWidth={0}
+              style={{ filter: 'drop-shadow(0 4px 14px rgba(0, 0, 0, 0.28)) blur(0.7px)' }}
+            />
+          </div>
+        )}
+        
+        {/* 渐变遮罩 */}
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-[62%] rounded-b-[18px]"
+          style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.82), rgba(0,0,0,0.24) 54%, transparent)' }}
+        />
+        
+        {/* 歌单信息 */}
+        <div className="absolute bottom-0 left-0 right-0 p-4">
+          <h3 className="text-white font-bold text-base line-clamp-2 mb-1">
+            {playlist.name}
+          </h3>
+          {playlist.trackCount !== undefined && (
+            <p className="text-white/70 text-xs">
+              {playlist.trackCount} 首歌曲
+            </p>
+          )}
+        </div>
+
+        {/* 激活状态指示 */}
+        {isActive && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="pointer-events-none absolute inset-0 rounded-[18px] border-4 border-white/50"
+          />
+        )}
+      </motion.div>
+    </motion.div>
+  )
+})
+
+export default memo(PlaylistCarousel3D)

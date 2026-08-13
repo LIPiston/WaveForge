@@ -1,0 +1,170 @@
+﻿import { motion, AnimatePresence } from 'framer-motion'
+import CachedImage from './CachedImage'
+import { useState, useEffect, useRef } from 'react'
+import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudioPulse'
+
+interface Track {
+  coverUrl: string
+  dominantColor?: string | null
+}
+
+interface AlbumCoverPlayerProps {
+  coverUrl: string
+  isPlaying: boolean
+  dominantColor: string | null
+  trackId?: string | number
+  isTransitioning?: boolean
+  transitionProgress?: number
+  transitionFromTrack?: Track | null
+  transitionToTrack?: Track | null
+  pulseStore?: AudioPulseStore
+}
+
+export default function AlbumCoverPlayer({ 
+  coverUrl, 
+  isPlaying, 
+  dominantColor, 
+  trackId,
+  isTransitioning = false,
+  transitionProgress = 0,
+  transitionFromTrack = null,
+  transitionToTrack = null,
+  pulseStore = EMPTY_AUDIO_PULSE_STORE,
+}: AlbumCoverPlayerProps) {
+  const pulseSurfaceRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    let pulseActive = false
+    const applyPulse = () => {
+      const surface = pulseSurfaceRef.current
+      if (!surface) return
+      const restlessPulse = pulseStore.getSnapshot().restless
+      const nextPulseActive = restlessPulse > 0
+      surface.style.transform = `translate3d(0, 0, 0) scale(${1 + restlessPulse * 0.022})`
+      surface.style.filter = `brightness(${1 + restlessPulse * 0.045}) saturate(${1 + restlessPulse * 0.055})`
+      if (nextPulseActive !== pulseActive) {
+        pulseActive = nextPulseActive
+        surface.style.transition = nextPulseActive
+          ? 'transform 0.15s cubic-bezier(0.22, 1, 0.36, 1), filter 0.15s ease-out'
+          : 'transform 0.32s ease-out, filter 0.32s ease-out'
+      }
+    }
+
+    applyPulse()
+    return pulseStore.subscribe(applyPulse)
+  }, [pulseStore])
+  // 浣跨敤鏈湴 SVG 鍗犱綅鍥?
+  const defaultCover = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTAwIiBoZWlnaHQ9IjUwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNTAwIiBoZWlnaHQ9IjUwMCIgZmlsbD0iIzFhMWExYSIvPjx0ZXh0IHg9IjI1MCIgeT0iMjUwIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMjQiIGZpbGw9IiM2NjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiPk5vIENvdmVyPC90ZXh0Pjwvc3ZnPg=='
+  
+  const validCoverUrl = coverUrl && coverUrl.trim() !== '' ? coverUrl : defaultCover
+  
+  // 鐢ㄤ簬璺熻釜杩囨浮鏃剁殑灏侀潰鐘舵€?
+  const [previousCoverUrl, setPreviousCoverUrl] = useState(validCoverUrl)
+  const prevTrackIdRef = useRef(trackId)
+  const hadActiveTransitionRef = useRef(false)
+  const skipCompletedTransitionEntry = !isTransitioning && hadActiveTransitionRef.current
+
+  useEffect(() => {
+    hadActiveTransitionRef.current = isTransitioning && transitionProgress > 0
+  }, [isTransitioning, transitionProgress])
+  
+  // 褰搕rackId鍙樺寲鏃讹紝淇濆瓨鍓嶄竴涓皝闈綔涓鸿繃娓″簳灞?
+  useEffect(() => {
+    if (trackId !== prevTrackIdRef.current && prevTrackIdRef.current !== undefined) {
+      setPreviousCoverUrl(validCoverUrl)
+    }
+    prevTrackIdRef.current = trackId
+  }, [trackId, validCoverUrl])
+  
+  // 杩囨浮鏃朵娇鐢ㄧ殑灏侀潰锛堜紭鍏堜娇鐢╰ransitionFromTrack/transitionToTrack锛?
+  const fromCover = transitionFromTrack?.coverUrl || previousCoverUrl
+  const toCover = transitionToTrack?.coverUrl || validCoverUrl
+
+  return (
+    <div
+      ref={pulseSurfaceRef}
+      className="relative mx-auto h-96 w-96 shrink-0"
+      style={{
+        transform: 'translate3d(0, 0, 0) scale(1)',
+        filter: 'brightness(1) saturate(1)',
+        transition: 'transform 0.32s ease-out, filter 0.32s ease-out',
+        willChange: 'transform, filter',
+      }}
+    >
+
+      {/* 灏侀潰鍥剧墖瀹瑰櫒 */}
+      <div className="relative z-10 h-full w-full overflow-hidden rounded-3xl shadow-2xl">
+        {isTransitioning && transitionProgress > 0 ? (
+          // 杩囨浮妯″紡锛氬弻灞傚彔鍔犳晥鏋滐紙绫讳技Apple Music锛?
+          <div className="relative h-full w-full">
+            {/* 搴曞眰锛氭棫灏侀潰 */}
+            <div className="absolute inset-0">
+              <CachedImage
+                src={fromCover}
+                alt="Previous Album Cover"
+                className="h-full w-full"
+                lazy={false}
+                fallback={
+                  <img
+                    src={defaultCover}
+                    alt="No Cover"
+                    className="h-full w-full object-cover"
+                  />
+                }
+              />
+            </div>
+            
+            {/* 椤跺眰锛氭柊灏侀潰锛堟牴鎹繃娓¤繘搴︽笎鏄撅級 */}
+            <motion.div
+              className="absolute inset-0"
+              style={{
+                opacity: transitionProgress,
+              }}
+            >
+              <CachedImage
+                src={toCover}
+                alt="Next Album Cover"
+                className="h-full w-full"
+                lazy={false}
+                fallback={
+                  <img
+                    src={defaultCover}
+                    alt="No Cover"
+                    className="h-full w-full object-cover"
+                  />
+                }
+              />
+            </motion.div>
+          </div>
+        ) : (
+          // 姝ｅ父妯″紡锛氬崟灞傚皝闈?
+          <motion.div
+            key={trackId}
+            className="h-full w-full overflow-hidden rounded-3xl"
+            initial={skipCompletedTransitionEntry ? false : { opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 1.05 }}
+            transition={{ duration: 0.6, ease: 'easeInOut' }}
+          >
+            <CachedImage
+              src={validCoverUrl}
+              alt="Album Cover"
+              className="h-full w-full"
+              lazy={false}
+              fallback={
+                <img
+                  src={defaultCover}
+                  alt="No Cover"
+                  className="h-full w-full object-cover"
+                />
+              }
+            />
+          </motion.div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+

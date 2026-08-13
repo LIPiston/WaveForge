@@ -1,0 +1,29 @@
+node_modules
+dist
+release
+*.log
+.env
+.DS_Store
+Thumbs.db
+*.local
+data/
+cache/
+venv/
+tmp/
+__pycache__/
+*.py[cod]
+
+# 嵌入式 Python 运行时（由 npm run bundle-python 生成，可重建）
+resources/python-embed/
+
+# Playwright 测试产物
+.playwright-mcp/
+
+# 会话/抓取临时文件（本地开发痕迹，不入库）
+.codex-*
+.browser-*
+.codex-perf/
+local-page.*
+.patch-test.txt
+probe*.wav
+logs/

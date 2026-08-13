@@ -1,0 +1,2687 @@
+import { useState, useEffect, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Play, Music, TrendingUp, Flame, Clock, LogOut, Crown, User, Heart, Search, Settings, History } from 'lucide-react'
+import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier, getSongUrl } from '../services/musicApi'
+import PlaylistDetailPanel from './PlaylistDetailPanel'
+import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
+import { getCachedUserPlaylists, getUserPlaylists, streamNeteasePlaylistTracks } from '../services/playlistService'
+import CachedImage from './CachedImage'
+import { imageCache } from '../utils/imageCache'
+import { wallpaperManager, WallpaperFile } from '../services/wallpaperManager'
+import SongContextMenu from './SongContextMenu'
+import { Plus, RefreshCw } from 'lucide-react'
+import { createPlaylist, deletePlaylist, updatePlaylist, updatePlaylistCover, subscribePlaylist, removeSongFromPlaylist } from '../services/playlistService'
+import PlaylistContextMenu from './PlaylistContextMenu'
+import CreatePlaylistModal from './CreatePlaylistModal'
+import EditPlaylistModal from './EditPlaylistModal'
+import DeletePlaylistModal from './DeletePlaylistModal'
+import type { PlaybackOrigin, SongSelectHandler } from '../types/playbackNavigation'
+import { fetchExploreChart, fetchExploreHome, fetchExplorePlaylist } from '../services/exploreApi'
+import {
+  getDefaultHomeModules,
+  HOME_MODULE_BY_ID,
+  sanitizeHomeModules,
+  type HomeModuleType,
+} from '../services/homeModules'
+
+interface HomeViewProps {
+  onSongSelect: SongSelectHandler
+  restorePlaybackOrigin?: (PlaybackOrigin & { revision: number }) | null
+  neteaseLoggedIn: boolean
+  neteaseUsername: string
+  neteaseAvatar?: string
+  neteaseUserId?: string
+  neteaseVip?: boolean
+  onNeteaseLogout: () => void
+  qqLoggedIn: boolean
+  qqUsername: string
+  qqAvatar?: string
+  qqUserId?: string
+  qqVip?: boolean
+  onQQLogout: () => void
+  onNeteaseLoginClick: () => void
+  onQQLoginClick: () => void
+  onProfileClick: (platform: 'netease' | 'qq', initialTab?: 'created' | 'subscribed' | 'detail' | 'recent') => void
+  onSearchClick: () => void
+  onSettingsClick: () => void
+  onOpenArtist?: (artistId: string, platform: 'netease' | 'qq') => void
+  onOpenAlbum?: (albumId: string, platform: 'netease' | 'qq') => void
+  onPlayNext?: (song: Song) => void
+  onAddToFavorites?: (song: Song) => void
+  onRemoveFromFavorites?: (song: Song) => boolean | Promise<boolean>
+  onAddToPlaylist?: (song: Song, playlistId: string) => void
+  onViewComments?: (song: Song) => void
+  onCopyInfo?: (song: Song) => void
+  accentColor?: string
+  currentSong?: Song | null
+  playerTheme?: 'light' | 'dark'
+  authRevision?: number
+}
+
+type ChartType = 'new' | 'hot' | 'rising'
+
+interface HomeModuleSessionSnapshot {
+  songs: Song[]
+  playlists: any[]
+  updatedAt: number
+  isStale?: boolean
+}
+
+// 内存缓存负责同一运行会话；持久缓存让冷启动先显示上一次成功内容，再后台刷新。
+const homeModuleSessionCache = new Map<string, HomeModuleSessionSnapshot>()
+const HOME_MODULE_SESSION_CACHE_LIMIT = 6
+const HOME_MODULE_SESSION_CACHE_TTL = 5 * 60 * 1000
+const HOME_MODULE_PERSISTED_CACHE_TTL = 24 * 60 * 60 * 1000
+const HOME_MODULE_PERSISTED_CACHE_KEY = 'waveforge:home-module-cache:v1'
+
+const readPersistedHomeModuleCache = (): Record<string, HomeModuleSessionSnapshot> => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HOME_MODULE_PERSISTED_CACHE_KEY) || '{}')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return parsed as Record<string, HomeModuleSessionSnapshot>
+  } catch {
+    return {}
+  }
+}
+
+const saveHomeModuleSession = (key: string, snapshot: Omit<HomeModuleSessionSnapshot, 'updatedAt'>) => {
+  const storedSnapshot = { songs: snapshot.songs, playlists: snapshot.playlists, updatedAt: Date.now() }
+  homeModuleSessionCache.delete(key)
+  homeModuleSessionCache.set(key, storedSnapshot)
+  while (homeModuleSessionCache.size > HOME_MODULE_SESSION_CACHE_LIMIT) {
+    const oldestKey = homeModuleSessionCache.keys().next().value
+    if (typeof oldestKey !== 'string') break
+    homeModuleSessionCache.delete(oldestKey)
+  }
+
+  try {
+    const persisted = readPersistedHomeModuleCache()
+    persisted[key] = storedSnapshot
+    const entries = Object.entries(persisted)
+      .filter(([, value]) => value && Array.isArray(value.songs) && Array.isArray(value.playlists))
+      .sort((left, right) => right[1].updatedAt - left[1].updatedAt)
+      .slice(0, HOME_MODULE_SESSION_CACHE_LIMIT)
+    localStorage.setItem(HOME_MODULE_PERSISTED_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)))
+  } catch (error) {
+    console.warn('[Home] 无法持久化首页推荐缓存:', error)
+  }
+}
+
+const getHomeModuleSessionSnapshot = (key: string) => {
+  const snapshot = homeModuleSessionCache.get(key)
+  if (snapshot && Date.now() - snapshot.updatedAt <= HOME_MODULE_SESSION_CACHE_TTL) {
+    return { ...snapshot, isStale: false }
+  }
+  if (snapshot) {
+    homeModuleSessionCache.delete(key)
+  }
+
+  const persisted = readPersistedHomeModuleCache()[key]
+  if (!persisted || !Array.isArray(persisted.songs) || !Array.isArray(persisted.playlists)) return undefined
+  const age = Date.now() - Number(persisted.updatedAt || 0)
+  if (age < 0 || age > HOME_MODULE_PERSISTED_CACHE_TTL) return undefined
+  const restored = { ...persisted, isStale: age > HOME_MODULE_SESSION_CACHE_TTL }
+  homeModuleSessionCache.set(key, restored)
+  return restored
+}
+
+const requiresFullQQRecommendationBatch = (moduleId: HomeModuleType) => (
+  moduleId === 'qq_guess_you_like' || moduleId === 'qq_daily_30'
+)
+
+const getHomeModuleSessionKey = (
+  moduleId: HomeModuleType,
+  neteaseLoggedIn: boolean,
+  neteaseUserId?: string,
+  qqLoggedIn?: boolean,
+  qqUserId?: string
+) => {
+  const isNetease = moduleId.startsWith('netease_')
+  const loggedIn = isNetease ? neteaseLoggedIn : Boolean(qqLoggedIn)
+  const userId = isNetease ? neteaseUserId : qqUserId
+  const devMode = !isNetease && localStorage.getItem('developerMode') === 'true'
+
+  // Never retain login cookies inside long-lived Map keys.
+  return `${moduleId}:${loggedIn ? userId || 'signed-in' : 'guest'}:${devMode ? 'dev' : 'prod'}`
+}
+
+export default function HomeView({ 
+  onSongSelect,
+  restorePlaybackOrigin,
+  neteaseLoggedIn,
+  neteaseUsername,
+  neteaseAvatar,
+  neteaseUserId,
+  neteaseVip,
+  onNeteaseLogout,
+  qqLoggedIn,
+  qqUsername,
+  qqAvatar,
+  qqUserId,
+  qqVip,
+  onQQLogout,
+  onNeteaseLoginClick,
+  onQQLoginClick,
+  onProfileClick,
+  onSearchClick,
+  onSettingsClick,
+  onOpenArtist,
+  onOpenAlbum,
+  onPlayNext,
+  onAddToFavorites,
+  onRemoveFromFavorites,
+  onAddToPlaylist,
+  onViewComments,
+  onCopyInfo,
+  accentColor = '#3B82F6',
+  currentSong = null,
+  playerTheme = 'dark',
+  authRevision = 0
+}: HomeViewProps) {
+  const [leftChartType, setLeftChartType] = useState<ChartType>('new')
+  // 从 localStorage 恢复上次选择的平台
+  const [platform, setPlatform] = useState<'netease' | 'qq'>(() => {
+    const saved = localStorage.getItem('selectedPlatform')
+    return (saved === 'qq' || saved === 'netease') ? saved : 'netease'
+  })
+  const [hideHomeAccountId, setHideHomeAccountId] = useState(() => localStorage.getItem('hideHomeAccountId') === 'true')
+  const [recentPlaybackSummary, setRecentPlaybackSummary] = useState<{ covers: string[]; count: number }>({ covers: [], count: 0 })
+  const [chartSongs, setChartSongs] = useState<Song[]>([])
+  const initialPlaylistUserId = platform === 'netease' ? neteaseUserId : qqUserId
+  const [userPlaylists, setUserPlaylists] = useState<any[]>(() => (
+    initialPlaylistUserId
+      ? getCachedUserPlaylists(platform, initialPlaylistUserId) || []
+      : []
+  ))
+  const [loading, setLoading] = useState(true)
+  const [playlistLoading, setPlaylistLoading] = useState(false)
+  
+  // Playlist management state
+  const [showCreatePlaylist, setShowCreatePlaylist] = useState(false)
+  const [showEditPlaylist, setShowEditPlaylist] = useState(false)
+  const [showDeletePlaylist, setShowDeletePlaylist] = useState(false)
+  const [selectedPlaylist, setSelectedPlaylist] = useState<any>(null)
+  const [playlistContextMenu, setPlaylistContextMenu] = useState<{
+    show: boolean
+    x: number
+    y: number
+    playlist: any
+  }>({ show: false, x: 0, y: 0, playlist: null })
+  const [isSubscribed, setIsSubscribed] = useState(false)
+  const [operationLoading, setOperationLoading] = useState(false)
+  
+  // Per-platform home module configuration
+  const [neteaseModules, setNeteaseModules] = useState<HomeModuleType[]>(() => {
+    const saved = localStorage.getItem('homeModules_netease')
+    return saved ? sanitizeHomeModules(saved, 'netease') : getDefaultHomeModules('netease', neteaseLoggedIn)
+  })
+  
+  const [qqModules, setQQModules] = useState<HomeModuleType[]>(() => {
+    const saved = localStorage.getItem('homeModules_qq')
+    return saved ? sanitizeHomeModules(saved, 'qq') : getDefaultHomeModules('qq', qqLoggedIn)
+  })
+  
+  // 恢复上次选择的卡片索引（会话级别，重启后重置为0）
+  const [currentNeteaseIndex, setCurrentNeteaseIndex] = useState(() => {
+    const saved = localStorage.getItem('homeModuleIndex_netease')
+    const savedIndex = saved ? parseInt(saved, 10) : 0
+    // 确保索引不越界
+    const modules = sanitizeHomeModules(localStorage.getItem('homeModules_netease'), 'netease')
+    return savedIndex < modules.length ? savedIndex : 0
+  })
+  const [currentQQIndex, setCurrentQQIndex] = useState(() => {
+    const saved = localStorage.getItem('homeModuleIndex_qq')
+    const savedIndex = saved ? parseInt(saved, 10) : 0
+    // 确保索引不越界
+    const modules = sanitizeHomeModules(localStorage.getItem('homeModules_qq'), 'qq')
+    return savedIndex < modules.length ? savedIndex : 0
+  })
+  const initialModuleId = platform === 'netease'
+    ? neteaseModules[currentNeteaseIndex]
+    : qqModules[currentQQIndex]
+  const initialModuleSnapshot = initialModuleId
+    ? getHomeModuleSessionSnapshot(getHomeModuleSessionKey(
+        initialModuleId,
+        neteaseLoggedIn,
+        neteaseUserId,
+        qqLoggedIn,
+        qqUserId
+      ))
+    : undefined
+  const [moduleSongs, setModuleSongs] = useState<Song[]>(() => initialModuleSnapshot?.songs || [])
+  const [modulePlaylists, setModulePlaylists] = useState<any[]>(() => initialModuleSnapshot?.playlists || [])
+  const [moduleLoading, setModuleLoading] = useState(() => Boolean(initialModuleId && !initialModuleSnapshot))
+  const [moduleError, setModuleError] = useState('')
+  const [moduleCoversReady, setModuleCoversReady] = useState(() => Boolean(initialModuleSnapshot))
+  const [forceReload, setForceReload] = useState(0)
+  const playlistAuthRevisionRef = useRef(authRevision)
+  const moduleAuthRevisionRef = useRef(authRevision)
+  
+  // Playlist detail panel state
+  const [showPlaylistDetail, setShowPlaylistDetail] = useState(false)
+  const [playlistSongs, setPlaylistSongs] = useState<Song[]>([])
+  const [loadingPlaylistSongs, setLoadingPlaylistSongs] = useState(false)
+  
+  // 壁纸背景
+  const [currentWallpaper, setCurrentWallpaper] = useState<WallpaperFile | null>(null)
+  
+  // 卡片模糊度
+  const [cardBlurAmount, setCardBlurAmount] = useState(() => {
+    const saved = localStorage.getItem('cardBlurAmount')
+    return saved ? parseInt(saved) : 10
+  })
+  
+  // 底部药丸悬停状态
+  const [isBottomBarHovered, setIsBottomBarHovered] = useState(false)
+  
+  // 主题面板状态
+  const [showThemePanel, setShowThemePanel] = useState(false)
+  const [themePanelSettled, setThemePanelSettled] = useState(false)
+  const [isTopHovered, setIsTopHovered] = useState(false)
+  const [showUpArrowHint, setShowUpArrowHint] = useState(false)
+
+  useEffect(() => {
+    const closeForModeSwitch = () => {
+      setThemePanelSettled(false)
+      setShowThemePanel(false)
+      setShowUpArrowHint(false)
+    }
+    window.addEventListener('viewModeChanged', closeForModeSwitch)
+    return () => window.removeEventListener('viewModeChanged', closeForModeSwitch)
+  }, [])
+  
+  // 个人中心面板状态
+  
+  // 歌单播放缓存 - 预加载详情与首曲 URL，减少点击延迟
+  const playlistPlaybackCacheRef = useRef<Map<string, { songs: Song[]; timestamp: number }>>(new Map())
+  const playlistPlaybackPendingRef = useRef<Map<string, Promise<Song[]>>>(new Map())
+  const PLAYLIST_PLAYBACK_CACHE_TTL = 5 * 60 * 1000
+  const PLAYLIST_PLAYBACK_CACHE_MAX_ENTRIES = 4
+  const playlistHoverTimersRef = useRef<Map<string, number>>(new Map())
+
+  const setPlaylistPlaybackCache = (cacheKey: string, songs: Song[]) => {
+    const cache = playlistPlaybackCacheRef.current
+    cache.set(cacheKey, { songs, timestamp: Date.now() })
+    // 浏览大量歌单时缓存只增不减，会积压整份曲目列表。按最旧时间戳淘汰。
+    while (cache.size > PLAYLIST_PLAYBACK_CACHE_MAX_ENTRIES) {
+      let oldestKey: string | null = null
+      let oldestTime = Number.POSITIVE_INFINITY
+      for (const [key, value] of cache) {
+        if (value.timestamp < oldestTime) {
+          oldestTime = value.timestamp
+          oldestKey = key
+        }
+      }
+      if (oldestKey === null) break
+      cache.delete(oldestKey)
+    }
+  }
+  
+  // AbortController instances used to clean up pending requests
+  const activeRequestsRef = useRef<Set<AbortController>>(new Set())
+  const playlistLoadIdRef = useRef(0)
+  const playlistDetailControllerRef = useRef<AbortController | null>(null)
+  const playlistDetailRequestIdRef = useRef(0)
+  const playlistDetailCleanupTimerRef = useRef<number | null>(null)
+  
+  // 右键菜单状态
+  const [contextMenuVisible, setContextMenuVisible] = useState(false)
+  const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 })
+  const [contextMenuSong, setContextMenuSong] = useState<Song | null>(null)
+  
+  // 监听卡片模糊度变化
+  useEffect(() => {
+    const handlePrivacySettingsChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ hideHomeAccountId?: boolean }>).detail
+      setHideHomeAccountId(typeof detail?.hideHomeAccountId === 'boolean'
+        ? detail.hideHomeAccountId
+        : localStorage.getItem('hideHomeAccountId') === 'true')
+    }
+    window.addEventListener('privacy-settings-changed', handlePrivacySettingsChange)
+    return () => window.removeEventListener('privacy-settings-changed', handlePrivacySettingsChange)
+  }, [])
+
+  useEffect(() => {
+    const handleBlurAmountChange = (e: Event) => {
+      const customEvent = e as CustomEvent
+      const newAmount = customEvent.detail
+      console.log('[HomeView] 收到卡片模糊度变化事件:', newAmount)
+      if (typeof newAmount === 'number') {
+        console.log('[HomeView] 更新模糊度到:', newAmount)
+        setCardBlurAmount(newAmount)
+      }
+    }
+    window.addEventListener('cardBlurAmountChanged', handleBlurAmountChange)
+    return () => window.removeEventListener('cardBlurAmountChanged', handleBlurAmountChange)
+  }, [])
+  
+  // Cancel all pending requests when the component unmounts
+  useEffect(() => {
+    return () => {
+      // Cancel every active request
+      activeRequestsRef.current.forEach(controller => {
+        try {
+          controller.abort()
+        } catch (e) {
+          // 忽略已取消的错误
+        }
+      })
+      activeRequestsRef.current.clear()
+      playlistDetailControllerRef.current = null
+      if (playlistDetailCleanupTimerRef.current !== null) {
+        window.clearTimeout(playlistDetailCleanupTimerRef.current)
+        playlistDetailCleanupTimerRef.current = null
+      }
+    }
+  }, [])
+
+  // 保存用户选择的卡片索引到 localStorage
+  useEffect(() => {
+    localStorage.setItem('homeModuleIndex_netease', currentNeteaseIndex.toString())
+  }, [currentNeteaseIndex])
+
+  useEffect(() => {
+    localStorage.setItem('homeModuleIndex_qq', currentQQIndex.toString())
+  }, [currentQQIndex])
+
+  useEffect(() => {
+    if (moduleLoading) {
+      setModuleCoversReady(false)
+      return
+    }
+
+    // Only warm the first visible covers. Remaining cards use viewport lazy loading.
+    const coverUrls = [...new Set([
+      ...moduleSongs.slice(0, 4).map(song => song.album?.picUrl),
+      ...modulePlaylists.slice(0, 4).map(playlist => playlist.coverImgUrl),
+    ].filter((url): url is string => Boolean(url)))]
+
+    if (coverUrls.length === 0) {
+      setModuleCoversReady(true)
+      return
+    }
+
+    let cancelled = false
+    let completed = 0
+    const preloadImages = new Set<HTMLImageElement>()
+
+    const markDone = () => {
+      completed += 1
+      if (!cancelled && completed >= coverUrls.length) {
+        setModuleCoversReady(true)
+      }
+    }
+
+    setModuleCoversReady(false)
+
+    coverUrls.forEach((url) => {
+      const proxyUrl = getProxiedImageUrl(url)
+      if (!proxyUrl || imageCache.get(proxyUrl)) {
+        markDone()
+        return
+      }
+
+      const img = new Image()
+      preloadImages.add(img)
+      const finish = (loaded: boolean) => {
+        if (loaded) imageCache.set(proxyUrl, proxyUrl)
+        img.onload = null
+        img.onerror = null
+        preloadImages.delete(img)
+        markDone()
+      }
+      img.onload = () => finish(true)
+      img.onerror = () => finish(false)
+      img.decoding = 'async'
+      img.src = proxyUrl
+    })
+
+    const timeout = window.setTimeout(() => {
+      if (!cancelled) {
+        setModuleCoversReady(true)
+      }
+    }, 5000)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeout)
+      preloadImages.forEach(img => {
+        img.onload = null
+        img.onerror = null
+        img.src = ''
+      })
+      preloadImages.clear()
+    }
+  }, [moduleLoading, moduleSongs, modulePlaylists])
+
+  const getPlaylistPlaybackCacheKey = (playlist: any) => {
+    const playlistPlatform = (playlist.platform || platform) as 'netease' | 'qq'
+    const accountId = playlistPlatform === 'qq' ? (qqUserId || 'guest') : (neteaseUserId || 'guest')
+    return `${playlistPlatform}:${accountId}:${authRevision}:${playlist.id}`
+  }
+
+  const mapPlaylistTracksToSongs = (tracks: any[], playlistPlatform: 'netease' | 'qq'): Song[] => {
+    if (!Array.isArray(tracks)) return []
+
+    if (playlistPlatform === 'netease') {
+      return tracks.map((track: any) => ({
+        id: track.id,
+        name: track.name,
+        artists: track.ar || track.artists || [],
+        album: track.al || track.album || {},
+        duration: track.dt || track.duration || 0,
+        platform: 'netease',
+        vip: track.vip || false,
+        fee: track.fee || 0
+      }))
+    }
+
+    return tracks.map((track: any) => ({
+      id: track.songid || track.id,
+      mid: track.songmid || track.mid,
+      name: track.songname || track.name,
+      artists: track.singer || [],
+      album: {
+        name: track.albumname || track.album?.name || '',
+        picUrl: track.albumpic || (track.albummid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${track.albummid}.jpg` : '')
+      },
+      duration: Number(track.interval || 0) * 1000 || Number(track.duration || 0),
+      platform: 'qq',
+      vip: track.pay?.payplay === 1 || false
+    }))
+  }
+
+  const resolvePlaylistSongsForPlayback = async (playlist: any): Promise<Song[]> => {
+    const playlistPlatform = playlist.platform || platform
+    const cacheKey = getPlaylistPlaybackCacheKey(playlist)
+    const cached = playlistPlaybackCacheRef.current.get(cacheKey)
+    const now = Date.now()
+    if (cached && (now - cached.timestamp) < PLAYLIST_PLAYBACK_CACHE_TTL) {
+      return cached.songs
+    }
+
+    const pending = playlistPlaybackPendingRef.current.get(cacheKey)
+    if (pending) {
+      return pending
+    }
+
+    const request = (async () => {
+      let data: any
+
+      if (playlistPlatform === 'netease') {
+        const neteaseCookie = localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
+        const response = await fetch(`http://localhost:3001/api/netease/playlist/detail?id=${encodeURIComponent(playlist.id)}&cookie=${encodeURIComponent(neteaseCookie)}`)
+        data = await response.json()
+        if (!response.ok || data.error) throw new Error(data.error || '读取网易云歌单失败')
+        const songs = mapPlaylistTracksToSongs(data.playlist?.tracks || [], 'netease')
+        if (songs.length > 0) {
+          setPlaylistPlaybackCache(cacheKey, songs)
+        }
+        const firstSong = songs[0]
+        if (firstSong) {
+          void getSongUrl(firstSong.platform === 'qq' ? (firstSong.mid || firstSong.id) : firstSong.id, firstSong.platform || 'netease').catch(() => null)
+        }
+        return songs
+      }
+
+      const cookie = localStorage.getItem('qq_cookie') || ''
+      const response = await fetch(`http://localhost:3001/api/qq/playlist/detail?id=${playlist.id}&cookie=${encodeURIComponent(cookie)}`)
+      data = await response.json()
+      if (!response.ok || data.error) throw new Error(data.error || '读取QQ歌单失败')
+      const songs = mapPlaylistTracksToSongs(data.songlist || data.data?.songlist || [], 'qq')
+      if (songs.length > 0) {
+        setPlaylistPlaybackCache(cacheKey, songs)
+      }
+      const firstSong = songs[0]
+      if (firstSong) {
+        void getSongUrl(firstSong.platform === 'qq' ? (firstSong.mid || firstSong.id) : firstSong.id, firstSong.platform || 'qq').catch(() => null)
+      }
+      return songs
+    })()
+
+    playlistPlaybackPendingRef.current.set(cacheKey, request)
+    try {
+      return await request
+    } finally {
+      if (playlistPlaybackPendingRef.current.get(cacheKey) === request) {
+        playlistPlaybackPendingRef.current.delete(cacheKey)
+      }
+    }
+  }
+
+  const prefetchPlaylistPlayback = (playlist: any) => {
+    if ((playlist.platform || platform) === 'netease' && Number(playlist.trackCount || 0) > 200) return
+    void resolvePlaylistSongsForPlayback(playlist).catch((error) => {
+      console.debug('[playlist playback prefetch] failed:', error)
+    })
+  }
+
+  const schedulePlaylistHoverPrefetch = (playlist: any) => {
+    const key = getPlaylistPlaybackCacheKey(playlist)
+    if (playlistHoverTimersRef.current.has(key)) return
+    const timer = window.setTimeout(() => {
+      playlistHoverTimersRef.current.delete(key)
+      prefetchPlaylistPlayback(playlist)
+    }, 650)
+    playlistHoverTimersRef.current.set(key, timer)
+  }
+
+  const cancelPlaylistHoverPrefetch = (playlist: any) => {
+    const key = getPlaylistPlaybackCacheKey(playlist)
+    const timer = playlistHoverTimersRef.current.get(key)
+    if (timer !== undefined) {
+      window.clearTimeout(timer)
+      playlistHoverTimersRef.current.delete(key)
+    }
+  }
+
+  useEffect(() => () => {
+    playlistHoverTimersRef.current.forEach(timer => window.clearTimeout(timer))
+    playlistHoverTimersRef.current.clear()
+  }, [])
+
+  const cancelPlaylistDetailRequest = () => {
+    playlistDetailRequestIdRef.current += 1
+    const controller = playlistDetailControllerRef.current
+    if (controller) {
+      controller.abort()
+      activeRequestsRef.current.delete(controller)
+      playlistDetailControllerRef.current = null
+    }
+  }
+
+  const closePlaylistDetail = () => {
+    cancelPlaylistDetailRequest()
+    setLoadingPlaylistSongs(false)
+    setShowPlaylistDetail(false)
+
+    if (playlistDetailCleanupTimerRef.current !== null) {
+      window.clearTimeout(playlistDetailCleanupTimerRef.current)
+    }
+    // 延迟清理歌曲列表，避免关闭歌单详情时内容瞬间闪烁。
+    playlistDetailCleanupTimerRef.current = window.setTimeout(() => {
+      playlistDetailCleanupTimerRef.current = null
+      setPlaylistSongs([])
+    }, 450)
+  }
+
+  // Load playlist details
+  const handlePlaylistClick = async (playlist: any) => {
+    if (playlistDetailCleanupTimerRef.current !== null) {
+      window.clearTimeout(playlistDetailCleanupTimerRef.current)
+      playlistDetailCleanupTimerRef.current = null
+    }
+    cancelPlaylistDetailRequest()
+
+    const requestId = playlistDetailRequestIdRef.current
+    const abortController = new AbortController()
+    playlistDetailControllerRef.current = abortController
+    activeRequestsRef.current.add(abortController)
+
+    setSelectedPlaylist(playlist)
+    setShowPlaylistDetail(true)
+    setLoadingPlaylistSongs(true)
+    setPlaylistSongs([])
+
+    const waitForRetry = (delay: number) => new Promise<void>((resolve, reject) => {
+      if (abortController.signal.aborted) {
+        reject(new DOMException('The operation was aborted.', 'AbortError'))
+        return
+      }
+      const timer = window.setTimeout(() => {
+        abortController.signal.removeEventListener('abort', handleAbort)
+        resolve()
+      }, delay)
+      const handleAbort = () => {
+        window.clearTimeout(timer)
+        reject(new DOMException('The operation was aborted.', 'AbortError'))
+      }
+      abortController.signal.addEventListener('abort', handleAbort, { once: true })
+    })
+
+    // 请求失败时进行有限次数重试。
+    const fetchWithRetry = async (url: string, maxRetries = 3): Promise<any> => {
+      let lastError: unknown = null
+
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          console.log(`[API request] attempt ${i + 1}/${maxRetries}`)
+          const response = await fetch(url, {
+            signal: abortController.signal,
+            cache: 'no-store',
+          })
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`)
+          }
+
+          const data = await response.json()
+          if (data.error) {
+            throw new Error(data.error)
+          }
+          return data
+        } catch (error) {
+          if ((error as Error).name === 'AbortError') {
+            throw error
+          }
+
+          lastError = error
+          console.warn(`[API request] attempt ${i + 1} failed:`, error)
+          if (i < maxRetries - 1) {
+            await waitForRetry(500 * (i + 1))
+          }
+        }
+      }
+
+      throw lastError
+    }
+
+    const isCurrentRequest = () => (
+      playlistDetailRequestIdRef.current === requestId &&
+      playlistDetailControllerRef.current === abortController &&
+      !abortController.signal.aborted
+    )
+
+    try {
+      const playlistPlatform = playlist.platform || platform
+
+      if (playlistPlatform === 'netease') {
+        await streamNeteasePlaylistTracks(playlist.id, {
+          signal: abortController.signal,
+          firstPageSize: 120,
+          pageSize: 200,
+          onPage: (page, firstPage) => {
+            if (!isCurrentRequest()) return
+            const pageSongs = mapPlaylistTracksToSongs(page.tracks, 'netease')
+            setSelectedPlaylist((current: any) => ({ ...(current || playlist), ...page.playlist, trackCount: page.total, platform: 'netease' }))
+            setPlaylistSongs(current => {
+              if (firstPage) return pageSongs
+              const seen = new Set(current.map(song => String(song.id)))
+              return [...current, ...pageSongs.filter(song => !seen.has(String(song.id)))]
+            })
+            if (firstPage) setLoadingPlaylistSongs(false)
+          },
+        })
+      } else if (playlistPlatform === 'qq') {
+        const cookie = localStorage.getItem('qq_cookie') || ''
+        const data = await fetchWithRetry(`http://localhost:3001/api/qq/playlist/detail?id=${playlist.id}&cookie=${encodeURIComponent(cookie)}`)
+        if (!isCurrentRequest()) return
+
+        if (data.playlist) {
+          const keepCustomLikeAppearance = Boolean(playlist.isLike)
+          setSelectedPlaylist({
+            ...playlist,
+            ...data.playlist,
+            name: keepCustomLikeAppearance ? playlist.name : (data.playlist.name || playlist.name),
+            coverImgUrl: keepCustomLikeAppearance ? playlist.coverImgUrl : (data.playlist.coverImgUrl || playlist.coverImgUrl),
+            dirId: playlist.dirId,
+            userId: playlist.userId,
+            isLike: playlist.isLike,
+            isCollected: playlist.isCollected,
+            platform: 'qq'
+          })
+        }
+        if (data.songlist && Array.isArray(data.songlist)) {
+          const songs: Song[] = data.songlist.map((track: any) => ({
+            id: track.songid || track.id,
+            mid: track.songmid || track.mid,
+            name: track.songname || track.name,
+            artists: track.singer || [],
+            album: {
+              name: track.albumname || track.album?.name || '',
+              picUrl: track.albumpic || (track.albummid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${track.albummid}.jpg` : '')
+            },
+            duration: Number(track.interval || 0) * 1000 || Number(track.duration || 0),
+            platform: 'qq',
+            vip: track.pay?.payplay === 1 || false
+          }))
+          setPlaylistSongs(songs)
+        } else {
+          console.warn('[QQ Music] songlist field was not found')
+        }
+      }
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError' && isCurrentRequest()) {
+        console.error('[playlist details] load failed:', error)
+      }
+    } finally {
+      activeRequestsRef.current.delete(abortController)
+      if (playlistDetailControllerRef.current === abortController) {
+        playlistDetailControllerRef.current = null
+      }
+      if (playlistDetailRequestIdRef.current === requestId) {
+        setLoadingPlaylistSongs(false)
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (restorePlaybackOrigin?.surface !== 'home-playlist' || !restorePlaybackOrigin.playlist) return
+    if (playlistDetailCleanupTimerRef.current !== null) {
+      window.clearTimeout(playlistDetailCleanupTimerRef.current)
+      playlistDetailCleanupTimerRef.current = null
+    }
+    cancelPlaylistDetailRequest()
+    setLoadingPlaylistSongs(false)
+    setSelectedPlaylist(restorePlaybackOrigin.playlist)
+    setPlaylistSongs(restorePlaybackOrigin.songs || [])
+    setShowPlaylistDetail(true)
+  }, [restorePlaybackOrigin?.revision])
+  const showPlaylistToast = (message: string, type: 'success' | 'error' | 'info') => {
+    window.dispatchEvent(new CustomEvent('showToast', { detail: { message, type } }))
+  }
+
+  const isPlaylistActionSuccessful = (result: any) => {
+    if (!result || result.error) return false
+    return result.code === undefined || result.code === 0 || result.code === 200 || result.result === 0 || result.result === 100
+  }
+
+  // Handle the playlist context menu
+  const handlePlaylistContextMenu = (playlist: any, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setSelectedPlaylist(playlist)
+    setPlaylistContextMenu({
+      show: true,
+      x: e.clientX,
+      y: e.clientY,
+      playlist: playlist
+    })
+    setIsSubscribed(Boolean(playlist.isCollected || playlist.subscribed))
+  }
+
+  // Create a playlist
+  const handleCreatePlaylist = async (name: string, privacy: 'public' | 'private', description?: string, coverDataUrl?: string) => {
+    setOperationLoading(true)
+    try {
+      const result = await createPlaylist(name, platform, {
+        privacy: privacy === 'private' ? '10' : '0',
+        type: 'NORMAL'
+      })
+      if (!isPlaylistActionSuccessful(result)) {
+        throw new Error(result?.error || result?.message || '创建歌单失败')
+      }
+
+      const createdId = result?.playlist?.id || result?.data?.playlist?.id || result?.id || result?.playlistId
+      if (platform === 'netease' && description && createdId) {
+        const updateResult = await updatePlaylist(createdId.toString(), 'netease', { name, desc: description, tags: '' })
+        if (!isPlaylistActionSuccessful(updateResult)) {
+          throw new Error(updateResult?.error || updateResult?.message || '歌单描述保存失败')
+        }
+      }
+      if (platform === 'netease' && coverDataUrl && createdId) {
+        const coverResult = await updatePlaylistCover(createdId.toString(), coverDataUrl, 'netease')
+        if (!isPlaylistActionSuccessful(coverResult)) {
+          throw new Error(coverResult?.error || coverResult?.message || '歌单封面上传失败')
+        }
+      }
+
+      await refreshPlaylists()
+      setShowCreatePlaylist(false)
+      showPlaylistToast(
+        platform === 'qq' && (description || coverDataUrl)
+          ? 'QQ 歌单创建成功；描述和自定义封面不受当前接口支持'
+          : '歌单创建成功',
+        'success'
+      )
+    } catch (error) {
+      console.error('Create playlist failed:', error)
+      showPlaylistToast(error instanceof Error ? error.message : '创建歌单失败，请重试', 'error')
+    } finally {
+      setOperationLoading(false)
+    }
+  }
+
+  // Edit a playlist
+  const handleEditPlaylist = async (data: { name: string; desc?: string; privacy?: string; coverDataUrl?: string }) => {
+    if (!selectedPlaylist) return
+    setOperationLoading(true)
+    try {
+      const tags = Array.isArray(selectedPlaylist.tags) ? selectedPlaylist.tags.join(';') : (selectedPlaylist.tags || '')
+      const result = await updatePlaylist(selectedPlaylist.id.toString(), 'netease', {
+        name: data.name,
+        desc: data.desc,
+        tags
+      })
+      if (!isPlaylistActionSuccessful(result)) {
+        throw new Error(result?.error || result?.message || '编辑歌单失败')
+      }
+      if (data.coverDataUrl) {
+        const coverResult = await updatePlaylistCover(selectedPlaylist.id.toString(), data.coverDataUrl, 'netease')
+        if (!isPlaylistActionSuccessful(coverResult)) {
+          throw new Error(coverResult?.error || coverResult?.message || '歌单封面上传失败')
+        }
+      }
+      await refreshPlaylists()
+      setShowEditPlaylist(false)
+      showPlaylistToast('歌单信息已更新', 'success')
+    } catch (error) {
+      console.error('Edit playlist failed:', error)
+      showPlaylistToast(error instanceof Error ? error.message : '编辑歌单失败，请重试', 'error')
+    } finally {
+      setOperationLoading(false)
+    }
+  }
+
+  // Delete a playlist
+  const handleDeletePlaylist = async () => {
+    if (!selectedPlaylist) return
+    setOperationLoading(true)
+    try {
+      const deleteId = platform === 'qq' ? selectedPlaylist.dirId || selectedPlaylist.id : selectedPlaylist.id
+      const result = await deletePlaylist(deleteId.toString(), platform)
+      if (!isPlaylistActionSuccessful(result)) {
+        throw new Error(result?.error || result?.message || '删除歌单失败')
+      }
+      await refreshPlaylists()
+      setShowDeletePlaylist(false)
+      setSelectedPlaylist(null)
+      setShowPlaylistDetail(false)
+      showPlaylistToast('歌单已删除', 'success')
+    } catch (error) {
+      console.error('Delete playlist failed:', error)
+      showPlaylistToast(error instanceof Error ? error.message : '删除歌单失败，请重试', 'error')
+    } finally {
+      setOperationLoading(false)
+    }
+  }
+
+  // Subscribe to or unsubscribe from a playlist
+  const handleSubscribePlaylist = async (playlist: any, subscribe: boolean) => {
+    setOperationLoading(true)
+    try {
+      const result = await subscribePlaylist(playlist.id.toString(), subscribe, platform)
+      if (!isPlaylistActionSuccessful(result)) {
+        throw new Error(result?.error || result?.message || (subscribe ? '收藏歌单失败' : '取消收藏失败'))
+      }
+      setIsSubscribed(subscribe)
+      await refreshPlaylists()
+      showPlaylistToast(subscribe ? '已收藏歌单' : '已取消收藏', 'success')
+    } catch (error) {
+      console.error('Playlist subscription failed:', error)
+      showPlaylistToast(error instanceof Error ? error.message : '歌单收藏操作失败，请重试', 'error')
+    } finally {
+      setOperationLoading(false)
+    }
+  }
+
+  // Share a playlist
+  const handleSharePlaylist = async (playlist: any) => {
+    const url = platform === 'qq'
+      ? `https://y.qq.com/n/ryqq/playlist/${playlist.id}`
+      : `https://music.163.com/#/playlist?id=${playlist.id}`
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: playlist.name, url })
+      } else {
+        await navigator.clipboard.writeText(url)
+        showPlaylistToast('歌单链接已复制', 'success')
+      }
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') {
+        showPlaylistToast('分享失败，请重试', 'error')
+      }
+    }
+  }
+
+  // Remove a song from a playlist
+  const handleRemoveFromPlaylist = async (song: Song, playlistId: string) => {
+    const userId = platform === 'qq' ? qqUserId : neteaseUserId
+    if (
+      !selectedPlaylist ||
+      selectedPlaylist.isLike ||
+      selectedPlaylist.isCollected ||
+      selectedPlaylist.userId?.toString() !== userId?.toString()
+    ) return
+
+    try {
+      const result = await removeSongFromPlaylist(playlistId, song.id.toString(), userId || '', platform, {
+        songMid: song.mid,
+        songType: song.songType,
+      })
+      if (!isPlaylistActionSuccessful(result)) {
+        throw new Error(result?.error || result?.message || '从歌单移除歌曲失败')
+      }
+
+      const selectedMutationId = selectedPlaylist
+        ? String(selectedPlaylist.dirId || selectedPlaylist.id)
+        : ''
+      if (selectedPlaylist && selectedMutationId === playlistId) {
+        playlistPlaybackCacheRef.current.delete(getPlaylistPlaybackCacheKey(selectedPlaylist))
+        setPlaylistSongs(previous => previous.filter(item => !(
+          item.id === song.id && item.platform === song.platform
+        )))
+        setSelectedPlaylist((previous: any) => previous ? {
+          ...previous,
+          trackCount: Math.max(0, Number(previous.trackCount || 0) - 1)
+        } : previous)
+      }
+      await refreshPlaylists()
+      showPlaylistToast('已从歌单移除歌曲', 'success')
+    } catch (error) {
+      console.error('Remove song from playlist failed:', error)
+      showPlaylistToast(error instanceof Error ? error.message : '从歌单移除歌曲失败，请重试', 'error')
+    }
+  }
+
+  const handleRemoveFromLikedPlaylist = async (song: Song) => {
+    if (!selectedPlaylist?.isLike || !onRemoveFromFavorites) return
+    const removed = await onRemoveFromFavorites(song)
+    if (!removed) return
+
+    setPlaylistSongs(previous => previous.filter(item => !(
+      item.id === song.id && item.platform === song.platform
+    )))
+    setSelectedPlaylist((previous: any) => previous ? {
+      ...previous,
+      trackCount: Math.max(0, Number(previous.trackCount || 0) - 1)
+    } : previous)
+    await refreshPlaylists()
+  }
+
+  // Refresh user playlists
+  const refreshPlaylists = async (showFeedback = false) => {
+    const currentUserId = platform === 'netease' ? neteaseUserId : qqUserId
+    if (!currentUserId) return
+
+    const loadId = ++playlistLoadIdRef.current
+    setPlaylistLoading(true)
+    try {
+      const playlists = await getUserPlaylists(
+        platform,
+        currentUserId,
+        platform === 'netease' ? neteaseUsername : qqUsername,
+        { forceRefresh: true }
+      )
+      if (loadId !== playlistLoadIdRef.current) return
+      setUserPlaylists(playlists)
+      if (showFeedback) showPlaylistToast('歌单列表已刷新', 'success')
+    } catch (error) {
+      console.error('Refresh playlists failed:', error)
+      if (showFeedback) showPlaylistToast('刷新歌单失败，请重试', 'error')
+    } finally {
+      if (loadId === playlistLoadIdRef.current) setPlaylistLoading(false)
+    }
+  }
+
+  // Play a playlist
+  const handlePlayPlaylist = async (playlist: any, e: React.MouseEvent) => {
+    e.stopPropagation() // Avoid opening playlist details
+    e.preventDefault()
+
+    try {
+      const songs = await resolvePlaylistSongsForPlayback(playlist)
+      if (songs.length > 0) {
+        onSongSelect(songs[0], songs)
+      }
+    } catch (error) {
+      console.error('Play playlist failed:', error)
+    }
+  }
+
+  // 首次进入时加载；重新进入简约模式会命中会话缓存。
+  useEffect(() => {
+    const shouldForceRefresh = authRevision !== playlistAuthRevisionRef.current
+    playlistAuthRevisionRef.current = authRevision
+    void loadUserPlaylists(shouldForceRefresh)
+  }, [neteaseLoggedIn, qqLoggedIn, platform, neteaseUserId, qqUserId, neteaseUsername, qqUsername, authRevision])
+
+  useEffect(() => {
+    const handlePlaylistContentChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        platform?: 'netease' | 'qq'
+        type?: string
+        coverImgUrl?: string
+        trackCountDelta?: number
+      }>).detail
+      if (!detail || detail.platform !== platform || detail.type !== 'like') return
+
+      const patchLikedPlaylist = (playlist: any) => playlist?.isLike
+        ? {
+            ...playlist,
+            coverImgUrl: detail.coverImgUrl || playlist.coverImgUrl,
+            trackCount: Math.max(0, Number(playlist.trackCount || 0) + Number(detail.trackCountDelta || 0))
+          }
+        : playlist
+
+      setUserPlaylists(previous => previous.map(patchLikedPlaylist))
+      setSelectedPlaylist((previous: any) => patchLikedPlaylist(previous))
+    }
+
+    window.addEventListener('playlist-content-changed', handlePlaylistContentChanged)
+    return () => window.removeEventListener('playlist-content-changed', handlePlaylistContentChanged)
+  }, [platform])
+
+  // 预加载首页可见歌单的播放队列与首曲，减少点击等待
+  useEffect(() => {
+    if (!userPlaylists.length) return
+
+    // Warm only the first small playlist after idle; full playlists can contain hundreds of tracks.
+    const targets = userPlaylists.slice(0, 1).filter(playlist => Number(playlist.trackCount || 0) <= 100)
+    const timers = targets.map(playlist => window.setTimeout(() => {
+      prefetchPlaylistPlayback(playlist)
+    }, 1200))
+
+    return () => {
+      timers.forEach(timer => window.clearTimeout(timer))
+    }
+  }, [userPlaylists, platform])
+  
+  // 保存平台选择到 localStorage
+  useEffect(() => {
+    localStorage.setItem('selectedPlatform', platform)
+  }, [platform])
+  
+  // Watch for home module configuration changes
+  useEffect(() => {
+    const handleModulesChange = () => {
+      const savedNetease = localStorage.getItem('homeModules_netease')
+      const savedQQ = localStorage.getItem('homeModules_qq')
+      if (savedNetease) {
+        setNeteaseModules(sanitizeHomeModules(savedNetease, 'netease'))
+        setCurrentNeteaseIndex(0)
+      }
+      if (savedQQ) {
+        setQQModules(sanitizeHomeModules(savedQQ, 'qq'))
+        setCurrentQQIndex(0)
+      }
+    }
+    
+    window.addEventListener('homeModulesChanged', handleModulesChange)
+    return () => window.removeEventListener('homeModulesChanged', handleModulesChange)
+  }, [])
+  
+  // 加载壁纸
+  useEffect(() => {
+    const loadWallpaper = async () => {
+      const wallpaper = await wallpaperManager.getCurrentWallpaper()
+      setCurrentWallpaper(wallpaper)
+    }
+    
+    // 初始加载
+    loadWallpaper()
+    
+    // Watch for wallpaper changes
+    const handleWallpaperChange = () => {
+      loadWallpaper()
+    }
+    
+    window.addEventListener('wallpaperChanged', handleWallpaperChange)
+    
+    // Start automatic wallpaper switching
+    wallpaperManager.startAutoSwitch()
+    
+    // Switch wallpaper at startup when configured
+    wallpaperManager.switchOnStartup()
+    
+    return () => {
+      window.removeEventListener('wallpaperChanged', handleWallpaperChange)
+      wallpaperManager.stopAutoSwitch()
+    }
+  }, [])
+  
+  // Watch for card blur changes
+  useEffect(() => {
+    const handleBlurChange = (e: Event) => {
+      const customEvent = e as CustomEvent
+      if (customEvent.detail !== undefined) {
+        setCardBlurAmount(customEvent.detail)
+      }
+    }
+    
+    window.addEventListener('cardBlurChanged', handleBlurChange)
+    return () => window.removeEventListener('cardBlurChanged', handleBlurChange)
+  }, [])
+  
+  // 根据登录状态更新默认模块
+  useEffect(() => {
+    const saved = localStorage.getItem('homeModules_netease')
+    if (!saved) {
+      setNeteaseModules(getDefaultHomeModules('netease', neteaseLoggedIn))
+      setCurrentNeteaseIndex(0)
+      setForceReload(prev => prev + 1)
+    }
+  }, [neteaseLoggedIn])
+
+  useEffect(() => {
+    const saved = localStorage.getItem('homeModules_qq')
+    if (!saved) {
+      setQQModules(getDefaultHomeModules('qq', qqLoggedIn))
+      setCurrentQQIndex(0)
+      setForceReload(prev => prev + 1)
+    }
+  }, [qqLoggedIn])
+
+  const loadModernHomeModule = async (
+    moduleId: HomeModuleType,
+    sessionKey: string,
+    signal?: AbortSignal,
+    forceRefresh = false,
+  ) => {
+    const definition = HOME_MODULE_BY_ID[moduleId]
+    const modulePlatform = definition.platform
+    const loggedIn = modulePlatform === 'netease' ? neteaseLoggedIn : qqLoggedIn
+
+    if (definition.loginRequired && !loggedIn) {
+      setModuleSongs([])
+      setModulePlaylists([])
+      setModuleError(`登录${modulePlatform === 'netease' ? '网易云音乐' : 'QQ 音乐'}后即可加载${definition.name}`)
+      return
+    }
+
+    const payload = await fetchExploreHome(modulePlatform, signal, { forceRefresh })
+    if (signal?.aborted) return
+
+    let songs: Song[] = []
+    let playlists: any[] = []
+
+    switch (moduleId) {
+      case 'netease_daily_recommend':
+        songs = payload.dailySongs
+        break
+      case 'netease_private_fm':
+        songs = payload.radioSongs.length > 0
+          ? payload.radioSongs
+          : payload.dailySongs.length > 0
+            ? payload.dailySongs
+            : payload.newSongs
+        break
+      case 'netease_radar': {
+        const radar = payload.playlists.find(item => /雷达|私人/.test(item.name)) ||
+          payload.playlists.find(item => item.source === 'personalized')
+        if (radar) {
+          const detail = await fetchExplorePlaylist(radar)
+          songs = detail.songs.slice(0, 50)
+        }
+        break
+      }
+      case 'netease_playlists':
+        playlists = payload.playlists
+        break
+      case 'netease_new_songs':
+        songs = payload.newSongs
+        break
+      case 'qq_guess_you_like':
+        songs = payload.radioSongs
+        break
+      case 'qq_daily_30':
+        // 未配置官方 Skills 时，服务端使用同账号的“猜你喜欢”动态批次补足 30 首。
+        songs = payload.dailySongs.length > 0
+          ? payload.dailySongs
+          : payload.radioSongs.length > 0
+            ? payload.radioSongs
+            : payload.newSongs
+        break
+      case 'qq_playlists':
+        playlists = payload.playlists
+        break
+      case 'qq_ai_playlists':
+        playlists = payload.playlists.filter(item => item.source === 'qqmusic-skills')
+        break
+      case 'qq_new_songs':
+        songs = payload.newSongs
+        break
+      case 'netease_hot_songs':
+      case 'netease_rising_songs':
+      case 'qq_hot_songs':
+      case 'qq_rising_songs': {
+        const rising = moduleId.endsWith('rising_songs')
+        const pattern = rising ? /飙升|上升/ : /热歌|流行指数/
+        const chart = payload.charts.find(item => pattern.test(item.name)) || payload.charts[rising ? 1 : 0]
+        if (chart) songs = (await fetchExploreChart(chart)).songs
+        break
+      }
+    }
+
+    playlists = playlists.map(item => ({
+      id: item.id,
+      name: item.name,
+      coverImgUrl: item.coverUrl,
+      trackCount: item.trackCount || 0,
+      playCount: item.playCount || 0,
+      description: item.description || '',
+      platform: item.platform,
+      source: item.source,
+    }))
+
+    const visibleSongs = songs.slice(0, 50)
+    const visiblePlaylists = playlists.slice(0, 60)
+    // QQ 连续推荐的首批仅有 5 首时不能写进简约模式会话缓存，
+    // 否则即使随后登录态和 Skill 已准备好，页面仍会一直复用这份短批次。
+    const canCacheSnapshot = !requiresFullQQRecommendationBatch(moduleId) || visibleSongs.length >= 30
+    if ((visibleSongs.length > 0 || visiblePlaylists.length > 0) && canCacheSnapshot) {
+      saveHomeModuleSession(sessionKey, { songs: visibleSongs, playlists: visiblePlaylists })
+    }
+    setModuleSongs(visibleSongs)
+    setModulePlaylists(visiblePlaylists)
+
+    if (visibleSongs.length === 0 && visiblePlaylists.length === 0) {
+      setModuleError(moduleId === 'qq_ai_playlists'
+        ? '请先在 QQ 音乐探索页启用官方增强，然后刷新本模块'
+        : `${definition.name}暂时没有返回内容，请稍后刷新`)
+    }
+  }
+  
+  // 加载当前模块数据（根据平台）
+  useEffect(() => {
+    const abortController = new AbortController()
+    activeRequestsRef.current.add(abortController) // 🔧 跟踪请求
+    
+    const shouldForceRefresh = authRevision !== moduleAuthRevisionRef.current
+    moduleAuthRevisionRef.current = authRevision
+    const loadData = async () => {
+      if (platform === 'netease' && neteaseModules.length > 0) {
+        await loadModuleData(neteaseModules[currentNeteaseIndex], abortController.signal, shouldForceRefresh)
+      } else if (platform === 'qq' && qqModules.length > 0) {
+        await loadModuleData(qqModules[currentQQIndex], abortController.signal, shouldForceRefresh)
+      }
+    }
+    
+    loadData()
+    
+    return () => {
+      abortController.abort()
+      activeRequestsRef.current.delete(abortController) // 🔧 清理请求
+    }
+  }, [
+    platform,
+    currentNeteaseIndex,
+    currentQQIndex,
+    forceReload,
+    neteaseLoggedIn,
+    qqLoggedIn,
+    neteaseUserId,
+    qqUserId,
+    neteaseModules,
+    qqModules,
+    authRevision
+  ])
+
+  const loadModuleData = async (
+    moduleId: HomeModuleType,
+    signal?: AbortSignal,
+    forceRefresh = false
+  ) => {
+    const sessionKey = getHomeModuleSessionKey(
+      moduleId,
+      neteaseLoggedIn,
+      neteaseUserId,
+      qqLoggedIn,
+      qqUserId
+    )
+    const sessionSnapshot = getHomeModuleSessionSnapshot(sessionKey)
+
+    const canReuseSnapshot = sessionSnapshot && (
+      !requiresFullQQRecommendationBatch(moduleId) || sessionSnapshot.songs.length >= 30
+    )
+    if (canReuseSnapshot) {
+      setModuleSongs(sessionSnapshot.songs)
+      setModulePlaylists(sessionSnapshot.playlists)
+      setModuleError('')
+      setModuleLoading(false)
+      setModuleCoversReady(true)
+      if (!forceRefresh && !sessionSnapshot.isStale) return
+    }
+
+    const keepCachedContentVisible = Boolean(canReuseSnapshot)
+    setModuleLoading(!keepCachedContentVisible)
+    setModuleCoversReady(keepCachedContentVisible)
+    setModuleError('')
+    if (!keepCachedContentVisible) {
+      setModuleSongs([])
+      setModulePlaylists([])
+    }
+    
+    try {
+      // 检查是否已取消
+      if (signal?.aborted) {
+        return
+      }
+      await loadModernHomeModule(moduleId, sessionKey, signal, forceRefresh)
+
+      
+    } catch (error: any) {
+      // 忽略 AbortError（请求被取消）
+      if (error.name === 'AbortError') {
+        return
+      }
+      console.error('加载模块数据失败:', error)
+      if (!keepCachedContentVisible) {
+        setModuleError(error?.message || '推荐内容加载失败，请稍后重试')
+      }
+    } finally {
+      // Clear loading state unless the request was cancelled
+      if (!signal?.aborted) {
+        setModuleLoading(false)
+      }
+    }
+  }
+  
+
+  const loadChartSongs = async () => {
+    setLoading(true)
+    try {
+      const payload = await fetchExploreHome(platform)
+      let songs: Song[] = []
+      if (leftChartType === 'new') {
+        songs = payload.newSongs
+      } else {
+        const pattern = leftChartType === 'rising'
+          ? /飙升|上升|趋势/
+          : /热歌|流行指数|热门/
+        const chart = payload.charts.find(item => pattern.test(item.name)) ||
+          payload.charts[leftChartType === 'rising' ? 1 : 0]
+        if (chart) songs = (await fetchExploreChart(chart)).songs
+      }
+      setChartSongs(songs.slice(0, 30))
+    } catch (error) {
+      console.error('加载首页榜单失败:', error)
+      setChartSongs([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+
+  const loadUserPlaylists = async (forceRefresh = false) => {
+    const loggedIn = platform === 'netease' ? neteaseLoggedIn : qqLoggedIn
+    const currentUserId = platform === 'netease' ? neteaseUserId : qqUserId
+    const currentUsername = platform === 'netease' ? neteaseUsername : qqUsername
+
+    if (!loggedIn || !currentUserId) {
+      ++playlistLoadIdRef.current
+      setUserPlaylists([])
+      setPlaylistLoading(false)
+      return
+    }
+
+    const cached = forceRefresh ? undefined : getCachedUserPlaylists(platform, currentUserId)
+    if (cached) {
+      ++playlistLoadIdRef.current
+      setUserPlaylists(cached)
+      setPlaylistLoading(false)
+      return
+    }
+
+    const loadId = ++playlistLoadIdRef.current
+    setUserPlaylists([])
+    setPlaylistLoading(true)
+
+    try {
+      const playlists = await getUserPlaylists(platform, currentUserId, currentUsername, { forceRefresh })
+      if (loadId !== playlistLoadIdRef.current) return
+      setUserPlaylists(playlists)
+    } catch (error) {
+      console.error('Load user playlists failed:', error)
+    } finally {
+      if (loadId === playlistLoadIdRef.current) setPlaylistLoading(false)
+    }
+  }
+
+  const currentHomeModuleId = platform === 'netease'
+    ? neteaseModules[currentNeteaseIndex]
+    : qqModules[currentQQIndex]
+  const currentHomeModule = currentHomeModuleId ? HOME_MODULE_BY_ID[currentHomeModuleId] : undefined
+  const currentHomeModuleNeedsLogin = Boolean(
+    currentHomeModule?.loginRequired && (platform === 'netease' ? !neteaseLoggedIn : !qqLoggedIn)
+  )
+
+  const refreshCurrentHomeModule = () => {
+    const currentModule = platform === 'netease'
+      ? neteaseModules[currentNeteaseIndex]
+      : qqModules[currentQQIndex]
+    if (!currentModule) return
+
+    void loadModuleData(currentModule, undefined, true)
+  }
+
+  const getChartIcon = (type: ChartType) => {
+    switch (type) {
+      case 'new': return <Clock className="w-4 h-4" />
+      case 'hot': return <Flame className="w-4 h-4" />
+      case 'rising': return <TrendingUp className="w-4 h-4" />
+    }
+  }
+
+  const getChartName = (type: ChartType) => {
+    switch (type) {
+      case 'new': return '新歌榜'
+      case 'hot': return '热歌榜'
+      case 'rising': return '飙升榜'
+    }
+  }
+
+  const isLoggedIn = platform === 'netease' ? neteaseLoggedIn : qqLoggedIn
+  const username = platform === 'netease' ? neteaseUsername : qqUsername
+  const avatar = platform === 'netease' ? neteaseAvatar : qqAvatar
+  const userId = platform === 'netease' ? neteaseUserId : qqUserId
+  const isVip = platform === 'netease' ? neteaseVip : qqVip
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      setRecentPlaybackSummary({ covers: [], count: 0 })
+      return
+    }
+
+    const controller = new AbortController()
+    const loadSummary = async () => {
+      try {
+        const cookie = platform === 'qq'
+          ? localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
+          : localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
+        if (!cookie) return
+        const endpoint = platform === 'qq'
+          ? 'http://localhost:3001/api/qq/record/recent/song'
+          : 'http://localhost:3001/api/netease/record/recent/song'
+        const recentQuery = new URLSearchParams({ limit: '100', cookie })
+        const response = await fetch(`${endpoint}?${recentQuery.toString()}`, {
+          cache: 'no-store',
+          signal: controller.signal,
+        })
+        const payload = await response.json()
+        if (!response.ok || payload?.error) throw new Error(payload?.error || 'recent playback unavailable')
+        const rows = platform === 'qq'
+          ? (Array.isArray(payload?.records) ? payload.records : [])
+          : ([
+              payload?.data?.list,
+              payload?.data?.records,
+              payload?.data?.songs,
+              payload?.data,
+              payload?.list,
+              payload?.records,
+              payload?.songs,
+              payload?.weekData,
+              payload?.allData,
+            ].find(Array.isArray) || [])
+        const covers = rows.map((row: any) => {
+          const song = platform === 'qq' ? (row?.song || row) : (row?.resource || row?.data || row?.song || row)
+          return song?.album?.picUrl || song?.al?.picUrl || song?.albumpic || song?.picUrl || ''
+        }).filter((url: unknown): url is string => typeof url === 'string' && url.length > 0).slice(0, 4)
+        const reportedCount = Number(payload?.total ?? payload?.data?.total ?? payload?.songnum ?? rows.length)
+        setRecentPlaybackSummary({ covers, count: Number.isFinite(reportedCount) ? reportedCount : rows.length })
+      } catch (error) {
+        if ((error as Error)?.name !== 'AbortError') setRecentPlaybackSummary({ covers: [], count: 0 })
+      }
+    }
+
+    void loadSummary()
+    const handleReported = () => void loadSummary()
+    window.addEventListener('waveforge-recent-playback-reported', handleReported)
+    return () => {
+      controller.abort()
+      window.removeEventListener('waveforge-recent-playback-reported', handleReported)
+    }
+  }, [platform, isLoggedIn, authRevision])
+
+  return (
+    <div
+      className="home-view-root absolute inset-0 h-full w-full overflow-hidden"
+    >
+      {/* 壁纸背景或默认渐变背景 */}
+      {currentWallpaper ? (
+        // 自定义壁纸
+        <div className="home-wallpaper-layer absolute inset-0">
+          {currentWallpaper.type === 'image' ? (
+            <img
+              src={currentWallpaper.dataUrl}
+              alt="壁纸"
+              className="home-wallpaper-media w-full h-full object-cover"
+            />
+          ) : (
+            <video
+              src={currentWallpaper.dataUrl}
+              className="home-wallpaper-media w-full h-full object-cover"
+              autoPlay
+              loop
+              muted
+              playsInline
+            />
+          )}
+          {/* 半透明遮罩，确保内容可读 */}
+          <div className="absolute inset-0 bg-black/30" />
+        </div>
+      ) : (
+        // 默认粉色渐变背景 - 添加动画
+        <>
+          <motion.div 
+            className="absolute inset-0"
+            animate={{
+              background: [
+                'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)',
+                'linear-gradient(135deg, #3d1b2d 0%, #2e0f1a 50%, #0a0a0a 100%)',
+                'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)',
+              ]
+            }}
+            transition={{
+              duration: 10,
+              repeat: Infinity,
+              ease: "easeInOut"
+            }}
+          />
+          
+          {/* Decorative background glow */}
+          <motion.div
+            className="absolute w-[40vw] h-[40vw] max-w-[500px] max-h-[500px] rounded-full"
+            style={{
+              background: 'radial-gradient(circle, rgba(255, 105, 180, 0.6) 0%, rgba(219, 112, 147, 0.4) 40%, transparent 70%)',
+              filter: 'blur(80px)',
+              top: '20%',
+              left: '15%',
+            }}
+            animate={{
+              scale: [1, 1.3, 1.1, 1],
+              x: [0, 60, -20, 0],
+              y: [0, 40, -30, 0],
+              rotate: [0, 90, 180, 360],
+            }}
+            transition={{
+              duration: 12,
+              repeat: Infinity,
+              ease: "easeInOut"
+            }}
+          />
+          
+          <motion.div
+            className="absolute w-[45vw] h-[45vw] max-w-[600px] max-h-[600px] rounded-full"
+            style={{
+              background: 'radial-gradient(circle, rgba(186, 85, 211, 0.5) 0%, rgba(147, 112, 219, 0.35) 40%, transparent 70%)',
+              filter: 'blur(90px)',
+              bottom: '15%',
+              right: '20%',
+            }}
+            animate={{
+              scale: [1, 1.4, 1.2, 1],
+              x: [0, -50, 30, 0],
+              y: [0, -60, 20, 0],
+              rotate: [0, -120, -240, -360],
+            }}
+            transition={{
+              duration: 15,
+              repeat: Infinity,
+              ease: "easeInOut"
+            }}
+          />
+          
+          <motion.div
+            className="absolute w-[35vw] h-[35vw] max-w-[400px] max-h-[400px] rounded-full"
+            style={{
+              background: 'radial-gradient(circle, rgba(255, 20, 147, 0.5) 0%, rgba(199, 21, 133, 0.3) 40%, transparent 70%)',
+              filter: 'blur(70px)',
+              top: '45%',
+              right: '30%',
+            }}
+            animate={{
+              scale: [1, 1.25, 1.15, 1],
+              x: [0, 40, -30, 0],
+              y: [0, -40, 30, 0],
+              rotate: [0, 60, 120, 180],
+            }}
+            transition={{
+              duration: 10,
+              repeat: Infinity,
+              ease: "easeInOut"
+            }}
+          />
+          
+          {/* 额外的流动光晕 */}
+          <motion.div
+            className="absolute w-[30vw] h-[30vw] max-w-[350px] max-h-[350px] rounded-full"
+            style={{
+              background: 'radial-gradient(circle, rgba(218, 112, 214, 0.4) 0%, transparent 70%)',
+              filter: 'blur(60px)',
+              top: '60%',
+              left: '40%',
+            }}
+            animate={{
+              scale: [1, 1.2, 1, 1.1, 1],
+              x: [0, -40, 20, -10, 0],
+              y: [0, 30, -20, 40, 0],
+            }}
+            transition={{
+              duration: 13,
+              repeat: Infinity,
+              ease: "easeInOut"
+            }}
+          />
+
+          {/* 第五个光晕 - 右上角 */}
+          <motion.div
+            className="absolute w-[35vw] h-[35vw] max-w-[450px] max-h-[450px] rounded-full"
+            style={{
+              background: 'radial-gradient(circle, rgba(255, 182, 193, 0.45) 0%, transparent 70%)',
+              filter: 'blur(75px)',
+              top: '10%',
+              right: '10%',
+            }}
+            animate={{
+              scale: [1, 1.35, 1.15, 1],
+              x: [0, -30, 20, 0],
+              y: [0, 50, -30, 0],
+              rotate: [0, 180, 360],
+            }}
+            transition={{
+              duration: 14,
+              repeat: Infinity,
+              ease: "easeInOut"
+            }}
+          />
+          
+          {/* 减轻遮罩透明度 */}
+          <div className="absolute inset-0 bg-black/10" />
+        </>
+      )}
+
+      <motion.div
+        className="absolute inset-0 z-10"
+        animate={{ y: showThemePanel ? MODE_SELECTION_PANEL_HEIGHT : 0 }}
+        transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
+        style={{
+          willChange: 'transform',
+          backfaceVisibility: 'hidden',
+          transform: 'translateZ(0)',
+        }}
+      >
+      {/* Top hover trigger area */}
+      <div 
+        className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-8 z-50"
+        onMouseEnter={() => setIsTopHovered(true)}
+        onMouseLeave={() => setIsTopHovered(false)}
+        onClick={() => {
+          if (!showThemePanel) {
+            setThemePanelSettled(false)
+            setShowThemePanel(true)
+            setShowUpArrowHint(false)
+          }
+        }}
+      >
+        <AnimatePresence>
+          {(isTopHovered || showUpArrowHint) && !showThemePanel && (
+            <motion.button
+              aria-label="打开模式选择"
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              onClick={() => {
+                setThemePanelSettled(false)
+                setShowThemePanel(true)
+                setShowUpArrowHint(false)
+              }}
+              className="absolute top-0 left-1/2 -translate-x-1/2 bg-white/10 backdrop-blur-md rounded-b-2xl border border-white/20 border-t-0 hover:bg-white/20 transition-colors"
+              style={{ width: '200px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              whileHover={{ backgroundColor: 'rgba(255, 255, 255, 0.25)' }}
+              whileTap={{ scale: 0.98 }}
+            >
+              <motion.div
+                animate={{ 
+                  y: [0, 2, 0],
+                  opacity: showUpArrowHint ? [1, 0.5, 1] : 1
+                }}
+                transition={{ 
+                  y: { duration: 1, repeat: Infinity },
+                  opacity: showUpArrowHint ? { duration: 0.5, repeat: Infinity } : { duration: 0 }
+                }}
+              >
+                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M19 9l-7 7-7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+                </svg>
+              </motion.div>
+            </motion.button>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* 主题面板 + 面板内上箭头 */}
+      <AnimatePresence>
+        {showThemePanel && (
+          <ModeSelectionPanel
+            currentMode="minimal"
+            onClose={() => {
+              setThemePanelSettled(false)
+              setShowThemePanel(false)
+            }}
+            onSelect={(mode) => {
+              setThemePanelSettled(false)
+              setShowThemePanel(false)
+              setShowUpArrowHint(false)
+              // 必须等当前界面从 MODE_SELECTION_PANEL_HEIGHT 完整回到 0 再切根视图，
+              // 否则退出中的 transform 会在跨模式淡入时形成顶部空栏。
+              window.setTimeout(() => {
+                localStorage.setItem('viewMode', mode)
+                window.dispatchEvent(new CustomEvent('viewModeChanged', { detail: mode }))
+              }, MODE_SELECTION_CLOSE_MS)
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* 内容区 */}
+      <motion.div
+        className="home-ui-layer relative z-10 w-full h-full flex items-center justify-center px-2 md:px-4 py-4 md:py-6"
+      >
+        <div className="w-full h-full flex flex-col md:flex-row gap-4 md:gap-6">
+        {/* 左栏：自定义模块 - 如果当前平台没有模块则隐藏 */}
+        {(platform === 'netease' ? neteaseModules : qqModules).length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, x: -50 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -50 }}
+            className="home-glass-panel relative w-full md:w-80 lg:w-96 min-h-0 flex flex-col flex-shrink-0 overflow-hidden rounded-3xl"
+            style={{
+              willChange: 'transform, opacity'
+            }}
+          >
+          <div
+            aria-hidden="true"
+            className="home-glass-panel-surface absolute inset-0 pointer-events-none rounded-3xl"
+            style={{
+              backdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
+              WebkitBackdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
+            }}
+          />
+          {/* Recommendation module header */}
+          <div className="p-6 border-b border-white/10">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-white">首页推荐</h2>
+              <motion.button
+                whileHover={{ scale: 1.1, rotate: 45 }}
+                whileTap={{ scale: 0.9 }}
+                onClick={refreshCurrentHomeModule}
+                disabled={moduleLoading}
+                className="p-2 hover:bg-white/10 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title="刷新当前推荐"
+                aria-label="刷新当前推荐"
+              >
+                <RefreshCw className={`w-5 h-5 text-white/60 ${moduleLoading ? 'animate-spin' : ''}`} />
+              </motion.button>
+            </div>
+            {/* Module tabs */}
+            <div className="flex gap-2 overflow-x-auto overflow-y-visible" style={{ scrollbarWidth: 'none' }}>
+              {(platform === 'netease' ? neteaseModules : qqModules).map((moduleId, index) => {
+                const moduleInfo = HOME_MODULE_BY_ID[moduleId]
+                
+                const currentIndex = platform === 'netease' ? currentNeteaseIndex : currentQQIndex
+                const setCurrentIndex = platform === 'netease' ? setCurrentNeteaseIndex : setCurrentQQIndex
+                
+                return (
+                  <button
+                    key={moduleId}
+                    onClick={() => {
+                      setCurrentIndex(index)
+                    }}
+                    className={`flex-shrink-0 px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+                      currentIndex === index
+                        ? 'bg-white/20 text-white'
+                        : 'bg-white/5 text-white/60 hover:bg-white/10'
+                    }`}
+                  >
+                    <div className={`w-2 h-2 rounded-full ${
+                      moduleInfo?.platform === 'netease' ? 'bg-red-500' : 'bg-green-500'
+                    }`} />
+                    {moduleInfo?.name || moduleId}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* 内容区域 */}
+          <div 
+            className="flex-1 overflow-hidden rounded-b-[24px]"
+          >
+            <div
+              className="home-glass-scroll overflow-y-auto pr-2"
+              style={{
+                height: 'calc(100% - 10px)',
+                scrollbarWidth: 'thin',
+                scrollbarColor: 'rgba(255, 255, 255, 0.3) transparent'
+              }}
+            >
+            <div className="p-4 pb-6">
+              {moduleLoading || (!moduleCoversReady && moduleSongs.length === 0 && modulePlaylists.length === 0) ? (
+                <div className="flex flex-col items-center justify-center h-64 gap-6">
+                  <div className="relative w-20 h-20">
+                    <motion.div
+                      className="absolute inset-0 rounded-full bg-gradient-to-r from-pink-500/20 to-purple-500/20"
+                      animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.2, 0.5] }}
+                      transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+                    />
+                    <motion.div
+                      className="absolute inset-2 rounded-full border-2"
+                      style={{
+                        borderImage: 'linear-gradient(135deg, #ec4899, #a855f7) 1',
+                      }}
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+                    />
+                    <motion.div
+                      className="absolute inset-0 flex items-center justify-center"
+                      animate={{ scale: [1, 1.1, 1] }}
+                      transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+                    >
+                      <Music className="w-8 h-8 text-pink-400" />
+                    </motion.div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <motion.span
+                      className="text-white/90 text-base font-light tracking-wide"
+                      animate={{ opacity: [0.4, 1, 0.4] }}
+                      transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+                    >
+                      正在加载列表
+                    </motion.span>
+                    <div className="flex gap-1">
+                      {[0, 1, 2].map((i) => (
+                        <motion.div
+                          key={i}
+                          className="w-1.5 h-1.5 rounded-full bg-pink-400"
+                          animate={{ opacity: [0.3, 1, 0.3], y: [0, -4, 0] }}
+                          transition={{
+                            duration: 1.5,
+                            repeat: Infinity,
+                            delay: i * 0.2,
+                            ease: 'easeInOut',
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : moduleError && moduleSongs.length === 0 && modulePlaylists.length === 0 ? (
+                <div className="flex min-h-64 flex-col items-center justify-center gap-4 px-5 text-center">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/10">
+                    <Music className="h-7 w-7 text-white/45" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium text-white">
+                      {currentHomeModuleNeedsLogin ? '登录后解锁个性化推荐' : '暂时没有加载到内容'}
+                    </div>
+                    <p className="mt-1 max-w-64 text-xs leading-5 text-white/50">{moduleError}</p>
+                  </div>
+                  <button
+                    onClick={currentHomeModuleNeedsLogin
+                      ? (platform === 'netease' ? onNeteaseLoginClick : onQQLoginClick)
+                      : refreshCurrentHomeModule}
+                    className="rounded-full bg-white px-4 py-2 text-xs font-medium text-black transition-transform hover:scale-105 active:scale-95"
+                  >
+                    {currentHomeModuleNeedsLogin ? '去登录' : '重新加载'}
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  {/* Song list mode */}
+                  {moduleSongs.length > 0 && (
+                    <div className="space-y-1">
+                      {moduleSongs.map((song, index) => (
+                        <motion.div
+                          key={`module-song-${index}`}
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: index * 0.01 }}
+                          whileHover={{ scale: 1.02 }}
+                          onClick={() => onSongSelect(song, moduleSongs)}
+                          onContextMenu={(e) => {
+                            e.preventDefault()
+                            setContextMenuPosition({ x: e.clientX, y: e.clientY })
+                            setContextMenuSong(song)
+                            setContextMenuVisible(true)
+                          }}
+                          className="flex items-center gap-3 p-2 rounded-lg hover:bg-white/10 cursor-pointer transition-all group"
+                          style={{ willChange: 'transform' }}
+                        >
+                          {/* 排名 */}
+                          <div className={`w-6 text-center font-bold text-sm ${
+                            index < 3 ? 'text-yellow-400' : 'text-white/40'
+                          }`}>
+                            {index + 1}
+                          </div>
+
+                          {/* 封面 */}
+                          <div className="w-10 h-10 rounded-md overflow-hidden bg-white/10 flex-shrink-0">
+                            {song.album?.picUrl ? (
+                              <CachedImage 
+                                src={song.album.picUrl} 
+                                alt={song.name} 
+                                className="w-full h-full object-cover"
+                                fallback={
+                                  <div className="w-full h-full flex items-center justify-center">
+                                    <Music className="w-4 h-4 text-white/20" />
+                                  </div>
+                                }
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <Music className="w-4 h-4 text-white/20" />
+                              </div>
+                            )}
+                          </div>
+
+                          {/* 歌曲信息 */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <div className="text-white text-sm font-medium truncate">{song.name}</div>
+                              {(song.vip || song.fee === 1 || song.fee === 4) && !isVip && (
+                                <Crown className="w-3.5 h-3.5 text-yellow-400 flex-shrink-0" />
+                              )}
+                            </div>
+                            <div className="text-white/50 text-xs truncate">
+                              {song.artists.map(a => a.name).join(', ')}
+                            </div>
+                          </div>
+
+                          {/* 播放按钮 */}
+                          <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Play className="w-4 h-4 text-white" />
+                          </div>
+                          </motion.div>
+                        ))}
+                      </div>
+                    )}
+
+                  {/* Playlist list mode */}
+                  {modulePlaylists.length > 0 && (
+                    <div className="space-y-2">
+                      {modulePlaylists.map((playlist, index) => (
+                        <motion.div
+                          key={`module-playlist-${playlist.id || index}`}
+                          initial={{ opacity: 0, x: -20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: index * 0.05 }}
+                          whileHover={{ x: 4, transition: { duration: 0.2 } }}
+                          onClick={() => handlePlaylistClick(playlist)}
+                          onContextMenu={(e) => handlePlaylistContextMenu(playlist, e)}
+                          className="flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-all group"
+                          style={{
+                            background: 'rgba(255, 255, 255, 0.05)',
+                            border: '1px solid rgba(255, 255, 255, 0.1)',
+                            backdropFilter: `blur(${cardBlurAmount}px)`,
+                            WebkitBackdropFilter: `blur(${cardBlurAmount}px)`
+                          }}
+                        >
+                          <div className="w-14 h-14 rounded-lg overflow-hidden bg-white/10 flex-shrink-0">
+                            {playlist.coverImgUrl ? (
+                              <CachedImage
+                                src={playlist.coverImgUrl}
+                                alt={playlist.name}
+                                className="w-full h-full object-cover"
+                                fallback={
+                                  <div className="w-full h-full flex items-center justify-center">
+                                    <Music className="w-6 h-6 text-white/20" />
+                                  </div>
+                                }
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <Music className="w-6 h-6 text-white/20" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-white text-sm font-medium line-clamp-2">{playlist.name}</div>
+                            <div className="text-white/50 text-xs mt-0.5">{playlist.trackCount} 首歌曲</div>
+                          </div>
+                          <button
+                            onClick={(e) => handlePlayPlaylist(playlist, e)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <Play className="w-4 h-4 text-white/70 group-hover:text-white transition-colors" />
+                          </button>
+                        </motion.div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+          </div>
+        </motion.div>
+      )}
+        {/* right column: user playlists */}
+        <motion.div
+          initial={{ opacity: 0, y: 50 }}
+          animate={{ opacity: 1, y: 0 }}
+          layout
+          layoutDependency={`${platform}-${(platform === 'netease' ? neteaseModules : qqModules).length}`}
+          transition={{
+            layout: { type: "spring", stiffness: 300, damping: 30 }
+          }}
+          className="home-glass-panel relative flex-1 min-h-0 flex flex-col overflow-hidden rounded-3xl"
+          style={{
+            willChange: 'transform, opacity'
+          }}
+        >
+          <div
+            aria-hidden="true"
+            className="home-glass-panel-surface absolute inset-0 pointer-events-none rounded-3xl"
+            style={{
+              backdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
+              WebkitBackdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
+            }}
+          />
+          <div className="p-6 border-b border-white/10 flex items-center justify-between">
+            <h2 className="text-xl font-bold text-white">我的歌单</h2>
+            {isLoggedIn && (
+              <div className="flex items-center gap-1">
+                <motion.button
+                  whileHover={{ scale: 1.1, rotate: 45 }}
+                  whileTap={{ scale: 0.9 }}
+                  onClick={() => refreshPlaylists(true)}
+                  disabled={playlistLoading}
+                  className="p-2 hover:bg-white/10 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="刷新歌单"
+                  aria-label="刷新歌单"
+                >
+                  <RefreshCw className={`w-5 h-5 text-white/60 ${playlistLoading ? 'animate-spin' : ''}`} />
+                </motion.button>
+                {(
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={() => setShowCreatePlaylist(true)}
+                    className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                    title="创建歌单"
+                    aria-label="创建歌单"
+                  >
+                    <Plus className="w-5 h-5 text-white/60" />
+                  </motion.button>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="home-glass-scroll flex-1 overflow-y-auto">
+            {!isLoggedIn ? (
+              <div className="flex flex-col items-center justify-center h-full gap-4">
+                <Music className="w-16 h-16 text-white/20" />
+                <p className="text-white/60 mb-4">登录后查看你的歌单</p>
+                <button
+                  onClick={platform === 'netease' ? onNeteaseLoginClick : onQQLoginClick}
+                  className={`px-6 py-3 ${
+                    platform === 'netease' 
+                      ? 'bg-red-600 hover:bg-red-700' 
+                      : 'bg-green-600 hover:bg-green-700'
+                  } text-white rounded-full font-medium transition-colors`}
+                >
+                  {platform === 'netease' ? '网易云登录' : 'QQ音乐登录'}
+                </button>
+              </div>
+            ) : playlistLoading && userPlaylists.length === 0 ? (
+              <div className="flex items-center justify-center h-full">
+                <div className="text-white/60">加载中...</div>
+              </div>
+            ) : userPlaylists.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full gap-4">
+                <Music className="w-16 h-16 text-white/20" />
+                <p className="text-white/60">暂无歌单</p>
+              </div>
+            ) : (
+              <div className="p-4 pb-6">
+                {/* 根据是否有推荐模块调整网格列数 */}
+                <div className="grid gap-4" style={{
+                gridTemplateColumns: (platform === 'netease' ? neteaseModules : qqModules).length === 0 
+                  ? 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))' // Larger cards without recommendation modules
+                  : 'repeat(auto-fill, minmax(min(240px, 100%), 1fr))', // Standard cards with recommendation modules
+                maxWidth: '100%'
+              }}>
+                <AnimatePresence mode="popLayout">
+                {userPlaylists.map((playlist: any, index: number) => (
+                  <motion.div
+                    key={`${platform || 'unknown'}-playlist-${playlist.id || index}`}
+                    className="home-playlist-card relative group overflow-hidden rounded-xl cursor-pointer"
+                    layout
+                    layoutDependency={`${platform}-${playlist.id || index}-${index}`}
+                    initial={{ opacity: 0, scale: 0.8, y: 20 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.8, y: -20 }}
+                    transition={{
+                      layout: { type: "spring", stiffness: 300, damping: 30 },
+                      opacity: { duration: 0.2 },
+                      scale: { duration: 0.2 },
+                      delay: index * 0.03
+                    }}
+                    whileHover={{ scale: 1.02, transition: { duration: 0.2 } }}
+                    onMouseEnter={() => schedulePlaylistHoverPrefetch(playlist)}
+                    onMouseLeave={() => cancelPlaylistHoverPrefetch(playlist)}
+                    onClick={() => handlePlaylistClick(playlist)}
+                    onContextMenu={(e) => handlePlaylistContextMenu(playlist, e)}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'auto 1fr',
+                      gridTemplateRows: 'auto auto',
+                      gap: '0.75rem',
+                      padding: '0.75rem',
+                      willChange: 'transform'
+                    }}
+                  >
+                    <div
+                      aria-hidden="true"
+                      className="home-playlist-card-glass absolute inset-0 pointer-events-none rounded-xl"
+                      style={{
+                        backdropFilter: `blur(${cardBlurAmount}px)`,
+                        WebkitBackdropFilter: `blur(${cardBlurAmount}px)`,
+                      }}
+                    />
+                    {/* 封面 */}
+                    <div 
+                      className="relative z-10 rounded-lg overflow-hidden bg-white/10"
+                      style={{
+                        width: (platform === 'netease' ? neteaseModules : qqModules).length === 0 ? '100px' : '80px',
+                        height: (platform === 'netease' ? neteaseModules : qqModules).length === 0 ? '100px' : '80px',
+                        gridRow: '1 / 3',
+                        flexShrink: 0
+                      }}
+                    >
+                      {playlist.coverImgUrl ? (
+                        <>
+                          <CachedImage
+                            src={playlist.coverImgUrl}
+                            alt={playlist.name}
+                            className="w-full h-full object-cover"
+                            fallback={
+                              <div className="w-full h-full flex items-center justify-center">
+                                <Music className="w-6 h-6 text-white/20" />
+                              </div>
+                            }
+                          />
+                          {playlist.isLike && platform === 'qq' && (
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <Heart
+                                className="h-[42%] w-[42%] fill-white/75 text-white/75"
+                                strokeWidth={0}
+                                style={{
+                                  filter: 'drop-shadow(0 2px 8px rgba(0, 0, 0, 0.28)) blur(0.6px)'
+                                }}
+                              />
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <Music className="w-6 h-6 text-white/20" />
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* Playlist name */}
+                    <div className="relative z-10 text-white text-sm font-medium line-clamp-2 leading-tight" title={playlist.name}>
+                      {playlist.name}
+                    </div>
+                    
+                    {/* 歌曲数量 */}
+                    <div className="relative z-10 text-white/50 text-xs self-end pr-12">
+                      {playlist.trackCount} 首歌曲
+                    </div>
+
+                    {(
+                      <button
+                        type="button"
+                        onClick={(e) => handlePlayPlaylist(playlist, e)}
+                        className="absolute right-3 bottom-3 z-20 w-10 h-10 rounded-xl bg-white/5 hover:bg-white/10 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-all shadow-lg border border-white/10 hover:border-white/20"
+                        style={{
+                          backdropFilter: `blur(${cardBlurAmount}px)`,
+                          WebkitBackdropFilter: `blur(${cardBlurAmount}px)`
+                        }}
+                        title="播放全部"
+                        aria-label={`播放歌单：${playlist.name}`}
+                      >
+                        <Play className="w-4 h-4 ml-0.5" fill="currentColor" />
+                      </button>
+                    )}
+                  </motion.div>
+                ))}
+                </AnimatePresence>
+              </div>
+            </div>
+            )}
+          </div>
+        </motion.div>
+
+        {/* 右栏：用户信息 */}
+        <motion.div
+          initial={{ opacity: 0, x: 50 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="home-glass-panel relative w-full md:w-80 min-h-0 flex flex-col flex-shrink-0 overflow-hidden rounded-3xl"
+          style={{
+            willChange: 'transform, opacity'
+          }}
+        >
+          <div
+            aria-hidden="true"
+            className="home-glass-panel-surface absolute inset-0 pointer-events-none rounded-3xl"
+            style={{
+              backdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
+              WebkitBackdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
+            }}
+          />
+          <div className="p-6 border-b border-white/10 flex items-center justify-between">
+            <h2 className="text-xl font-bold text-white">个人信息</h2>
+          </div>
+
+          {/* Platform switcher */}
+          <div className="px-6 pt-4 pb-2">
+            <div className="flex gap-2 relative">
+              <motion.button
+                onClick={() => setPlatform('netease')}
+                className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium relative z-10 ${
+                  platform === 'netease'
+                    ? 'text-white'
+                    : 'text-white/60'
+                }`}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                <div className="flex items-center justify-center gap-2">
+                  <motion.div 
+                    className="w-2 h-2 rounded-full bg-red-500"
+                    animate={{ scale: platform === 'netease' ? [1, 1.2, 1] : 1 }}
+                    transition={{ duration: 0.3 }}
+                  />
+                  网易云
+                </div>
+              </motion.button>
+              <motion.button
+                onClick={() => setPlatform('qq')}
+                className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium relative z-10 ${
+                  platform === 'qq'
+                    ? 'text-white'
+                    : 'text-white/60'
+                }`}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                <div className="flex items-center justify-center gap-2">
+                  <motion.div 
+                    className="w-2 h-2 rounded-full bg-green-500"
+                    animate={{ scale: platform === 'qq' ? [1, 1.2, 1] : 1 }}
+                    transition={{ duration: 0.3 }}
+                  />
+                  QQ音乐
+                </div>
+              </motion.button>
+              
+              {/* 滑动背景 */}
+              <motion.div
+                className="absolute top-0 h-full rounded-xl shadow-lg"
+                style={{
+                  background: 'rgba(255, 255, 255, 0.2)',
+                  backdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
+                  WebkitBackdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
+                  boxShadow: '0 4px 16px rgba(255, 255, 255, 0.1)'
+                }}
+                animate={{
+                  left: platform === 'netease' ? '0%' : '50%',
+                  width: '50%'
+                }}
+                transition={{
+                  type: 'spring',
+                  stiffness: 300,
+                  damping: 30
+                }}
+              />
+            </div>
+          </div>
+
+          {isLoggedIn && (
+            <div className="px-6 pt-5">
+              <motion.button
+                type="button"
+                onClick={() => onProfileClick(platform, 'recent')}
+                whileHover={{ scale: 1.015, y: -2 }}
+                whileTap={{ scale: 0.99 }}
+                className="home-recent-card group relative w-full overflow-hidden rounded-2xl text-left"
+                style={{
+                  willChange: 'transform',
+                }}
+              >
+                <div
+                  aria-hidden="true"
+                  className="home-recent-card-glass absolute inset-0 pointer-events-none rounded-2xl"
+                  style={{
+                    backdropFilter: `blur(${cardBlurAmount}px)`,
+                    WebkitBackdropFilter: `blur(${cardBlurAmount}px)`,
+                  }}
+                />
+                <div className="relative z-10 flex items-center gap-4 p-3">
+                  <div className="grid h-24 w-24 flex-shrink-0 grid-cols-2 grid-rows-2 overflow-hidden rounded-2xl bg-white/10 shadow-lg">
+                    {Array.from({ length: 4 }).map((_, index) => {
+                      const cover = recentPlaybackSummary.covers[index]
+                      return cover ? (
+                        <CachedImage key={`${cover}-${index}`} src={cover} alt="最近播放封面" className="h-full w-full object-cover" />
+                      ) : (
+                        <div key={`recent-placeholder-${index}`} className="flex h-full w-full items-center justify-center bg-white/5">
+                          <Music className="h-4 w-4 text-white/20" />
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-lg font-semibold text-white">已播歌曲</div>
+                    <div className="mt-1 text-sm text-white/55">{recentPlaybackSummary.count} 首</div>
+                  </div>
+                  <History className="h-5 w-5 flex-shrink-0 text-white/35 transition-colors group-hover:text-white/70" />
+                </div>
+              </motion.button>
+            </div>
+          )}
+
+          <div className="flex-1 flex flex-col items-center justify-center p-6">
+            {!isLoggedIn ? (
+              <div className="text-center">
+                <div className="w-20 h-20 rounded-full bg-white/10 flex items-center justify-center mx-auto mb-4">
+                  <Music className="w-10 h-10 text-white/20" />
+                </div>
+                <p className="text-white/60">未登录</p>
+              </div>
+            ) : (
+              <div className="w-full text-center">
+                {/* 头像 */}
+                <div className="w-24 h-24 rounded-full overflow-hidden mx-auto mb-4 border-2 border-white/20">
+                  {avatar ? (
+                    <img src={avatar} alt={username} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full bg-white/10 flex items-center justify-center">
+                      <Music className="w-12 h-12 text-white/20" />
+                    </div>
+                  )}
+                </div>
+
+                {/* 昵称 */}
+                <div className="mb-2 flex items-center justify-center gap-2">
+                  <h3 className={`text-xl font-bold ${isVip ? 'text-yellow-400' : 'text-white'}`}>
+                    {username}
+                  </h3>
+                  {isVip && <Crown className="w-5 h-5 text-yellow-400" />}
+                </div>
+
+                {/* 账号ID */}
+                {userId && !hideHomeAccountId && (
+                  <p className="text-white/50 text-sm mb-6">
+                    {platform === 'netease' ? '网易云ID' : 'QQ号'}: {userId}
+                  </p>
+                )}
+
+                {/* 操作按钮 */}
+                <div className="space-y-3 w-full px-4">
+                  <button
+                    onClick={() => {
+                      onProfileClick(platform, 'created')
+                    }}
+                    className="relative w-full px-6 py-3 text-white rounded-full font-medium transition-all flex items-center justify-center gap-2 overflow-hidden group"
+                    style={{
+                      background: platform === 'netease' 
+                        ? 'linear-gradient(135deg, #e74c3c 0%, #c0392b 100%)' 
+                        : 'linear-gradient(135deg, #31c27c 0%, #22a866 100%)',
+                      boxShadow: platform === 'netease'
+                        ? '0 4px 20px rgba(231, 76, 60, 0.4), inset 0 1px 0 rgba(255,255,255,0.2)'
+                        : '0 4px 20px rgba(49, 194, 124, 0.4), inset 0 1px 0 rgba(255,255,255,0.2)',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.transform = 'translateY(-2px)'
+                      e.currentTarget.style.boxShadow = platform === 'netease'
+                        ? '0 6px 30px rgba(231, 76, 60, 0.6), inset 0 1px 0 rgba(255,255,255,0.3)'
+                        : '0 6px 30px rgba(49, 194, 124, 0.6), inset 0 1px 0 rgba(255,255,255,0.3)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.transform = 'translateY(0)'
+                      e.currentTarget.style.boxShadow = platform === 'netease'
+                        ? '0 4px 20px rgba(231, 76, 60, 0.4), inset 0 1px 0 rgba(255,255,255,0.2)'
+                        : '0 4px 20px rgba(49, 194, 124, 0.4), inset 0 1px 0 rgba(255,255,255,0.2)'
+                    }}
+                  >
+                    <div 
+                      className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300"
+                      style={{
+                        background: platform === 'netease'
+                          ? 'radial-gradient(circle at center, #e74c3cff 0%, transparent 70%)'
+                          : 'radial-gradient(circle at center, #31c27cff 0%, transparent 70%)',
+                        filter: 'blur(20px)',
+                      }}
+                    />
+                    <User className="w-4 h-4 relative z-10" />
+                    <span className="relative z-10">个人中心</span>
+                  </button>
+
+
+                  <button
+                    onClick={platform === 'netease' ? onNeteaseLogout : onQQLogout}
+                    className="w-full px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-full font-medium transition-all flex items-center justify-center gap-2"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    退出登录
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </motion.div>
+      </div>
+      </motion.div>
+
+      {/* Playlist detail panel */}
+      <PlaylistDetailPanel
+        show={showPlaylistDetail}
+        playlist={selectedPlaylist}
+        songs={playlistSongs}
+        loading={loadingPlaylistSongs}
+        onClose={closePlaylistDetail}
+        onSongSelect={(song, songs) => onSongSelect(song, songs, {
+          surface: 'home-playlist',
+          playlist: selectedPlaylist,
+          songs,
+        })}
+        neteaseVip={neteaseVip}
+        qqVip={qqVip}
+        currentPlatform={platform}
+        onOpenArtist={onOpenArtist}
+        onOpenAlbum={onOpenAlbum}
+        onPlayNext={onPlayNext}
+        onAddToFavorites={onAddToFavorites}
+        onRemoveFromFavorites={
+          selectedPlaylist?.isLike && onRemoveFromFavorites
+            ? handleRemoveFromLikedPlaylist
+            : onRemoveFromFavorites
+        }
+        onRemoveFromPlaylist={
+          selectedPlaylist?.userId?.toString() === (platform === 'qq' ? qqUserId : neteaseUserId) &&
+          !selectedPlaylist?.isLike &&
+          !selectedPlaylist?.isCollected
+            ? handleRemoveFromPlaylist
+            : undefined
+        }
+        onAddToPlaylist={onAddToPlaylist}
+        onViewComments={onViewComments}
+        onCopyInfo={onCopyInfo}
+        userPlaylists={userPlaylists}
+        currentSong={currentSong}
+        playerTheme={playerTheme}
+      />
+
+      {/* Bottom floating toolbar */}
+      <motion.div
+        className="absolute bottom-0 left-1/2 -translate-x-1/2 z-50"
+        style={{
+          paddingTop: '40px',
+          paddingBottom: '8px'
+        }}
+        onMouseEnter={() => setIsBottomBarHovered(true)}
+        onMouseLeave={() => setIsBottomBarHovered(false)}
+      >
+        <AnimatePresence mode="wait">
+          {!isBottomBarHovered ? (
+            // Collapsed bar
+            <motion.div
+              key="bar"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.2 }}
+              className="home-bottom-bar relative w-96 h-1.5 overflow-hidden rounded-full cursor-pointer"
+              style={{
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+              }}
+            >
+              <div aria-hidden="true" className="home-bottom-bar-glass absolute inset-0 rounded-full bg-white/40 backdrop-blur-md" />
+            </motion.div>
+          ) : (
+            // Expanded toolbar actions
+            <motion.div
+              key="pill"
+              initial={{ opacity: 0, y: 20, width: '24rem' }}
+              animate={{ opacity: 1, y: 0, width: '24rem' }}
+              exit={{ opacity: 0, y: 20, width: '24rem' }}
+              transition={{ type: "spring", stiffness: 300, damping: 25 }}
+              className="home-bottom-pill relative overflow-hidden px-8 py-4 rounded-full"
+              style={{
+                willChange: 'transform, opacity'
+              }}
+            >
+              <div
+                aria-hidden="true"
+                className="home-bottom-pill-glass absolute inset-0 pointer-events-none rounded-full"
+                style={{
+                  backdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
+                  WebkitBackdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
+                }}
+              />
+              <div className="relative z-10 flex items-center justify-center gap-6">
+                {/* 搜索按钮 */}
+                <motion.button
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.95 }}
+                  className="p-3 rounded-full bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-600 hover:to-purple-700 text-white transition-all shadow-lg"
+                  onClick={onSearchClick}
+                  title="搜索音乐"
+                >
+                  <Search className="w-5 h-5" />
+                </motion.button>
+
+                {/* Settings button */}
+                <motion.button
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.95 }}
+                  className="p-3 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white transition-all shadow-lg"
+                  onClick={onSettingsClick}
+                  title="设置"
+                >
+                  <Settings className="w-5 h-5" />
+                </motion.button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+      {/* 右键菜单 */}
+      {contextMenuSong && <SongContextMenu
+        show={contextMenuVisible}
+        x={contextMenuPosition.x}
+        y={contextMenuPosition.y}
+        song={contextMenuSong}
+        onClose={() => setContextMenuVisible(false)}
+        onPlayNow={(song) => {
+          onSongSelect(song, moduleSongs)
+          setContextMenuVisible(false)
+        }}
+        onPlayNext={(song) => {
+          onPlayNext?.(song)
+          setContextMenuVisible(false)
+        }}
+        onAddToFavorites={(song) => {
+          onAddToFavorites?.(song)
+          setContextMenuVisible(false)
+        }}
+        onRemoveFromFavorites={(song) => {
+          void onRemoveFromFavorites?.(song)
+          setContextMenuVisible(false)
+        }}
+        onAddToPlaylist={(song, playlistId) => {
+          onAddToPlaylist?.(song, playlistId)
+          setContextMenuVisible(false)
+        }}
+        onViewComments={(song) => {
+          onViewComments?.(song)
+          setContextMenuVisible(false)
+        }}
+        onViewAlbum={async (song) => {
+          const songPlatform = song.platform || platform
+          const albumId = await resolveSongAlbumIdentifier(song, songPlatform)
+          if (onOpenAlbum && albumId) {
+            onOpenAlbum(albumId, songPlatform)
+          }
+          setContextMenuVisible(false)
+        }}
+        onViewArtist={(song) => {
+          const songPlatform = song.platform || platform
+          const artist = song.artists?.[0]
+          const artistId = songPlatform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
+          if (onOpenArtist && artistId) onOpenArtist(String(artistId), songPlatform)
+          setContextMenuVisible(false)
+        }}
+        onCopyInfo={(song) => {
+          onCopyInfo?.(song)
+          setContextMenuVisible(false)
+        }}
+        userPlaylists={userPlaylists}
+        platform={platform}
+      />}
+      {/* Playlist context menu */}
+      <PlaylistContextMenu
+        show={playlistContextMenu.show}
+        x={playlistContextMenu.x}
+        y={playlistContextMenu.y}
+        playlist={playlistContextMenu.playlist}
+        onClose={() => setPlaylistContextMenu({ show: false, x: 0, y: 0, playlist: null })}
+        onEdit={(playlist) => {
+          setSelectedPlaylist(playlist)
+          setShowEditPlaylist(true)
+        }}
+        onDelete={(playlist) => {
+          setSelectedPlaylist(playlist)
+          setShowDeletePlaylist(true)
+        }}
+        onSubscribe={handleSubscribePlaylist}
+        onShare={handleSharePlaylist}
+        isOwner={playlistContextMenu.playlist?.userId?.toString() === (platform === 'netease' ? neteaseUserId : qqUserId)}
+        isSubscribed={isSubscribed}
+        isSpecialPlaylist={Boolean(playlistContextMenu.playlist?.isLike)}
+        canEdit={platform === 'netease'}
+      />
+
+      {/* Create playlist dialog */}
+      <CreatePlaylistModal
+        show={showCreatePlaylist}
+        onClose={() => setShowCreatePlaylist(false)}
+        onSubmit={handleCreatePlaylist}
+        loading={operationLoading}
+      />
+
+      {/* Edit playlist dialog */}
+      <EditPlaylistModal
+        show={showEditPlaylist}
+        onClose={() => setShowEditPlaylist(false)}
+        onSubmit={handleEditPlaylist}
+        playlist={selectedPlaylist}
+        loading={operationLoading}
+      />
+
+      {/* Delete playlist dialog */}
+      <DeletePlaylistModal
+        show={showDeletePlaylist}
+        onClose={() => setShowDeletePlaylist(false)}
+        onConfirm={handleDeletePlaylist}
+        playlistName={selectedPlaylist?.name || ''}
+        loading={operationLoading}
+      />
+      </motion.div>
+    </div>
+  )
+  }
+
+
+
+
+
+
+
+
+
+
