@@ -501,8 +501,8 @@ export default function DesktopSettingsModal({
               className="mx-4 rounded-3xl overflow-hidden shadow-2xl"
               style={{
                 background: 'linear-gradient(135deg, rgba(0,0,0,0.85) 0%, rgba(15,15,25,0.9) 50%, rgba(0,0,0,0.85) 100%)',
-                backdropFilter: 'blur(40px) saturate(180%)',
-                WebkitBackdropFilter: 'blur(40px) saturate(180%)',
+                backdropFilter: 'blur(20px) saturate(170%)',
+                WebkitBackdropFilter: 'blur(20px) saturate(170%)',
                 border: '1px solid rgba(255,255,255,0.1)',
               }}
             >

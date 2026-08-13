@@ -3360,7 +3360,7 @@ function App() {
     } catch {}
     setPendingGpuChange(null)
     window.dispatchEvent(new CustomEvent('showToast', {
-      detail: { message: '已恢复为安全默认设置（独显 / 开启 GPU 加速），重启后生效', type: 'info' }
+      detail: { message: '已恢复为安全默认设置（系统默认显卡 / 开启 GPU 加速），重启后生效', type: 'info' }
     }))
   }, [])
 
@@ -3400,7 +3400,7 @@ function App() {
           <div className={`rounded-xl border p-4 shadow-2xl ${playerTheme === 'dark' ? 'bg-[#0b1220]/95 border-red-500/40' : 'bg-white/95 border-red-500/40'}`}>
             <div className={`text-sm font-medium leading-relaxed ${playerTheme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
               {pendingGpuChange.type === 'preference'
-                ? '您在此前修改过 GPU 加速设备，若无异常请点击确认，否则将在 15 秒后自动修改为独显'
+                ? '您在此前修改过 GPU 加速设备，若无异常请点击确认，否则将在 15 秒后自动恢复为系统默认显卡'
                 : '您在此前关闭了 GPU 加速，若无异常请点击确认，否则将在 15 秒后自动打开 GPU 加速'}
             </div>
             <div className="mt-3 flex items-center gap-3">

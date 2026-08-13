@@ -699,8 +699,8 @@ export default function SearchPanel({
             className="absolute inset-0"
             style={{
               background: 'linear-gradient(135deg, rgba(0,0,0,0.90) 0%, rgba(20,20,30,0.95) 50%, rgba(0,0,0,0.92) 100%)',
-              backdropFilter: 'blur(60px) saturate(180%)',
-              WebkitBackdropFilter: 'blur(60px) saturate(180%)',
+              backdropFilter: 'blur(24px) saturate(160%)',
+              WebkitBackdropFilter: 'blur(24px) saturate(160%)',
             }}
           />
           
@@ -867,8 +867,8 @@ export default function SearchPanel({
                   className="absolute top-full left-0 right-0 mt-2 rounded-xl overflow-hidden z-10 shadow-2xl"
                   style={{
                     background: 'linear-gradient(135deg, rgba(20,20,30,0.92) 0%, rgba(0,0,0,0.95) 100%)',
-                    backdropFilter: 'blur(40px) saturate(150%)',
-                    WebkitBackdropFilter: 'blur(40px) saturate(150%)',
+                    backdropFilter: 'blur(20px) saturate(150%)',
+                    WebkitBackdropFilter: 'blur(20px) saturate(150%)',
                     border: '1px solid rgba(255,255,255,0.1)',
                   }}
                 >
@@ -913,8 +913,8 @@ export default function SearchPanel({
                     scrollbarWidth: 'thin',
                     scrollbarColor: 'rgba(255,255,255,0.2) transparent',
                     background: 'linear-gradient(135deg, rgba(20,20,30,0.92) 0%, rgba(0,0,0,0.95) 100%)',
-                    backdropFilter: 'blur(40px) saturate(150%)',
-                    WebkitBackdropFilter: 'blur(40px) saturate(150%)',
+                    backdropFilter: 'blur(20px) saturate(150%)',
+                    WebkitBackdropFilter: 'blur(20px) saturate(150%)',
                     border: '1px solid rgba(255,255,255,0.1)',
                   }}
                 >

@@ -451,7 +451,7 @@ export default function SettingsPanel({
     gpu: { deviceString?: string; vendorString?: string; driverVersion?: string } | null
     gpus: Array<{ deviceString: string; vendorString: string; active: boolean; kind: 'discrete' | 'integrated' | 'unknown' }>
   } | null>(null)
-  const [gpuPreference, setGpuPreference] = useState<'auto' | 'discrete' | 'integrated'>('discrete')
+  const [gpuPreference, setGpuPreference] = useState<'auto' | 'discrete' | 'integrated'>('auto')
 
   useEffect(() => {
     let cancelled = false
@@ -855,8 +855,8 @@ export default function SettingsPanel({
                   background: playerTheme === 'dark'
                     ? 'linear-gradient(135deg, rgba(0,0,0,0.75) 0%, rgba(15,15,25,0.85) 30%, rgba(25,15,35,0.8) 70%, rgba(0,0,0,0.75) 100%)'
                     : 'linear-gradient(135deg, rgba(255,255,255,0.75) 0%, rgba(245,245,250,0.85) 30%, rgba(250,245,255,0.8) 70%, rgba(255,255,255,0.75) 100%)',
-                  backdropFilter: 'blur(60px) saturate(200%) brightness(1.1)',
-                  WebkitBackdropFilter: 'blur(60px) saturate(200%) brightness(1.1)',
+                  backdropFilter: 'blur(24px) saturate(170%) brightness(1.05)',
+                  WebkitBackdropFilter: 'blur(24px) saturate(170%) brightness(1.05)',
                 }}
               />
               

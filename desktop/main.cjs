@@ -26,7 +26,7 @@ const performanceSettingsPath = path.join(app.getPath('userData'), 'performance-
 const shortcutSettingsPath = path.join(app.getPath('userData'), 'shortcut-settings.json')
 
 function readPerformanceSettings() {
-  const defaults = { hardwareAcceleration: true, gpuPreference: 'discrete', pendingGpuChange: null }
+  const defaults = { hardwareAcceleration: true, gpuPreference: 'auto', pendingGpuChange: null }
   try {
     const parsed = JSON.parse(fs.readFileSync(performanceSettingsPath, 'utf8'))
     const gpuPreference = ['auto', 'discrete', 'integrated'].includes(parsed?.gpuPreference)
@@ -2372,8 +2372,8 @@ ipcMain.handle('set-hardware-acceleration', (_event, enabled) => {
 ipcMain.handle('set-gpu-preference', (_event, preference) => {
   const next = ['auto', 'discrete', 'integrated'].includes(preference) ? preference : 'discrete'
   performanceSettings.gpuPreference = next
-  // 切换显卡（非独显）属于风险操作，重启后需要用户确认，否则 15 秒自动恢复为独显
-  performanceSettings.pendingGpuChange = next === 'discrete' ? null : { type: 'preference' }
+  // 切换到强制显卡（独显/核显）属于风险操作，重启后需要用户确认；自动为安全默认
+  performanceSettings.pendingGpuChange = next === 'auto' ? null : { type: 'preference' }
   writePerformanceSettings(performanceSettings)
   return { success: true, gpuPreference: next, requiresRestart: true }
 })
@@ -2391,7 +2391,7 @@ ipcMain.handle('revert-gpu-change', () => {
   if (pending?.type === 'acceleration') {
     performanceSettings.hardwareAcceleration = true
   } else if (pending?.type === 'preference') {
-    performanceSettings.gpuPreference = 'discrete'
+    performanceSettings.gpuPreference = 'auto'
   }
   performanceSettings.pendingGpuChange = null
   writePerformanceSettings(performanceSettings)
