@@ -333,7 +333,10 @@ export class AudioEffectsEngine {
 
     // 3D 环绕干湿
     this.pannerDryGain.connect(output)
-    this.pannerDryGain.connect(this.panner) // 湿路（HRTF 环绕）
+    // 湿路（HRTF 环绕）必须从干路信号源直接分叉，不能挂在 pannerDryGain 上——
+    // 否则 3D 环绕启用时 pannerDryGain 增益降到 0，panner 的输入同样为 0，
+    // 干湿两路全部静音，音乐会完全无声。
+    this.hallMatrix.output.connect(this.panner)
     this.panner.connect(this.pannerWetGain)
     this.pannerWetGain.connect(output)
 

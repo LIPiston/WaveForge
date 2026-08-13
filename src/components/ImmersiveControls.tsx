@@ -5,7 +5,7 @@ import QuickSettings from './QuickSettings'
 
 interface ImmersiveControlsProps {
   onHomeClick: () => void
-  onOpenMixingStudio?: () => void
+  onOpenMixingStudio?: (anchorRect?: DOMRect) => void
   onTranslationToggle: () => void
   translationEnabled: boolean
   hasTranslation: boolean
@@ -242,7 +242,7 @@ export default function ImmersiveControls({
           transition={{ type: 'spring', damping: 25, stiffness: 300, mass: 0.8, delay: 0.16 }}
           whileHover={{ scale: 1.1, x: -2 }}
           whileTap={{ scale: 0.9 }}
-          onClick={onOpenMixingStudio}
+          onClick={(e) => onOpenMixingStudio?.(e.currentTarget.getBoundingClientRect())}
           className={`absolute right-6 p-3 rounded-full backdrop-blur-md border transition-colors ${
             playerTheme === 'dark'
               ? 'bg-black/40 hover:bg-black/60 border-white/20'

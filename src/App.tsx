@@ -380,6 +380,8 @@ function App() {
   const [showSearch, setShowSearch] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showMixingStudio, setShowMixingStudio] = useState(false)
+  // 调音室弹窗锚点：记录打开按钮的位置，弹窗从按钮侧弹出/关闭时收缩回按钮
+  const mixingStudioAnchorRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
   useEffect(() => {
     const idleId = window.requestIdleCallback(() => {
       void Promise.allSettled([
@@ -3682,6 +3684,7 @@ function App() {
                 playerTheme={playerTheme}
                 sourceUrl={audioPlayer.audioElement?.src || undefined}
                 sourceDuration={audioPlayer.audioElement?.duration || undefined}
+                anchorRect={mixingStudioAnchorRef.current}
               />
             </Suspense>
           )}
@@ -3781,7 +3784,12 @@ function App() {
               {/* 沉浸模式控制按钮 - 右上角 */}
               <LazyImmersiveControls
                 onHomeClick={handlePlayerHome}
-                onOpenMixingStudio={() => setShowMixingStudio(true)}
+                onOpenMixingStudio={(anchorRect) => {
+                  if (anchorRect) {
+                    mixingStudioAnchorRef.current = { x: anchorRect.x, y: anchorRect.y, width: anchorRect.width, height: anchorRect.height }
+                  }
+                  setShowMixingStudio(true)
+                }}
                 onTranslationToggle={handleTranslationToggle}
                 translationEnabled={translationEnabled}
                 hasTranslation={hasTranslation}
