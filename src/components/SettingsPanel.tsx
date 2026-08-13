@@ -449,6 +449,7 @@ export default function SettingsPanel({
     actualEnabled: boolean
     featureStatus: Record<string, string>
     gpu: { deviceString?: string; vendorString?: string; driverVersion?: string } | null
+    gpus: Array<{ deviceString: string; vendorString: string; active: boolean; kind: 'discrete' | 'integrated' | 'unknown' }>
   } | null>(null)
   const [gpuPreference, setGpuPreference] = useState<'auto' | 'discrete' | 'integrated'>('discrete')
 
@@ -462,6 +463,7 @@ export default function SettingsPanel({
         actualEnabled: result.actualEnabled,
         featureStatus: result.featureStatus,
         gpu: result.gpu,
+        gpus: result.gpus || [],
       })
       localStorage.setItem('gpuAcceleration', JSON.stringify(result.enabled))
     }).catch(error => console.warn('读取硬件加速设置失败:', error))
@@ -2204,20 +2206,63 @@ export default function SettingsPanel({
                     </div>
 
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`}>
-                      <div className="flex items-center justify-between gap-4">
-                        <div>
-                          <div className={`${textPrimary} font-medium mb-1`}>显卡选择</div>
-                          <div className={`${textSecondary} text-sm`}>优先使用哪块显卡进行加速渲染</div>
-                        </div>
-                        <select
-                          value={gpuPreference}
-                          onChange={(e) => void handleGpuPreferenceChange(e.target.value as 'auto' | 'discrete' | 'integrated')}
-                          className={`${bgCard} ${textPrimary} border ${borderColor} rounded-lg px-3 py-2 text-sm outline-none`}
+                      <div className="mb-3">
+                        <div className={`${textPrimary} font-medium mb-1`}>显卡选择</div>
+                        <div className={`${textSecondary} text-sm`}>优先使用哪块显卡进行加速渲染（切换后重启生效）</div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleGpuPreferenceChange('auto')}
+                          className={`rounded-lg border px-3 py-2 text-sm transition-all ${gpuPreference === 'auto' ? 'border-transparent text-white' : `${borderColor} ${textSecondary}`}`}
+                          style={gpuPreference === 'auto' ? { backgroundColor: accentColor } : { backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }}
                         >
-                          <option value="discrete">独立显卡（默认）</option>
-                          <option value="integrated">核显 / 集成显卡</option>
-                          <option value="auto">自动</option>
-                        </select>
+                          自动
+                        </button>
+                        {(gpuStatus?.gpus ?? []).filter(g => g.kind === 'discrete').map(gpu => (
+                          <button
+                            key={gpu.vendorString + gpu.deviceString}
+                            type="button"
+                            onClick={() => void handleGpuPreferenceChange('discrete')}
+                            className={`rounded-lg border px-3 py-2 text-sm transition-all ${gpuPreference === 'discrete' ? 'border-transparent text-white' : `${borderColor} ${textSecondary}`}`}
+                            style={gpuPreference === 'discrete' ? { backgroundColor: accentColor } : { backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }}
+                          >
+                            <span className="font-medium">{gpu.deviceString || gpu.vendorString || '独立显卡'}</span>
+                            <span className="ml-1.5 text-xs opacity-70">独显</span>
+                          </button>
+                        ))}
+                        {(gpuStatus?.gpus ?? []).filter(g => g.kind === 'integrated').map(gpu => (
+                          <button
+                            key={gpu.vendorString + gpu.deviceString}
+                            type="button"
+                            onClick={() => void handleGpuPreferenceChange('integrated')}
+                            className={`rounded-lg border px-3 py-2 text-sm transition-all ${gpuPreference === 'integrated' ? 'border-transparent text-white' : `${borderColor} ${textSecondary}`}`}
+                            style={gpuPreference === 'integrated' ? { backgroundColor: accentColor } : { backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }}
+                          >
+                            <span className="font-medium">{gpu.deviceString || gpu.vendorString || '核显'}</span>
+                            <span className="ml-1.5 text-xs opacity-70">核显</span>
+                          </button>
+                        ))}
+                        {(!gpuStatus || (gpuStatus.gpus ?? []).filter(g => g.kind !== 'unknown').length === 0) && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void handleGpuPreferenceChange('discrete')}
+                              className={`rounded-lg border px-3 py-2 text-sm transition-all ${gpuPreference === 'discrete' ? 'border-transparent text-white' : `${borderColor} ${textSecondary}`}`}
+                              style={gpuPreference === 'discrete' ? { backgroundColor: accentColor } : { backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }}
+                            >
+                              独立显卡
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleGpuPreferenceChange('integrated')}
+                              className={`rounded-lg border px-3 py-2 text-sm transition-all ${gpuPreference === 'integrated' ? 'border-transparent text-white' : `${borderColor} ${textSecondary}`}`}
+                              style={gpuPreference === 'integrated' ? { backgroundColor: accentColor } : { backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }}
+                            >
+                              核显 / 集成显卡
+                            </button>
+                          </>
+                        )}
                       </div>
                       <div className={`${textTertiary} text-xs mt-3 p-3 rounded-lg`} style={{ backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
                         默认使用独立显卡以获得最佳动画流畅度；笔记本想省电或独显驱动异常时可切换为核显或自动。切换后需重启软件生效。

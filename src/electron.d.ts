@@ -100,6 +100,15 @@ export interface HardwareAccelerationStatus {
     driverVendor?: string
     driverVersion?: string
   } | null
+  gpus: Array<{
+    active: boolean
+    vendorId?: number
+    deviceId?: number
+    vendorString: string
+    deviceString: string
+    driverVersion?: string
+    kind: 'discrete' | 'integrated' | 'unknown'
+  }>
 }
 
 export interface ElectronAPI {

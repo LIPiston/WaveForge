@@ -2298,16 +2298,48 @@ ipcMain.handle('device-license:redeem', (_event, code) => {
   }
 })
 
+// 根据 vendor/设备名判断 GPU 类型（独显 / 核显 / 未知），用于显卡选择 UI 展示
+function classifyGpuKind(device) {
+  const vendor = String(device?.vendorString || '').toLowerCase()
+  const name = String(device?.deviceString || '').toLowerCase()
+  if (vendor.includes('nvidia')) return 'discrete'
+  if (vendor.includes('intel')) return 'integrated'
+  if (vendor.includes('amd') || vendor.includes('ati') || vendor.includes('advanced micro devices')) {
+    // AMD：RX/Pro 系列为独显，Radeon Graphics/APU 为核显
+    return /rx\s?\d|radeon\s?rx|radeon\s?pro/.test(name) ? 'discrete' : 'integrated'
+  }
+  return 'unknown'
+}
+
 ipcMain.handle('get-hardware-acceleration', async () => {
   let gpuInfo = null
   try {
-    gpuInfo = await app.getGPUInfo('basic')
+    gpuInfo = await app.getGPUInfo('complete')
   } catch (error) {
     console.warn('[GPU] Failed to read GPU information:', error?.message || error)
   }
 
   const devices = Array.isArray(gpuInfo?.gpuDevice) ? gpuInfo.gpuDevice : []
   const activeGpu = devices.find(device => device?.active) || devices[0] || null
+
+  // 去重（同一显卡可能以不同 adapter 出现），保留首条
+  const seen = new Set()
+  const gpus = devices
+    .filter(device => {
+      const key = `${device?.vendorString || ''}|${device?.deviceString || ''}`
+      if (!key.trim() || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .map(device => ({
+      active: Boolean(device?.active),
+      vendorId: device?.vendorId,
+      deviceId: device?.deviceId,
+      vendorString: device?.vendorString || '',
+      deviceString: device?.deviceString || '',
+      driverVersion: device?.driverVersion || '',
+      kind: classifyGpuKind(device),
+    }))
 
   return {
     enabled: performanceSettings.hardwareAcceleration,
@@ -2323,6 +2355,7 @@ ipcMain.handle('get-hardware-acceleration', async () => {
       driverVendor: activeGpu.driverVendor || '',
       driverVersion: activeGpu.driverVersion || '',
     } : null,
+    gpus,
   }
 })
 
