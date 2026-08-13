@@ -270,37 +270,25 @@ export class GaplessIntegration {
     })
 
     if (sameAlbum) {
-      // 使用 Album Gapless
-      debugLog('[Gapless] 使用 Album Gapless 模式（同专辑）')
-      
-      const albumKey = this.albumGapless.getSongAlbumKey({
-        key: ctx.currentSong.key,
-        url: ctx.currentSong.url,
-        albumId: currentAlbumId,
-        albumCover: currentAlbumCover,
-        duration: ctx.currentSong.duration,
-      })
-
-      this.albumGapless.setEnabled(true, null, albumKey)
-      
-      const scheduled = await this.albumGapless.schedulePreload(
-        ctx.token,
-        ctx.nextIndex,
-        {
-          key: ctx.nextSong.key,
-          url: ctx.nextSong.url,
-          albumId: nextAlbumId,
-          albumCover: nextAlbumCover,
-          duration: ctx.nextSong.duration,
-        }
-      )
-
-      return { success: scheduled, mode: 'album-gapless' }
+      // 专辑场景：三方案分流，首选【第一种·直接拼接】（头尾都不掐）。
+      // 不激活 Album Gapless 的交叉淡化（第三种方案）——置位直接拼接优先，
+      // 其 monitor 若激活会在歌曲尾部抢先 startMix，ended 时 hasActiveTransition()
+      // 挡住首选拼接，听感变成 1.8s 淡入淡出而非直接接上。非专辑场景的
+      // 第二种（60ms 淡入淡出）由 useAudioPlayer 的 handleTimeUpdate 负责。
+      debugLog('[Gapless] 同专辑：首选直接拼接（albumGapless 交叉淡化让路）')
+      this.albumGapless.setDirectJoinPreferred(true)
+      this.albumGapless.setEnabled(false)
+      this.stopMonitoring()
+      this.cuefieldAutoMix.reset()
+      return { success: false, mode: 'disabled' }
     }
 
     // Gapless 与 AutoMix 是两套独立系统。跨专辑时只保留普通边界
     // 无缝切换；BPM、节拍和能量规划只由 useAudioPlayer 的 AutoMix 路径负责。
+    // 非专辑场景：albumGapless 交叉淡化（第三种）解除直接拼接门控，
+    // 由 useAudioPlayer 走第二种（60ms 淡入淡出）。
     debugLog('[Gapless] 跨专辑歌曲使用普通无缝边界切换')
+    this.albumGapless.setDirectJoinPreferred(false)
     this.albumGapless.setEnabled(false)
     this.stopMonitoring()
     this.cuefieldAutoMix.reset()

@@ -71,6 +71,10 @@ export interface AlbumGaplessState {
 const ALBUM_GAPLESS_PREROLL_SECONDS = 8.5
 const ALBUM_GAPLESS_MIX_SECONDS = 1.8
 const ALBUM_GAPLESS_MIN_MIX_MS = 720
+// 混音收尾余量（ms）：淡化必须在 source 结束前完成，预留少量余量吸收音频时钟漂移
+const ALBUM_GAPLESS_MIX_END_MARGIN_MS = 80
+// 混音时长绝对下限（ms）：剩余时间极短时仍保留最小淡化时长，配合 ended 兜底收尾
+const ALBUM_GAPLESS_ABSOLUTE_MIN_MIX_MS = 60
 const ALBUM_GAPLESS_MUTED_PREROLL_SECONDS = 2.2
 const ALBUM_GAPLESS_BOUNDARY_RELEASE_SECONDS = 1.8
 const ALBUM_GAPLESS_LONG_SILENCE_SECONDS = 1.05
@@ -107,6 +111,7 @@ export class AlbumGaplessService {
   private analyser: AnalyserNode | null = null
   private tailTimeData: Uint8Array | null = null
   private tailFreqData: Uint8Array | null = null
+  private directJoinPreferred = false  // 专辑场景由第一种方案（直接拼接）接管时置位
 
   constructor(
     private deps: {
@@ -132,6 +137,19 @@ export class AlbumGaplessService {
   }
 
   setEnabled(enabled: boolean, context?: any, albumKey?: string): boolean {
+    // 第三种方案（交叉淡化）门控：专辑场景由第一种方案（直接拼接，头尾都不掐）
+    // 接管，albumGapless 交叉淡化让路——即使被误调 setEnabled(true) 也不激活，
+    // 避免其 monitor 在歌曲尾部抢先 startMix，挡住 useAudioPlayer 的首选拼接。
+    if (this.directJoinPreferred) {
+      this.state.enabled = false
+      this.state.context = null
+      this.state.albumKey = ''
+      if (this.state.preload?.mixStarted) {
+        this.restoreOutgoingAudio(120)
+      }
+      this.clearPreload('direct-join-preferred')
+      return false
+    }
     this.state.enabled = !!enabled
     this.state.context = context || null
     this.state.albumKey = enabled && albumKey ? albumKey : ''
@@ -146,6 +164,13 @@ export class AlbumGaplessService {
     }
 
     return true
+  }
+
+  // 专辑场景标记"第一种方案（直接拼接）优先"：置位后本服务（第三种方案）
+  // 不再激活；非专辑场景可清除以恢复 albumGapless 交叉淡化能力。
+  setDirectJoinPreferred(preferred: boolean): void {
+    this.directJoinPreferred = preferred
+    if (preferred) this.setEnabled(false, undefined, '')
   }
 
   getSongAlbumKey(song: AlbumGaplessSong): string {
@@ -304,12 +329,31 @@ export class AlbumGaplessService {
           console.warn('[AlbumGapless] 调整音量失败', e)
         }
 
-        if (t >= 1) {
-          this.deps.setOutputGain(0)
-          try {
-            media.volume = liveTarget
-          } catch (e) {
-            console.warn('[AlbumGapless] 设置最终音量失败', e)
+        // 兜底：混音时长被 remaining 截断后，source 仍可能在淡化中途先结束。
+        // 此时直接完成混音，避免增益曲线在 source 已结束后继续跑。
+        const outgoingMedia = this.deps.getCurrentAudio()
+        const sourceEnded = !!outgoingMedia?.ended || !!media.ended
+        if (t >= 1 || sourceEnded) {
+          if (sourceEnded) {
+            // source 提前结束：定格 incoming 满音量完成收尾，不再沿曲线跳变；
+            // masterGain 保持当前帧的值（不再归零），避免上层接管前出现静音窗口。
+            try {
+              media.muted = false
+              media.volume = liveTarget
+            } catch (e) {
+              console.warn('[AlbumGapless] 设置最终音量失败', e)
+            }
+            this.deps.onTransitionProgress?.(1)
+          } else {
+            // 混音正常完成：不把 masterGain 瞬间归零。主增益保持此刻剩余值，
+            // 由已满音量的 preload.media 继续出声，直到上层 adoptExternalAudio
+            // 完成接管（standby deck 重新 load + canplay 的等待期内不再静音）。
+            try {
+              media.muted = false
+              media.volume = liveTarget
+            } catch (e) {
+              console.warn('[AlbumGapless] 设置最终音量失败', e)
+            }
           }
           
           // 暂停旧音频
@@ -384,10 +428,18 @@ export class AlbumGaplessService {
     preload.transitionIndex = currentIndex
     preload.previousAudio = outgoingMedia || undefined
 
-    // 计算混音时长
+    // 计算混音时长：淡化必须在 source 结束前完成，mixMs 上限受剩余时间约束
     let mixMs = Math.round(ALBUM_GAPLESS_MIX_SECONDS * 1000)
     if (isFinite(remaining || 0) && (remaining || 0) > 0) {
-      mixMs = Math.min(mixMs, Math.max(ALBUM_GAPLESS_MIN_MIX_MS, Math.round((remaining || 0) * 1000 + 80)))
+      // 预留少量余量吸收音频时钟漂移；剩余时间不足以支撑
+      // ALBUM_GAPLESS_MIN_MIX_MS 时允许取更短的淡化时长，
+      // 避免交叉淡化在 source 结束后还在跑、incoming 增益曲线中途跳变爆音。
+      const remainingCap = Math.max(
+        ALBUM_GAPLESS_ABSOLUTE_MIN_MIX_MS,
+        Math.round((remaining || 0) * 1000) - ALBUM_GAPLESS_MIX_END_MARGIN_MS
+      )
+      mixMs = Math.min(mixMs, remainingCap)
+      mixMs = Math.max(mixMs, Math.min(ALBUM_GAPLESS_MIN_MIX_MS, remainingCap))
     }
     preload.mixDurationMs = mixMs
     this.deps.onTransitionStart?.(preload.key, mixMs / 1000)
@@ -422,6 +474,15 @@ export class AlbumGaplessService {
       return false
     }
 
+    if (!preload.media) {
+      // 混音完成时 masterGain 不再归零（保持淡化剩余值）；若 preload.media
+      // 已缺失无法接管，需手动恢复主增益，避免图形输出停留在静音电平。
+      debugLog('[AlbumGapless] handoff 时预加载媒体缺失，恢复输出增益')
+      this.deps.setOutputGain(this.deps.getTargetVolume())
+      this.clearPreload('handoff-no-media')
+      return false
+    }
+
     this.state.handoff = true
     this.consumePreload()
 
@@ -446,6 +507,8 @@ export class AlbumGaplessService {
         } catch {
           // The element may already have been released.
         }
+        // 接管被拒绝：混音已完成且旧音频已暂停，恢复主增益让回退路径有声
+        this.deps.setOutputGain(this.deps.getTargetVolume())
       }
 
       return success
@@ -458,6 +521,7 @@ export class AlbumGaplessService {
       } catch {
         // The element may already have been released.
       }
+      this.deps.setOutputGain(this.deps.getTargetVolume())
       return false
     } finally {
       this.state.handoff = false
