@@ -46,6 +46,8 @@ const EXTERNAL_HANDOFF_FADE_MS = 72
 const EXTERNAL_HANDOFF_SYNC_TOLERANCE_SECONDS = 0.025
 const CURRENT_MEDIA_LOAD_TIMEOUT_MS = 18_000
 const PRELOAD_MEDIA_LOAD_TIMEOUT_MS = 15_000
+// 跨专辑无缝衔接：在歌曲尾部做一次短交叉淡化的时长（秒）
+const GAPLESS_BOUNDARY_CROSSFADE_SECONDS = 0.8
 
 function asPreloadTrack(input: string | PreloadTrack): PreloadTrack {
   return typeof input === 'string' ? { url: input } : input
@@ -58,6 +60,40 @@ function equalPowerCurve(fadeIn: boolean): Float32Array {
     curve[i] = fadeIn ? Math.sin(progress * Math.PI / 2) : Math.cos(progress * Math.PI / 2)
   }
   return curve
+}
+
+// 构造一个跨专辑无缝用的短交叉淡化计划，复用已验证的 fixed-crossfade 路径
+function buildGaplessCrossfadePlan(options: {
+  sourceTrackKey: string
+  targetTrackKey: string
+  sourceStartTime: number
+  sourceEndTime: number
+}): TransitionPlan {
+  const crossfadeDuration = Math.max(0.25, options.sourceEndTime - options.sourceStartTime)
+  return {
+    id: `gapless-boundary-${Date.now()}`,
+    sourceTrackKey: options.sourceTrackKey,
+    targetTrackKey: options.targetTrackKey,
+    sourceStartTime: options.sourceStartTime,
+    sourceEndTime: options.sourceEndTime,
+    targetStartTime: 0,
+    targetEndTime: crossfadeDuration,
+    beatCount: 0,
+    sourceBpm: 0,
+    targetBpm: 0,
+    tempoRamp: [],
+    sourceDownbeatIndex: 0,
+    targetDownbeatIndex: 0,
+    gainCurve: {
+      source: Array.from(equalPowerCurve(false)),
+      target: Array.from(equalPowerCurve(true)),
+    },
+    confidence: 0,
+    strategy: 'fixed-crossfade',
+    fallbackReason: 'cross-album gapless crossfade',
+    analysisVersion: 'gapless-boundary',
+    rendererVersion: 'browser-crossfade-v1',
+  }
 }
 
 function waitForSeek(audio: HTMLAudioElement, timeoutMs = 120): Promise<void> {
@@ -936,19 +972,19 @@ export function useAudioPlayer(
       } else {
         debugLog('[Gapless] 当前歌曲不使用专辑融合，使用普通 gapless')
         setTransitionState('armed', {
-          transitionStrategy: 'gapless',
+          transitionStrategy: 'fixed-crossfade',
           fallbackReason: undefined,
           transitioning: false,
-          transitionStartTime: current.duration || null,
+          transitionStartTime: Math.max(0, (current.duration || 0) - GAPLESS_BOUNDARY_CROSSFADE_SECONDS),
         })
       }
     } catch (error) {
       console.error('[Gapless] 准备过渡失败:', error)
       setTransitionState('armed', {
-        transitionStrategy: 'gapless',
+        transitionStrategy: 'fixed-crossfade',
         fallbackReason: error instanceof Error ? error.message : 'preparation failed',
         transitioning: false,
-        transitionStartTime: current.duration || null,
+        transitionStartTime: Math.max(0, (current.duration || 0) - GAPLESS_BOUNDARY_CROSSFADE_SECONDS),
       })
     }
   }, [setTransitionState])
@@ -1032,29 +1068,31 @@ export function useAudioPlayer(
           gaplessRef.current.enabled
           && Number.isFinite(remaining)
           && remaining > 0
-          && remaining <= 1
+          && remaining <= GAPLESS_BOUNDARY_CROSSFADE_SECONDS
           && !gaplessBoundaryScheduledRef.current
           && !gaplessIntegrationRef.current?.hasActiveTransition()
         ) {
-          // `ended` is dispatched after the media pipeline has already drained. Schedule the
-          // prepared deck at the media boundary instead, while keeping `ended` as a fallback.
+          // 跨专辑无缝：在歌曲尾部做一次短交叉淡化（复用 fixed-crossfade 路径），
+          // 消除「播到最后一秒才硬切」以及可能的空档。仅触发一次。
           gaplessBoundaryScheduledRef.current = true
-          const scheduledSource = active
-          const delayMs = Math.max(0, remaining * 1000 - 12)
-          transitionTimerRef.current = window.setTimeout(() => {
-            transitionTimerRef.current = null
-            gaplessBoundaryScheduledRef.current = false
-            if (
-              getActiveAudio() === scheduledSource
-              && gaplessRef.current.enabled
-              && transitionStateRef.current !== 'running-transition'
-              && getStandbyAudio()?.src
-              && !gaplessIntegrationRef.current?.hasActiveTransition()
-            ) {
-              debugLog('⚡ [Gapless] 在音频边界启动已预载的下一首')
-              void startTransition('gapless')
+          if (
+            getStandbyAudio()?.src
+            && !gaplessIntegrationRef.current?.hasActiveTransition()
+          ) {
+            const current = currentMetadataRef.current
+            const next = nextMetadataRef.current
+            if (current?.trackKey && next?.trackKey && active.duration > 0) {
+              const plan = buildGaplessCrossfadePlan({
+                sourceTrackKey: current.trackKey,
+                targetTrackKey: next.trackKey,
+                sourceStartTime: active.currentTime,
+                sourceEndTime: active.duration,
+              })
+              transitionPlanRef.current = plan
+              debugLog(`🎬 [Gapless] 跨专辑无缝交叉淡化，剩余 ${remaining.toFixed(2)}s`)
+              void startTransition('fixed-crossfade', plan)
             }
-          }, delayMs)
+          }
         }
       }
       let buffered = 0
