@@ -35,7 +35,10 @@
       overflow: hidden;
     }
     
-    /* 动态渐变背景 */
+    /* 动态渐变背景
+       注意：不使用 filter: blur —— 软件合成（GPU 加速禁用）下 blur 会强制软件栅格化
+       整层 200% 尺寸渐变，首帧渲染极慢，导致 splash 显示时内容还没画完（只剩深色底 ≈ 黑屏）。
+       这里用半透明渐变本身（opacity 0.15）+ 纯 transform 旋转，软件合成可快速渲染。 */
     .gradient-bg {
       position: absolute;
       top: -50%;
@@ -53,12 +56,15 @@
         #FF6B6B 100%);
       opacity: 0.15;
       animation: gradientShift 15s ease infinite;
-      filter: blur(24px);
     }
     
     .splash-container {
       text-align: center;
-      animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+      /* 基础可见性：容器默认不透明。入场动画只做位移，不依赖 opacity 淡入——
+         CSS 动画在窗口显示前不运行，若从 opacity:0 开始，首帧提交时内容透明，
+         窗口只剩深色背景，用户会看到黑屏。默认 opacity:1 保证任何时刻内容可见。 */
+      opacity: 1;
+      animation: splashEnter 0.8s cubic-bezier(0.16, 1, 0.3, 1);
       position: relative;
       z-index: 1;
     }
@@ -132,13 +138,11 @@
     .wave-bar:nth-child(11) { height: 55px; animation-delay: 1s; background: linear-gradient(180deg, #5B9FFF, #5B9FFF80); }
     .wave-bar:nth-child(12) { height: 35px; animation-delay: 1.1s; background: linear-gradient(180deg, #A78BFA, #A78BFA80); }
     
-    @keyframes fadeIn {
+    @keyframes splashEnter {
       from {
-        opacity: 0;
         transform: translateY(30px) scale(0.95);
       }
       to {
-        opacity: 1;
         transform: translateY(0) scale(1);
       }
     }

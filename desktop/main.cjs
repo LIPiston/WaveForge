@@ -51,6 +51,9 @@ function writePerformanceSettings(settings) {
 }
 
 const performanceSettings = readPerformanceSettings()
+// 软件合成标记：GPU 合成器禁用时置 true（app ready 后由 getGPUFeatureStatus 判定）。
+// createWindow 据此动态调整 splash 最短可见时间（软件合成下内容层提交慢）。
+let gpuCompositingDisabled = false
 if (!performanceSettings.hardwareAcceleration) {
   app.disableHardwareAcceleration()
 } else if (performanceSettings.gpuPreference === 'discrete') {
@@ -1107,7 +1110,9 @@ protocol.registerSchemesAsPrivileged([
 function createWindow() {
   // 开发模式下主页面加载很快，必须让启动画面先完成绘制并保持可见，
   // 否则 splash 的淡入和音波动画还没显示就会被主窗口关闭。
-  const splashMinVisibleMs = isDev ? 1800 : 1200
+  // 软件合成（GPU 加速禁用）下内容层提交慢，splash 最短可见时间动态加长，
+  // 给 logo/文字/音波足够时间真正上屏（否则只见深色底 ≈ 黑屏）。
+  const splashMinVisibleMs = isDev ? 1800 : (gpuCompositingDisabled ? 3500 : 1200)
   let splashShownAt = 0
 
   const splashWindow = new BrowserWindow({
@@ -1121,30 +1126,56 @@ function createWindow() {
     resizable: false,
     maximizable: false,
     fullscreenable: false,
+    // 显示时机：等渲染器完成首帧绘制（ready-to-show）再 show。
+    // 本机 GPU 合成器为 disabled_software（软件合成，GPU 加速禁用）：
+    // 窗口隐藏时渲染器默认暂停绘制（paintWhenInitiallyHidden=false），首帧可能
+    // 不完整；ready-to-show 触发≠内容已上屏，show 时窗口表面可能是 OS 默认白。
+    // 修复：paintWhenInitiallyHidden:true 让渲染器在隐藏时也持续绘制，
+    // 首帧内容（深色底+logo+文字+音波）在 show 前已完整就绪。
     show: false,
     backgroundColor: '#0a0f14',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      paintWhenInitiallyHidden: true,  // 隐藏时持续绘制，splash 首帧内容完整
     },
   })
 
+  let splashShown = false
   const showSplash = () => {
-    if (splashWindow.isDestroyed() || splashWindow.isVisible()) return
+    if (splashShown || splashWindow.isDestroyed() || splashWindow.isVisible()) return
+    splashShown = true
     splashShownAt = Date.now()
     splashWindow.show()
     splashWindow.focus()
-    logStartupTiming(`Splash animation shown (minimum ${splashMinVisibleMs}ms)`)
+    logStartupTiming(`Splash animation shown`)
   }
-
-  // 使用 ready-to-show 事件：等首帧真正渲染完成再显示，避免强制独显后 GPU 初始化变慢导致启动白屏
-  splashWindow.once('ready-to-show', showSplash)
+  let splashLoadDone = false
+  let splashFrameDone = false
+  const tryShowSplash = () => {
+    if (splashLoadDone && splashFrameDone) showSplash()
+  }
+  splashWindow.once('ready-to-show', () => {
+    splashFrameDone = true
+    tryShowSplash()
+  })
   const splashReady = splashWindow.loadFile(path.join(__dirname, 'splash.html'))
-    .then(() => true)
+    .then(() => {
+      splashLoadDone = true
+      tryShowSplash()
+      return true
+    })
     .catch(error => {
       console.warn('[Startup] Failed to load splash animation:', error.message)
+      splashLoadDone = true
+      tryShowSplash()
       return false
     })
+  setTimeout(() => {
+    splashLoadDone = true
+    splashFrameDone = true
+    tryShowSplash()
+  }, 3000)
   // 创建主窗口
   const iconPath = path.join(__dirname, '..', 'build', 'icon.ico')
   mainWindow = new BrowserWindow({
@@ -1153,7 +1184,7 @@ function createWindow() {
     minWidth: 1200,
     minHeight: 800,
     frame: false,
-    backgroundColor: '#000000',
+    backgroundColor: '#0a0f14',
     transparent: false,
     titleBarStyle: 'hidden',
     title: 'WaveForge 澜音工坊',
@@ -1164,6 +1195,7 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.cjs'),
+      paintWhenInitiallyHidden: true,  // 软件合成下隐藏时也持续绘制，避免显示时首帧空白
     },
   })
 
@@ -1183,6 +1215,9 @@ function createWindow() {
   })
   mainWindow.webContents.once('did-finish-load', async () => {
     logStartupTiming('Main renderer finished loading')
+    // 资源加载完成（React 已挂载）——满足主窗显示条件之一
+    mainLoaded = true
+    showMainWindowWhenReady()
     try {
       const rendererMetrics = await mainWindow.webContents.executeJavaScript(`(() => {
         const resources = performance.getEntriesByType('resource')
@@ -1219,11 +1254,19 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
   
-  // 主页面与启动动画都准备好后再切换，并保证动画有完整的可见时间。
-  mainWindow.once('ready-to-show', async () => {
-    const splashLoaded = await splashReady
+  // 主窗口显示：等「首帧渲染完成」且「资源加载完成（React 已挂载）」都满足才显示。
+  // 仅依赖 ready-to-show 会在首帧（可能只是纯背景色帧）时就显示，用户会先看到黑屏再闪出内容；
+  // 双条件保证 show 时页面内容已就绪，配合 splash 最短可见时间，启动画面自然过渡到主界面。
+  let mainFirstFrameReady = false
+  let mainLoaded = false
+  let mainShown = false
+  const showMainWindowWhenReady = () => {
+    if (mainShown || !mainWindow || mainWindow.isDestroyed()) return
+    if (!mainFirstFrameReady || !mainLoaded) return
+    mainShown = true
     const visibleForMs = splashShownAt > 0 ? Date.now() - splashShownAt : 0
-    const remainingMs = splashLoaded
+    // splash 实际显示过才保证最短可见时间；未显示（加载失败等）则立即切换主窗
+    const remainingMs = splashShownAt > 0
       ? Math.max(0, splashMinVisibleMs - visibleForMs)
       : 0
 
@@ -1234,6 +1277,16 @@ function createWindow() {
       if (!splashWindow.isDestroyed()) splashWindow.close()
       logStartupTiming('Main window shown')
     }, remainingMs)
+  }
+  // 兜底：任一事件异常未触发（如 GPU 合成器问题），8s 后强制显示，避免永远黑屏卡住
+  setTimeout(() => {
+    mainFirstFrameReady = true
+    mainLoaded = true
+    showMainWindowWhenReady()
+  }, 8000)
+  mainWindow.once('ready-to-show', () => {
+    mainFirstFrameReady = true
+    showMainWindowWhenReady()
   })
   // 阻止 window.open 创建新的 Electron 窗口
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -2624,6 +2677,18 @@ app.on('will-quit', () => {
 
 app.whenReady().then(() => {
   logStartupTiming('Electron app ready')
+  // GPU 状态诊断：区分"splash 未渲染出来"（GPU 合成器异常）与"未加载出来"（资源失败）。
+  // 每次启动写入日志，便于排查 splash 黑/白屏问题。
+  try {
+    const gpuInfo = app.getGPUFeatureStatus()
+    logStartupTiming(`GPU feature status: accelerated=${gpuInfo.gpu_compositing || '?'} webgl=${gpuInfo.webgl || '?'}`)
+    // 软件合成（GPU 加速禁用）下，窗口内容层提交明显变慢（可达 2s+）。
+    // 记录该状态，createWindow 据此动态延长 splash 最短可见时间，
+    // 给内容层足够时间真正上屏，避免 splash 显示 1.2s 后就被关闭、用户只见深色底（≈黑）。
+    gpuCompositingDisabled = gpuInfo.gpu_compositing === 'disabled_software' || gpuInfo.gpu_compositing === 'disabled'
+  } catch (error) {
+    logStartupTiming(`GPU feature status unavailable: ${error.message}`)
+  }
   // Electron 默认不会自动放行渲染进程的定位权限。
   // 放行后，天气组件才能优先使用 Windows/Chromium 的设备定位，再回退到公网 IP。
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => permission === 'geolocation')
