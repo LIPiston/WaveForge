@@ -1137,11 +1137,10 @@ function createWindow() {
     logStartupTiming(`Splash animation shown (minimum ${splashMinVisibleMs}ms)`)
   }
 
+  // 使用 ready-to-show 事件：等首帧真正渲染完成再显示，避免强制独显后 GPU 初始化变慢导致启动白屏
+  splashWindow.once('ready-to-show', showSplash)
   const splashReady = splashWindow.loadFile(path.join(__dirname, 'splash.html'))
-    .then(() => {
-      showSplash()
-      return true
-    })
+    .then(() => true)
     .catch(error => {
       console.warn('[Startup] Failed to load splash animation:', error.message)
       return false
