@@ -968,15 +968,15 @@ export default function SettingsPanel({
               </button>
             </div>
 
-            {/* Tabs */}
-            <div className={`flex border-b ${playerTheme === 'dark' ? 'border-white/10' : 'border-black/10'}`}>
+            {/* Tabs：激活项下方为蓝色指示条（layoutId 共享布局动画，切换时丝滑滑到选中 tab 下方） */}
+            <div className={`relative flex border-b ${playerTheme === 'dark' ? 'border-white/10' : 'border-black/10'}`}>
               <button
                 onClick={() => switchTab('account')}
-                className={`flex-1 py-4 px-4 flex items-center justify-center gap-2 transition-colors ${
+                className={`relative flex-1 py-4 px-4 flex items-center justify-center gap-2 transition-colors ${
                   activeTab === 'account'
                     ? playerTheme === 'dark'
-                      ? 'text-white border-b-2 border-white'
-                      : 'text-black border-b-2 border-black'
+                      ? 'text-white'
+                      : 'text-black'
                     : playerTheme === 'dark'
                     ? 'text-white/60 hover:text-white/80'
                     : 'text-black/60 hover:text-black/80'
@@ -984,14 +984,22 @@ export default function SettingsPanel({
               >
                 <User className="w-5 h-5" />
                 账号
+                {activeTab === 'account' && (
+                  <motion.div
+                    layoutId="settings-tab-indicator"
+                    className="absolute bottom-0 left-1/4 right-1/4 h-[3px] rounded-full"
+                    style={{ backgroundColor: accentColor, boxShadow: `0 0 8px ${accentColor}66` }}
+                    transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                  />
+                )}
               </button>
               <button
                 onClick={() => switchTab('personalization')}
-                className={`flex-1 py-4 px-4 flex items-center justify-center gap-2 transition-colors ${
+                className={`relative flex-1 py-4 px-4 flex items-center justify-center gap-2 transition-colors ${
                   activeTab === 'personalization'
                     ? playerTheme === 'dark'
-                      ? 'text-white border-b-2 border-white'
-                      : 'text-black border-b-2 border-black'
+                      ? 'text-white'
+                      : 'text-black'
                     : playerTheme === 'dark'
                     ? 'text-white/60 hover:text-white/80'
                     : 'text-black/60 hover:text-black/80'
@@ -999,14 +1007,22 @@ export default function SettingsPanel({
               >
                 <Sparkles className="w-5 h-5" />
                 个性化
+                {activeTab === 'personalization' && (
+                  <motion.div
+                    layoutId="settings-tab-indicator"
+                    className="absolute bottom-0 left-1/4 right-1/4 h-[3px] rounded-full"
+                    style={{ backgroundColor: accentColor, boxShadow: `0 0 8px ${accentColor}66` }}
+                    transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                  />
+                )}
               </button>
               <button
                 onClick={() => switchTab('advanced')}
-                className={`flex-1 py-4 px-4 flex items-center justify-center gap-2 transition-colors ${
+                className={`relative flex-1 py-4 px-4 flex items-center justify-center gap-2 transition-colors ${
                   activeTab === 'advanced'
                     ? playerTheme === 'dark'
-                      ? 'text-white border-b-2 border-white'
-                      : 'text-black border-b-2 border-black'
+                      ? 'text-white'
+                      : 'text-black'
                     : playerTheme === 'dark'
                     ? 'text-white/60 hover:text-white/80'
                     : 'text-black/60 hover:text-black/80'
@@ -1014,14 +1030,22 @@ export default function SettingsPanel({
               >
                 <Palette className="w-5 h-5" />
                 高级
+                {activeTab === 'advanced' && (
+                  <motion.div
+                    layoutId="settings-tab-indicator"
+                    className="absolute bottom-0 left-1/4 right-1/4 h-[3px] rounded-full"
+                    style={{ backgroundColor: accentColor, boxShadow: `0 0 8px ${accentColor}66` }}
+                    transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                  />
+                )}
               </button>
               <button
                 onClick={() => switchTab('about')}
-                className={`flex-1 py-4 px-4 flex items-center justify-center gap-2 transition-colors ${
+                className={`relative flex-1 py-4 px-4 flex items-center justify-center gap-2 transition-colors ${
                   activeTab === 'about'
                     ? playerTheme === 'dark'
-                      ? 'text-white border-b-2 border-white'
-                      : 'text-black border-b-2 border-black'
+                      ? 'text-white'
+                      : 'text-black'
                     : playerTheme === 'dark'
                     ? 'text-white/60 hover:text-white/80'
                     : 'text-black/60 hover:text-black/80'
@@ -1029,6 +1053,14 @@ export default function SettingsPanel({
               >
                 <Info className="w-5 h-5" />
                 关于
+                {activeTab === 'about' && (
+                  <motion.div
+                    layoutId="settings-tab-indicator"
+                    className="absolute bottom-0 left-1/4 right-1/4 h-[3px] rounded-full"
+                    style={{ backgroundColor: accentColor, boxShadow: `0 0 8px ${accentColor}66` }}
+                    transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                  />
+                )}
               </button>
             </div>
 
