@@ -110,20 +110,47 @@ function loadSettings(): AudioEffectsSettings {
 
 // ============ 工具函数 ============
 
-// 生成一个简单的立体声大厅脉冲响应（指数衰减噪声），用于卷积混响
-function generateHallImpulseResponse(context: BaseAudioContext, seconds = 2.8, decay = 3.2): AudioBuffer {
+// 生成一个接近真实大厅的立体声脉冲响应：
+// - 预延迟（pre-delay）
+// - 早期反射（若干离散回声，营造房间轮廓）
+// - 晚期反射（左右去相关的噪声，经一阶低通让高频随尾音自然衰减）
+function generateHallImpulseResponse(context: BaseAudioContext, seconds = 3.6, decay = 2.2): AudioBuffer {
   const sampleRate = context.sampleRate
   const length = Math.max(1, Math.floor(sampleRate * seconds))
   const buffer = context.createBuffer(2, length, sampleRate)
+  const preDelaySamples = Math.floor(sampleRate * 0.018)
+
+  // 早期反射：不同延迟与衰减的离散回声（左右略有差异，增加空间感）
+  const earlyReflections = [
+    { delay: 0.010, gain: 0.55 },
+    { delay: 0.022, gain: 0.42 },
+    { delay: 0.035, gain: 0.34 },
+    { delay: 0.051, gain: 0.26 },
+    { delay: 0.068, gain: 0.2 },
+    { delay: 0.087, gain: 0.15 },
+    { delay: 0.108, gain: 0.11 },
+  ]
+
   for (let ch = 0; ch < 2; ch += 1) {
     const data = buffer.getChannelData(ch)
-    for (let i = 0; i < length; i += 1) {
-      const t = i / sampleRate
-      // 前几毫秒留出预延迟感，后面指数衰减
+    const sideScale = ch === 0 ? 1 : 0.92 // 左右早期反射略有差异
+
+    for (const er of earlyReflections) {
+      const idx = Math.floor(sampleRate * er.delay)
+      if (idx < length) data[idx] = er.gain * sideScale
+    }
+
+    // 晚期反射：去相关噪声 + 一阶低通（模拟空气对高频的吸收）
+    let lp = 0
+    for (let i = preDelaySamples; i < length; i += 1) {
+      const t = (i - preDelaySamples) / sampleRate
       const envelope = Math.exp(-decay * t)
-      data[i] = (Math.random() * 2 - 1) * envelope * 0.6
+      const white = Math.random() * 2 - 1
+      lp += 0.16 * (white - lp)
+      data[i] += lp * envelope * 0.7
     }
   }
+
   return buffer
 }
 
@@ -214,8 +241,12 @@ export class AudioEffectsEngine {
 
   // 低音/人声/伴奏（滤波类，串行，关掉时增益归零即透明）
   private bassFilter: BiquadFilterNode | null = null
+  private bassPunchFilter: BiquadFilterNode | null = null
   private vocalFilter: BiquadFilterNode | null = null
   private accompFilter: BiquadFilterNode | null = null
+
+  // 人声/伴奏增强的 M/S 矩阵（人声=中置声道，伴奏=侧声道）
+  private presenceMatrix: MsMatrix | null = null
 
   // 均衡器
   private eqFilters: BiquadFilterNode[] = []
@@ -273,6 +304,9 @@ export class AudioEffectsEngine {
     // 人声/伴奏比例 M/S 矩阵
     this.voiceMatrix = createMsMatrix(context)
 
+    // 人声/伴奏增强 M/S 矩阵（人声=中置、伴奏=侧置）
+    this.presenceMatrix = createMsMatrix(context)
+
     // 全景声厅
     this.hallMatrix = createMsMatrix(context)
     this.hallConvolver = context.createConvolver()
@@ -293,6 +327,11 @@ export class AudioEffectsEngine {
     this.bassFilter = context.createBiquadFilter()
     this.bassFilter.type = 'lowshelf'
     this.bassFilter.gain.value = 0
+    this.bassPunchFilter = context.createBiquadFilter()
+    this.bassPunchFilter.type = 'peaking'
+    this.bassPunchFilter.frequency.value = 55
+    this.bassPunchFilter.Q.value = 0.9
+    this.bassPunchFilter.gain.value = 0
     this.vocalFilter = context.createBiquadFilter()
     this.vocalFilter.type = 'peaking'
     this.vocalFilter.frequency.value = 2500
@@ -320,8 +359,10 @@ export class AudioEffectsEngine {
     //                                     → hallWet(convolver) ─┐
     //                                     → 3D wet(panner) ─────┴→ output
     input.connect(this.voiceMatrix.input)
-    this.voiceMatrix.output.connect(this.bassFilter)
-    this.bassFilter.connect(this.vocalFilter)
+    this.voiceMatrix.output.connect(this.presenceMatrix.input)
+    this.presenceMatrix.output.connect(this.bassFilter)
+    this.bassFilter.connect(this.bassPunchFilter)
+    this.bassPunchFilter.connect(this.vocalFilter)
     this.vocalFilter.connect(this.accompFilter)
 
     // 全景声厅干湿两路（从 accompFilter 之后分叉）
@@ -411,32 +452,42 @@ export class AudioEffectsEngine {
       this.voiceMatrix.sideGain.gain.setTargetAtTime(side, t, 0.02)
     }
 
-    // 低音增强
-    if (this.bassFilter) {
-      this.bassFilter.frequency.setTargetAtTime(effects.bassBoost.depth, t, 0.02)
-      this.bassFilter.gain.setTargetAtTime(effects.bassBoost.enabled ? effects.bassBoost.intensity : 0, t, 0.02)
+    // 人声/伴奏增强（M/S：人声=中置、伴奏=侧置）
+    if (this.presenceMatrix) {
+      const vocalCenter = effects.vocalBoost.enabled ? 1 + effects.vocalBoost.intensity * 0.16 : 1
+      const accompSide = effects.accompanimentBoost.enabled ? 1 + effects.accompanimentBoost.intensity * 0.16 : 1
+      const accompCenter = effects.accompanimentBoost.enabled ? 1 - effects.accompanimentBoost.intensity * 0.09 : 1
+      this.presenceMatrix.centerGain.gain.setTargetAtTime(Math.max(0.3, vocalCenter * accompCenter), t, 0.03)
+      this.presenceMatrix.sideGain.gain.setTargetAtTime(accompSide, t, 0.03)
     }
 
-    // 人声加强
+    // 低音增强（lowshelf + 次低频 punch 共振）
+    if (this.bassFilter && this.bassPunchFilter) {
+      this.bassFilter.frequency.setTargetAtTime(effects.bassBoost.depth, t, 0.02)
+      this.bassFilter.gain.setTargetAtTime(effects.bassBoost.enabled ? effects.bassBoost.intensity * 1.3 : 0, t, 0.02)
+      this.bassPunchFilter.gain.setTargetAtTime(effects.bassBoost.enabled ? effects.bassBoost.intensity * 0.55 : 0, t, 0.02)
+    }
+
+    // 人声加强（频段存在感提升，比单段更明显）
     if (this.vocalFilter) {
-      this.vocalFilter.gain.setTargetAtTime(effects.vocalBoost.enabled ? effects.vocalBoost.intensity : 0, t, 0.02)
+      this.vocalFilter.gain.setTargetAtTime(effects.vocalBoost.enabled ? effects.vocalBoost.intensity * 1.25 : 0, t, 0.02)
     }
 
     // 伴奏加强（削减人声频段，突出伴奏）
     if (this.accompFilter) {
-      this.accompFilter.gain.setTargetAtTime(effects.accompanimentBoost.enabled ? -effects.accompanimentBoost.intensity : 0, t, 0.02)
+      this.accompFilter.gain.setTargetAtTime(effects.accompanimentBoost.enabled ? -effects.accompanimentBoost.intensity * 1.25 : 0, t, 0.02)
     }
 
-    // 全景声厅：M/S 加宽 + 混响湿电平
+    // 全景声厅：M/S 加宽 + 卷积混响
     if (this.hallMatrix && this.hallWetGain) {
       const level = effects.hall.enabled ? effects.hall.level : 0 // 0-6
-      // 加宽：侧声道增益随级别增加（1 级≈轻微，6 级≈强烈）
-      const sideGain = 1 + (level / 6) * 1.2
-      const centerGain = 1 - (level / 6) * 0.25
+      // 加宽：大幅提升侧声道、压低中置，声场明显变宽
+      const sideGain = 1 + (level / 6) * 1.9 // 1 → 2.9
+      const centerGain = 1 - (level / 6) * 0.42 // 1 → 0.58
       this.hallMatrix.sideGain.gain.setTargetAtTime(sideGain, t, 0.03)
-      this.hallMatrix.centerGain.gain.setTargetAtTime(Math.max(0.5, centerGain), t, 0.03)
-      // 混响湿电平
-      this.hallWetGain.gain.setTargetAtTime(effects.hall.enabled ? Math.min(1, level / 6) * 0.9 : 0, t, 0.05)
+      this.hallMatrix.centerGain.gain.setTargetAtTime(Math.max(0.4, centerGain), t, 0.03)
+      // 混响湿电平（有基础量 + 随级别增强）
+      this.hallWetGain.gain.setTargetAtTime(effects.hall.enabled ? 0.22 + Math.min(1, level / 6) * 0.78 : 0, t, 0.05)
     }
 
     // 3D 环绕
@@ -454,7 +505,7 @@ export class AudioEffectsEngine {
   }
 
   private rebuildEq(): void {
-    if (!this.context || !this.input || !this.voiceMatrix) return
+    if (!this.context || !this.input || !this.presenceMatrix) return
     const { eq } = this.settings
 
     // 清理旧滤波器
@@ -464,9 +515,9 @@ export class AudioEffectsEngine {
     this.eqFilters = []
 
     if (!eq.enabled) {
-      // EQ 关闭：voiceMatrix 直接接到 bassFilter
-      this.voiceMatrix.output.disconnect()
-      this.voiceMatrix.output.connect(this.bassFilter!)
+      // EQ 关闭：presenceMatrix 直接接到 bassFilter
+      this.presenceMatrix.output.disconnect()
+      this.presenceMatrix.output.connect(this.bassFilter!)
       return
     }
 
@@ -474,8 +525,8 @@ export class AudioEffectsEngine {
       ? SIMPLE_EQ_BANDS.map((band, i) => ({ frequency: band.frequency, gain: eq.simpleBands[i] || 0, q: 1.0 }))
       : eq.proBands
 
-    this.voiceMatrix.output.disconnect()
-    let prev: AudioNode = this.voiceMatrix.output
+    this.presenceMatrix.output.disconnect()
+    let prev: AudioNode = this.presenceMatrix.output
     for (const band of bands) {
       const filter = this.context.createBiquadFilter()
       filter.type = 'peaking'
@@ -509,9 +560,9 @@ export class AudioEffectsEngine {
       const dt = Math.min(0.1, (now - this.surroundLastTime) / 1000)
       this.surroundLastTime = now
       const speed = this.settings.effects.surround3d.speed // 速度
-      const distance = 0.5 + this.settings.effects.surround3d.distance * 0.5 // 近远（距离）
-      this.surroundAngle += dt * speed * 1.6 // 旋转角速度
-      const radius = distance
+      // 半径更大、旋转更快，让耳机内的环绕轨迹更明显
+      const radius = 0.6 + this.settings.effects.surround3d.distance * 0.95
+      this.surroundAngle += dt * speed * 2.6
       const x = Math.sin(this.surroundAngle) * radius
       const z = Math.cos(this.surroundAngle) * radius
       const p = this.panner
