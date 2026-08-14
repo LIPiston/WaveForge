@@ -222,7 +222,9 @@ export default function DesktopLyricsApp() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [hovered, setHovered] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [unlockVisible, setUnlockVisible] = useState(false)
   const mousePassthroughRef = useRef(false)
+  const unlockHideTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     const api = bridge()
@@ -256,6 +258,10 @@ export default function DesktopLyricsApp() {
     }
   }, [])
 
+  useEffect(() => () => {
+    if (unlockHideTimerRef.current !== null) window.clearTimeout(unlockHideTimerRef.current)
+  }, [])
+
   const update = (partial: Partial<DesktopLyricsSettings>) => {
     setSettings(previous => ({ ...previous, ...partial }))
     void bridge()?.updateSettings(partial).then(setSettings)
@@ -267,11 +273,38 @@ export default function DesktopLyricsApp() {
     void bridge()?.setMousePassthrough(passthrough)
   }
 
+  const cancelUnlockHide = () => {
+    if (unlockHideTimerRef.current !== null) {
+      window.clearTimeout(unlockHideTimerRef.current)
+      unlockHideTimerRef.current = null
+    }
+  }
+
+  const scheduleUnlockHide = () => {
+    cancelUnlockHide()
+    unlockHideTimerRef.current = window.setTimeout(() => {
+      unlockHideTimerRef.current = null
+      setUnlockVisible(false)
+      setMousePassthrough(true)
+    }, 2000)
+  }
+
+  const showUnlock = () => {
+    setUnlockVisible(true)
+    scheduleUnlockHide()
+  }
+
   const setLocked = (locked: boolean) => {
     setSettingsOpen(false)
     void bridge()?.setPanelOpen(false)
     setSettings(previous => ({ ...previous, locked }))
-    if (!locked) setMousePassthrough(false)
+    if (locked) {
+      showUnlock()
+    } else {
+      cancelUnlockHide()
+      setUnlockVisible(false)
+      setMousePassthrough(false)
+    }
     void bridge()?.updateSettings({ locked }).then(next => {
       setSettings({ ...DEFAULT_SETTINGS, ...next })
       setMousePassthrough(locked)
@@ -349,13 +382,14 @@ export default function DesktopLyricsApp() {
         if (settings.locked) {
           const target = document.elementFromPoint(event.clientX, event.clientY)
           setMousePassthrough(!target?.closest('.dl-unlock'))
+          showUnlock()
         } else {
           setMousePassthrough(false)
         }
       }}
       onPointerDown={beginDrag}
     >
-      {settings.locked && (
+      {settings.locked && unlockVisible && (
         <button className="dl-unlock" title="解锁桌面歌词" onPointerEnter={() => setMousePassthrough(false)} onClick={() => setLocked(false)}>
           <LockKeyholeOpen /><span>解锁</span>
         </button>
