@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, AudioLines, SlidersHorizontal, Music2, Save, Copy, ClipboardPaste, Trash2, Info, FileAudio, ChevronDown } from 'lucide-react'
+import { X, AudioLines, SlidersHorizontal, Music2, Music, Mic2, Headphones, Save, Copy, ClipboardPaste, Trash2, Info, FileAudio } from 'lucide-react'
 import {
   AudioEffectsEngine,
   type AudioEffectsSettings,
@@ -49,6 +49,19 @@ function savePresets(presets: EqPreset[]): void {
   }
 }
 
+// 云澜音效：上次启用的音效（顶部总开关再次打开时恢复它，而不是总回退到全景声厅）
+const LAST_EFFECT_KEY = 'waveforge:last-effect'
+const EFFECT_KEYS = ['hall', 'surround3d', 'bassBoost', 'vocalBoost', 'accompanimentBoost'] as const
+type EffectKey = (typeof EFFECT_KEYS)[number]
+
+const EFFECT_META: Record<EffectKey, { name: string; desc: string; intro: string; icon: typeof Music2 }> = {
+  hall: { name: '全景声厅', desc: '声场加宽 + 大厅混响', intro: '通过中/侧声道加宽声场，并叠加大厅卷积混响，营造宽敞、有纵深感的听感。可左右拖动声场图调整宽度，混响程度单独可调。', icon: AudioLines },
+  surround3d: { name: '3D 环绕', desc: '耳机内环绕旋转', intro: '用 HRTF 双耳算法让声音在耳机内绕头旋转，营造环绕感。可在圆形图上拖动圆点调整旋转角度与环绕距离，并设置旋转方向与速度。', icon: Headphones },
+  bassBoost: { name: '低音增强', desc: '增强低频厚度与力度', intro: '通过低频搁架 + 次低频共振峰增强鼓点与贝斯的冲击力。深度控制起始频率，强度控制增强幅度。', icon: Music2 },
+  vocalBoost: { name: '人声加强', desc: '提升人声存在感', intro: '聚焦 3kHz 人声存在感频段做窄带提升，并用中/侧分离适度增强中置人声，不会连带放大吉他等乐器。', icon: Mic2 },
+  accompanimentBoost: { name: '伴奏加强', desc: '突出伴奏、削弱人声', intro: '通过中/侧分离增强侧声道（乐器/伴奏）并压低中置人声，让伴奏真正更突出，而不只是减弱人声。', icon: Music },
+}
+
 export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, sourceDuration, anchorRect }: MixingStudioProps) {
   const [activeTab, setActiveTab] = useState<Tab>('effects')
   const [settings, setSettings] = useState<AudioEffectsSettings>(engine.getSettings())
@@ -57,7 +70,15 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
   const [importText, setImportText] = useState('')
   const [exportText, setExportText] = useState('')
   const [exporting, setExporting] = useState(false)
-  const [effectDetail, setEffectDetail] = useState<keyof AudioEffectsSettings['effects'] | null>(null)
+  const [effectModal, setEffectModal] = useState<EffectKey | null>(null)
+  const [lastEffectKey, setLastEffectKey] = useState<EffectKey>(() => {
+    try {
+      const saved = localStorage.getItem(LAST_EFFECT_KEY)
+      return saved && (EFFECT_KEYS as readonly string[]).includes(saved) ? (saved as EffectKey) : 'hall'
+    } catch {
+      return 'hall'
+    }
+  })
 
   const dark = playerTheme === 'dark'
 
@@ -111,6 +132,26 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
   const patchPitch = useCallback((patch: DeepPartial<AudioEffectsSettings['pitch']>) => {
     update({ pitch: patch })
   }, [update])
+
+  // 激活/关闭音效（互斥）。必须同步回 React 状态，否则开关和「使用」按钮不会刷新。
+  const activateEffect = useCallback((key: EffectKey | null) => {
+    engine.activateEffect(key)
+    setSettings(engine.getSettings())
+    if (key) {
+      setLastEffectKey(key)
+      try { localStorage.setItem(LAST_EFFECT_KEY, key) } catch { /* 忽略 */ }
+    }
+  }, [engine])
+
+  // 顶部总开关：打开时恢复上一次使用的音效（而不是总回退到全景声厅）
+  const toggleMasterEffect = useCallback((on: boolean) => {
+    if (!on) {
+      activateEffect(null)
+      return
+    }
+    const current = EFFECT_KEYS.find(k => engine.getSettings().effects[k].enabled) || null
+    activateEffect(current || lastEffectKey)
+  }, [activateEffect, lastEffectKey])
 
   // ---- EQ 预设 ----
   const currentPresetJson = useMemo(() => {
@@ -195,14 +236,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
   const sliderTrack = (value: number, min: number, max: number) =>
     `linear-gradient(to right, ${accentColor} 0%, ${accentColor} ${((value - min) / (max - min)) * 100}%, ${dark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.14)'} ${((value - min) / (max - min)) * 100}%, ${dark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.14)'} 100%)`
 
-  const EFFECT_NAMES: Record<keyof AudioEffectsSettings['effects'], string> = {
-    hall: '全景声厅',
-    surround3d: '3D 环绕',
-    bassBoost: '低音增强',
-    vocalBoost: '人声加强',
-    accompanimentBoost: '伴奏加强',
-  }
-  const activeEffectKey = (Object.keys(EFFECT_NAMES) as (keyof AudioEffectsSettings['effects'])[]).find(k => settings.effects[k].enabled) || null
+  const activeEffectKey = EFFECT_KEYS.find(k => settings.effects[k].enabled) || null
 
   // 全景声厅：声场可视化拖拽（横向位置 → 宽度级别 1-10）
   const hallSpread = (settings.effects.hall.level / 10) * 70
@@ -425,116 +459,53 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                   {glassCardShell(
                     <div className="flex items-center justify-between">
                       <div>
-                        <div className={`${textPrimary} font-medium`}>{activeEffectKey ? `当前音效：${EFFECT_NAMES[activeEffectKey]}` : '开启音效'}</div>
-                        <div className={`${textSecondary} text-xs mt-0.5`}>{activeEffectKey ? '同时只能开启一个音效' : '选择下方音效卡片，点击「使用」即可开启'}</div>
+                        <div className={`${textPrimary} font-medium`}>{activeEffectKey ? `当前音效：${EFFECT_META[activeEffectKey].name}` : '开启音效'}</div>
+                        <div className={`${textSecondary} text-xs mt-0.5`}>{activeEffectKey ? '可尝试自定义选择当前音效自定义配置' : '选择下方音效卡片，点击即可开启'}</div>
                       </div>
-                      {renderToggle(activeEffectKey !== null, (v) => engine.activateEffect(v ? (activeEffectKey || 'hall') : null))}
+                      {renderToggle(activeEffectKey !== null, toggleMasterEffect)}
                     </div>
                   )}
 
-                  {/* 效果卡片（点击进入二级菜单） */}
-                  {([
-                    { key: 'hall' as const, desc: '让声场更宽广 + 大厅混响', intro: '通过中/侧声道加宽声场，并叠加大厅卷积混响，营造宽敞、有纵深感的听感。可拖动上方声场图或滑杆调节宽度，混响程度单独可调。' },
-                    { key: 'surround3d' as const, desc: '耳机内环绕旋转的立体声场', intro: '用 HRTF 双耳算法让声音在耳机内绕头旋转，营造环绕感。可在圆形图上拖动调整旋转角度与环绕距离，并设置旋转方向与速度。' },
-                    { key: 'bassBoost' as const, desc: '增强低频的厚度与力度', intro: '通过低频搁架 + 次低频共振峰增强鼓点与贝斯的冲击力。深度控制起始频率，强度控制增强幅度。' },
-                    { key: 'vocalBoost' as const, desc: '提升人声存在感与清晰度', intro: '聚焦 3kHz 人声存在感频段做窄带提升，并用中/侧分离适度增强中置人声，不会连带放大吉他等乐器。' },
-                    { key: 'accompanimentBoost' as const, desc: '突出伴奏、削弱人声', intro: '通过中/侧分离增强侧声道（乐器/伴奏）并压低中置人声，让伴奏真正更突出，而不只是减弱人声。' },
-                  ]).map((item) => (
-                    <div key={item.key}>
-                      {glassCardShell(
-                        <>
-                          <button type="button" className="w-full flex items-center justify-between" onClick={() => setEffectDetail(effectDetail === item.key ? null : item.key)}>
-                            <div className="text-left">
-                              <div className={`${textPrimary} font-medium`}>{EFFECT_NAMES[item.key]}</div>
-                              <div className={`${textSecondary} text-xs mt-0.5`}>{item.desc}</div>
-                            </div>
-                            <ChevronDown className={`w-5 h-5 ${textSecondary} transition-transform ${effectDetail === item.key ? 'rotate-180' : ''}`} />
-                          </button>
+                  {/* 效果卡片（一行 4 个，点击卡片打开配置弹窗） */}
+                  <div className="grid grid-cols-4 gap-2.5">
+                    {EFFECT_KEYS.map((key) => {
+                      const meta = EFFECT_META[key]
+                      const enabled = settings.effects[key].enabled
+                      const Icon = meta.icon
+                      return (
+                        <div
+                          key={key}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setEffectModal(key)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setEffectModal(key) }}
+                          className="relative cursor-pointer rounded-2xl p-3 flex flex-col items-center gap-2 transition-all hover:brightness-110"
+                          style={{
+                            background: enabled ? `${accentColor}26` : glassCard,
+                            backdropFilter: glassCardBlur,
+                            WebkitBackdropFilter: glassCardBlur,
+                            border: `1px solid ${enabled ? accentColor : glassBorder}`,
+                            boxShadow: enabled ? `0 0 16px ${accentColor}44` : '0 4px 14px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.12)',
+                          }}
+                        >
+                          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: `${accentColor}22`, color: accentColor }}>
+                            <Icon className="w-4.5 h-4.5" />
+                          </div>
+                          <div className={`text-xs font-medium ${textPrimary} text-center leading-tight`}>{meta.name}</div>
                           <button
                             type="button"
-                            onClick={() => engine.activateEffect(settings.effects[item.key].enabled ? null : item.key)}
-                            className="mt-3 w-full py-2 rounded-xl text-sm font-medium transition-colors"
-                            style={settings.effects[item.key].enabled
-                              ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 14px ${accentColor}55` }
+                            onClick={(e) => { e.stopPropagation(); activateEffect(enabled ? null : key) }}
+                            className="w-full py-1.5 rounded-lg text-xs font-medium transition-colors"
+                            style={enabled
+                              ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
                               : { backgroundColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', color: dark ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.7)' }}
                           >
-                            {settings.effects[item.key].enabled ? '已启用' : '使用'}
+                            {enabled ? '已启用' : '使用'}
                           </button>
-                          <AnimatePresence>
-                            {effectDetail === item.key && (
-                              <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                                <div className="mt-3 pt-3 border-t border-white/10">
-                                  <p className={`${textSecondary} text-xs leading-relaxed mb-3`}>{item.intro}</p>
-
-                                  {item.key === 'hall' && (
-                                    <>
-                                      {/* 声场可视化（可拖拽） */}
-                                      <div
-                                        className="relative h-16 rounded-xl mb-3 cursor-ew-resize touch-none overflow-hidden"
-                                        style={{ background: `linear-gradient(90deg, ${accentColor}22, transparent 50%, ${accentColor}22)`, border: `1px solid ${glassBorder}` }}
-                                        onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setHallLevelFromPointer(e) }}
-                                        onPointerMove={(e) => { if (e.buttons === 1) setHallLevelFromPointer(e) }}
-                                      >
-                                        <div className="absolute left-1/2 top-0 bottom-0 w-px" style={{ background: dark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.2)' }} />
-                                        <div className="absolute top-1/2 w-3.5 h-3.5 rounded-full bg-white -translate-y-1/2 -translate-x-1/2 shadow" style={{ left: `${50 - hallSpread / 2}%` }} />
-                                        <div className="absolute top-1/2 w-3.5 h-3.5 rounded-full bg-white -translate-y-1/2 -translate-x-1/2 shadow" style={{ left: `${50 + hallSpread / 2}%` }} />
-                                        <div className="absolute bottom-1 inset-x-0 text-center text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)' }}>← 拖动调整声场宽度 →</div>
-                                      </div>
-                                      {renderRange('声场宽度', settings.effects.hall.level, 1, 10, 1, (v) => patchEffects({ hall: { ...settings.effects.hall, level: v } }), `${settings.effects.hall.level} 级`)}
-                                      {renderRange('混响程度', settings.effects.hall.reverb, 0, 10, 1, (v) => patchEffects({ hall: { ...settings.effects.hall, reverb: v } }), `${settings.effects.hall.reverb}`)}
-                                    </>
-                                  )}
-
-                                  {item.key === 'surround3d' && (
-                                    <>
-                                      {/* 环绕可视化（可拖拽：角度+近远） */}
-                                      <div
-                                        className="relative h-40 rounded-xl mb-3 cursor-pointer touch-none overflow-hidden"
-                                        style={{ background: dark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)', border: `1px solid ${glassBorder}` }}
-                                        onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setSurroundFromPointer(e) }}
-                                        onPointerMove={(e) => { if (e.buttons === 1) setSurroundFromPointer(e) }}
-                                      >
-                                        <div className="absolute left-1/2 top-1/2 w-24 h-24 -translate-x-1/2 -translate-y-1/2 rounded-full border" style={{ borderColor: dark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)' }} />
-                                        <div className="absolute left-1/2 top-1/2 w-3 h-3 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ background: dark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)' }} />
-                                        <div className="absolute w-4 h-4 -translate-x-1/2 -translate-y-1/2 rounded-full shadow" style={{ left: `${surroundDotX}%`, top: `${surroundDotY}%`, background: accentColor, boxShadow: `0 0 12px ${accentColor}88` }} />
-                                        <div className="absolute bottom-1 inset-x-0 text-center text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)' }}>拖动圆点调整角度与距离</div>
-                                      </div>
-                                      {renderRange('环绕近远', settings.effects.surround3d.distance, 1, 10, 1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, distance: v } }))}
-                                      {renderRange('旋转角度', settings.effects.surround3d.angle, 0, 360, 1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, angle: v } }), `${settings.effects.surround3d.angle}°`)}
-                                      {renderRange('环绕速度', settings.effects.surround3d.speed, 0.2, 3, 0.1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, speed: v } }), `${settings.effects.surround3d.speed.toFixed(1)}x`)}
-                                      <div className="flex gap-2">
-                                        <button type="button" onClick={() => patchEffects({ surround3d: { ...settings.effects.surround3d, direction: 1 } })} className={`flex-1 py-2 rounded-xl text-sm transition-colors ${settings.effects.surround3d.direction === 1 ? 'text-white' : dark ? 'text-white/70' : 'text-black/70'}`} style={settings.effects.surround3d.direction === 1 ? { backgroundColor: accentColor } : { backgroundColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}>正转 ↻</button>
-                                        <button type="button" onClick={() => patchEffects({ surround3d: { ...settings.effects.surround3d, direction: -1 } })} className={`flex-1 py-2 rounded-xl text-sm transition-colors ${settings.effects.surround3d.direction === -1 ? 'text-white' : dark ? 'text-white/70' : 'text-black/70'}`} style={settings.effects.surround3d.direction === -1 ? { backgroundColor: accentColor } : { backgroundColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}>反转 ↺</button>
-                                      </div>
-                                    </>
-                                  )}
-
-                                  {item.key === 'bassBoost' && (
-                                    <>
-                                      <div className="flex items-center gap-3 mb-3">
-                                        <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: `${accentColor}22` }}><Music2 className="w-5 h-5" style={{ color: accentColor }} /></div>
-                                        <div className={`${textTertiary} text-xs`}>低频搁架 + 次低频共振，增强鼓点与贝斯冲击力</div>
-                                      </div>
-                                      {renderRange('深度（起始频率）', settings.effects.bassBoost.depth, 40, 250, 5, (v) => patchEffects({ bassBoost: { ...settings.effects.bassBoost, depth: v } }), `${settings.effects.bassBoost.depth}Hz`)}
-                                      {renderRange('强度', settings.effects.bassBoost.intensity, 0, 12, 0.5, (v) => patchEffects({ bassBoost: { ...settings.effects.bassBoost, intensity: v } }), `+${settings.effects.bassBoost.intensity.toFixed(1)}dB`)}
-                                    </>
-                                  )}
-
-                                  {item.key === 'vocalBoost' && (
-                                    renderRange('强度', settings.effects.vocalBoost.intensity, 0, 9, 0.5, (v) => patchEffects({ vocalBoost: { ...settings.effects.vocalBoost, intensity: v } }), `+${settings.effects.vocalBoost.intensity.toFixed(1)}dB`)
-                                  )}
-
-                                  {item.key === 'accompanimentBoost' && (
-                                    renderRange('强度', settings.effects.accompanimentBoost.intensity, 0, 9, 0.5, (v) => patchEffects({ accompanimentBoost: { ...settings.effects.accompanimentBoost, intensity: v } }), `+${settings.effects.accompanimentBoost.intensity.toFixed(1)}dB`)
-                                  )}
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </>
-                      )}
-                    </div>
-                  ))}
+                        </div>
+                      )
+                    })}
+                  </div>
                 </motion.div>
               )}
 
@@ -765,6 +736,146 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
           </div>
         </motion.div>
       </motion.div>
+
+      {/* 效果配置弹窗（点击卡片打开，独立层级避免点击冒泡关闭整个调音室） */}
+      <AnimatePresence>
+        {effectModal && (() => {
+          const key = effectModal
+          const meta = EFFECT_META[key]
+          const enabled = settings.effects[key].enabled
+          const Icon = meta.icon
+          return (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[90] flex items-center justify-center p-4"
+              style={{ backgroundColor: dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.2)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+              onClick={() => setEffectModal(null)}
+            >
+              <motion.div
+                initial={{ scale: 0.9, opacity: 0, y: 12 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 12 }}
+                transition={{ type: 'spring', damping: 26, stiffness: 320 }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-sm overflow-hidden rounded-3xl"
+                style={{
+                  background: glassPanel,
+                  backdropFilter: glassBlur,
+                  WebkitBackdropFilter: glassBlur,
+                  border: `1px solid ${glassBorder}`,
+                  boxShadow: '0 24px 64px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.2)',
+                }}
+              >
+                <div className="p-5">
+                  {/* 头部 */}
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: `${accentColor}22`, color: accentColor, border: `1px solid ${accentColor}55` }}>
+                        <Icon className="w-4.5 h-4.5" />
+                      </div>
+                      <div className={`${textPrimary} font-semibold`}>{meta.name}</div>
+                    </div>
+                    <button type="button" onClick={() => setEffectModal(null)} className={`p-2 rounded-full transition-colors ${dark ? 'hover:bg-white/15' : 'hover:bg-black/10'}`}>
+                      <X className={`w-4.5 h-4.5 ${textSecondary}`} />
+                    </button>
+                  </div>
+
+                  <p className={`${textSecondary} text-xs leading-relaxed mb-4`}>{meta.intro}</p>
+
+                  {key === 'hall' && (
+                    <>
+                      {/* 声场可视化（优化：左右声源点 + 听者中线 + 级别徽标） */}
+                      <div
+                        className="relative h-24 rounded-xl mb-3 cursor-ew-resize touch-none overflow-hidden select-none"
+                        style={{
+                          background: dark
+                            ? `radial-gradient(ellipse at center, ${accentColor}1f, transparent 72%), rgba(255,255,255,0.03)`
+                            : `radial-gradient(ellipse at center, ${accentColor}1a, transparent 72%), rgba(0,0,0,0.03)`,
+                          border: `1px solid ${glassBorder}`,
+                        }}
+                        onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setHallLevelFromPointer(e) }}
+                        onPointerMove={(e) => { if (e.buttons === 1) setHallLevelFromPointer(e) }}
+                      >
+                        <div className="absolute left-1/2 top-0 bottom-0 w-px" style={{ background: dark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.16)' }} />
+                        <div className="absolute left-1/2 top-1/2 w-1.5 h-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ background: accentColor }} />
+                        <div className="absolute top-1/2 w-3 h-3 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ left: `${50 - hallSpread / 2}%`, background: accentColor, boxShadow: `0 0 12px ${accentColor}aa` }} />
+                        <div className="absolute top-1/2 w-3 h-3 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ left: `${50 + hallSpread / 2}%`, background: accentColor, boxShadow: `0 0 12px ${accentColor}aa` }} />
+                        <span className="absolute top-1.5 left-2 text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)' }}>声场宽度</span>
+                        <span className="absolute top-1.5 right-2 text-[10px] font-semibold" style={{ color: accentColor }}>{settings.effects.hall.level} 级</span>
+                        <span className="absolute bottom-1 inset-x-0 text-center text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)' }}>← 左右拖动调整声场宽度 →</span>
+                      </div>
+                      {renderRange('混响程度', settings.effects.hall.reverb, 0, 10, 1, (v) => patchEffects({ hall: { ...settings.effects.hall, reverb: v } }), `${settings.effects.hall.reverb}`)}
+                    </>
+                  )}
+
+                  {key === 'surround3d' && (
+                    <>
+                      {/* 环绕可视化（优化：同心环 + 十字线 + 角度/距离读数） */}
+                      <div
+                        className="relative h-48 rounded-xl mb-3 touch-none overflow-hidden select-none"
+                        style={{ background: dark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)', border: `1px solid ${glassBorder}` }}
+                      >
+                        <span className="absolute top-1.5 left-2 text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)' }}>角度 {settings.effects.surround3d.angle}°</span>
+                        <span className="absolute top-1.5 right-2 text-[10px] font-semibold" style={{ color: accentColor }}>距离 {settings.effects.surround3d.distance}</span>
+                        <div
+                          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-36 h-36 cursor-pointer touch-none"
+                          onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setSurroundFromPointer(e) }}
+                          onPointerMove={(e) => { if (e.buttons === 1) setSurroundFromPointer(e) }}
+                        >
+                          {[0.33, 0.66, 1].map(r => (
+                            <div key={r} className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border" style={{ width: `${r * 100}%`, height: `${r * 100}%`, borderColor: dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)' }} />
+                          ))}
+                          <div className="absolute left-1/2 top-0 bottom-0 w-px" style={{ background: dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)' }} />
+                          <div className="absolute top-1/2 left-0 right-0 h-px" style={{ background: dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)' }} />
+                          <div className="absolute left-1/2 top-1/2 w-2.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ background: dark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.5)' }} />
+                          <div className="absolute w-4 h-4 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ left: `${surroundDotX}%`, top: `${surroundDotY}%`, background: accentColor, boxShadow: `0 0 14px ${accentColor}aa` }} />
+                        </div>
+                        <span className="absolute bottom-1 inset-x-0 text-center text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)' }}>拖动圆点调整角度与距离</span>
+                      </div>
+                      {renderRange('环绕近远', settings.effects.surround3d.distance, 1, 10, 1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, distance: v } }))}
+                      {renderRange('旋转角度', settings.effects.surround3d.angle, 0, 360, 1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, angle: v } }), `${settings.effects.surround3d.angle}°`)}
+                      {renderRange('环绕速度', settings.effects.surround3d.speed, 0.2, 3, 0.1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, speed: v } }), `${settings.effects.surround3d.speed.toFixed(1)}x`)}
+                      <div className="flex gap-2">
+                        <button type="button" onClick={() => patchEffects({ surround3d: { ...settings.effects.surround3d, direction: 1 } })} className={`flex-1 py-2 rounded-xl text-sm transition-colors ${settings.effects.surround3d.direction === 1 ? 'text-white' : dark ? 'text-white/70' : 'text-black/70'}`} style={settings.effects.surround3d.direction === 1 ? { backgroundColor: accentColor } : { backgroundColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}>正转 ↻</button>
+                        <button type="button" onClick={() => patchEffects({ surround3d: { ...settings.effects.surround3d, direction: -1 } })} className={`flex-1 py-2 rounded-xl text-sm transition-colors ${settings.effects.surround3d.direction === -1 ? 'text-white' : dark ? 'text-white/70' : 'text-black/70'}`} style={settings.effects.surround3d.direction === -1 ? { backgroundColor: accentColor } : { backgroundColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}>反转 ↺</button>
+                      </div>
+                    </>
+                  )}
+
+                  {key === 'bassBoost' && (
+                    <>
+                      {renderRange('深度（起始频率）', settings.effects.bassBoost.depth, 40, 250, 5, (v) => patchEffects({ bassBoost: { ...settings.effects.bassBoost, depth: v } }), `${settings.effects.bassBoost.depth}Hz`)}
+                      {renderRange('强度', settings.effects.bassBoost.intensity, 0, 12, 0.5, (v) => patchEffects({ bassBoost: { ...settings.effects.bassBoost, intensity: v } }), `+${settings.effects.bassBoost.intensity.toFixed(1)}dB`)}
+                    </>
+                  )}
+
+                  {key === 'vocalBoost' && (
+                    renderRange('强度', settings.effects.vocalBoost.intensity, 0, 9, 0.5, (v) => patchEffects({ vocalBoost: { ...settings.effects.vocalBoost, intensity: v } }), `+${settings.effects.vocalBoost.intensity.toFixed(1)}dB`)
+                  )}
+
+                  {key === 'accompanimentBoost' && (
+                    renderRange('强度', settings.effects.accompanimentBoost.intensity, 0, 9, 0.5, (v) => patchEffects({ accompanimentBoost: { ...settings.effects.accompanimentBoost, intensity: v } }), `+${settings.effects.accompanimentBoost.intensity.toFixed(1)}dB`)
+                  )}
+
+                  {/* 启用按钮 */}
+                  <button
+                    type="button"
+                    onClick={() => activateEffect(enabled ? null : key)}
+                    className="mt-4 w-full py-2.5 rounded-xl text-sm font-medium transition-all active:scale-[0.98]"
+                    style={enabled
+                      ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 16px ${accentColor}55` }
+                      : { backgroundColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', color: dark ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.7)' }}
+                  >
+                    {enabled ? '已启用 · 点击关闭' : '使用此音效'}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )
+        })()}
+      </AnimatePresence>
     </>
   )
 }
