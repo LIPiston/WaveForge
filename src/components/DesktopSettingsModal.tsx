@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Image, Monitor, Upload, Trash2, Video, Check, RotateCcw, ImageIcon, ChevronRight, ArrowLeft, Clock, LayoutDashboard, CloudSun, LocateFixed, MapPin, Captions, Sparkles, Hourglass, CheckCircle2, CalendarDays, CalendarClock, ListTodo, NotebookPen, Target, History, WandSparkles, ListMusic, Heart, Library, BarChart3, CalendarRange, Radio, AudioLines, Rocket, Cpu, Volume2, Timer, Shuffle, ListOrdered } from 'lucide-react'
+import { X, Image, Monitor, Upload, Trash2, Video, Check, RotateCcw, RefreshCw, ImageIcon, ChevronRight, ArrowLeft, Clock, LayoutDashboard, CloudSun, LocateFixed, MapPin, Captions, Sparkles, Hourglass, CheckCircle2, CalendarDays, CalendarClock, ListTodo, NotebookPen, Target, History, WandSparkles, ListMusic, Heart, Library, BarChart3, CalendarRange, Radio, AudioLines, Rocket, Cpu, Volume2, Timer, Shuffle, ListOrdered } from 'lucide-react'
 import { desktopWallpaperManager, DesktopWallpaperFile, DesktopWallpaperMode, DesktopWallpaperPlayMode, RandomImageSource, DesktopWallpaperSwitchMode } from '../services/desktopWallpaperManager'
 import {
   DESKTOP_CUSTOMIZATION_EVENT,
@@ -14,6 +14,7 @@ import type {
   WallpaperEngineRotationSettings,
   WallpaperEngineWallpaper,
 } from '../services/wallpaperEngineRotation'
+import type { LocationOption } from '../services/locationHierarchy'
 
 interface DesktopSettingsModalProps {
   show: boolean
@@ -186,13 +187,31 @@ export default function DesktopSettingsModal({
     () => locationHierarchy?.getProvinces(desktopCustomization.weatherCountryCode) || [],
     [desktopCustomization.weatherCountryCode, locationHierarchy],
   )
-  const weatherCities = useMemo(
-    () => locationHierarchy?.getCities(
-      desktopCustomization.weatherCountryCode,
-      desktopCustomization.weatherProvinceCode,
-    ) || [],
-    [desktopCustomization.weatherCountryCode, desktopCustomization.weatherProvinceCode, locationHierarchy],
-  )
+  const [weatherCities, setWeatherCities] = useState<LocationOption[]>([])
+  const [weatherCitiesLoading, setWeatherCitiesLoading] = useState(false)
+  // 城市数据懒加载（country-state-city 的 city.json 约 7.9MB，仅非中国地区需要，
+  // 通过 dynamic import 按需加载；中国地区直接用本地 china-area-data）。
+  useEffect(() => {
+    let cancelled = false
+    const countryCode = desktopCustomization.weatherCountryCode
+    const provinceCode = desktopCustomization.weatherProvinceCode
+    if (!countryCode || !provinceCode || !locationHierarchy) {
+      setWeatherCities([])
+      setWeatherCitiesLoading(false)
+      return
+    }
+    setWeatherCitiesLoading(true)
+    void locationHierarchy.getCities(countryCode, provinceCode).then(cities => {
+      if (cancelled) return
+      setWeatherCities(cities)
+      setWeatherCitiesLoading(false)
+    }).catch(() => {
+      if (cancelled) return
+      setWeatherCities([])
+      setWeatherCitiesLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [desktopCustomization.weatherCountryCode, desktopCustomization.weatherProvinceCode, locationHierarchy])
   const weatherDistricts = useMemo(
     () => locationHierarchy?.getDistricts(
       desktopCustomization.weatherCountryCode,
@@ -385,6 +404,21 @@ export default function DesktopSettingsModal({
   // 保存 Wallpaper Engine 联动设置
   const handleWallpaperSyncToggle = (enabled: boolean) => {
     onWallpaperSyncToggle(enabled)
+  }
+
+  // 立即同步：主进程对系统壁纸的检测是 10 秒轮询（见 desktop/main.cjs），
+  // 这里主动向主进程查询一次最新壁纸并触发前端刷新，免去等待下一次轮询。
+  const [syncNowLoading, setSyncNowLoading] = useState(false)
+  const handleWallpaperSyncNow = async () => {
+    setSyncNowLoading(true)
+    try {
+      await desktopWallpaperManager.getCurrentWallpaper()
+      window.dispatchEvent(new Event('desktopWallpaperChanged'))
+    } catch (error) {
+      console.error('立即同步壁纸失败:', error)
+    } finally {
+      setSyncNowLoading(false)
+    }
   }
 
   // 保存歌单卡片大小
@@ -625,8 +659,17 @@ export default function DesktopSettingsModal({
                                 <br />
                                 无法同步将默认使用Windows壁纸
                                 <br />
-                                壁纸同步可能需要10秒左右
+                                壁纸检测为主进程 10 秒轮询，非实时；可点击下方按钮立即同步
                               </p>
+                              <button
+                                type="button"
+                                onClick={handleWallpaperSyncNow}
+                                disabled={syncNowLoading}
+                                className="mt-3 inline-flex items-center gap-2 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 disabled:opacity-45 px-3 py-2 text-xs text-purple-200 transition-colors"
+                              >
+                                <RefreshCw className={`w-4 h-4 ${syncNowLoading ? 'animate-spin' : ''}`} />
+                                {syncNowLoading ? '同步中…' : '立即同步'}
+                              </button>
                             </motion.div>
                           )}
                         </div>
@@ -1015,26 +1058,28 @@ export default function DesktopSettingsModal({
 
                               <label className="space-y-1.5">
                                 <span className="px-1 text-[11px] text-white/40">市 / 地区</span>
-                                <select
-                                  value={desktopCustomization.weatherCityCode}
-                                  disabled={!desktopCustomization.weatherProvinceCode || weatherCities.length === 0}
-                                  onChange={event => {
-                                    const option = weatherCities.find(item => item.code === event.target.value)
-                                    updateDesktopCustomization({
-                                      ...desktopCustomization,
-                                      weatherCityCode: event.target.value,
-                                      weatherCity: option?.name || '',
-                                      weatherDistrictCode: '',
-                                      weatherDistrict: '',
-                                      weatherLatitude: null,
-                                      weatherLongitude: null,
-                                    })
-                                  }}
-                                  className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white outline-none focus:border-cyan-400/60 disabled:opacity-45"
-                                >
-                                  <option value="">请选择</option>
-                                  {weatherCities.map(option => <option key={option.code} value={option.code}>{option.name}</option>)}
-                                </select>
+                                  <select
+                                    value={desktopCustomization.weatherCityCode}
+                                    disabled={!desktopCustomization.weatherProvinceCode || (weatherCities.length === 0 && !weatherCitiesLoading)}
+                                    onChange={event => {
+                                      const option = weatherCities.find(item => item.code === event.target.value)
+                                      updateDesktopCustomization({
+                                        ...desktopCustomization,
+                                        weatherCityCode: event.target.value,
+                                        weatherCity: option?.name || '',
+                                        weatherDistrictCode: '',
+                                        weatherDistrict: '',
+                                        weatherLatitude: null,
+                                        weatherLongitude: null,
+                                      })
+                                    }}
+                                    className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white outline-none focus:border-cyan-400/60 disabled:opacity-45"
+                                  >
+                                    {weatherCitiesLoading
+                                      ? <option>正在加载城市数据…</option>
+                                      : <option value="">请选择</option>}
+                                    {weatherCities.map(option => <option key={option.code} value={option.code}>{option.name}</option>)}
+                                  </select>
                               </label>
 
                               <label className="space-y-1.5">

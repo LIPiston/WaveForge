@@ -56,6 +56,23 @@ type ElectronWallpaperResult = {
   }
 }
 
+/**
+ * 将本地壁纸路径规范化为渲染进程可直接使用的 URL，重点容错 UNC 网络路径：
+ * - 已是 URL（data:/http:/https:/blob:/file:/waveforge-media:）原样返回
+ * - UNC 路径（\\server\share\file.png）转为 file://server/share/file.png
+ * - 其他本地路径保持原样（通常主进程已附带 fileUrl / dataUrl）
+ */
+export function toWallpaperUrl(raw: string | null | undefined): string {
+  if (!raw) return ''
+  const value = raw.trim()
+  if (/^(data:|https?:|blob:|file:|waveforge-media:)/i.test(value)) return value
+  // UNC：\\server\share\... -> file://server/share/...
+  if (/^\\\\[^\\]+\\/.test(value)) {
+    return `file:${value.replace(/\\/g, '/')}`
+  }
+  return value
+}
+
 function wallpaperResultToSource(result: ElectronWallpaperResult): string | DesktopLiveWallpaperSource | null {
   console.log('[wallpaperResultToSource] Processing result:', result)
   if (!result.success) return null
@@ -65,27 +82,27 @@ function wallpaperResultToSource(result: ElectronWallpaperResult): string | Desk
   // 检查是否是不支持的壁纸类型
   if (engine?.unsupported) {
     console.warn('[wallpaperResultToSource] Unsupported wallpaper detected! Type:', engine.sourceType, 'Path:', engine.path)
-    // 触发警告通知
+    // 触发警告通知（携带 sourceType 供渲染端展示更准确的提示）
     setTimeout(() => {
       console.log('[wallpaperResultToSource] Dispatching unsupportedWallpaper event')
       window.dispatchEvent(new CustomEvent('unsupportedWallpaper', {
-        detail: { sourceType: engine.sourceType, path: engine.path }
+        detail: { sourceType: engine.sourceType, path: engine.path, title: engine.title }
       }))
     }, 100)
-    // 返回系统壁纸作为回退
-    return result.dataUrl || result.fileUrl || result.path || null
+    // 返回系统壁纸作为回退（若为 UNC 路径则规范化为 file:// 形式）
+    return toWallpaperUrl(result.dataUrl || result.fileUrl || result.path) || null
   }
   
   if (engine && (engine.sourceType === 'video' || engine.sourceType === 'web')) {
     return {
       kind: 'wallpaper-engine',
       sourceType: engine.sourceType,
-      url: engine.mediaUrl || engine.fileUrl || engine.path || '',
+      url: toWallpaperUrl(engine.mediaUrl || engine.fileUrl || engine.path) || '',
       path: engine.path || '',
       title: engine.title
     }
   }
-  return result.dataUrl || result.fileUrl || result.path || null
+  return toWallpaperUrl(result.dataUrl || result.fileUrl || result.path) || null
 }
 
 // 随机图片API配置 - 使用可用的API
@@ -278,11 +295,11 @@ class DesktopWallpaperManager {
                   title: selected.title
                 } as DesktopLiveWallpaperSource
               } else if (selected.type === 'image') {
-                // 图片壁纸 - 返回真实文件 URL
-                return `http://localhost:3001/api/wallpaper-engine/media?id=${selected.id}&file=${encodeURIComponent(selected.file)}`
+                // 图片壁纸 - 返回真实文件 URL（容错 UNC 路径）
+                return toWallpaperUrl(`http://localhost:3001/api/wallpaper-engine/media?id=${selected.id}&file=${encodeURIComponent(selected.file)}`)
               } else {
                 // 其他类型使用预览图
-                return `http://localhost:3001${selected.preview}`
+                return toWallpaperUrl(`http://localhost:3001${selected.preview}`)
               }
             }
           } catch (error) {

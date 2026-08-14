@@ -9,7 +9,7 @@ import LyricsDisplay from './LyricsDisplay'
 import DesktopWidgetZone from './DesktopWidgetZone'
 import DesktopFocusAlarmOverlay from './DesktopFocusAlarmOverlay'
 import { Song, LyricLine } from '../services/musicApi'
-import { desktopWallpaperManager, DesktopLiveWallpaperSource } from '../services/desktopWallpaperManager'
+import { desktopWallpaperManager, DesktopLiveWallpaperSource, toWallpaperUrl } from '../services/desktopWallpaperManager'
 import { getUserPlaylists, removeSongFromPlaylist, streamNeteasePlaylistTracks } from '../services/playlistService'
 import { useColorThief } from '../hooks/useColorThief'
 import {
@@ -989,9 +989,19 @@ export default function DesktopView({
     const handleUnsupportedWallpaper = (e: Event) => {
       console.log('[DesktopView] Received unsupportedWallpaper event!')
       const customEvent = e as CustomEvent
-      const { sourceType } = customEvent.detail
+      const { sourceType, title } = customEvent.detail || {}
       console.warn('[DesktopView] Unsupported wallpaper detected:', sourceType)
-      showToastNotification('当前壁纸无法同步，请更换其他壁纸', 'warning')
+      // 按类型给出更准确的提示（Wallpaper Engine 场景/程序壁纸无法在浏览器中实时渲染，
+      // 只会显示静态预览图）
+      const typeMessages: Record<string, string> = {
+        scene: '3D 场景壁纸',
+        application: '程序壁纸',
+        web: '网页壁纸',
+        unknown: '动态壁纸',
+      }
+      const label = typeMessages[sourceType as string] || '动态壁纸'
+      const name = title ? `「${title}」` : ''
+      showToastNotification(`Wallpaper Engine ${name}${label}无法实时同步，已显示静态预览`, 'warning')
     }
     
     console.log('[DesktopView] Setting up unsupportedWallpaper listener')
@@ -1023,11 +1033,13 @@ export default function DesktopView({
       
       if (typeof wallpaper === 'string') {
         // 字符串类型：Wallpaper Engine 路径或随机图片 URL
-        nextSignature = `image:${wallpaper}`
+        // 本地路径可能是 UNC（\\server\share\...），统一规范化为可渲染的 URL
+        const wallpaperUrl = toWallpaperUrl(wallpaper)
+        nextSignature = `image:${wallpaperUrl}`
         if (!forceReload && wallpaperSourceRef.current === nextSignature) return
         wallpaperSourceRef.current = nextSignature
         setDesktopLiveWallpaper(null)
-        setDesktopWallpaper(wallpaper)
+        setDesktopWallpaper(wallpaperUrl)
       } else if (isDesktopLiveWallpaperSource(wallpaper)) {
         nextSignature = `live:${wallpaper.sourceType}:${wallpaper.url}:${wallpaper.path}`
         if (!forceReload && wallpaperSourceRef.current === nextSignature) return
@@ -1087,7 +1099,15 @@ export default function DesktopView({
         // 检查是否是不支持的壁纸类型
         if (settings.wallpaperEngineEnabled && engine?.unsupported) {
           console.warn('[DesktopView] Unsupported wallpaper type:', engine.sourceType)
-          showToastNotification('当前壁纸无法同步，请更换其他壁纸', 'warning')
+          const typeMessages: Record<string, string> = {
+            scene: '3D 场景壁纸',
+            application: '程序壁纸',
+            web: '网页壁纸',
+            unknown: '动态壁纸',
+          }
+          const label = typeMessages[engine.sourceType] || '动态壁纸'
+          const name = engine.title ? `「${engine.title}」` : ''
+          showToastNotification(`Wallpaper Engine ${name}${label}无法实时同步，已显示静态预览`, 'warning')
           // 回退到系统壁纸
           const nextWallpaper = typeof wallpaper === 'string'
             ? wallpaper
@@ -1146,7 +1166,7 @@ export default function DesktopView({
           if (wallpaperSourceRef.current === nextSignature) return
           wallpaperSourceRef.current = nextSignature
           setDesktopLiveWallpaper(null)
-          setDesktopWallpaper(nextWallpaper)
+          setDesktopWallpaper(toWallpaperUrl(nextWallpaper))
           setWallpaperKey(prev => prev + 1)
         }
       })
