@@ -22,7 +22,12 @@
     "lint": "tsc --noEmit",
     "sync:sponsors": "node scripts/sync-afdian-sponsors.mjs",
     "prebuild": "node scripts/sync-afdian-sponsors.mjs --optional",
-    "test:license": "node scripts/test-device-license.cjs"
+    "test:license": "node scripts/test-device-license.cjs",
+    "version:patch": "node scripts/bump-version.mjs patch",
+    "version:minor": "node scripts/bump-version.mjs minor",
+    "version:major": "node scripts/bump-version.mjs major",
+    "version:pre": "node scripts/bump-version.mjs pre",
+    "version:dry": "node scripts/bump-version.mjs --dry-run"
   },
   "build": {
     "appId": "com.waveforge.desktop",
