@@ -90,9 +90,9 @@
 
 ---
 
-## 4. Phase 2 规划（智能过渡点选择算法）
+## 4. Phase 2 规划（智能过渡点选择算法）—— 已实施 ✅
 
-> 来自 PHASE_1_COMPLETE.md，为尚未实施的进行中规划。
+> 原为 PHASE_1_COMPLETE.md 的进行中规划；**已于 2026-08-13 前落地**（`src/audio/transitionPlanner.ts` 的 `planTransition()` 完整实现：候选过渡点生成 + 6 成本矩阵 timbre/chroma/loudness/vocal/section/confidence + 归一化加权选优）。以下保留原始规划存档。
 
 Phase 1（Beat This 集成）已铺好基础：
 - `server/analysis_worker.py`：Python 分析 worker（Beat This 为主、Librosa 降级），JSON 消息通信协议（stdin/stdout），支持节拍检测、BPM 估算、beat 同步特征提取
@@ -100,14 +100,14 @@ Phase 1（Beat This 集成）已铺好基础：
 - `desktop/analysis-runtime.cjs`：worker 生命周期管理（启动 / 空闲关闭）+ 分析结果持久化缓存（LRU）
 - `src/services/analysisService.ts`、`src/hooks/useAutoMixer.ts`：渲染层接入，将 Beat This 结果转换为 AudioFeatures
 
-**Phase 2 目标**：
+**Phase 2 目标**（规划存档；实际已由 `transitionPlanner.ts` 的 6 成本矩阵方案实现）：
 - 使用 Beat This 的精确 beat / downbeat 数据
 - 实现候选过渡点生成
 - 计算 6 个成本矩阵：timbre（音色）、chroma（和声）、loudness（响度）、vocal（人声）、section（段落）、tempo（速度）
 - 基于成本矩阵选择最佳过渡点
 
-预计工作量：2-3 天
-关键文件：`src/audio/transitionPlanner.ts`（需完善）、`server/analysis_worker.py`（增强特征提取）
+预计工作量：2-3 天（已达成）
+关键文件：`src/audio/transitionPlanner.ts`（已完善）、`server/analysis_worker.py`（增强特征提取）
 
 **Phase 1 性能指标（历史快照数据）**：
 - 首次分析 10-30 秒（3 分钟歌曲）；缓存命中 < 50ms；worker 首次启动 2-5 秒

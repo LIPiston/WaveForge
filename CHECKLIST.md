@@ -1,5 +1,7 @@
 # WaveForge 完成检查清单
 
+> ⚠️ 本文档为 2026-07-25 的功能完成清单（历史基线）。技术栈与最新状态以 [AGENTS.md](./AGENTS.md) 与 [README.md](./README.md) 为准；HANDOVER.md「未决事项」记录最新待办。已更新差异：React **19**（非 18）、无 Zustand（用 hooks/context）、嵌入式 Python 3.13.15、端口 3002。
+
 ## ✅ 核心功能
 
 - [x] 音乐搜索（QQ音乐 + 网易云）
@@ -52,9 +54,9 @@
 ## ✅ 技术架构
 
 ### 前端
-- [x] React 18 + TypeScript
+- [x] React 19 + TypeScript
 - [x] Tailwind CSS
-- [x] Zustand 状态管理
+- [x] Hooks/Context 状态管理（无 Zustand）
 - [x] Web Audio API
 - [x] Three.js 可视化
 

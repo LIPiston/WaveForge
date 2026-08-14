@@ -29,6 +29,21 @@ except ImportError:
     LIBROSA_AVAILABLE = False
 
 
+def _ensure_stereo(audio: np.ndarray) -> np.ndarray:
+    """单声道输入上采样为立体声，立体声/多声道保持原样。
+
+    与 desktop/workers/render_worker.py 一致保留立体声——音乐是立体声，折叠 mono
+    会丢失声像信息。pedalboard AudioFile.read() 与 librosa.load(mono=False) 均返回
+    (channels, frames) 2D 布局，这里同时兼容 1D 输入（librosa.load 对单声道文件
+    以 mono=False 读取时仍返回 1D）。
+    """
+    if audio.ndim == 1:
+        audio = audio[None, :]
+    if audio.shape[0] == 1:
+        return np.repeat(audio, 2, axis=0)
+    return audio
+
+
 class RenderWorker:
     """Handles audio rendering for seamless transitions"""
     
@@ -144,12 +159,11 @@ class RenderWorker:
             # Resample target if needed
             target_audio = librosa.resample(target_audio, orig_sr=sr_target, target_sr=sr)
         
-        # Convert to mono if stereo (pedalboard AudioFile.read() always returns 2D (channels, frames))
-        if source_audio.shape[0] == 2:
-            source_audio = np.mean(source_audio, axis=0, keepdims=True)
-        
-        if target_audio.shape[0] == 2:
-            target_audio = np.mean(target_audio, axis=0, keepdims=True)
+        # 保留立体声（与 desktop/workers/render_worker.py 契约一致）：
+        # 立体声输入保持原样，单声道输入上采样为立体声，避免折叠 mono 丢失声像信息。
+        # pedalboard AudioFile.read() 始终返回 (channels, frames) 2D 布局
+        source_audio = _ensure_stereo(source_audio)
+        target_audio = _ensure_stereo(target_audio)
         
         print(f"Source audio: {source_audio.shape}, Target audio: {target_audio.shape}", file=sys.stderr)
         
@@ -159,22 +173,25 @@ class RenderWorker:
         
         if needs_stretch and LIBROSA_AVAILABLE:
             print(f"Applying time stretch: ratio={bpm_ratio:.3f}", file=sys.stderr)
-            # Use librosa for time stretching (Pedalboard doesn't have time_stretch directly)
-            source_audio_stretched = librosa.effects.time_stretch(source_audio[0], rate=bpm_ratio)
-            source_audio = source_audio_stretched.reshape(1, -1)
+            # 逐声道 time_stretch 并保留立体声布局（与 desktop/workers/render_worker.py 一致）
+            stretched_channels = [
+                librosa.effects.time_stretch(channel, rate=bpm_ratio)
+                for channel in source_audio
+            ]
+            source_audio = np.stack(stretched_channels, axis=0)
         
         # Ensure same length
         min_length = min(source_audio.shape[1], target_audio.shape[1])
         max_length = max(source_audio.shape[1], target_audio.shape[1])
         transition_length = max_length
         
-        # Pad shorter audio
+        # Pad shorter audio (按声道数补零，保持 (channels, frames) 布局)
         if source_audio.shape[1] < transition_length:
-            padding = np.zeros((1, transition_length - source_audio.shape[1]))
+            padding = np.zeros((source_audio.shape[0], transition_length - source_audio.shape[1]))
             source_audio = np.concatenate([source_audio, padding], axis=1)
         
         if target_audio.shape[1] < transition_length:
-            padding = np.zeros((1, transition_length - target_audio.shape[1]))
+            padding = np.zeros((target_audio.shape[0], transition_length - target_audio.shape[1]))
             target_audio = np.concatenate([target_audio, padding], axis=1)
         
         # Apply gain curves (crossfade)
@@ -209,8 +226,8 @@ class RenderWorker:
         
         processed = board(mixed.astype(np.float32), sr)
         
-        # Save output
-        with AudioFile(output_path, 'w', sr, num_channels=1) as f:
+        # Save output (保留立体声声道数)
+        with AudioFile(output_path, 'w', sr, num_channels=processed.shape[0]) as f:
             f.write(processed)
         
         duration = len(processed[0]) / sr
@@ -238,9 +255,12 @@ class RenderWorker:
         gain_curve_source = plan.get('gainCurve', {}).get('source', [])
         gain_curve_target = plan.get('gainCurve', {}).get('target', [])
         
-        # Load audio segments
-        source_audio, sr = librosa.load(source_path, sr=44100, mono=True, offset=source_start, duration=source_end - source_start)
-        target_audio, sr = librosa.load(target_path, sr=44100, mono=True, offset=target_start, duration=target_end - target_start)
+        # Load audio segments (保留立体声，mono 输入由 _ensure_stereo 上采样为立体声)
+        source_audio, sr = librosa.load(source_path, sr=44100, mono=False, offset=source_start, duration=source_end - source_start)
+        target_audio, sr = librosa.load(target_path, sr=44100, mono=False, offset=target_start, duration=target_end - target_start)
+        
+        source_audio = _ensure_stereo(source_audio)
+        target_audio = _ensure_stereo(target_audio)
         
         # Apply tempo adjustment
         bpm_ratio = target_bpm / source_bpm if source_bpm > 0 else 1.0
@@ -249,16 +269,18 @@ class RenderWorker:
             source_audio = librosa.effects.time_stretch(source_audio, rate=bpm_ratio)
         
         # Ensure same length
-        min_length = min(len(source_audio), len(target_audio))
-        max_length = max(len(source_audio), len(target_audio))
+        min_length = min(source_audio.shape[1], target_audio.shape[1])
+        max_length = max(source_audio.shape[1], target_audio.shape[1])
         transition_length = max_length
         
-        # Pad to same length
-        source_padded = np.zeros(transition_length)
-        target_padded = np.zeros(transition_length)
+        # Pad to same length (按声道数补零，保持 (channels, frames) 布局)
+        source_channels = source_audio.shape[0]
+        target_channels = target_audio.shape[0]
+        source_padded = np.zeros((source_channels, transition_length))
+        target_padded = np.zeros((target_channels, transition_length))
         
-        source_padded[:len(source_audio)] = source_audio
-        target_padded[:len(target_audio)] = target_audio
+        source_padded[:, :source_audio.shape[1]] = source_audio
+        target_padded[:, :target_audio.shape[1]] = target_audio
         
         # Apply gain curves
         if len(gain_curve_source) > 0 and len(gain_curve_target) > 0:
@@ -284,10 +306,10 @@ class RenderWorker:
         if max_val > 0.95:
             mixed = mixed * (0.95 / max_val)
         
-        # Save
-        sf.write(output_path, mixed, sr)
+        # Save (soundfile 期望 (frames, channels) 布局，内部统一用 (channels, frames)，写出前转置)
+        sf.write(output_path, mixed.T, sr)
         
-        duration = len(mixed) / sr
+        duration = mixed.shape[1] / sr
         
         print(f"Rendered transition (librosa): {duration:.2f}s", file=sys.stderr)
         

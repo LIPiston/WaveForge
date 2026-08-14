@@ -8,6 +8,18 @@ if (process.stderr && typeof process.stderr.setDefaultEncoding === 'function') {
   process.stderr.setDefaultEncoding('utf8')
 }
 
+// 防 EPIPE 崩溃：stdout/stderr 管道被关闭（如从启动器/脚本 detached 启动后管道断开、
+// GUI 环境无控制台等）时，console.log 写已关闭管道会抛未捕获异常导致主进程崩溃。
+// 捕获 'error' 事件静默吞掉 EPIPE（broken pipe），其他错误仍抛出。
+for (const stream of [process.stdout, process.stderr]) {
+  if (stream) {
+    stream.on('error', (error) => {
+      if (error && error.code === 'EPIPE') return
+      throw error
+    })
+  }
+}
+
 // Avoid spawning chcp/cmd.exe here. Electron is a GUI process, and the child
 // console can flash visibly whenever the main process is initialized.
 const { app, BrowserWindow, ipcMain, protocol, shell, session, safeStorage, dialog, globalShortcut, clipboard, utilityProcess } = require('electron')

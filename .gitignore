@@ -16,6 +16,9 @@ __pycache__/
 # 嵌入式 Python 运行时（由 npm run bundle-python 生成，可重建）
 resources/python-embed/
 
+# 城市数据拆分产物（由 vite 插件 scripts/split-city-data.mjs 在 build/dev 前自动生成，可重建）
+src/generated/city-data/
+
 # Playwright 测试产物
 .playwright-mcp/
 

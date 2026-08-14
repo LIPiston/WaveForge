@@ -9,6 +9,7 @@ npm run dev:electron     # Full dev: Vite (3000) + API server (3001) + Electron 
 npm run dev              # Vite dev server only (port 3000)
 npm run dev:api          # Express backend only (local-server.mjs, port 3001)
 npm run lint             # Typecheck: tsc --noEmit (covers src/ only; no ESLint in repo)
+npm run test             # vitest 单测 (test/*.test.ts, 111 用例)
 npm run build            # vite build -> dist/ (multi-entry: every *.html in repo root)
 npm run build:electron   # build + electron-builder NSIS -> release/
 npm run build:full       # bundle-python + build:electron (完整发布流水线)
@@ -16,6 +17,8 @@ npm run build:electron:dir  # build + electron-builder --win dir (未打包目�
 npm run bundle-python    # Rebuild embedded Python runtime (3.13.15) -> resources/python-embed/
 npm run test:license     # 设备授权自测 (scripts/test-device-license.cjs)
 npm run sync:sponsors    # 从爱发电 API 刷新 src/data/afdianSponsors.generated.json
+npm run version:patch|minor|major|pre  # 版本号更迭 (scripts/bump-version.mjs, 自动 commit/tag/push)
+npm run version:dry      # 预览版本更迭 (不落地)
 start-full.bat           # One-click: Python beat service (3002) + app
 test-python-service.bat  # Health-check Python service on port 3002
 ```
@@ -28,6 +31,18 @@ Python beat service runs on **port 3002** (not 5001 — historical docs are stal
 
 **发布策略（releases）**：**GitHub Releases 只发 NSIS 安装版**（`npm run build:electron` → `release/WaveForge-<version>-Setup.exe`），**不发便携版**（`release/win-unpacked/` 是本地调试产物，不随 releases 分发）。发布时：打 `v<version>` tag → push tag → `gh release create v<version> release/WaveForge-<version>-Setup.exe`（附 changelog）。安装版为每用户安装（`nsis.perMachine: false`），**不携带任何用户数据/配置**——用户配置生成于各机 `%APPDATA%\WaveForge 澜音工坊\`，安装后自动适配当前用户。
 
+**版本号更迭机制**：版本号唯一事实来源是 `package.json` 的 `version`（设置→关于页显示 `v{version} Beta`，"检查新版本"功能对比 GitHub tag 与本地 version）。使用 `scripts/bump-version.mjs` 自动更迭：
+
+```bash
+npm run version:patch   # 0.1.0 -> 0.1.1（修复）
+npm run version:minor   # 0.1.0 -> 0.2.0（新功能）
+npm run version:major   # 0.1.0 -> 1.0.0（破坏性）
+npm run version:pre     # 0.1.0 -> 0.1.1-beta.0（预发布）
+npm run version:dry     # 预览将要执行的操作（不落地）
+```
+
+脚本默认流程：更新 `package.json` + `package-lock.json` 版本 → commit `chore: bump version to vX.Y.Z` → 打 `vX.Y.Z` tag → push 分支与 tag。选项：`--no-commit` / `--no-tag` / `--no-push` / `--force`（工作区有未提交改动时默认拒绝，避免污染版本提交）。bump 后走发布流程：`npm run build:electron` → `gh release create`。
+
 **打包三大约束（破坏任一条便携版就会黑屏/缺资源）**：
 1. `vite.config.ts` 的 **`base` 必须保持 `'./'`**（顶层配置，不要移进 `build` 子对象）——打包版用 `loadFile()`（file://）加载 `dist/index.html`，若 base 是 `'/'`，资源以 `/assets/...` 绝对路径引用全部 404，React 不挂载 → 整窗黑屏（症状：启动日志 `Renderer resources: 0`）。
 2. `package.json` `build.files` 必须包含 **`logo.png` 与 `build/**/*`**——`desktop/splash.html` 引用 `../logo.png`，主窗口/登录窗口 icon 用 `../build/icon.ico`，漏打包则启动 logo 丢失。
@@ -36,6 +51,7 @@ Python beat service runs on **port 3002** (not 5001 — historical docs are stal
 ## Layout & boundaries
 
 - `src/` — React frontend. `components/` (App.tsx lazy-loads nearly everything), `services/` (API clients, cache, gapless/AutoMix logic), `audio/` (playback engine: `PlaybackQueue.ts`, `transitionPlanner.ts`, `TransitionRenderer.ts`, `playbackTimeStore.ts`), `hooks/`, `api/`, `utils/`.
+- `src/services/gapless/` — **无缝衔接独立模块**（从 `useAudioPlayer.ts` 抽离）：`gaplessConstants.ts`（设置/常量）、`seamlessJoinController.ts`（首选拼接控制器：预热缓存/静音预启动/ended 拼接/边界调度/兜底，依赖注入）、`gaplessTransition.ts`（60ms 等功率双 deck 淡入淡出）。`useAudioPlayer.ts` 只保留调用接口（注入依赖 + 事件接线），改动无缝逻辑优先改此处。
 - `desktop/` — Electron main process, **CommonJS** (`main.cjs`, `preload.cjs`, `config-manager.cjs`, `device-license.cjs`). Not covered by `tsc --noEmit`.
 - `src/desktop-lyrics/` + `src/desktop-player/` — standalone renderer entries for `desktop-lyrics.html` / `desktop-player.html`.
 - `local-server.mjs` — single-file Express backend (~8k lines, port 3001). Extra route modules in `server/` are registered here. QQ cookie state must flow through the single `qqMusicCookie` source of truth.
