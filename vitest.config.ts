@@ -5,5 +5,6 @@ export default defineConfig({
     // 单测只覆盖纯逻辑，无需浏览器环境
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    setupFiles: ['test/setup.ts'],
   },
 })
