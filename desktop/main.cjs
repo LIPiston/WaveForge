@@ -2574,6 +2574,36 @@ ipcMain.handle('device-license:get-state', () => {
   }
 })
 
+// 系统音量（0-100，取左右声道均值）。用 winmm 的 waveOutGetVolume 读取主输出音量，
+// 2 分钟缓存避免频繁 spawn PowerShell。前端频响补偿据此自适应（<50% 时提示开启）。
+let systemVolumeCache = { value: -1, expiresAt: 0 }
+let systemVolumeRequest = null
+ipcMain.handle('audio:get-system-volume', () => {
+  if (process.platform !== 'win32') return { success: true, volume: -1 }
+  const now = Date.now()
+  if (systemVolumeCache.value >= 0 && now < systemVolumeCache.expiresAt) {
+    return { success: true, volume: systemVolumeCache.value }
+  }
+  if (!systemVolumeRequest) {
+    const script = [
+      "Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class VolUtil { [DllImport(\"winmm.dll\")] public static extern int waveOutGetVolume(System.IntPtr hwo, out uint dwVolume); }'",
+      '$v = 0',
+      '[VolUtil]::waveOutGetVolume([IntPtr]::Zero, [ref]$v) | Out-Null',
+      '([math]::Round(((($v -band 0xFFFF) / 65535.0) + ((($v -shr 16) -band 0xFFFF) / 65535.0)) / 2 * 100))',
+    ].join('; ')
+    systemVolumeRequest = new Promise(resolve => {
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 5000 }, (error, stdout) => {
+        systemVolumeRequest = null
+        const parsed = parseInt(String(stdout || '').trim(), 10)
+        const volume = error || !isFinite(parsed) ? -1 : Math.max(0, Math.min(100, parsed))
+        systemVolumeCache = { value: volume, expiresAt: Date.now() + 120_000 }
+        resolve({ success: true, volume })
+      })
+    })
+  }
+  return systemVolumeRequest
+})
+
 ipcMain.handle('device-license:copy-id', () => {
   try {
     const identity = deviceLicense.getOrCreateDeviceId(app)
@@ -2850,9 +2880,13 @@ ipcMain.handle('get-system-location', async () => {
  *    传入开发模式 API 进程会用到的同款缓存路径参数（app.getPath('userData')/cache）。
  * 2) Python 节拍服务（beat_analyzer.py，端口 3002）——优先使用嵌入式 python，
  *    启动失败仅告警（应用会自动降级到 Fixed Crossfade）。
+ * 3) Python 响度测量服务（loudness_server.py，端口 3003）——响度归一化按曲目调用。
+ * 4) Python 频响补偿设计服务（compensation_server.py，端口 3004）——等响度/预设/自定义 → 多段 Biquad。
  */
 let localApiChild = null
 let localPythonChild = null
+let localLoudnessChild = null
+let localCompensationChild = null
 
 function startLocalBackend() {
   if (!app.isPackaged) return // 开发模式由 dev-electron.mjs 启动
@@ -2885,38 +2919,113 @@ function startLocalBackend() {
     console.error('[LocalAPI] failed to start:', error)
   }
 
-  // 2) Python 节拍服务（3002）——仅当嵌入式 python 存在时启动
+  // 嵌入式 Python 可执行文件路径（节拍与响度服务共用）。
+  // 必须声明在函数作用域：若放在节拍服务 try 块内，响度服务的 spawn 拿不到它，
+  // 会抛 ReferenceError 导致响度服务在打包版从未启动。
+  const pythonExe = path.join(process.resourcesPath, 'python-embed', 'python.exe')
+
+  // 2) Python 节拍服务（3002）——仅当嵌入式 python 与脚本都存在时启动。
+  // 缺少文件只跳过节拍服务（不再 return 整个函数，避免连带跳过响度服务）。
   try {
-    const pythonExe = path.join(process.resourcesPath, 'python-embed', 'python.exe')
     const beatAnalyzer = path.join(process.resourcesPath, 'app.asar.unpacked', 'python-beat-service', 'beat_analyzer.py')
     if (!fs.existsSync(pythonExe)) {
       console.warn('[BeatService] 未找到嵌入式 Python，跳过节拍服务（将使用 Fixed Crossfade 降级）')
-      return
-    }
-    if (!fs.existsSync(beatAnalyzer)) {
+    } else if (!fs.existsSync(beatAnalyzer)) {
       console.warn('[BeatService] 未找到 beat_analyzer.py，跳过节拍服务')
-      return
+    } else {
+      localPythonChild = spawn(pythonExe, [beatAnalyzer], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
+      })
+      localPythonChild.stdout?.on('data', (chunk) => {
+        const text = String(chunk).trim()
+        if (text) console.log('[BeatService]', text)
+      })
+      localPythonChild.stderr?.on('data', (chunk) => {
+        const text = String(chunk).trim()
+        if (text) console.error('[BeatService:err]', text)
+      })
+      localPythonChild.on('exit', (code) => {
+        console.warn('[BeatService] exited with code', code)
+        localPythonChild = null
+      })
+      console.log('[BeatService] starting beat_analyzer.py on port 3002')
     }
-    localPythonChild = spawn(pythonExe, [beatAnalyzer], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
-    })
-    localPythonChild.stdout?.on('data', (chunk) => {
-      const text = String(chunk).trim()
-      if (text) console.log('[BeatService]', text)
-    })
-    localPythonChild.stderr?.on('data', (chunk) => {
-      const text = String(chunk).trim()
-      if (text) console.error('[BeatService:err]', text)
-    })
-    localPythonChild.on('exit', (code) => {
-      console.warn('[BeatService] exited with code', code)
-      localPythonChild = null
-    })
-    console.log('[BeatService] starting beat_analyzer.py on port 3002')
   } catch (error) {
     console.error('[BeatService] failed to start:', error)
+  }
+
+  // 3) Python 响度测量服务（3003）——独立于节拍服务，响度归一化按曲目调用
+  try {
+    const loudnessServer = path.join(process.resourcesPath, 'app.asar.unpacked', 'python-beat-service', 'loudness_server.py')
+    if (!fs.existsSync(pythonExe)) {
+      console.warn('[LoudnessService] 未找到嵌入式 Python，跳过响度服务（响度归一化不可用）')
+    } else if (!fs.existsSync(loudnessServer)) {
+      console.warn('[LoudnessService] 未找到 loudness_server.py，跳过响度服务（响度归一化不可用）')
+    } else {
+      localLoudnessChild = spawn(pythonExe, [loudnessServer], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
+      })
+      localLoudnessChild.stdout?.on('data', (chunk) => {
+        const text = String(chunk).trim()
+        if (text) console.log('[LoudnessService]', text)
+      })
+      localLoudnessChild.stderr?.on('data', (chunk) => {
+        const text = String(chunk).trim()
+        if (text) console.error('[LoudnessService:err]', text)
+      })
+      // spawn 失败（如嵌入式 python 缺失/启动即退出）时避免 unhandled 'error' 事件
+      localLoudnessChild.on('error', (error) => {
+        console.error('[LoudnessService] failed to spawn:', error?.message || error)
+        localLoudnessChild = null
+      })
+      localLoudnessChild.on('exit', (code) => {
+        console.warn('[LoudnessService] exited with code', code)
+        localLoudnessChild = null
+      })
+      console.log('[LoudnessService] starting loudness_server.py on port 3003')
+    }
+  } catch (error) {
+    console.error('[LoudnessService] failed to start:', error)
+  }
+
+  // 4) Python 频响补偿设计服务（3004）——独立于节拍/响度服务，等响度/预设/自定义 → 多段 Biquad 参数
+  try {
+    const compensationServer = path.join(process.resourcesPath, 'app.asar.unpacked', 'python-beat-service', 'compensation_server.py')
+    if (!fs.existsSync(pythonExe)) {
+      console.warn('[CompensationService] 未找到嵌入式 Python，跳过频响补偿服务（频响补偿不可用）')
+    } else if (!fs.existsSync(compensationServer)) {
+      console.warn('[CompensationService] 未找到 compensation_server.py，跳过频响补偿服务（频响补偿不可用）')
+    } else {
+      localCompensationChild = spawn(pythonExe, [compensationServer], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
+      })
+      localCompensationChild.stdout?.on('data', (chunk) => {
+        const text = String(chunk).trim()
+        if (text) console.log('[CompensationService]', text)
+      })
+      localCompensationChild.stderr?.on('data', (chunk) => {
+        const text = String(chunk).trim()
+        if (text) console.error('[CompensationService:err]', text)
+      })
+      // spawn 失败（如嵌入式 python 缺失/启动即退出）时避免 unhandled 'error' 事件
+      localCompensationChild.on('error', (error) => {
+        console.error('[CompensationService] failed to spawn:', error?.message || error)
+        localCompensationChild = null
+      })
+      localCompensationChild.on('exit', (code) => {
+        console.warn('[CompensationService] exited with code', code)
+        localCompensationChild = null
+      })
+      console.log('[CompensationService] starting compensation_server.py on port 3004')
+    }
+  } catch (error) {
+    console.error('[CompensationService] failed to start:', error)
   }
 }
 
@@ -2924,6 +3033,8 @@ function startLocalBackend() {
 app.on('will-quit', () => {
   try { localApiChild?.kill() } catch {}
   try { localPythonChild?.kill() } catch {}
+  try { localLoudnessChild?.kill() } catch {}
+  try { localCompensationChild?.kill() } catch {}
 })
 
 app.whenReady().then(() => {

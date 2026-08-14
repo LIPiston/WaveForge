@@ -42,6 +42,11 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
 
+  // 系统音量（频响补偿 / 低音量提示）
+  audio: {
+    getSystemVolume: () => ipcRenderer.invoke('audio:get-system-volume'),
+  },
+
   desktopWidgets: {
     getSystemStatus: () => ipcRenderer.invoke('desktop-widgets:get-system-status'),
     pickLauncherTarget: (kind) => ipcRenderer.invoke('desktop-widgets:pick-launcher-target', kind),
