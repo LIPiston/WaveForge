@@ -69,6 +69,11 @@ const LazyTranslationDisplay = lazy(loadTranslationDisplay)
 const LazyWallpaperLyrics: any = lazy(loadWallpaperLyrics)
 const LazyGloriousLyrics: any = lazy(loadGloriousLyrics)
 const LazyMultidimensionalLyrics = lazy(loadMultidimensionalLyrics)
+const loadRemoteControlModal = () => import('./components/RemoteControlModal')
+const LazyRemoteControlModal = lazy(loadRemoteControlModal)
+const loadSongDetailModal = () => import('./components/SongDetailModal')
+const LazySongDetailModal = lazy(loadSongDetailModal)
+import RemoteCursor from './components/RemoteCursor'
 import { detectQQMusicVip } from './utils/musicEntitlements'
 import { getQQUserDisplayName } from './utils/qqUser'
 import {
@@ -380,6 +385,9 @@ function App() {
   const [showSearch, setShowSearch] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showMixingStudio, setShowMixingStudio] = useState(false)
+  const [showRemote, setShowRemote] = useState(false)
+  const [showSongDetail, setShowSongDetail] = useState(false)
+  const [songDetailSong, setSongDetailSong] = useState<Song | null>(null)
   // 调音室弹窗锚点：记录打开按钮的位置，弹窗从按钮侧弹出/关闭时收缩回按钮
   const mixingStudioAnchorRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
   useEffect(() => {
@@ -642,6 +650,11 @@ function App() {
     const saved = localStorage.getItem('playerTheme')
     return (saved as 'dark' | 'light') || 'dark'
   })
+
+  // 将主题同步到根节点属性，供全局 CSS（玻璃质感等）做浅色适配
+  useEffect(() => {
+    document.documentElement.dataset.wfTheme = playerTheme
+  }, [playerTheme])
   
   // 歌词状态
   const [backgroundEffect, setBackgroundEffect] = useState<'transparent' | 'blur' | 'immersive'>(() => {
@@ -1168,14 +1181,7 @@ function App() {
       const eventTime = useTransitionCountdown ? (transitionStartTime ?? duration) : duration
       const timeRemaining = (eventTime ?? duration) - state.currentTime
       
-      // 提前1秒开始淡出
-      if (canShowUpNextOnCurrentSurface && playMode !== 'repeat' && upNextEnabled && duration > 0 && eventTime !== null && timeRemaining <= upNextTime + 1 && timeRemaining > upNextTime) {
-        // 在即将播放弹出前1秒，关闭所有弹窗
-        if (showSettings) setShowSettings(false)
-        if (showProfile) setShowProfile(false)
-        if (showSearch) setShowSearch(false)
-      }
-      
+      // 提前1秒开始淡出（仅淡出提示本身，不主动关闭用户打开的设置/个人/搜索面板）
       // 如果正在过渡中或准备过渡，隐藏"即将播放"提示
       if (state.transitioning || state.transitionState === 'preparing-next' || state.transitionState === 'running-transition') {
         if (showUpNext) setShowUpNext(false)
@@ -1294,7 +1300,7 @@ function App() {
         handleNextRef.current()
       }
     }
-  }, [duration, upNextTime, upNextEnabled, showUpNext, playMode, deterministicNextIndex, autoMixEnabled, gaplessEnabled, transitionStartTime, canShowUpNextOnCurrentSurface, playlist, showSettings, showProfile, showSearch, handleNextRef, dominantColorRef]),
+  }, [duration, upNextTime, upNextEnabled, showUpNext, playMode, deterministicNextIndex, autoMixEnabled, gaplessEnabled, transitionStartTime, canShowUpNextOnCurrentSurface, playlist, handleNextRef, dominantColorRef]),
     { enabled: crossfadeEnabled, duration: crossfadeDuration },
     { enabled: gaplessEnabled, albumGapless: albumGaplessEnabled },
     {
@@ -1608,6 +1614,16 @@ function App() {
   
   // 监听视图模式变化
   useEffect(() => {
+    const applyMode = (mode: 'explore' | 'minimal' | 'desktop') => {
+      setViewMode(mode)
+      setEnteredFromMode(mode)
+      // 切换模式时清掉待恢复的歌单/搜索来源，避免切回后又自动打开上一次的歌单
+      setRestorePlaybackOrigin(null)
+      playbackOriginRef.current = { mode, surface: mode === 'minimal' ? 'home' : 'mode-root' }
+      if (mode === 'desktop') setShowHome(false)
+      else setShowHome(true)
+    }
+
     const handleViewModeChange = (e: Event) => {
       const mode = (e as CustomEvent).detail as 'explore' | 'minimal' | 'desktop'
       const revision = ++viewModeChangeRevisionRef.current
@@ -1621,12 +1637,11 @@ function App() {
       // two prepared roots crossfade. React.lazy must never expose the black app base here.
       void loadTarget().then(() => {
         if (revision !== viewModeChangeRevisionRef.current) return
-        setViewMode(mode)
-        setEnteredFromMode(mode)
-        if (mode === 'desktop') setShowHome(false)
-        else setShowHome(true)
+        applyMode(mode)
       }).catch(error => {
         console.error('[ViewMode] Failed to load target mode:', mode, error)
+        // 懒加载失败时仍切换模式，Suspense 会展示 fallback 并在下次渲染重试加载
+        if (revision === viewModeChangeRevisionRef.current) applyMode(mode)
       })
     }
     
@@ -2734,7 +2749,14 @@ function App() {
   const isPlayingRef = useRef(isPlaying)
   isPlayingRef.current = isPlaying
   const lastMediaControlRef = useRef<{ group: string; time: number } | null>(null)
-  const desktopControlHandlerRef = useRef<(action: string, payload?: number) => void>(() => undefined)
+  // 遥控器音量/静音状态
+  const mutedRef = useRef(false)
+  const [muted, setMuted] = useState(false)
+  const lastVolumeRef = useRef(0.8)
+  const volumeRef = useRef(volume)
+  volumeRef.current = volume
+
+  const desktopControlHandlerRef = useRef<(action: string, payload?: any) => void>(() => undefined)
   desktopControlHandlerRef.current = (action, payload) => {
     if (action === 'toggle' || action === 'play' || action === 'pause') {
       const audio = audioPlayer.getAudioElement()
@@ -2750,6 +2772,80 @@ function App() {
       const index = Number(payload)
       const target = playlistRef.current[index]
       if (target) void handleSongSelectRef.current(target, playlistRef.current)
+    } else if (action === 'seek') {
+      audioPlayerRef.current.seek(Number(payload) || 0)
+    } else if (action === 'volume') {
+      const v = Math.max(0, Math.min(1, Number(payload)))
+      audioPlayerRef.current.setVolume(v)
+      if (v > 0 && mutedRef.current) { mutedRef.current = false; setMuted(false) }
+    } else if (action === 'mute') {
+      const next = !mutedRef.current
+      mutedRef.current = next
+      if (next) {
+        lastVolumeRef.current = volumeRef.current > 0 ? volumeRef.current : 0.8
+        audioPlayerRef.current.setVolume(0)
+      } else {
+        audioPlayerRef.current.setVolume(lastVolumeRef.current || 0.8)
+      }
+      setMuted(next)
+    } else if (action === 'home') {
+      // 遥控器 Home：回到当前模式主页（不切换模式），并关闭所有弹层
+      setShowHome(true)
+      setShowSongDetail(false)
+      setShowRemote(false)
+      setShowMixingStudio(false)
+      setShowCommentModal(false)
+      setShowArtistDetail(false)
+      setShowAlbumDetail(false)
+      setShowSettings(false)
+      setShowSearch(false)
+      setShowProfile(false)
+    } else if (action === 'back') {
+      if (showSongDetail) setShowSongDetail(false)
+      else if (showRemote) setShowRemote(false)
+      else if (showMixingStudio) setShowMixingStudio(false)
+      else if (showCommentModal) closeCommentModal()
+      else if (showArtistDetail) closeArtistDetail()
+      else if (showAlbumDetail) closeAlbumDetail()
+      else if (showSettings) setShowSettings(false)
+      else if (showSearch) setShowSearch(false)
+      else { setShowHome(true); setShowProfile(false) }
+    } else if (action === 'show-comment' || action === 'show-song' || action === 'show-artist') {
+      const current = playlistRef.current[currentIndexRef.current]
+      if (!current) return
+      const platform = (current as any).platform || 'netease'
+      if (action === 'show-comment') {
+        handleViewComments(current)
+      } else if (action === 'show-artist') {
+        const artist = Array.isArray(current.artists) ? current.artists[0] : null
+        const artistId = platform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
+        if (!artistId) {
+          addToast('当前歌曲缺少歌手信息', 'error')
+          return
+        }
+        handleOpenArtist(String(artistId), platform)
+      } else if (action === 'show-song') {
+        setSongDetailSong(current)
+        setShowSongDetail(true)
+      }
+    } else if (action === 'favorite') {
+      const current = playlistRef.current[currentIndexRef.current]
+      if (current) handlePlaybackToggleFavorite(current, currentSongLiked)
+    } else if (action === 'desktop-lyrics') {
+      void window.electron?.desktopLyrics?.setEnabled?.(!desktopLyricsWindowEnabled)
+    } else if (action === 'mode-switch') {
+      const order = ['explore', 'minimal', 'desktop']
+      const idx = order.indexOf(viewMode)
+      const next = order[(idx + 1) % order.length]
+      window.dispatchEvent(new CustomEvent('viewModeChanged', { detail: next }))
+    } else if (action === 'set-mode') {
+      const mode = String(payload)
+      if (['explore', 'minimal', 'desktop'].includes(mode)) {
+        window.dispatchEvent(new CustomEvent('viewModeChanged', { detail: mode }))
+      }
+    } else if (action === 'set-lyric-mode') {
+      const mode = String(payload) as LyricDisplayMode
+      if (ALL_LYRIC_MODES.includes(mode)) handleLyricDisplayModeChange(mode)
     }
   }
 
@@ -2927,6 +3023,29 @@ function App() {
   useEffect(() => {
     window.electron?.desktopPlayer?.pushState({ playing: isPlaying })
   }, [isPlaying])
+
+  // 遥控器：把音量/静音状态同步给主进程（用于手机端状态显示）
+  useEffect(() => {
+    window.electron?.desktopPlayer?.pushState({ volume, muted })
+  }, [volume, muted])
+
+  // 遥控器：把当前页面（主页/播放页）同步给主进程，「模式切换」据此展示模式列表或歌词样式列表
+  useEffect(() => {
+    window.electron?.desktopPlayer?.pushState({ page: isPlaybackPage ? 'playback' : 'home' })
+  }, [isPlaybackPage])
+
+  // 右键菜单「查看歌曲详情」：通过全局事件打开歌曲详情弹窗
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const song = (e as CustomEvent).detail
+      if (song) {
+        setSongDetailSong(song)
+        setShowSongDetail(true)
+      }
+    }
+    window.addEventListener('waveforge:show-song-detail', handler)
+    return () => window.removeEventListener('waveforge:show-song-detail', handler)
+  }, [])
 
   useEffect(() => {
     window.electron?.desktopPlayer?.pushState({ accentColor: coverPalette[0] || dominantColor })
@@ -3413,6 +3532,30 @@ function App() {
       {/* 自定义窗口标题栏 */}
       <TitleBar />
 
+      {/* 遥控器虚拟鼠标 overlay（顶层挂载，任何模式下都可用） */}
+      <RemoteCursor />
+
+      {/* 全局弹层：遥控器 / 歌曲详情（任何模式下都能打开） */}
+      <AnimatePresence>
+        {showRemote && (
+          <Suspense fallback={null}>
+            <LazyRemoteControlModal
+              onClose={() => setShowRemote(false)}
+              playerTheme={playerTheme}
+            />
+          </Suspense>
+        )}
+        {showSongDetail && songDetailSong && (
+          <Suspense fallback={null}>
+            <LazySongDetailModal
+              song={songDetailSong}
+              onClose={() => setShowSongDetail(false)}
+              playerTheme={playerTheme}
+            />
+          </Suspense>
+        )}
+      </AnimatePresence>
+
       {/* GPU 设置变更确认横幅 */}
       {pendingGpuChange && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-[99999] w-[min(92vw,560px)] pointer-events-auto">
@@ -3487,6 +3630,7 @@ function App() {
                 setShowProfile(true)
               }}
               onSearchClick={() => setShowSearch(true)}
+              onRemoteClick={() => setShowRemote(true)}
               onPlayPause={handlePlayPause}
               onNext={handleNext}
               onPrevious={handlePrevious}
@@ -3566,6 +3710,7 @@ function App() {
                 // 记录来源，用于返回
                 setEnteredFromMode('desktop')
               }}
+              onRemoteClick={() => setShowRemote(true)}
             />
           </motion.div>
         ) : (
@@ -3628,23 +3773,27 @@ function App() {
                   : backgroundEffect === 'transparent'
                     ? 'linear-gradient(to bottom, rgba(255,255,255,0.05), rgba(255,255,255,0.05), rgba(255,255,255,0.05))'  // 浅色透明模式增加5%黑色叠加
                     : backgroundEffect === 'blur'
-                    ? 'linear-gradient(to bottom, rgba(255,255,255,0.55), rgba(255,255,255,0.45), rgba(255,255,255,0.6))'  // 娴呰壊妯＄硦锛氭槑鏄剧櫧闆?
-                    : 'linear-gradient(135deg, rgba(255,255,255,0.4) 0%, rgba(255,255,255,0.65) 50%, rgba(255,255,255,0.5) 100%)'  // 娴呰壊娌夋蹈锛氬己鐧介浘+娓愬彉
+                    ? 'linear-gradient(to bottom, rgba(250,250,248,0.42), rgba(250,250,248,0.32), rgba(250,250,248,0.46))'  // 娴呰壊妯＄硦锛氭槑鏄剧櫧闆?
+                    : 'linear-gradient(135deg, rgba(250,250,248,0.3) 0%, rgba(250,250,248,0.52) 50%, rgba(250,250,248,0.4) 100%)'  // 娴呰壊娌夋蹈锛氬己鐧介浘+娓愬彉
               }}
             />
             {/* 沉浸模式额外效果 - 边缘渐变和光晕 */}
             {backgroundEffect === 'immersive' && (
               <>
-                <div 
+                <div
                   className="absolute inset-0"
                   style={{
-                    background: 'radial-gradient(circle at 30% 40%, rgba(255,255,255,0.15) 0%, transparent 50%)',
+                    background: playerTheme === 'dark'
+                      ? 'radial-gradient(circle at 30% 40%, rgba(255,255,255,0.15) 0%, transparent 50%)'
+                      : 'radial-gradient(circle at 30% 40%, rgba(255,255,255,0.35) 0%, transparent 50%)',
                   }}
                 />
-                <div 
+                <div
                   className="absolute inset-0"
                   style={{
-                    boxShadow: 'inset 0 0 200px rgba(0,0,0,0.3)',
+                    boxShadow: playerTheme === 'dark'
+                      ? 'inset 0 0 200px rgba(0,0,0,0.3)'
+                      : 'inset 0 0 200px rgba(0,0,0,0.08)',
                   }}
                 />
               </>
@@ -3657,10 +3806,11 @@ function App() {
         {/* 鎼滅储闈㈡澘 */}
         {/* 设置闈㈡澘 */}
         {/* cast props to any to satisfy prop mismatch between App and SettingsPanel typings */}
-        {showSettings && (
-          <Suspense fallback={null}>
-            <LazySettingsPanel {...({
-          show: true,
+        {/* 设置面板保持挂载：关闭仅隐藏主面板，内部的首页自定义/模糊度等
+            子弹窗链路（HomeCustomizeModal -> BlurAdjustModal）依赖组件存活。 */}
+        <Suspense fallback={null}>
+          <LazySettingsPanel {...({
+          show: showSettings,
           onClose: () => setShowSettings(false),
           neteaseLoggedIn,
           neteaseUsername,
@@ -3674,8 +3824,7 @@ function App() {
           onQQLogout: handleQQLogout,
           playerTheme,
             } as any)} />
-          </Suspense>
-        )}
+        </Suspense>
 
         {/* 调音室 */}
         <AnimatePresence>
@@ -3738,6 +3887,7 @@ function App() {
                 setShowLogin(true)
               }}
               onSearchClick={() => setShowSearch(true)}
+              onRemoteClick={() => setShowRemote(true)}
               onSettingsClick={() => setShowSettings(true)}
               onProfileClick={(platform, initialTab = 'created') => {
                 setProfileInitialPlatform(platform)
@@ -3823,10 +3973,10 @@ function App() {
                           initial={{ opacity: 0, y: -10 }}
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, y: -10 }}
-                          className="absolute top-0 left-1/2 -translate-x-1/2 bg-white/10 backdrop-blur-md rounded-b-2xl border border-white/20 border-t-0 hover:bg-white/20 transition-colors"
+                          className={`absolute top-0 left-1/2 -translate-x-1/2 backdrop-blur-md rounded-b-2xl border border-t-0 transition-colors ${playerTheme === 'dark' ? 'bg-white/10 border-white/20 hover:bg-white/20' : 'bg-black/5 border-black/15 hover:bg-black/10'}`}
                           style={{ width: '200px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                           transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                          whileHover={{ backgroundColor: 'rgba(255, 255, 255, 0.25)' }}
+                          whileHover={{ backgroundColor: playerTheme === 'dark' ? 'rgba(255, 255, 255, 0.25)' : 'rgba(0, 0, 0, 0.12)' }}
                           whileTap={{ scale: 0.98 }}
                         >
                           <motion.div
@@ -3839,7 +3989,7 @@ function App() {
                               opacity: showLyricModeArrowHint ? { duration: 0.5, repeat: Infinity } : { duration: 0 },
                             }}
                           >
-                            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg className={`w-6 h-6 ${playerTheme === 'dark' ? 'text-white' : 'text-black/70'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path d="M19 9l-7 7-7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
                             </svg>
                           </motion.div>
@@ -3867,10 +4017,10 @@ function App() {
                           setShowLyricModeCustomize(false)
                         }}
                       >
-                        <div className="relative h-[22vh] bg-black/40 backdrop-blur-xl overflow-hidden">
+                        <div className={`relative h-[22vh] backdrop-blur-xl overflow-hidden ${playerTheme === 'dark' ? 'bg-black/40' : 'bg-white/55'}`}>
                           <div className="h-full flex flex-col items-center justify-center px-8 py-6">
                             <div className="w-full max-w-5xl flex flex-col items-center h-full">
-                              <h2 className="text-xl font-bold text-white mb-4 text-center">歌词显示</h2>
+                              <h2 className={`text-xl font-bold mb-4 text-center ${playerTheme === 'dark' ? 'text-white' : 'text-black/90'}`}>歌词显示</h2>
                               <div
                                 className="grid w-full gap-3"
                                 style={{ gridTemplateColumns: `repeat(${effectiveVisibleLyricModes.length}, minmax(0, 1fr))` }}
@@ -3919,7 +4069,7 @@ function App() {
                               event.stopPropagation()
                               setShowLyricModeCustomize((value) => !value)
                             }}
-                            className="absolute bottom-4 right-8 z-30 flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/[0.08] text-white/85 transition-[background-color,color] hover:bg-white/[0.16] hover:text-white"
+                            className={`absolute bottom-4 right-8 z-30 flex h-9 w-9 items-center justify-center rounded-full border transition-[background-color,color] ${playerTheme === 'dark' ? 'border-white/15 bg-white/[0.08] text-white/85 hover:bg-white/[0.16] hover:text-white' : 'border-black/10 bg-black/[0.06] text-black/70 hover:bg-black/[0.12] hover:text-black'}`}
                           >
                             <Settings className="h-[18px] w-[18px]" />
                           </button>
@@ -3931,10 +4081,10 @@ function App() {
                               setShowLyricModePanel(false)
                               setShowLyricModeCustomize(false)
                             }}
-                            className="bg-white/10 backdrop-blur-md rounded-b-2xl border border-white/20 border-t-0 hover:bg-white/20 transition-colors"
+                            className={`backdrop-blur-md rounded-b-2xl border border-t-0 transition-colors ${playerTheme === 'dark' ? 'bg-white/10 border-white/20 hover:bg-white/20' : 'bg-black/5 border-black/15 hover:bg-black/10'}`}
                             style={{ width: '200px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                           >
-                            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg className={`w-6 h-6 ${playerTheme === 'dark' ? 'text-white' : 'text-black/70'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path d="M5 15l7-7 7 7" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
                             </svg>
                           </button>
@@ -3949,10 +4099,10 @@ function App() {
                               exit={{ opacity: 0, y: -6, scale: 0.98 }}
                               transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
                               data-lyric-mode-customize
-                              className="absolute right-8 top-[calc(22vh+24px)] z-40 w-64 rounded-2xl border border-white/15 bg-[#0c0e1a]/[0.97] p-2 shadow-[0_18px_50px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+                              className={`absolute right-8 top-[calc(22vh+24px)] z-40 w-64 rounded-2xl border p-2 backdrop-blur-2xl ${playerTheme === 'dark' ? 'border-white/15 bg-[#0c0e1a]/[0.97] shadow-[0_18px_50px_rgba(0,0,0,0.55)]' : 'border-black/10 bg-white/[0.97] shadow-[0_18px_50px_rgba(0,0,0,0.15)]'}`}
                               style={{ willChange: 'transform, opacity' }}
                             >
-                              <p className="px-2 pb-1.5 pt-1 text-[11px] font-semibold tracking-[0.08em] text-white/55">显示 / 隐藏歌词模式</p>
+                              <p className={`px-2 pb-1.5 pt-1 text-[11px] font-semibold tracking-[0.08em] ${playerTheme === 'dark' ? 'text-white/55' : 'text-black/50'}`}>显示 / 隐藏歌词模式</p>
                               {ALL_LYRIC_MODES.map((mode) => {
                                 const isVisible = effectiveVisibleLyricModes.includes(mode)
                                 const isCurrent = lyricDisplayMode === mode
@@ -3964,17 +4114,17 @@ function App() {
                                     type="button"
                                     disabled={locked}
                                     onClick={() => toggleLyricModeVisibility(mode)}
-                                    className="flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-45"
+                                    className={`flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${playerTheme === 'dark' ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.05]'}`}
                                   >
                                     <span className="flex flex-col leading-tight">
-                                      <span className="text-sm font-medium text-white/95">{LYRIC_MODE_NAMES[mode]}</span>
-                                      <span className="mt-0.5 text-[10px] text-white/45">
+                                      <span className={`text-sm font-medium ${playerTheme === 'dark' ? 'text-white/95' : 'text-black/85'}`}>{LYRIC_MODE_NAMES[mode]}</span>
+                                      <span className={`mt-0.5 text-[10px] ${playerTheme === 'dark' ? 'text-white/45' : 'text-black/40'}`}>
                                         {mode === 'modern' ? '始终显示' : (isCurrent ? '当前模式' : (isVisible ? '显示中' : '已隐藏'))}
                                       </span>
                                     </span>
                                     <span
                                       aria-hidden="true"
-                                      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200 ${isVisible ? 'bg-emerald-400/80' : 'bg-white/15'}`}
+                                      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200 ${isVisible ? 'bg-emerald-400/80' : playerTheme === 'dark' ? 'bg-white/15' : 'bg-black/15'}`}
                                     >
                                       <span
                                         className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-[left] duration-200 ${isVisible ? 'left-[18px]' : 'left-0.5'}`}
@@ -3983,7 +4133,7 @@ function App() {
                                   </button>
                                 )
                               })}
-                              <p className="px-2 pb-1 pt-1.5 text-[10px] leading-snug text-white/35">
+                              <p className={`px-2 pb-1 pt-1.5 text-[10px] leading-snug ${playerTheme === 'dark' ? 'text-white/35' : 'text-black/35'}`}>
                                 现代模式始终显示；当前模式与最后一个可见模式不可隐藏
                               </p>
                             </motion.div>
@@ -4063,19 +4213,19 @@ function App() {
                         <>
                           {/* 底层：旧歌曲信息 */}
                           <div className="absolute inset-0" style={{ opacity: 1 - transitionProgress }}>
-                            <h1 className="text-4xl font-bold text-white drop-shadow-lg">
+                            <h1 className={`text-4xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
                               {transitionFromTrack.title}
                             </h1>
-                            <p className="text-xl text-white/80 drop-shadow-md">
+                            <p className={`text-xl ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
                               {transitionFromTrack.artist}
                             </p>
                           </div>
                           {/* 顶层：新歌曲信息 */}
                           <div className="relative" style={{ opacity: transitionProgress }}>
-                            <h1 className="text-4xl font-bold text-white drop-shadow-lg">
+                            <h1 className={`text-4xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
                               {transitionToTrack.title}
                             </h1>
-                            <p className="text-xl text-white/80 drop-shadow-md">
+                            <p className={`text-xl ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
                               {transitionToTrack.artist}
                             </p>
                           </div>
@@ -4083,10 +4233,10 @@ function App() {
                       ) : (
                         // 正常模式：单层信息
                         <div className="relative">
-                          <h1 className="text-4xl font-bold text-white drop-shadow-lg">
+                          <h1 className={`text-4xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
                             {currentSong.name}
                           </h1>
-                          <p className="text-xl text-white/80 drop-shadow-md">
+                          <p className={`text-xl ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
                             {currentSong.artists.map((a: any) => a.name).join(', ')}
                           </p>
                         </div>
@@ -4111,8 +4261,8 @@ function App() {
                       transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
                       className="pointer-events-none fixed left-10 top-8 z-30 max-w-[42vw]"
                     >
-                      <h1 className="truncate text-2xl font-semibold text-white drop-shadow-lg">{currentSong.name}</h1>
-                      <p className="mt-1 truncate text-sm text-white/70 drop-shadow-md">{currentSong.artists.map((a: any) => a.name).join(', ')}</p>
+                      <h1 className={`truncate text-2xl font-semibold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>{currentSong.name}</h1>
+                      <p className={`mt-1 truncate text-sm ${playerTheme === 'dark' ? 'text-white/70 drop-shadow-md' : 'text-black/60'}`}>{currentSong.artists.map((a: any) => a.name).join(', ')}</p>
                     </motion.div>
                   )}
 
@@ -4130,6 +4280,7 @@ function App() {
                       displayMode="single"
                       isTransitioning={isVisualTransitioning}
                       trackId={currentSong?.id || currentSong?.mid}
+                      playerTheme={playerTheme}
                     />
                   </div>
                 </motion.div>
@@ -4247,19 +4398,19 @@ function App() {
                         <>
                           {/* 底层：旧歌曲信息 */}
                           <div className="absolute inset-0" style={{ opacity: 1 - transitionProgress }}>
-                            <h1 className="text-3xl font-bold text-white drop-shadow-lg">
+                            <h1 className={`text-3xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
                               {transitionFromTrack.title}
                             </h1>
-                            <p className="text-lg text-white/80 drop-shadow-md">
+                            <p className={`text-lg ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
                               {transitionFromTrack.artist}
                             </p>
                           </div>
                           {/* 顶层：新歌曲信息 */}
                           <div className="relative" style={{ opacity: transitionProgress }}>
-                            <h1 className="text-3xl font-bold text-white drop-shadow-lg">
+                            <h1 className={`text-3xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
                               {transitionToTrack.title}
                             </h1>
-                            <p className="text-lg text-white/80 drop-shadow-md">
+                            <p className={`text-lg ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
                               {transitionToTrack.artist}
                             </p>
                           </div>
@@ -4267,10 +4418,10 @@ function App() {
                       ) : (
                         // 正常模式：单层信息
                         <div className="relative">
-                          <h1 className="text-3xl font-bold text-white drop-shadow-lg">
+                          <h1 className={`text-3xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
                             {currentSong.name}
                           </h1>
-                          <p className="text-lg text-white/80 drop-shadow-md">
+                          <p className={`text-lg ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
                             {currentSong.artists.map((a: any) => a.name).join(', ')}
                           </p>
                         </div>
@@ -4298,6 +4449,7 @@ function App() {
                           isTransitioning={isVisualTransitioning}
                           trackId={currentSong?.id || currentSong?.mid}
                           pulseStore={audioPulseStore}
+                          playerTheme={playerTheme}
                         />
                       </div>
                     </div>
@@ -4395,6 +4547,7 @@ function App() {
         <Suspense fallback={null}>
           <LazyPlaylistPanel
             show={true}
+            playerTheme={playerTheme}
             onClose={() => setShowPlaylist(false)}
             playlist={playlist}
             currentIndex={currentIndex}
@@ -4429,6 +4582,7 @@ function App() {
         <Suspense fallback={null}>
           <LazyUpNextNotification
             show={true}
+            playerTheme={playerTheme}
             nextSong={nextSongToShow}
             secondsRemaining={(autoMixEnabled || gaplessEnabled)
               ? (transitionStartTime ?? duration) - currentTime

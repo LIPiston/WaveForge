@@ -10,9 +10,10 @@ interface LoginButtonProps {
   username?: string
   onLogin: (cookie: string) => void
   onLogout: () => void
+  playerTheme?: 'light' | 'dark'
 }
 
-export default function LoginButton({ platform, isLoggedIn, username, onLogin, onLogout }: LoginButtonProps) {
+export default function LoginButton({ platform, isLoggedIn, username, onLogin, onLogout, playerTheme = 'dark' }: LoginButtonProps) {
   const [showLoginPanel, setShowLoginPanel] = useState(false)
   
   const platformName = platform === 'netease' ? '网易云' : 'QQ音乐'
@@ -30,18 +31,18 @@ export default function LoginButton({ platform, isLoggedIn, username, onLogin, o
       {isLoggedIn ? (
         <motion.div
           whileHover={{ scale: 1.05 }}
-          className="flex items-center gap-3 px-4 py-2 bg-white/10 rounded-full"
+          className={`flex items-center gap-3 px-4 py-2 rounded-full ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}
         >
           <div className="flex items-center gap-2">
-            <User className="w-4 h-4 text-white/60" />
-            <span className="text-white/80 text-sm">{username || platformName}</span>
+            <User className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/60'}`} />
+            <span className={`text-sm ${playerTheme === 'dark' ? 'text-white/80' : 'text-black/80'}`}>{username || platformName}</span>
           </div>
           <button
             onClick={onLogout}
-            className="p-1 hover:bg-white/10 rounded-full transition-colors"
+            className={`p-1 rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}
             title="登出"
           >
-            <LogOut className="w-4 h-4 text-white/60" />
+            <LogOut className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/60'}`} />
           </button>
         </motion.div>
       ) : (

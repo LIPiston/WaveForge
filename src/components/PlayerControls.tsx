@@ -597,12 +597,12 @@ export default function PlayerControls({
                 className="pointer-events-none mb-4 flex max-w-[min(82vw,760px)] flex-col items-center gap-1 text-center"
               >
                 {showImmersiveRoman && (
-                  <p className="text-sm font-medium tracking-[0.08em] text-white/62 drop-shadow-[0_3px_12px_rgba(0,0,0,0.72)]">
+                  <p className={`text-sm font-medium tracking-[0.08em] ${playerTheme === 'dark' ? 'text-white/62 drop-shadow-[0_3px_12px_rgba(0,0,0,0.72)]' : 'text-black/55'}`}>
                     {immersiveRoman}
                   </p>
                 )}
                 {showImmersiveTranslation && (
-                  <p className="text-base font-medium text-white/82 drop-shadow-[0_4px_16px_rgba(0,0,0,0.78)]">
+                  <p className={`text-base font-medium ${playerTheme === 'dark' ? 'text-white/82 drop-shadow-[0_4px_16px_rgba(0,0,0,0.78)]' : 'text-black/75'}`}>
                     {immersiveTranslation}
                   </p>
                 )}
@@ -758,9 +758,9 @@ export default function PlayerControls({
                         </div>
                         <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.95 }} onClick={onPlayModeChange}
                           className={`p-2 rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}>
-                          {playMode === 'shuffle' && <Shuffle className="w-4 h-4 text-white/70" />}
-                          {playMode === 'repeat' && <Repeat1 className="w-4 h-4 text-white/70" />}
-                          {playMode === 'sequential' && <Repeat className="w-4 h-4 text-white/40" />}
+                          {playMode === 'shuffle' && <Shuffle className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
+                          {playMode === 'repeat' && <Repeat1 className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
+                          {playMode === 'sequential' && <Repeat className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/40' : 'text-black/35'}`} />}
                         </motion.button>
                       </motion.div>
                     )}
@@ -1149,9 +1149,9 @@ export default function PlayerControls({
                     playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'
                   }`}
                 >
-                  {playMode === 'shuffle' && <Shuffle className="w-4 h-4 text-white/70" />}
-                  {playMode === 'repeat' && <Repeat1 className="w-4 h-4 text-white/70" />}
-                  {playMode === 'sequential' && <Repeat className="w-4 h-4 text-white/40" />}
+                  {playMode === 'shuffle' && <Shuffle className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
+                  {playMode === 'repeat' && <Repeat1 className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
+                  {playMode === 'sequential' && <Repeat className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/40' : 'text-black/35'}`} />}
                 </motion.button>
               </motion.div>
             )}

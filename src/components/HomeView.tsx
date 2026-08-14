@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Play, Music, TrendingUp, Flame, Clock, LogOut, Crown, User, Heart, Search, Settings, History } from 'lucide-react'
+import { Play, Music, TrendingUp, Flame, Clock, LogOut, Crown, User, Heart, MonitorSmartphone, Search, Settings, History } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier, getSongUrl } from '../services/musicApi'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
@@ -43,6 +43,7 @@ interface HomeViewProps {
   onQQLoginClick: () => void
   onProfileClick: (platform: 'netease' | 'qq', initialTab?: 'created' | 'subscribed' | 'detail' | 'recent') => void
   onSearchClick: () => void
+  onRemoteClick: () => void
   onSettingsClick: () => void
   onOpenArtist?: (artistId: string, platform: 'netease' | 'qq') => void
   onOpenAlbum?: (albumId: string, platform: 'netease' | 'qq') => void
@@ -164,6 +165,7 @@ export default function HomeView({
   onQQLoginClick,
   onProfileClick,
   onSearchClick,
+  onRemoteClick,
   onSettingsClick,
   onOpenArtist,
   onOpenAlbum,
@@ -1553,19 +1555,25 @@ export default function HomeView({
             />
           )}
           {/* 半透明遮罩，确保内容可读 */}
-          <div className="absolute inset-0 bg-black/30" />
+          <div className={`absolute inset-0 ${playerTheme === 'dark' ? 'bg-black/30' : 'bg-white/40'}`} />
         </div>
       ) : (
         // 默认粉色渐变背景 - 添加动画
         <>
-          <motion.div 
+          <motion.div
             className="absolute inset-0"
             animate={{
-              background: [
-                'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)',
-                'linear-gradient(135deg, #3d1b2d 0%, #2e0f1a 50%, #0a0a0a 100%)',
-                'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)',
-              ]
+              background: playerTheme === 'dark'
+                ? [
+                    'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)',
+                    'linear-gradient(135deg, #3d1b2d 0%, #2e0f1a 50%, #0a0a0a 100%)',
+                    'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)',
+                  ]
+                : [
+                    'linear-gradient(135deg, #f7f4ee 0%, #efe8e0 50%, #f3efe8 100%)',
+                    'linear-gradient(135deg, #f4eef0 0%, #e9e2e6 50%, #f2efe9 100%)',
+                    'linear-gradient(135deg, #f7f4ee 0%, #efe8e0 50%, #f3efe8 100%)',
+                  ]
             }}
             transition={{
               duration: 10,
@@ -1579,6 +1587,7 @@ export default function HomeView({
             className="absolute w-[40vw] h-[40vw] max-w-[500px] max-h-[500px] rounded-full"
             style={{
               background: 'radial-gradient(circle, rgba(255, 105, 180, 0.6) 0%, rgba(219, 112, 147, 0.4) 40%, transparent 70%)',
+              opacity: playerTheme === 'dark' ? 1 : 0.45,
               filter: 'blur(80px)',
               top: '20%',
               left: '15%',
@@ -1600,6 +1609,7 @@ export default function HomeView({
             className="absolute w-[45vw] h-[45vw] max-w-[600px] max-h-[600px] rounded-full"
             style={{
               background: 'radial-gradient(circle, rgba(186, 85, 211, 0.5) 0%, rgba(147, 112, 219, 0.35) 40%, transparent 70%)',
+              opacity: playerTheme === 'dark' ? 1 : 0.45,
               filter: 'blur(90px)',
               bottom: '15%',
               right: '20%',
@@ -1621,6 +1631,7 @@ export default function HomeView({
             className="absolute w-[35vw] h-[35vw] max-w-[400px] max-h-[400px] rounded-full"
             style={{
               background: 'radial-gradient(circle, rgba(255, 20, 147, 0.5) 0%, rgba(199, 21, 133, 0.3) 40%, transparent 70%)',
+              opacity: playerTheme === 'dark' ? 1 : 0.45,
               filter: 'blur(70px)',
               top: '45%',
               right: '30%',
@@ -1643,6 +1654,7 @@ export default function HomeView({
             className="absolute w-[30vw] h-[30vw] max-w-[350px] max-h-[350px] rounded-full"
             style={{
               background: 'radial-gradient(circle, rgba(218, 112, 214, 0.4) 0%, transparent 70%)',
+              opacity: playerTheme === 'dark' ? 1 : 0.45,
               filter: 'blur(60px)',
               top: '60%',
               left: '40%',
@@ -1664,6 +1676,7 @@ export default function HomeView({
             className="absolute w-[35vw] h-[35vw] max-w-[450px] max-h-[450px] rounded-full"
             style={{
               background: 'radial-gradient(circle, rgba(255, 182, 193, 0.45) 0%, transparent 70%)',
+              opacity: playerTheme === 'dark' ? 1 : 0.45,
               filter: 'blur(75px)',
               top: '10%',
               right: '10%',
@@ -1682,7 +1695,7 @@ export default function HomeView({
           />
           
           {/* 减轻遮罩透明度 */}
-          <div className="absolute inset-0 bg-black/10" />
+          <div className={`absolute inset-0 ${playerTheme === 'dark' ? 'bg-black/10' : 'bg-white/20'}`} />
         </>
       )}
 
@@ -1721,10 +1734,10 @@ export default function HomeView({
                 setShowThemePanel(true)
                 setShowUpArrowHint(false)
               }}
-              className="absolute top-0 left-1/2 -translate-x-1/2 bg-white/10 backdrop-blur-md rounded-b-2xl border border-white/20 border-t-0 hover:bg-white/20 transition-colors"
+              className={`absolute top-0 left-1/2 -translate-x-1/2 backdrop-blur-md rounded-b-2xl border border-t-0 transition-colors ${playerTheme === 'dark' ? 'bg-white/10 border-white/20 hover:bg-white/20' : 'bg-black/5 border-black/15 hover:bg-black/10'}`}
               style={{ width: '200px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              whileHover={{ backgroundColor: 'rgba(255, 255, 255, 0.25)' }}
+              whileHover={{ backgroundColor: playerTheme === 'dark' ? 'rgba(255, 255, 255, 0.25)' : 'rgba(0, 0, 0, 0.12)' }}
               whileTap={{ scale: 0.98 }}
             >
               <motion.div
@@ -1737,7 +1750,7 @@ export default function HomeView({
                   opacity: showUpArrowHint ? { duration: 0.5, repeat: Infinity } : { duration: 0 }
                 }}
               >
-                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className={`w-6 h-6 ${playerTheme === 'dark' ? 'text-white' : 'text-black/70'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path d="M19 9l-7 7-7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
                 </svg>
               </motion.div>
@@ -1795,19 +1808,19 @@ export default function HomeView({
             }}
           />
           {/* Recommendation module header */}
-          <div className="p-6 border-b border-white/10">
+          <div className={`p-6 border-b ${playerTheme === 'dark' ? 'border-white/10' : 'border-black/10'}`}>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold text-white">首页推荐</h2>
+              <h2 className={`text-xl font-bold ${playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`}>首页推荐</h2>
               <motion.button
                 whileHover={{ scale: 1.1, rotate: 45 }}
                 whileTap={{ scale: 0.9 }}
                 onClick={refreshCurrentHomeModule}
                 disabled={moduleLoading}
-                className="p-2 hover:bg-white/10 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className={`p-2 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}
                 title="刷新当前推荐"
                 aria-label="刷新当前推荐"
               >
-                <RefreshCw className={`w-5 h-5 text-white/60 ${moduleLoading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-5 h-5 ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'} ${moduleLoading ? 'animate-spin' : ''}`} />
               </motion.button>
             </div>
             {/* Module tabs */}
@@ -1826,8 +1839,8 @@ export default function HomeView({
                     }}
                     className={`flex-shrink-0 px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
                       currentIndex === index
-                        ? 'bg-white/20 text-white'
-                        : 'bg-white/5 text-white/60 hover:bg-white/10'
+                        ? playerTheme === 'dark' ? 'bg-white/20 text-white' : 'bg-black/15 text-black/85'
+                        : playerTheme === 'dark' ? 'bg-white/5 text-white/60 hover:bg-white/10' : 'bg-black/5 text-black/55 hover:bg-black/10'
                     }`}
                   >
                     <div className={`w-2 h-2 rounded-full ${
@@ -1849,7 +1862,7 @@ export default function HomeView({
               style={{
                 height: 'calc(100% - 10px)',
                 scrollbarWidth: 'thin',
-                scrollbarColor: 'rgba(255, 255, 255, 0.3) transparent'
+                scrollbarColor: playerTheme === 'dark' ? 'rgba(255, 255, 255, 0.3) transparent' : 'rgba(0, 0, 0, 0.3) transparent'
               }}
             >
             <div className="p-4 pb-6">
@@ -1879,7 +1892,7 @@ export default function HomeView({
                   </div>
                   <div className="flex items-center gap-2">
                     <motion.span
-                      className="text-white/90 text-base font-light tracking-wide"
+                      className={`text-base font-light tracking-wide ${playerTheme === 'dark' ? 'text-white/90' : 'text-black/70'}`}
                       animate={{ opacity: [0.4, 1, 0.4] }}
                       transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
                     >
@@ -1904,14 +1917,14 @@ export default function HomeView({
                 </div>
               ) : moduleError && moduleSongs.length === 0 && modulePlaylists.length === 0 ? (
                 <div className="flex min-h-64 flex-col items-center justify-center gap-4 px-5 text-center">
-                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/10">
-                    <Music className="h-7 w-7 text-white/45" />
+                  <div className={`flex h-14 w-14 items-center justify-center rounded-2xl ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
+                    <Music className={`h-7 w-7 ${playerTheme === 'dark' ? 'text-white/45' : 'text-black/40'}`} />
                   </div>
                   <div>
-                    <div className="text-sm font-medium text-white">
+                    <div className={`text-sm font-medium ${playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`}>
                       {currentHomeModuleNeedsLogin ? '登录后解锁个性化推荐' : '暂时没有加载到内容'}
                     </div>
-                    <p className="mt-1 max-w-64 text-xs leading-5 text-white/50">{moduleError}</p>
+                    <p className={`mt-1 max-w-64 text-xs leading-5 ${playerTheme === 'dark' ? 'text-white/50' : 'text-black/50'}`}>{moduleError}</p>
                   </div>
                   <button
                     onClick={currentHomeModuleNeedsLogin
@@ -1941,18 +1954,18 @@ export default function HomeView({
                             setContextMenuSong(song)
                             setContextMenuVisible(true)
                           }}
-                          className="flex items-center gap-3 p-2 rounded-lg hover:bg-white/10 cursor-pointer transition-all group"
+                          className={`flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-all group ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}
                           style={{ willChange: 'transform' }}
                         >
                           {/* 排名 */}
                           <div className={`w-6 text-center font-bold text-sm ${
-                            index < 3 ? 'text-yellow-400' : 'text-white/40'
+                            index < 3 ? 'text-yellow-400' : playerTheme === 'dark' ? 'text-white/40' : 'text-black/35'
                           }`}>
                             {index + 1}
                           </div>
 
                           {/* 封面 */}
-                          <div className="w-10 h-10 rounded-md overflow-hidden bg-white/10 flex-shrink-0">
+                          <div className={`w-10 h-10 rounded-md overflow-hidden flex-shrink-0 ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
                             {song.album?.picUrl ? (
                               <CachedImage 
                                 src={song.album.picUrl} 
@@ -1960,13 +1973,13 @@ export default function HomeView({
                                 className="w-full h-full object-cover"
                                 fallback={
                                   <div className="w-full h-full flex items-center justify-center">
-                                    <Music className="w-4 h-4 text-white/20" />
+                                    <Music className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                                   </div>
                                 }
                               />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center">
-                                <Music className="w-4 h-4 text-white/20" />
+                                <Music className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                               </div>
                             )}
                           </div>
@@ -1974,19 +1987,19 @@ export default function HomeView({
                           {/* 歌曲信息 */}
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
-                              <div className="text-white text-sm font-medium truncate">{song.name}</div>
+                              <div className={`text-sm font-medium truncate ${playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`}>{song.name}</div>
                               {(song.vip || song.fee === 1 || song.fee === 4) && !isVip && (
                                 <Crown className="w-3.5 h-3.5 text-yellow-400 flex-shrink-0" />
                               )}
                             </div>
-                            <div className="text-white/50 text-xs truncate">
+                            <div className={`text-xs truncate ${playerTheme === 'dark' ? 'text-white/50' : 'text-black/50'}`}>
                               {song.artists.map(a => a.name).join(', ')}
                             </div>
                           </div>
 
                           {/* 播放按钮 */}
                           <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-                            <Play className="w-4 h-4 text-white" />
+                            <Play className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white' : 'text-black/70'}`} />
                           </div>
                           </motion.div>
                         ))}
@@ -2007,13 +2020,13 @@ export default function HomeView({
                           onContextMenu={(e) => handlePlaylistContextMenu(playlist, e)}
                           className="flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-all group"
                           style={{
-                            background: 'rgba(255, 255, 255, 0.05)',
-                            border: '1px solid rgba(255, 255, 255, 0.1)',
+                            background: playerTheme === 'dark' ? 'rgba(255, 255, 255, 0.05)' : 'rgba(255, 255, 255, 0.45)',
+                            border: playerTheme === 'dark' ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid rgba(0, 0, 0, 0.06)',
                             backdropFilter: `blur(${cardBlurAmount}px)`,
                             WebkitBackdropFilter: `blur(${cardBlurAmount}px)`
                           }}
                         >
-                          <div className="w-14 h-14 rounded-lg overflow-hidden bg-white/10 flex-shrink-0">
+                          <div className={`w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
                             {playlist.coverImgUrl ? (
                               <CachedImage
                                 src={playlist.coverImgUrl}
@@ -2021,25 +2034,25 @@ export default function HomeView({
                                 className="w-full h-full object-cover"
                                 fallback={
                                   <div className="w-full h-full flex items-center justify-center">
-                                    <Music className="w-6 h-6 text-white/20" />
+                                    <Music className={`w-6 h-6 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                                   </div>
                                 }
                               />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center">
-                                <Music className="w-6 h-6 text-white/20" />
+                                <Music className={`w-6 h-6 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                               </div>
                             )}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="text-white text-sm font-medium line-clamp-2">{playlist.name}</div>
-                            <div className="text-white/50 text-xs mt-0.5">{playlist.trackCount} 首歌曲</div>
+                            <div className={`text-sm font-medium line-clamp-2 ${playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`}>{playlist.name}</div>
+                            <div className={`text-xs mt-0.5 ${playerTheme === 'dark' ? 'text-white/50' : 'text-black/50'}`}>{playlist.trackCount} 首歌曲</div>
                           </div>
                           <button
                             onClick={(e) => handlePlayPlaylist(playlist, e)}
                             className="opacity-0 group-hover:opacity-100 transition-opacity"
                           >
-                            <Play className="w-4 h-4 text-white/70 group-hover:text-white transition-colors" />
+                            <Play className={`w-4 h-4 transition-colors ${playerTheme === 'dark' ? 'text-white/70 group-hover:text-white' : 'text-black/60 group-hover:text-black'}`} />
                           </button>
                         </motion.div>
                       ))}
@@ -2074,8 +2087,8 @@ export default function HomeView({
               WebkitBackdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
             }}
           />
-          <div className="p-6 border-b border-white/10 flex items-center justify-between">
-            <h2 className="text-xl font-bold text-white">我的歌单</h2>
+          <div className={`p-6 border-b flex items-center justify-between ${playerTheme === 'dark' ? 'border-white/10' : 'border-black/10'}`}>
+            <h2 className={`text-xl font-bold ${playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`}>我的歌单</h2>
             {isLoggedIn && (
               <div className="flex items-center gap-1">
                 <motion.button
@@ -2083,22 +2096,22 @@ export default function HomeView({
                   whileTap={{ scale: 0.9 }}
                   onClick={() => refreshPlaylists(true)}
                   disabled={playlistLoading}
-                  className="p-2 hover:bg-white/10 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className={`p-2 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}
                   title="刷新歌单"
                   aria-label="刷新歌单"
                 >
-                  <RefreshCw className={`w-5 h-5 text-white/60 ${playlistLoading ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`w-5 h-5 ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'} ${playlistLoading ? 'animate-spin' : ''}`} />
                 </motion.button>
                 {(
                   <motion.button
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     onClick={() => setShowCreatePlaylist(true)}
-                    className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                    className={`p-2 rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}
                     title="创建歌单"
                     aria-label="创建歌单"
                   >
-                    <Plus className="w-5 h-5 text-white/60" />
+                    <Plus className={`w-5 h-5 ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}`} />
                   </motion.button>
                 )}
               </div>
@@ -2107,8 +2120,8 @@ export default function HomeView({
           <div className="home-glass-scroll flex-1 overflow-y-auto">
             {!isLoggedIn ? (
               <div className="flex flex-col items-center justify-center h-full gap-4">
-                <Music className="w-16 h-16 text-white/20" />
-                <p className="text-white/60 mb-4">登录后查看你的歌单</p>
+                <Music className={`w-16 h-16 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
+                <p className={`mb-4 ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}`}>登录后查看你的歌单</p>
                 <button
                   onClick={platform === 'netease' ? onNeteaseLoginClick : onQQLoginClick}
                   className={`px-6 py-3 ${
@@ -2122,12 +2135,12 @@ export default function HomeView({
               </div>
             ) : playlistLoading && userPlaylists.length === 0 ? (
               <div className="flex items-center justify-center h-full">
-                <div className="text-white/60">加载中...</div>
+                <div className={playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}>加载中...</div>
               </div>
             ) : userPlaylists.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full gap-4">
-                <Music className="w-16 h-16 text-white/20" />
-                <p className="text-white/60">暂无歌单</p>
+                <Music className={`w-16 h-16 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
+                <p className={playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}>暂无歌单</p>
               </div>
             ) : (
               <div className="p-4 pb-6">
@@ -2177,8 +2190,8 @@ export default function HomeView({
                       }}
                     />
                     {/* 封面 */}
-                    <div 
-                      className="relative z-10 rounded-lg overflow-hidden bg-white/10"
+                    <div
+                      className={`relative z-10 rounded-lg overflow-hidden ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}
                       style={{
                         width: (platform === 'netease' ? neteaseModules : qqModules).length === 0 ? '100px' : '80px',
                         height: (platform === 'netease' ? neteaseModules : qqModules).length === 0 ? '100px' : '80px',
@@ -2194,7 +2207,7 @@ export default function HomeView({
                             className="w-full h-full object-cover"
                             fallback={
                               <div className="w-full h-full flex items-center justify-center">
-                                <Music className="w-6 h-6 text-white/20" />
+                                <Music className={`w-6 h-6 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                               </div>
                             }
                           />
@@ -2212,18 +2225,18 @@ export default function HomeView({
                         </>
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
-                          <Music className="w-6 h-6 text-white/20" />
+                          <Music className={`w-6 h-6 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                         </div>
                       )}
                     </div>
-                    
+
                     {/* Playlist name */}
-                    <div className="relative z-10 text-white text-sm font-medium line-clamp-2 leading-tight" title={playlist.name}>
+                    <div className={`relative z-10 text-sm font-medium line-clamp-2 leading-tight ${playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`} title={playlist.name}>
                       {playlist.name}
                     </div>
-                    
+
                     {/* 歌曲数量 */}
-                    <div className="relative z-10 text-white/50 text-xs self-end pr-12">
+                    <div className={`relative z-10 text-xs self-end pr-12 ${playerTheme === 'dark' ? 'text-white/50' : 'text-black/50'}`}>
                       {playlist.trackCount} 首歌曲
                     </div>
 
@@ -2231,7 +2244,7 @@ export default function HomeView({
                       <button
                         type="button"
                         onClick={(e) => handlePlayPlaylist(playlist, e)}
-                        className="absolute right-3 bottom-3 z-20 w-10 h-10 rounded-xl bg-white/5 hover:bg-white/10 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-all shadow-lg border border-white/10 hover:border-white/20"
+                        className={`absolute right-3 bottom-3 z-20 w-10 h-10 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-all shadow-lg ${playerTheme === 'dark' ? 'bg-white/5 hover:bg-white/10 text-white border border-white/10 hover:border-white/20' : 'bg-black/5 hover:bg-black/10 text-black/80 border border-black/10 hover:border-black/20'}`}
                         style={{
                           backdropFilter: `blur(${cardBlurAmount}px)`,
                           WebkitBackdropFilter: `blur(${cardBlurAmount}px)`
@@ -2268,8 +2281,8 @@ export default function HomeView({
               WebkitBackdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
             }}
           />
-          <div className="p-6 border-b border-white/10 flex items-center justify-between">
-            <h2 className="text-xl font-bold text-white">个人信息</h2>
+          <div className={`p-6 border-b flex items-center justify-between ${playerTheme === 'dark' ? 'border-white/10' : 'border-black/10'}`}>
+            <h2 className={`text-xl font-bold ${playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`}>个人信息</h2>
           </div>
 
           {/* Platform switcher */}
@@ -2279,8 +2292,8 @@ export default function HomeView({
                 onClick={() => setPlatform('netease')}
                 className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium relative z-10 ${
                   platform === 'netease'
-                    ? 'text-white'
-                    : 'text-white/60'
+                    ? playerTheme === 'dark' ? 'text-white' : 'text-black/85'
+                    : playerTheme === 'dark' ? 'text-white/60' : 'text-black/50'
                 }`}
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
@@ -2298,8 +2311,8 @@ export default function HomeView({
                 onClick={() => setPlatform('qq')}
                 className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium relative z-10 ${
                   platform === 'qq'
-                    ? 'text-white'
-                    : 'text-white/60'
+                    ? playerTheme === 'dark' ? 'text-white' : 'text-black/85'
+                    : playerTheme === 'dark' ? 'text-white/60' : 'text-black/50'
                 }`}
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
@@ -2318,10 +2331,10 @@ export default function HomeView({
               <motion.div
                 className="absolute top-0 h-full rounded-xl shadow-lg"
                 style={{
-                  background: 'rgba(255, 255, 255, 0.2)',
+                  background: playerTheme === 'dark' ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.65)',
                   backdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
                   WebkitBackdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
-                  boxShadow: '0 4px 16px rgba(255, 255, 255, 0.1)'
+                  boxShadow: playerTheme === 'dark' ? '0 4px 16px rgba(255, 255, 255, 0.1)' : '0 4px 16px rgba(0, 0, 0, 0.08)'
                 }}
                 animate={{
                   left: platform === 'netease' ? '0%' : '50%',
@@ -2357,23 +2370,23 @@ export default function HomeView({
                   }}
                 />
                 <div className="relative z-10 flex items-center gap-4 p-3">
-                  <div className="grid h-24 w-24 flex-shrink-0 grid-cols-2 grid-rows-2 overflow-hidden rounded-2xl bg-white/10 shadow-lg">
+                  <div className={`grid h-24 w-24 flex-shrink-0 grid-cols-2 grid-rows-2 overflow-hidden rounded-2xl shadow-lg ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
                     {Array.from({ length: 4 }).map((_, index) => {
                       const cover = recentPlaybackSummary.covers[index]
                       return cover ? (
                         <CachedImage key={`${cover}-${index}`} src={cover} alt="最近播放封面" className="h-full w-full object-cover" />
                       ) : (
-                        <div key={`recent-placeholder-${index}`} className="flex h-full w-full items-center justify-center bg-white/5">
-                          <Music className="h-4 w-4 text-white/20" />
+                        <div key={`recent-placeholder-${index}`} className={`flex h-full w-full items-center justify-center ${playerTheme === 'dark' ? 'bg-white/5' : 'bg-black/5'}`}>
+                          <Music className={`h-4 w-4 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                         </div>
                       )
                     })}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-lg font-semibold text-white">已播歌曲</div>
-                    <div className="mt-1 text-sm text-white/55">{recentPlaybackSummary.count} 首</div>
+                    <div className={`text-lg font-semibold ${playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`}>已播歌曲</div>
+                    <div className={`mt-1 text-sm ${playerTheme === 'dark' ? 'text-white/55' : 'text-black/55'}`}>{recentPlaybackSummary.count} 首</div>
                   </div>
-                  <History className="h-5 w-5 flex-shrink-0 text-white/35 transition-colors group-hover:text-white/70" />
+                  <History className={`h-5 w-5 flex-shrink-0 transition-colors ${playerTheme === 'dark' ? 'text-white/35 group-hover:text-white/70' : 'text-black/30 group-hover:text-black/60'}`} />
                 </div>
               </motion.button>
             </div>
@@ -2382,27 +2395,27 @@ export default function HomeView({
           <div className="flex-1 flex flex-col items-center justify-center p-6">
             {!isLoggedIn ? (
               <div className="text-center">
-                <div className="w-20 h-20 rounded-full bg-white/10 flex items-center justify-center mx-auto mb-4">
-                  <Music className="w-10 h-10 text-white/20" />
+                <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
+                  <Music className={`w-10 h-10 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                 </div>
-                <p className="text-white/60">未登录</p>
+                <p className={playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}>未登录</p>
               </div>
             ) : (
               <div className="w-full text-center">
                 {/* 头像 */}
-                <div className="w-24 h-24 rounded-full overflow-hidden mx-auto mb-4 border-2 border-white/20">
+                <div className={`w-24 h-24 rounded-full overflow-hidden mx-auto mb-4 border-2 ${playerTheme === 'dark' ? 'border-white/20' : 'border-black/15'}`}>
                   {avatar ? (
                     <img src={avatar} alt={username} className="w-full h-full object-cover" />
                   ) : (
-                    <div className="w-full h-full bg-white/10 flex items-center justify-center">
-                      <Music className="w-12 h-12 text-white/20" />
+                    <div className={`w-full h-full flex items-center justify-center ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
+                      <Music className={`w-12 h-12 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                     </div>
                   )}
                 </div>
 
                 {/* 昵称 */}
                 <div className="mb-2 flex items-center justify-center gap-2">
-                  <h3 className={`text-xl font-bold ${isVip ? 'text-yellow-400' : 'text-white'}`}>
+                  <h3 className={`text-xl font-bold ${isVip ? 'text-yellow-400' : playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`}>
                     {username}
                   </h3>
                   {isVip && <Crown className="w-5 h-5 text-yellow-400" />}
@@ -2410,7 +2423,7 @@ export default function HomeView({
 
                 {/* 账号ID */}
                 {userId && !hideHomeAccountId && (
-                  <p className="text-white/50 text-sm mb-6">
+                  <p className={`text-sm mb-6 ${playerTheme === 'dark' ? 'text-white/50' : 'text-black/50'}`}>
                     {platform === 'netease' ? '网易云ID' : 'QQ号'}: {userId}
                   </p>
                 )}
@@ -2459,7 +2472,7 @@ export default function HomeView({
 
                   <button
                     onClick={platform === 'netease' ? onNeteaseLogout : onQQLogout}
-                    className="w-full px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-full font-medium transition-all flex items-center justify-center gap-2"
+                    className={`w-full px-6 py-3 rounded-full font-medium transition-all flex items-center justify-center gap-2 ${playerTheme === 'dark' ? 'bg-white/10 hover:bg-white/20 text-white' : 'bg-black/10 hover:bg-black/15 text-black/80'}`}
                   >
                     <LogOut className="w-4 h-4" />
                     退出登录
@@ -2475,6 +2488,7 @@ export default function HomeView({
       {/* Playlist detail panel */}
       <PlaylistDetailPanel
         show={showPlaylistDetail}
+        playerTheme={playerTheme}
         playlist={selectedPlaylist}
         songs={playlistSongs}
         loading={loadingPlaylistSongs}
@@ -2508,7 +2522,6 @@ export default function HomeView({
         onCopyInfo={onCopyInfo}
         userPlaylists={userPlaylists}
         currentSong={currentSong}
-        playerTheme={playerTheme}
       />
 
       {/* Bottom floating toolbar */}
@@ -2559,6 +2572,17 @@ export default function HomeView({
                 }}
               />
               <div className="relative z-10 flex items-center justify-center gap-6">
+                {/* 遥控器按钮 */}
+                <motion.button
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.95 }}
+                  className="p-3 rounded-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white transition-all shadow-lg"
+                  onClick={onRemoteClick}
+                  title="遥控器"
+                >
+                  <MonitorSmartphone className="w-5 h-5" />
+                </motion.button>
+
                 {/* 搜索按钮 */}
                 <motion.button
                   whileHover={{ scale: 1.1 }}

@@ -337,6 +337,145 @@ async function mutateQQSonglistModern({ dirid, songId, songType = 0, operation }
   return requestResult?.data || requestResult
 }
 
+// 收藏/取消收藏歌单（关注歌单）。与「我喜欢」写入一致，走签名 MusicU 接口：
+// g_tk 从 qqmusic_key/qm_keyst 计算，ag-1 加密 + zzc 签名，POST 到 musics.fcg。
+async function mutateQQPlaylistConcern({ dissid, concern }) {
+  const parsedCookie = parseQQCookie()
+  const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || parsedCookie.wxuin || '').replace(/\D/g, '')
+  const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
+  if (!musicId || !musicKey) {
+    throw new Error('QQ 音乐登录凭证缺少 musicid 或 musickey，请重新登录后再试')
+  }
+
+  const attempts = [
+    { module: 'music.concern.ConcernMusicDiss', method: 'concern', param: { disstid: String(dissid), source: 1 } },
+    { module: 'music.concern.ConcernMusicDiss', method: 'concern', param: { disstid: String(dissid), source: 2 } },
+    { module: 'music.concern.ConcernMusicDiss', method: 'concern', param: { disstid: String(dissid), concern: '1' } },
+    { module: 'music.concern.ConcernMusicDiss', method: 'concern', param: { dissid: String(dissid), concern: '1' } },
+    { module: 'music.concern.ConcernMusicDiss', method: 'concern', param: { dissid: Number(dissid), concern: 1 } },
+  ]
+
+  const cookieHeader = qqMusicCookie || Object.entries(parsedCookie)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join('; ')
+
+  let lastError = null
+  for (const attempt of attempts) {
+    const payload = {
+      comm: {
+        ct: 24,
+        cv: 4747474,
+        platform: 'yqq.json',
+        uin: musicId,
+        qq: musicId,
+        authst: musicKey,
+        tmeLoginType: Number(parsedCookie.tmeLoginType) || Number(parsedCookie.login_type) || undefined,
+        g_tk: qqHash33(musicKey),
+        g_tk_new_20200303: qqHash33(musicKey),
+        format: 'json',
+        inCharset: 'utf-8',
+        outCharset: 'utf-8',
+        notice: 0,
+        need_new_code: 1
+      },
+      req_0: attempt
+    }
+    try {
+      const requestBody = JSON.stringify(payload)
+      const encryptedBody = await encodeAG1Request(requestBody)
+      const sign = zzcSign(requestBody)
+      const signedUrl = `https://u6.y.qq.com/cgi-bin/musics.fcg?_=${Date.now()}&encoding=ag-1&sign=${encodeURIComponent(sign)}`
+      const response = await axios.post(signedUrl, encryptedBody, {
+        headers: {
+          ...QQ_HEADERS,
+          Cookie: cookieHeader,
+          'Content-Type': 'text/plain'
+        },
+        responseType: 'arraybuffer',
+        transformResponse: data => data,
+        validateStatus: () => true
+      })
+      let responseData
+      try {
+        responseData = JSON.parse(decodeAG1Response(new Uint8Array(response.data)))
+      } catch (decodeError) {
+        throw new Error(`QQ 音乐收藏歌单响应解密失败：${decodeError?.message || decodeError}`)
+      }
+      const requestResult = responseData?.req_0 || responseData
+      const resultCode = Number(requestResult?.code ?? requestResult?.data?.retCode ?? responseData?.code)
+      console.log(`[QQ音乐收藏歌单] 尝试 ${attempt.module} / ${attempt.method} / ${JSON.stringify(attempt.param)} → code ${resultCode}`)
+      if (resultCode === 0) {
+        return requestResult?.data || requestResult
+      }
+      lastError = new Error(
+        requestResult?.msg || requestResult?.errMsg || requestResult?.data?.msg ||
+        `QQ 音乐${concern ? '收藏' : '取消收藏'}歌单失败（代码 ${resultCode}）`
+      )
+      lastError.qqCode = resultCode
+    } catch (requestError) {
+      console.error('[QQ音乐收藏歌单] 请求异常:', requestError?.message || requestError)
+      lastError = requestError
+    }
+  }
+
+  // 兜底：旧版 fcg_qm_order_diss 接口（收藏/取消收藏歌单）。现代微信登录没有
+  // skey/p_skey，这里分别尝试用 qqmusic_key / qm_keyst 计算 g_tk。
+  // 该接口必须走 POST + x-www-form-urlencoded 表单体（GET 会返回 -100002 invalid request）。
+  for (const keyName of ['qqmusic_key', 'qm_keyst']) {
+    const token = parsedCookie[keyName]
+    if (!token) continue
+    try {
+      const gTk = qqHash33(token)
+      const formBody = new URLSearchParams({
+        loginUin: musicId,
+        hostUin: '0',
+        format: 'json',
+        inCharset: 'GB2312',
+        outCharset: 'utf8',
+        notice: '0',
+        platform: 'yqq',
+        needNewCode: '0',
+        g_tk: String(gTk),
+        uin: musicId,
+        dissid: String(dissid),
+        from: '1',
+        optype: concern ? '1' : '2',
+        utf8: '1',
+        qzreferrer: `https://y.qq.com/n/yqq/playlist/${dissid}.html`,
+      }).toString()
+      const legacyResponse = await axios.post(
+        'https://c.y.qq.com/folder/fcgi-bin/fcg_qm_order_diss.fcg',
+        formBody,
+        {
+          headers: {
+            ...QQ_HEADERS,
+            Cookie: cookieHeader,
+            Referer: `https://y.qq.com/n/yqq/playlist/${dissid}.html`,
+            Origin: 'https://imgcache.qq.com',
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          validateStatus: () => true,
+        }
+      )
+      let legacyResult = legacyResponse.data
+      if (typeof legacyResult === 'string') {
+        try { legacyResult = JSON.parse(legacyResult.replace(/(^.+\()|(\).+$)/g, '')) } catch { legacyResult = null }
+      }
+      const legacyCode = legacyResult?.code ?? legacyResult?.ret ?? null
+      console.log(`[QQ音乐收藏歌单] 旧接口(POST) ${keyName} → code ${legacyCode}`, legacyResult?.msg ? `(${legacyResult.msg})` : '')
+      if (legacyCode != null && Number(legacyCode) === 0) {
+        return legacyResult
+      }
+      if (legacyResult) lastError = new Error(legacyResult?.msg || `QQ 音乐收藏歌单失败（旧接口 code ${legacyCode}）`)
+    } catch (legacyError) {
+      console.error('[QQ音乐收藏歌单] 旧接口异常:', legacyError?.message || legacyError)
+      lastError = legacyError
+    }
+  }
+
+  throw lastError || new Error('QQ 音乐收藏歌单失败')
+}
+
 async function resolveQQFavoritePlaylistId() {
   const parsedCookie = parseQQCookie()
   const uin = String(
@@ -6803,10 +6942,22 @@ app.get('/api/qq/playlist/detail', async (req, res) => {
         skillKey,
         'trackList'
       )
-      const songlist = (skillPlaylist?.trackList || []).map(song => {
-        const track = song?.songInfo || song?.song || song
-        return qqNormalizeSongFromTrack(track, track?.mid || track?.songmid || track?.songMid, track)
-      })
+      const rawTracks = skillPlaylist?.trackList || skillPlaylist?.songlist || skillPlaylist?.songList || skillPlaylist?.tracks || skillPlaylist?.songInfoList || []
+      // Skills 的简略歌曲对象通常不带封面/时长，逐首用 qqSongDetail 补全，
+      // 否则 AI 歌单打开后整列无封面、时长为 0:00。
+      const songlist = (await Promise.all(rawTracks.map(async song => {
+        const mid = song?.songMid || song?.mid
+        if (!mid) return normalizeQQExploreSong(song)
+        try {
+          return normalizeQQExploreSong(await qqSongDetail(mid, {
+            mid,
+            name: song.songName,
+            singerName: song.singerName
+          }))
+        } catch {
+          return normalizeQQExploreSong(song)
+        }
+      }))).filter(Boolean)
       return res.json({
         result: 100,
         songlist,
@@ -7164,10 +7315,9 @@ app.post('/api/qq/playlist/subscribe', async (req, res) => {
     if (!id) return res.status(400).json({ result: 500, error: '歌单 ID 不能为空' })
     if (!requireQQLogin(res, cookie)) return
 
-    const data = await qqMusicApi.api('songlist/collect', {
-      id: String(id),
-      op: subscribe ? 1 : 2
-    })
+    // 现代 MusicU 签名接口：g_tk 从 qqmusic_key/qm_keyst 计算，
+    // 旧 fcg_qm_order_diss 需要 skey/p_skey，现代登录不再提供，会导致 500。
+    const data = await mutateQQPlaylistConcern({ dissid: String(id), concern: subscribe === true })
     res.json({ result: 100, data, message: subscribe ? '已收藏歌单' : '已取消收藏' })
   } catch (error) {
     console.error('[QQ音乐收藏歌单] 失败:', error)

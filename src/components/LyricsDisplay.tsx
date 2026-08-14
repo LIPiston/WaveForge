@@ -415,6 +415,7 @@ interface LyricsDisplayProps {
   isTransitioning?: boolean
   trackId?: string | number
   pulseStore?: AudioPulseStore
+  playerTheme?: 'light' | 'dark'
 }
 
 export default function LyricsDisplay({ 
@@ -443,7 +444,12 @@ export default function LyricsDisplay({
   isTransitioning = false,
   trackId,
   pulseStore = EMPTY_AUDIO_PULSE_STORE,
+  playerTheme = 'dark',
 }: LyricsDisplayProps) {
+  const isLightTheme = playerTheme === 'light'
+  // 浅色主题下歌词用深色文字，保证在淡白雾背景上可读
+  const activeLyricColor = isLightTheme ? 'rgba(15, 15, 15, 0.92)' : 'rgba(255, 255, 255, 1)'
+  const inactiveLyricColor = isLightTheme ? 'rgba(0, 0, 0, 0.38)' : 'rgba(255, 255, 255, 0.38)'
   const [currentIndex, setCurrentIndex] = useState(-1)
   const [, setManualScrollOffset] = useState(0) // 
   const [isManualScrolling, setIsManualScrolling] = useState(false)
@@ -966,12 +972,12 @@ export default function LyricsDisplay({
           wordPaddingX: '0',
           linePaddingX: '0.12em',
           wordLineHeight: 1.28,
-          inactiveColor: 'rgba(255, 255, 255, 0.38)',
+          inactiveColor: isLightTheme ? 'rgba(0, 0, 0, 0.38)' : 'rgba(255, 255, 255, 0.38)',
           inactiveFilter: 'blur(0.3px)',
           fillExtension: 42,
-          baseTextShadow: '0 2px 9px rgba(0,0,0,0.24)',
-          activeTextShadow: '0 0 14px rgba(255,255,255,0.25), 0 3px 12px rgba(0,0,0,0.36)',
-          completedTextShadow: '0 2px 9px rgba(0,0,0,0.3)',
+          baseTextShadow: isLightTheme ? '0 2px 9px rgba(255,255,255,0.24)' : '0 2px 9px rgba(0,0,0,0.24)',
+          activeTextShadow: isLightTheme ? '0 3px 12px rgba(255,255,255,0.36)' : '0 0 14px rgba(255,255,255,0.25), 0 3px 12px rgba(0,0,0,0.36)',
+          completedTextShadow: isLightTheme ? '0 2px 9px rgba(255,255,255,0.3)' : '0 2px 9px rgba(0,0,0,0.3)',
         }
       case 'clear':
       default:
@@ -981,12 +987,12 @@ export default function LyricsDisplay({
           wordPaddingX: '0',
           linePaddingX: '0.1em',
           wordLineHeight: 1.3,
-          inactiveColor: 'rgba(255, 255, 255, 0.4)',
+          inactiveColor: isLightTheme ? 'rgba(0, 0, 0, 0.4)' : 'rgba(255, 255, 255, 0.4)',
           inactiveFilter: 'none',
           fillExtension: 0,
-          baseTextShadow: '0 2px 9px rgba(0,0,0,0.28)',
-          activeTextShadow: '0 0 22px rgba(255,255,255,0.42), 0 3px 12px rgba(0,0,0,0.4)',
-          completedTextShadow: '0 0 6px rgba(255,255,255,0.1), 0 2px 9px rgba(0,0,0,0.3)',
+          baseTextShadow: isLightTheme ? '0 2px 9px rgba(255,255,255,0.28)' : '0 2px 9px rgba(0,0,0,0.28)',
+          activeTextShadow: isLightTheme ? '0 3px 12px rgba(255,255,255,0.4)' : '0 0 22px rgba(255,255,255,0.42), 0 3px 12px rgba(0,0,0,0.4)',
+          completedTextShadow: isLightTheme ? '0 2px 9px rgba(255,255,255,0.3)' : '0 0 6px rgba(255,255,255,0.1), 0 2px 9px rgba(0,0,0,0.3)',
         }
     }
   }
@@ -1187,7 +1193,7 @@ export default function LyricsDisplay({
                 style={{
                   ['--word-progress' as string]: `${fillWidth}%`,
                   ['--word-accent' as string]: sustainGlowColor.css,
-                  color: isSpace ? 'transparent' : (fullyFilled ? 'rgba(255, 255, 255, 1)' : effectConfig.inactiveColor),
+                  color: isSpace ? 'transparent' : (fullyFilled ? activeLyricColor : effectConfig.inactiveColor),
                   opacity: isSpace ? 0 : 1,
                   textShadow: isSustainGlowActive
                     ? sustainTextShadow
@@ -1224,7 +1230,7 @@ export default function LyricsDisplay({
                      className="absolute left-0 top-0 z-10 overflow-hidden whitespace-nowrap pointer-events-none"
                      style={{
                        ...getFillOverlayStyle(displayFillWidth),
-                       color: 'rgba(255, 255, 255, 1)',
+                       color: activeLyricColor,
                        textShadow: 'none',
                        transition: 'none',
                      }}
@@ -1290,7 +1296,7 @@ export default function LyricsDisplay({
                       style={{
                         ['--word-progress' as string]: `${fillWidth}%`,
                         ['--word-accent' as string]: sustainGlowColor.css,
-                        color: fullyFilled ? 'rgba(255, 255, 255, 1)' : effectConfig.inactiveColor,
+                        color: fullyFilled ? activeLyricColor : effectConfig.inactiveColor,
                         opacity: 1,
                         textShadow: isSustainGlowActive
                           ? sustainTextShadow
@@ -1325,7 +1331,7 @@ export default function LyricsDisplay({
                           className="absolute left-0 top-0 z-10 overflow-hidden whitespace-nowrap pointer-events-none"
                           style={{
                             ...getFillOverlayStyle(displayFillWidth),
-                            color: 'rgba(255, 255, 255, 1)',
+                            color: activeLyricColor,
                             textShadow: 'none',
                             transition: 'none',
                           }}
@@ -1650,7 +1656,7 @@ export default function LyricsDisplay({
                   />
                 )}
                 <motion.p
-                  className="font-bold leading-tight text-white drop-shadow-[0_8px_34px_rgba(0,0,0,0.72)] whitespace-normal break-words [overflow-wrap:anywhere]"
+                  className={`font-bold leading-tight whitespace-normal break-words [overflow-wrap:anywhere] ${isLightTheme ? 'text-black/90' : 'text-white drop-shadow-[0_8px_34px_rgba(0,0,0,0.72)]'}`}
                   animate={{
                     fontSize: `clamp(1.9rem, ${singleLyricFontSize * immersiveEffectConfig.fontScale}rem, min(11vw, 18vh))`,
                   }}
@@ -1921,7 +1927,7 @@ export default function LyricsDisplay({
                   }}
                   exit={{ opacity: 0, y: -5 }}
                   transition={{ duration: 0.3 }}
-                  className="text-white/60 mt-2 font-light relative z-10 whitespace-normal break-words [overflow-wrap:anywhere]"
+                  className={`mt-2 font-light relative z-10 whitespace-normal break-words [overflow-wrap:anywhere] ${isLightTheme ? 'text-black/55' : 'text-white/60'}`}
                   style={{
                     fontSize: `${effectiveLyricSize * 0.45}rem`,
                     textShadow: '0 1px 4px rgba(0,0,0,0.4)',
@@ -1996,7 +2002,7 @@ export default function LyricsDisplay({
                   }}
                   exit={{ opacity: 0, y: -10 }}
                   transition={{ duration: 0.3 }}
-                  className="inline-block max-w-full text-white/70 text-lg mt-3 font-light italic relative z-10 whitespace-normal break-words [overflow-wrap:anywhere]"
+                  className={`inline-block max-w-full text-lg mt-3 font-light italic relative z-10 whitespace-normal break-words [overflow-wrap:anywhere] ${isLightTheme ? 'text-black/60' : 'text-white/70'}`}
                   style={{
                     textShadow: '0 2px 8px rgba(0,0,0,0.5)',
                     letterSpacing: '0.02em',

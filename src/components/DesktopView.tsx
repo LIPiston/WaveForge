@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ChevronDown, Search, Settings, X, Play, Clock, Volume2, VolumeX, LogIn, Captions, Heart } from 'lucide-react'
+import { ChevronDown, Search, Settings, X, Play, Clock, Volume2, VolumeX, LogIn, Captions, Heart, MonitorSmartphone } from 'lucide-react'
 import PlaylistCarousel3D from './PlaylistCarousel3D'
 import DesktopMiniPlayer from './DesktopMiniPlayer'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
@@ -83,6 +83,7 @@ interface DesktopViewProps {
   
   // 其他
   onExitDesktopMode: () => void
+  onRemoteClick: () => void
 }
 
 interface Playlist {
@@ -157,6 +158,7 @@ export default function DesktopView({
   onOpenAlbum,
   onCopyInfo,
   onExitDesktopMode,
+  onRemoteClick,
 }: DesktopViewProps) {
   // 当前平台（桌面模式独立）- 记住用户选择
   const [currentPlatform, setCurrentPlatform] = useState<'netease' | 'qq'>(() => {
@@ -1895,8 +1897,25 @@ export default function DesktopView({
               </div>
             )}
             
-            {/* 底部控制区域：按钮组 - 从左到右：搜索、平台切换、设置、音量控制 */}
+            {/* 底部控制区域：按钮组 - 从左到右：遥控器、搜索、平台切换、设置、音量控制 */}
             <div className="flex items-center justify-center gap-3 mt-2">
+              {/* 遥控器按钮 */}
+              <motion.button
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={onRemoteClick}
+                className="rounded-full flex items-center justify-center transition-all"
+                style={{
+                  width: '48px',
+                  height: '48px',
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.2)',
+                }}
+              >
+                <MonitorSmartphone className="w-5 h-5 text-white" />
+              </motion.button>
+
               {/* 搜索按钮 */}
               <motion.button
                 whileHover={{ scale: 1.1 }}

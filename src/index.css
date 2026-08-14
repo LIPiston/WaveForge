@@ -1137,3 +1137,128 @@ input, textarea, [contenteditable="true"] {
   position: relative;
   z-index: 1;
 }
+
+/* ===== 浅色主题：玻璃质感改为淡白半透明，保证可读又不刺眼 ===== */
+:root[data-wf-theme='light'] .home-view-root {
+  background: #f4f3ef;
+}
+
+:root[data-wf-theme='light'] .home-glass-panel-surface {
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+}
+
+:root[data-wf-theme='light'] .home-recent-card-glass {
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.08);
+}
+
+:root[data-wf-theme='light'] .home-bottom-pill-glass {
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+}
+
+:root[data-wf-theme='light'] .home-playlist-card-glass {
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(0, 0, 0, 0.07);
+}
+
+:root[data-wf-theme='light'] .home-playlist-card:hover .home-playlist-card-glass {
+  background: rgba(255, 255, 255, 0.6);
+  border-color: rgba(0, 0, 0, 0.14);
+}
+
+:root[data-wf-theme='light'] .home-glass-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.25);
+  background-clip: padding-box;
+}
+
+:root[data-wf-theme='light'] .home-glass-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.4);
+  background-clip: padding-box;
+}
+
+:root[data-wf-theme='light'] .profile-glass-panel-surface {
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+/* ===== 浅色主题：探索模式 token 集中覆写（淡白底 + 深色文字，可读不刺眼） ===== */
+:root[data-wf-theme='light'] .explore-view-root { background-color: #f2f1ec; }
+:root[data-wf-theme='light'] .explore-view-root .bg-\[\#080b11\] { background-color: #f2f1ec; }
+:root[data-wf-theme='light'] .explore-view-root .bg-\[\#080b11\]\/98 { background-color: rgba(244, 243, 239, 0.98); }
+:root[data-wf-theme='light'] .explore-view-root .bg-\[\#090d14\]\/72 { background-color: rgba(248, 247, 243, 0.82); }
+
+/* 文字：白 → 黑（同 alpha） */
+:root[data-wf-theme='light'] .explore-view-root .text-white { color: rgba(0, 0, 0, 0.85); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/86 { color: rgba(0, 0, 0, 0.84); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/84 { color: rgba(0, 0, 0, 0.82); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/82 { color: rgba(0, 0, 0, 0.8); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/80 { color: rgba(0, 0, 0, 0.78); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/75 { color: rgba(0, 0, 0, 0.72); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/72 { color: rgba(0, 0, 0, 0.7); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/70 { color: rgba(0, 0, 0, 0.68); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/68 { color: rgba(0, 0, 0, 0.66); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/66 { color: rgba(0, 0, 0, 0.64); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/65 { color: rgba(0, 0, 0, 0.63); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/60 { color: rgba(0, 0, 0, 0.58); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/58 { color: rgba(0, 0, 0, 0.56); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/55 { color: rgba(0, 0, 0, 0.54); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/52 { color: rgba(0, 0, 0, 0.52); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/50 { color: rgba(0, 0, 0, 0.5); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/48 { color: rgba(0, 0, 0, 0.48); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/45 { color: rgba(0, 0, 0, 0.45); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/44 { color: rgba(0, 0, 0, 0.44); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/42 { color: rgba(0, 0, 0, 0.42); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/40 { color: rgba(0, 0, 0, 0.4); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/38 { color: rgba(0, 0, 0, 0.4); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/36 { color: rgba(0, 0, 0, 0.38); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/35 { color: rgba(0, 0, 0, 0.37); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/30 { color: rgba(0, 0, 0, 0.32); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/28 { color: rgba(0, 0, 0, 0.3); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/25 { color: rgba(0, 0, 0, 0.3); }
+:root[data-wf-theme='light'] .explore-view-root .text-white\/24 { color: rgba(0, 0, 0, 0.28); }
+
+/* 表面：白 alpha → 黑 alpha */
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.035\] { background-color: rgba(0, 0, 0, 0.035); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.04\] { background-color: rgba(0, 0, 0, 0.04); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.045\] { background-color: rgba(0, 0, 0, 0.045); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.05\] { background-color: rgba(0, 0, 0, 0.05); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.055\] { background-color: rgba(0, 0, 0, 0.055); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.06\] { background-color: rgba(0, 0, 0, 0.06); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.065\] { background-color: rgba(0, 0, 0, 0.065); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.07\] { background-color: rgba(0, 0, 0, 0.07); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.075\] { background-color: rgba(0, 0, 0, 0.075); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.08\] { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/\[0\.09\] { background-color: rgba(0, 0, 0, 0.09); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/10 { background-color: rgba(0, 0, 0, 0.1); }
+:root[data-wf-theme='light'] .explore-view-root .bg-white\/20 { background-color: rgba(0, 0, 0, 0.15); }
+
+/* 封面上的深色小标签 → 淡白小标签 */
+:root[data-wf-theme='light'] .explore-view-root .bg-black\/20 { background-color: rgba(255, 255, 255, 0.55); }
+:root[data-wf-theme='light'] .explore-view-root .bg-black\/25 { background-color: rgba(255, 255, 255, 0.6); }
+:root[data-wf-theme='light'] .explore-view-root .bg-black\/35 { background-color: rgba(255, 255, 255, 0.65); }
+:root[data-wf-theme='light'] .explore-view-root .bg-black\/45 { background-color: rgba(255, 255, 255, 0.72); }
+:root[data-wf-theme='light'] .explore-view-root .bg-black\/50 { background-color: rgba(255, 255, 255, 0.75); }
+:root[data-wf-theme='light'] .explore-view-root .bg-black\/65 { background-color: rgba(255, 255, 255, 0.82); }
+
+/* 边框：白 → 黑 */
+:root[data-wf-theme='light'] .explore-view-root .border-white\/\[0\.06\] { border-color: rgba(0, 0, 0, 0.08); }
+:root[data-wf-theme='light'] .explore-view-root .border-white\/\[0\.07\] { border-color: rgba(0, 0, 0, 0.09); }
+:root[data-wf-theme='light'] .explore-view-root .border-white\/\[0\.08\] { border-color: rgba(0, 0, 0, 0.1); }
+:root[data-wf-theme='light'] .explore-view-root .border-white\/\[0\.09\] { border-color: rgba(0, 0, 0, 0.11); }
+:root[data-wf-theme='light'] .explore-view-root .border-white\/\[0\.1\] { border-color: rgba(0, 0, 0, 0.12); }
+:root[data-wf-theme='light'] .explore-view-root .border-white\/\[0\.12\] { border-color: rgba(0, 0, 0, 0.14); }
+:root[data-wf-theme='light'] .explore-view-root .border-white\/20 { border-color: rgba(0, 0, 0, 0.18); }
+
+/* hover 状态 */
+:root[data-wf-theme='light'] .explore-view-root .hover\:bg-white\/\[0\.07\]:hover { background-color: rgba(0, 0, 0, 0.1); }
+:root[data-wf-theme='light'] .explore-view-root .hover\:bg-white\/\[0\.075\]:hover { background-color: rgba(0, 0, 0, 0.11); }
+:root[data-wf-theme='light'] .explore-view-root .hover\:bg-white\/\[0\.09\]:hover { background-color: rgba(0, 0, 0, 0.12); }
+:root[data-wf-theme='light'] .explore-view-root .hover\:bg-white\/\[0\.1\]:hover { background-color: rgba(0, 0, 0, 0.13); }
+:root[data-wf-theme='light'] .explore-view-root .hover\:bg-white\/20:hover { background-color: rgba(0, 0, 0, 0.18); }
+:root[data-wf-theme='light'] .explore-view-root .hover\:text-white:hover { color: rgba(0, 0, 0, 0.9); }

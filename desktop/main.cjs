@@ -100,6 +100,7 @@ const { createAnalysisRuntime } = require('./analysis-runtime.cjs')
 const { setupRenderIPC, cleanup: cleanupRender } = require('./render-runtime.cjs')
 const { ConfigManager } = require('./config-manager.cjs')
 const deviceLicense = require('./device-license.cjs')
+const { createRemoteServer, getLanIPv4Addresses } = require('./remote-server.cjs')
 logStartupTiming('Main-process modules loaded')
 
 let desktopWidgetCpuSample = null
@@ -255,6 +256,9 @@ const desktopPlayerState = {
   progress: 0,
   hasTranslation: false,
   hasRomaji: false,
+  volume: 0.5, // 遥控器状态回传用
+  muted: false,
+  page: 'home', // 'home' | 'playback' —— 遥控器「模式切换」据此展示模式列表或歌词样式列表
 }
 const DESKTOP_PLAYER_FORMS = new Set(['card', 'bar'])
 const DESKTOP_PLAYER_BASE_SIZE = {
@@ -368,6 +372,11 @@ function broadcastDesktopPlayerState() {
   if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
     desktopLyricsWindow.webContents.send('desktop-lyrics:state', getDesktopPlayerSnapshot())
   }
+  broadcastRemoteState()
+}
+
+function broadcastRemoteState() {
+  if (remoteServer) remoteServer.broadcastState(getDesktopPlayerSnapshot())
 }
 
 function broadcastDesktopPlayerPartial(partial) {
@@ -384,6 +393,7 @@ function broadcastDesktopPlayerPartial(partial) {
       desktopLyricsWindow.webContents.send('desktop-lyrics:state', lyricsPartial)
     }
   }
+  broadcastRemoteState()
 }
 
 function desktopPlayerSetExpanded(expanded) {
@@ -877,6 +887,25 @@ ipcMain.on('desktop-player:state-update', (_event, partial) => {
     desktopPlayerState.progress = partial.progress
     changed.progress = partial.progress
   }
+  if (typeof partial.volume === 'number' && Number.isFinite(partial.volume)) {
+    const next = Math.max(0, Math.min(1, partial.volume))
+    if (desktopPlayerState.volume !== next) {
+      desktopPlayerState.volume = next
+      changed.volume = next
+    }
+  }
+  if (typeof partial.muted === 'boolean') {
+    if (desktopPlayerState.muted !== partial.muted) {
+      desktopPlayerState.muted = partial.muted
+      changed.muted = partial.muted
+    }
+  }
+  if (partial.page === 'home' || partial.page === 'playback') {
+    if (desktopPlayerState.page !== partial.page) {
+      desktopPlayerState.page = partial.page
+      changed.page = partial.page
+    }
+  }
   if (Array.isArray(partial.spectrum)) {
     const next = partial.spectrum.slice(0, 5).map(value => Math.max(0, Math.min(1, Number(value) || 0)))
     desktopPlayerState.spectrum = next
@@ -1048,6 +1077,102 @@ function safeSendToWindow(targetWindow, channel, ...args) {
     return false
   }
 }
+
+// ===== 遥控器：局域网 Web 服务 + 虚拟鼠标桥接 =====
+let remoteServer = null
+const remoteSettings = { theme: 'dark', topRightAction: 'song', gestures: { doubleTap: true, swipe: true, twoFinger: true, twoFingerTap: true } }
+
+function remoteSettingsPath() {
+  return path.join(app.getPath('userData'), 'remote-settings.json')
+}
+
+function loadRemoteSettings() {
+  try {
+    const raw = fs.readFileSync(remoteSettingsPath(), 'utf8')
+    const parsed = JSON.parse(raw)
+    if (parsed.theme === 'light' || parsed.theme === 'dark') remoteSettings.theme = parsed.theme
+    if (['song', 'comment', 'artist', 'favorite', 'desktop-lyrics', 'mode-switch'].includes(parsed.topRightAction)) remoteSettings.topRightAction = parsed.topRightAction
+    if (parsed.gestures && typeof parsed.gestures === 'object') {
+      if (typeof parsed.gestures.doubleTap === 'boolean') remoteSettings.gestures.doubleTap = parsed.gestures.doubleTap
+      if (typeof parsed.gestures.swipe === 'boolean') remoteSettings.gestures.swipe = parsed.gestures.swipe
+      if (typeof parsed.gestures.twoFinger === 'boolean') remoteSettings.gestures.twoFinger = parsed.gestures.twoFinger
+      if (typeof parsed.gestures.twoFingerTap === 'boolean') remoteSettings.gestures.twoFingerTap = parsed.gestures.twoFingerTap
+    }
+  } catch {
+    // 首次运行 / 文件缺失：使用默认
+  }
+}
+
+function saveRemoteSettings() {
+  try {
+    const tmp = remoteSettingsPath() + '.tmp'
+    fs.writeFileSync(tmp, JSON.stringify(remoteSettings, null, 2), 'utf8')
+    fs.renameSync(tmp, remoteSettingsPath())
+  } catch (err) {
+    console.error('[Remote] 保存设置失败:', err)
+  }
+}
+
+function getRemoteSettings() {
+  return { ...remoteSettings }
+}
+
+function ensureRemoteServer() {
+  if (remoteServer) return remoteServer
+  remoteServer = createRemoteServer({
+    getComputerName: () => os.hostname(),
+    getSettings: () => remoteSettings,
+    getState: () => getDesktopPlayerSnapshot(),
+    sendControl: (action, payload) => {
+      safeSendToWindow(mainWindow, 'desktop-player:control', action, payload)
+    },
+    sendCursor: (cmd, data) => {
+      safeSendToWindow(mainWindow, 'remote:cursor', { cmd, ...(data || {}) })
+    },
+    onClientsChange: (status) => {
+      safeSendToWindow(mainWindow, 'remote:clients', status)
+    },
+  })
+  return remoteServer
+}
+
+ipcMain.handle('remote:start', async (_event, requestedPort) => {
+  const srv = ensureRemoteServer()
+  try {
+    return await srv.start(Number(requestedPort) || 25566)
+  } catch (err) {
+    return { running: false, error: err && err.message ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('remote:stop', () => {
+  if (remoteServer) remoteServer.stop()
+  return remoteServer ? remoteServer.status() : { running: false, port: 25566, token: '', clientCount: 0, ips: getLanIPv4Addresses() }
+})
+
+ipcMain.handle('remote:get-status', () => (
+  remoteServer
+    ? remoteServer.status()
+    : { running: false, port: 25566, token: '', clientCount: 0, ips: getLanIPv4Addresses() }
+))
+
+ipcMain.handle('remote:get-settings', () => getRemoteSettings())
+
+ipcMain.handle('remote:update-settings', (_event, partial) => {
+  if (partial && typeof partial === 'object') {
+    if (partial.theme === 'light' || partial.theme === 'dark') remoteSettings.theme = partial.theme
+    if (['song', 'comment', 'artist', 'favorite', 'desktop-lyrics', 'mode-switch'].includes(partial.topRightAction)) remoteSettings.topRightAction = partial.topRightAction
+    if (partial.gestures && typeof partial.gestures === 'object') {
+      if (typeof partial.gestures.doubleTap === 'boolean') remoteSettings.gestures.doubleTap = partial.gestures.doubleTap
+      if (typeof partial.gestures.swipe === 'boolean') remoteSettings.gestures.swipe = partial.gestures.swipe
+      if (typeof partial.gestures.twoFinger === 'boolean') remoteSettings.gestures.twoFinger = partial.gestures.twoFinger
+      if (typeof partial.gestures.twoFingerTap === 'boolean') remoteSettings.gestures.twoFingerTap = partial.gestures.twoFingerTap
+    }
+  }
+  saveRemoteSettings()
+  if (remoteServer) remoteServer.pushConfig()
+  return getRemoteSettings()
+})
 
 function getWindowsSystemLocation() {
   const script = `
@@ -2159,29 +2284,137 @@ const QMK_DETECT_KEY_JS = `
   return JSON.stringify({ full: full, masked: masked });
 })()
 `
+// 在官方页里定位「复制Key」按钮：按多组文案匹配 + 回退到 clipboard/copy 数据属性。
+// 返回真实可点击的元素（button / a / [role=button] / 带 data-clipboard 的元素）。
+function qmkFindCopyBtnSource() {
+  return `(function () {
+    var texts = ['复制Key', '复制 Key', '复制key', '复制', 'Copy Key', 'Copy', 'copy'];
+    function findCopyBtn() {
+      for (var t = 0; t < texts.length; t++) {
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          var node = walker.currentNode;
+          var v = node.nodeValue || '';
+          if (v.indexOf(texts[t]) === -1) continue;
+          var el = node.parentElement;
+          var guard = 0;
+          while (el && el.innerText && el.innerText.length > 30 && guard < 8) { el = el.parentElement; guard++; }
+          var clickable = (el && el.closest && el.closest('button, a, [role=button], [data-clipboard], [data-copy], [data-clipboard-text], [data-clipboard-action]')) || el;
+          if (clickable) return clickable;
+        }
+      }
+      var attrEls = document.querySelectorAll('[data-clipboard], [data-copy], [data-clipboard-text], [data-clipboard-action]');
+      if (attrEls.length) return attrEls[0];
+      return null;
+    }
+    var btn = findCopyBtn();
+    if (!btn) return false;
+    try { btn.click(); return true; } catch (e) { return false; }
+  })()`
+}
 const QMK_CLICK_COPY_JS = `
+${qmkFindCopyBtnSource()}
+`
+
+// 注入：登录后页面只显示打码 key（qmk-12cc****…7916）时，用动画引导用户点击「复制Key」按钮。
+// 复制按钮点击后完整 key 会进剪贴板，主进程轮询读到后自动完成登录并关闭窗口。
+const QMK_COPY_GUIDE_JS = `
 (function () {
-  function findElByText(text) {
-    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      var node = walker.currentNode;
-      if (node.nodeValue && node.nodeValue.indexOf(text) !== -1) {
+  if (window.__waveforgeQmkCopyGuideDismissed) return;
+  var old = document.getElementById('waveforge-copy-guide');
+  if (old && old.parentNode) old.parentNode.removeChild(old);
+
+  var texts = ['复制Key', '复制 Key', '复制key', '复制', 'Copy Key', 'Copy', 'copy'];
+  function findCopyBtn() {
+    for (var t = 0; t < texts.length; t++) {
+      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        var node = walker.currentNode;
+        var v = node.nodeValue || '';
+        if (v.indexOf(texts[t]) === -1) continue;
         var el = node.parentElement;
         var guard = 0;
-        while (el && el.innerText && el.innerText.length > 40 && guard < 8) {
-          el = el.parentElement;
-          guard++;
-        }
-        return el;
+        while (el && el.innerText && el.innerText.length > 30 && guard < 8) { el = el.parentElement; guard++; }
+        var clickable = (el && el.closest && el.closest('button, a, [role=button], [data-clipboard], [data-copy], [data-clipboard-text], [data-clipboard-action]')) || el;
+        if (clickable) return clickable;
       }
     }
+    var attrEls = document.querySelectorAll('[data-clipboard], [data-copy], [data-clipboard-text], [data-clipboard-action]');
+    if (attrEls.length) return attrEls[0];
     return null;
   }
-  var btn = findElByText('\u590d\u5236') || findElByText('Copy');
-  if (!btn) return false;
-  var clickable = (btn.closest && btn.closest('button, a, [role=button]')) || btn;
-  try { clickable.click(); return true; } catch (e) { return false; }
-})()
+
+  function mount(target) {
+    if (window.__waveforgeQmkCopyGuideMounted) return;
+    window.__waveforgeQmkCopyGuideMounted = true;
+
+    var overlay = document.createElement('div');
+    overlay.id = 'waveforge-copy-guide';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2147483646;';
+
+    var style = document.createElement('style');
+    style.textContent = '@keyframes wf-copy-pulse{0%{box-shadow:0 0 0 0 rgba(49,230,139,.75)}70%{box-shadow:0 0 0 26px rgba(49,230,139,0)}100%{box-shadow:0 0 0 0 rgba(49,230,139,0)}}@keyframes wf-copy-bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(10px)}}';
+    (document.head || document.documentElement).appendChild(style);
+
+    var ring = document.createElement('div');
+    ring.style.cssText = 'position:fixed;border-radius:10px;border:3px solid #31e68b;background:rgba(49,230,139,.18);animation:wf-copy-pulse 1.4s infinite;pointer-events:none;';
+
+    var arrow = document.createElement('div');
+    arrow.style.cssText = 'position:fixed;width:44px;height:44px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.55));animation:wf-copy-bounce 1s infinite;pointer-events:none;';
+    arrow.innerHTML = '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 5v14m0 0l-6-6m6 6l6-6" stroke="#31e68b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    var tip = document.createElement('div');
+    tip.style.cssText = 'position:fixed;padding:9px 15px;border-radius:10px;background:rgba(7,16,24,.94);color:#31e68b;font:600 13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.45);border:1px solid rgba(49,230,139,.4);pointer-events:none;white-space:nowrap;';
+    tip.textContent = '请点击「复制Key」按钮，自动完成登录';
+
+    function reposition() {
+      if (!target.isConnected) { cleanup(); return; }
+      var rect = target.getBoundingClientRect();
+      if (!rect || rect.width === 0 || rect.height === 0) return;
+      ring.style.left = (rect.left - 6) + 'px';
+      ring.style.top = (rect.top - 6) + 'px';
+      ring.style.width = (rect.width + 12) + 'px';
+      ring.style.height = (rect.height + 12) + 'px';
+      var above = rect.top > 150;
+      arrow.style.left = (rect.left + rect.width / 2 - 22) + 'px';
+      arrow.style.top = above ? (rect.top - 58) + 'px' : (rect.bottom + 14) + 'px';
+      arrow.style.transform = above ? '' : 'rotate(180deg)';
+      tip.style.left = Math.max(8, Math.min(window.innerWidth - 270, rect.left + rect.width / 2 - 125)) + 'px';
+      tip.style.top = above ? (rect.top - 108) + 'px' : (rect.bottom + 66) + 'px';
+    }
+
+    var moveTimer = null;
+    var goneTimer = null;
+    function cleanup() {
+      window.__waveforgeQmkCopyGuideDismissed = true;
+      if (moveTimer) clearInterval(moveTimer);
+      if (goneTimer) clearInterval(goneTimer);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+
+    overlay.appendChild(ring);
+    overlay.appendChild(arrow);
+    overlay.appendChild(tip);
+    document.body.appendChild(overlay);
+    reposition();
+    moveTimer = setInterval(reposition, 500);
+
+    // 用户点击复制按钮后 key 进入剪贴板，主进程会读到并自动关闭窗口。
+    target.addEventListener('click', function () { setTimeout(cleanup, 600); });
+    goneTimer = setInterval(function () {
+      if (!target.isConnected || !target.getBoundingClientRect().width) cleanup();
+    }, 800);
+  }
+
+  var btn = findCopyBtn();
+  if (btn) { mount(btn); return; }
+  var tries = 0;
+  var retry = setInterval(function () {
+    if (window.__waveforgeQmkCopyGuideMounted || ++tries > 12) { clearInterval(retry); return; }
+    var b = findCopyBtn();
+    if (b) { clearInterval(retry); mount(b); }
+  }, 500);
+})();
 `
 
 
@@ -2256,7 +2489,8 @@ async function createQQSkillKeyWindow() {
     qqSkillKeyWindow.webContents.on('did-navigate-in-page', () => setTimeout(injectGuide, 350))
 
     // 轮询抓取页面上出现的 qmk- API Key
-        let copyRequested = false
+    let copyGuideShown = false
+    let copyClickAttempts = 0
     const keyPoll = setInterval(async () => {
       if (!qqSkillKeyWindow || qqSkillKeyWindow.isDestroyed()) {
         clearInterval(keyPoll)
@@ -2268,10 +2502,15 @@ async function createQQSkillKeyWindow() {
         try { info = JSON.parse(raw) } catch (e) { info = null }
         let key = info && info.full ? info.full : ''
         if (!key && info && info.masked) {
-          if (!copyRequested) {
-            copyRequested = true
-            await qqSkillKeyWindow.webContents.executeJavaScript(QMK_CLICK_COPY_JS, true).catch(() => {})
-            await new Promise((r) => setTimeout(r, 400))
+          // 先注入引导动画指向「复制Key」（用户可手动点，最可靠）；同时尽力自动点击复制。
+          if (!copyGuideShown) {
+            copyGuideShown = true
+            await qqSkillKeyWindow.webContents.executeJavaScript(QMK_COPY_GUIDE_JS, true).catch(() => {})
+          }
+          if (copyClickAttempts < 3) {
+            copyClickAttempts++
+            const clicked = await qqSkillKeyWindow.webContents.executeJavaScript(QMK_CLICK_COPY_JS, true).catch(() => false)
+            if (clicked) await new Promise((r) => setTimeout(r, 500))
           }
           const cb = clipboard.readText() || ''
           const m = cb.match(/qmk-[A-Za-z0-9._-]{8,}/)
@@ -2712,6 +2951,7 @@ app.whenReady().then(() => {
   configManager = new ConfigManager(app)
   const cachePath = configManager.getCachePath()
   console.log('📁 [Config] 缓存路径:', cachePath)
+  loadRemoteSettings()
   
   // 创建缓存目录结构
   const requiredDirs = [
@@ -2943,6 +3183,11 @@ app.on('before-quit', () => {
   if (wallpaperWatcher) {
     clearInterval(wallpaperWatcher)
     wallpaperWatcher = null
+  }
+  // 停止遥控器局域网服务
+  if (remoteServer) {
+    remoteServer.stop()
+    remoteServer = null
   }
   // Cleanup render runtime
   cleanupRender()

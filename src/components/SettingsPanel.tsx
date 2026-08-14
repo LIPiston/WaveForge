@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, Trash2, ChevronLeft, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones } from 'lucide-react'
+import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, Trash2, ChevronLeft, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone } from 'lucide-react'
 import LoginButton from './LoginButton'
 import HomeCustomizeModal from './HomeCustomizeModal'
 import AudioQualitySettingsModal from './AudioQualitySettingsModal'
+import RemoteControlSettingsModal from './RemoteControlSettingsModal'
 import CacheClearModal from './CacheClearModal'
 import packageInfo from '../../package.json'
 import sponsorData from '../data/afdianSponsors.generated.json'
@@ -126,6 +127,8 @@ export default function SettingsPanel({
     const saved = localStorage.getItem('accentColor')
     return saved || '#3B82F6' // 默认蓝色
   })
+  // 远程遥控器设置（二级菜单弹窗）
+  const [showRemoteSettings, setShowRemoteSettings] = useState(false)
   const [playbackShortcutSettings, setPlaybackShortcutSettings] = useState(loadPlaybackShortcutSettings)
   
   // 第三方歌词源设置
@@ -823,6 +826,12 @@ export default function SettingsPanel({
     window.dispatchEvent(new Event('autoMixSettingsChanged'))
   }
 
+  // 深浅色主题：与播放页快捷设置共用同一存储与事件，App 监听后统一更新
+  const handlePlayerThemeChange = (newTheme: 'dark' | 'light') => {
+    localStorage.setItem('playerTheme', newTheme)
+    window.dispatchEvent(new CustomEvent('playerThemeChanged', { detail: newTheme }))
+  }
+
   return (
     <AnimatePresence>
       {show && (
@@ -834,7 +843,7 @@ export default function SettingsPanel({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           onClick={onClose}
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+          className={`fixed inset-0 backdrop-blur-sm z-40 ${playerTheme === 'dark' ? 'bg-black/60' : 'bg-white/40'}`}
         />
 
         {/* 设置面板 */}
@@ -1102,6 +1111,7 @@ export default function SettingsPanel({
                             username={neteaseUsername}
                             onLogin={onNeteaseLogin}
                             onLogout={onNeteaseLogout}
+                            playerTheme={playerTheme}
                           />
                         </div>
                       </div>
@@ -1133,6 +1143,7 @@ export default function SettingsPanel({
                             username={qqUsername}
                             onLogin={onQQLogin}
                             onLogout={onQQLogout}
+                            playerTheme={playerTheme}
                           />
                         </div>
                       </div>
@@ -1163,12 +1174,51 @@ export default function SettingsPanel({
 
               {activeTab === 'personalization' && (
                 <div className="space-y-6">
+                  {/* 外观主题 */}
+                  <div>
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>外观主题</h3>
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                      <div className="flex items-center justify-between gap-6">
+                        <div className="min-w-0">
+                          <div className={`${textPrimary} font-medium mb-1`}>主题色</div>
+                          <div className={`${textSecondary} text-sm`}>切换播放页、简约模式与探索模式的深浅色显示</div>
+                        </div>
+                        <div className="flex gap-2 flex-shrink-0">
+                          {(['dark', 'light'] as const).map((themeOption) => (
+                            <button
+                              key={themeOption}
+                              onClick={() => handlePlayerThemeChange(themeOption)}
+                              className="px-4 py-1.5 rounded-lg text-xs font-medium transition-all"
+                              style={{
+                                backgroundColor:
+                                  playerTheme === themeOption
+                                    ? accentColor
+                                    : playerTheme === 'dark'
+                                    ? 'rgba(255,255,255,0.1)'
+                                    : 'rgba(0,0,0,0.1)',
+                                color:
+                                  playerTheme === themeOption
+                                    ? '#fff'
+                                    : playerTheme === 'dark'
+                                    ? 'rgba(255,255,255,0.6)'
+                                    : 'rgba(0,0,0,0.6)',
+                                boxShadow: playerTheme === themeOption ? `0 0 8px ${accentColor}30` : 'none',
+                              }}
+                            >
+                              {themeOption === 'dark' ? '深色' : '浅色'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* 首页自定义 */}
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>自定义首页</h3>
                     <button
                       onClick={() => setShowHomeCustomize(true)}
-                      className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} hover:bg-white/10 transition-all flex items-center justify-between group`}
+                      className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} ${hoverBg} transition-all flex items-center justify-between group`}
                     >
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${accentColor}20` }}>
@@ -1190,7 +1240,7 @@ export default function SettingsPanel({
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>播放音质</h3>
                     <button
                       onClick={() => setShowAudioQuality(true)}
-                      className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} hover:bg-white/10 transition-all flex items-center justify-between group`}
+                      className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} ${hoverBg} transition-all flex items-center justify-between group`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${accentColor}20` }}>
@@ -1223,7 +1273,7 @@ export default function SettingsPanel({
                             onChange={(event) => updatePlaybackShortcutSettings({ playbackPageEnabled: event.target.checked })}
                             className="sr-only peer"
                           />
-                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all ${playerTheme === 'dark' ? 'after:bg-white' : 'after:bg-black'}`} style={{ backgroundColor: playbackShortcutSettings.playbackPageEnabled ? accentColor : '' }} />
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)]`} style={{ backgroundColor: playbackShortcutSettings.playbackPageEnabled ? accentColor : '' }} />
                         </label>
                       </div>
 
@@ -1269,7 +1319,7 @@ export default function SettingsPanel({
                                 onChange={(event) => updatePlaybackShortcutSettings({ spacePlayPauseEnabled: event.target.checked })}
                                 className="sr-only peer"
                               />
-                              <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all ${playerTheme === 'dark' ? 'after:bg-white' : 'after:bg-black'}`} style={{ backgroundColor: playbackShortcutSettings.spacePlayPauseEnabled ? accentColor : '' }} />
+                              <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)]`} style={{ backgroundColor: playbackShortcutSettings.spacePlayPauseEnabled ? accentColor : '' }} />
                             </label>
                           </div>
                         </div>
@@ -1287,7 +1337,7 @@ export default function SettingsPanel({
                             onChange={(event) => updatePlaybackShortcutSettings({ mediaKeysEnabled: event.target.checked })}
                             className="sr-only peer"
                           />
-                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all ${playerTheme === 'dark' ? 'after:bg-white' : 'after:bg-black'}`} style={{ backgroundColor: playbackShortcutSettings.mediaKeysEnabled ? accentColor : '' }} />
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)]`} style={{ backgroundColor: playbackShortcutSettings.mediaKeysEnabled ? accentColor : '' }} />
                         </label>
                       </div>
                     </div>
@@ -1313,7 +1363,7 @@ export default function SettingsPanel({
                             onChange={(e) => handleUpNextToggle(e.target.checked)}
                             className="sr-only peer"
                           />
-                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full ${playerTheme === 'dark' ? 'peer-checked:after:border-white after:bg-white' : 'peer-checked:after:border-black after:bg-black'} after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: upNextEnabled ? accentColor : '' }}></div>
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)] after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: upNextEnabled ? accentColor : '' }}></div>
                         </label>
                       </div>
                       
@@ -1334,7 +1384,7 @@ export default function SettingsPanel({
                                 onChange={(e) => handleShowUpNextOutsidePlayerToggle(e.target.checked)}
                                 className="sr-only peer"
                               />
-                              <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full ${playerTheme === 'dark' ? 'peer-checked:after:border-white after:bg-white' : 'peer-checked:after:border-black after:bg-black'} after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: showUpNextOutsidePlayer ? accentColor : '' }} />
+                              <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)] after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: showUpNextOutsidePlayer ? accentColor : '' }} />
                             </label>
                           </div>
                           <div className="border-t pt-4" style={{ borderColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)' }}>
@@ -1457,7 +1507,7 @@ export default function SettingsPanel({
                             onChange={(event) => handleDesktopLyricsToggle(event.target.checked)}
                             className="sr-only peer"
                           />
-                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full ${playerTheme === 'dark' ? 'after:bg-white' : 'after:bg-black'} after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: desktopLyricsSettings.enabled ? accentColor : '' }} />
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)] after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: desktopLyricsSettings.enabled ? accentColor : '' }} />
                         </label>
                       </div>
 
@@ -1546,7 +1596,7 @@ export default function SettingsPanel({
                             onChange={(e) => handleDesktopPlayerToggle(e.target.checked)}
                             className="sr-only peer"
                           />
-                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full ${playerTheme === 'dark' ? 'peer-checked:after:border-white after:bg-white' : 'peer-checked:after:border-black after:bg-black'} after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: desktopPlayerEnabled ? accentColor : '' }}></div>
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)] after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: desktopPlayerEnabled ? accentColor : '' }}></div>
                         </label>
                       </div>
 
@@ -1827,6 +1877,26 @@ export default function SettingsPanel({
                         当前：{presetColors.find(c => c.value === accentColor)?.name || '自定义'}
                       </div>
                     </div>
+                  </div>
+
+                  {/* 远程遥控器设置（卡片 → 二级菜单弹窗） */}
+                  <div>
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>远程遥控器</h3>
+                    <button
+                      onClick={() => setShowRemoteSettings(true)}
+                      className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} ${hoverBg} transition-all flex items-center justify-between group`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${accentColor}20` }}>
+                          <MonitorSmartphone className="w-5 h-5" style={{ color: accentColor }} />
+                        </div>
+                        <div className="text-left min-w-0">
+                          <div className={`${textPrimary} font-medium`}>遥控器个性化</div>
+                          <div className={`${textSecondary} text-sm truncate`}>外观 · 右上角按钮 · 触摸板手势</div>
+                        </div>
+                      </div>
+                      <ChevronRight className={`w-5 h-5 ${textTertiary} flex-shrink-0 group-hover:translate-x-1 transition-transform`} />
+                    </button>
                   </div>
                 </div>
               )}
@@ -2358,7 +2428,7 @@ export default function SettingsPanel({
                     {/* 缓存清理按钮 */}
                     <button
                       onClick={() => setShowCacheClear(true)}
-                      className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} hover:bg-white/10 transition-all text-left`}
+                      className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} ${hoverBg} transition-all text-left`}
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
@@ -2574,6 +2644,13 @@ export default function SettingsPanel({
         qqVip={qqVip}
         neteaseLoggedIn={neteaseLoggedIn}
         qqLoggedIn={qqLoggedIn}
+      />
+
+      {/* 远程遥控器设置弹窗 */}
+      <RemoteControlSettingsModal
+        show={showRemoteSettings}
+        onClose={() => setShowRemoteSettings(false)}
+        playerTheme={playerTheme}
       />
 
       <CacheClearModal 

@@ -10,6 +10,7 @@ import {
   Headphones,
   Loader2,
   LogIn,
+  MonitorSmartphone,
   Music2,
   Play,
   Radio,
@@ -88,6 +89,7 @@ interface ExploreViewProps {
   onLoginClick: (platform: ExplorePlatform) => void
   onProfileClick: (platform: ExplorePlatform) => void
   onSearchClick: () => void
+  onRemoteClick: () => void
   onPlayPause: () => void
   onNext: () => void
   onPrevious: () => void
@@ -317,6 +319,7 @@ export default function ExploreView({
   onLoginClick,
   onProfileClick,
   onSearchClick,
+  onRemoteClick,
   onPlayPause,
   onNext,
   onPrevious,
@@ -838,15 +841,19 @@ export default function ExploreView({
 
   return (
     <div
-      className="absolute inset-0 overflow-hidden bg-[#080b11] text-white"
+      className="explore-view-root absolute inset-0 overflow-hidden bg-[#080b11] text-white"
       style={themeStyle}
     >
       <div
         className={`pointer-events-none absolute inset-0 ${platformPreferences.backgroundIntensity === 'vivid' ? 'opacity-90' : 'opacity-55'}`}
         style={{
-          background: platform === 'qq'
-            ? 'radial-gradient(circle at 10% 0%, rgba(22, 117, 91, 0.34), transparent 38%), radial-gradient(circle at 92% 15%, rgba(36, 95, 181, 0.3), transparent 34%), linear-gradient(145deg, #06131b 0%, #071019 48%, #090c12 100%)'
-            : 'radial-gradient(circle at 10% 0%, rgba(164, 43, 72, 0.34), transparent 38%), radial-gradient(circle at 92% 15%, rgba(96, 50, 177, 0.3), transparent 34%), linear-gradient(145deg, #170c13 0%, #100c14 48%, #090b11 100%)',
+          background: playerTheme === 'light'
+            ? (platform === 'qq'
+              ? 'radial-gradient(circle at 10% 0%, rgba(22, 117, 91, 0.14), transparent 38%), radial-gradient(circle at 92% 15%, rgba(36, 95, 181, 0.12), transparent 34%), linear-gradient(145deg, #f2f6f4 0%, #eef2f5 48%, #f2f1ec 100%)'
+              : 'radial-gradient(circle at 10% 0%, rgba(164, 43, 72, 0.12), transparent 38%), radial-gradient(circle at 92% 15%, rgba(96, 50, 177, 0.12), transparent 34%), linear-gradient(145deg, #f7f1f2 0%, #f3f0f4 48%, #f2f1ec 100%)')
+            : platform === 'qq'
+              ? 'radial-gradient(circle at 10% 0%, rgba(22, 117, 91, 0.34), transparent 38%), radial-gradient(circle at 92% 15%, rgba(36, 95, 181, 0.3), transparent 34%), linear-gradient(145deg, #06131b 0%, #071019 48%, #090c12 100%)'
+              : 'radial-gradient(circle at 10% 0%, rgba(164, 43, 72, 0.34), transparent 38%), radial-gradient(circle at 92% 15%, rgba(96, 50, 177, 0.3), transparent 34%), linear-gradient(145deg, #170c13 0%, #100c14 48%, #090b11 100%)',
         }}
       />
       <div className="pointer-events-none absolute -left-28 top-40 h-80 w-80 rounded-full bg-[rgba(var(--explore-accent-rgb),0.13)] blur-[100px]" />
@@ -952,6 +959,15 @@ export default function ExploreView({
             </div>
 
             <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onRemoteClick}
+                className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/[0.08] bg-white/[0.045] text-white/58 transition hover:bg-white/[0.1] hover:text-white"
+                aria-label="遥控器"
+                title="遥控器"
+              >
+                <MonitorSmartphone className="h-[18px] w-[18px]" />
+              </button>
               <button
                 type="button"
                 onClick={onSearchClick}
@@ -1194,16 +1210,7 @@ export default function ExploreView({
                         key={item.label}
                         type="button"
                         whileHover={{ y: -4 }}
-                        onContextMenu={event => {
-                          if (item.songs?.[0]) {
-                            openSongContextMenu(
-                              event,
-                              item.songs[0],
-                              item.songs,
-                              'continuous' in item && item.continuous === true,
-                            )
-                          }
-                        }}
+                        onContextMenu={event => event.preventDefault()}
                         onClick={() => {
                           if (item.songs?.[0]) {
                             playExploreCollection(
@@ -1579,6 +1586,7 @@ export default function ExploreView({
 
       <PlaylistDetailPanel
         show={detailOpen}
+        playerTheme={playerTheme}
         playlist={detail?.playlist || null}
         songs={detail?.songs || []}
         loading={detailLoading}
@@ -1613,7 +1621,6 @@ export default function ExploreView({
         onCopyInfo={onCopyInfo}
         userPlaylists={userPlaylists}
         currentSong={currentSong}
-        playerTheme={playerTheme}
         accentColor={accent}
       />
 

@@ -21,6 +21,9 @@ const DEFAULT_STATE: DesktopPlayerSnapshot = {
   progress: 0,
   hasTranslation: false,
   hasRomaji: false,
+  volume: 0.5,
+  muted: false,
+  page: 'home',
 }
 
 const getBridge = () => (window as { desktopPlayer?: DesktopPlayerBridgeAPI }).desktopPlayer

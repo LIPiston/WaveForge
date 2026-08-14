@@ -232,8 +232,8 @@ export default function FullScreenPlayer({
               
               {/* 歌曲信息 */}
               <div className="text-center space-y-2">
-                <h1 className="text-3xl font-bold text-white drop-shadow-lg">{currentSong.name}</h1>
-                <p className="text-lg text-white/80 drop-shadow-md">{currentSong.artists.map((a: any) => a.name).join(', ')}</p>
+                <h1 className={`text-3xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>{currentSong.name}</h1>
+                <p className={`text-lg ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>{currentSong.artists.map((a: any) => a.name).join(', ')}</p>
               </div>
             </motion.div>
 

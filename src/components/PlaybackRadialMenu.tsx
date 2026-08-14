@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Disc3, Heart, HeartOff, MessageCircle, UserRound } from 'lucide-react'
+import { Disc3, Heart, HeartOff, MessageCircle, UserRound, Info } from 'lucide-react'
 import type { Song } from '../services/musicApi'
 import SongContextMenu from './SongContextMenu'
 
-type RadialDirection = 'up' | 'down' | 'left' | 'right'
+type RadialDirection = 'up' | 'down' | 'left' | 'right' | 'up-left' | 'up-right' | 'down-left' | 'down-right'
 
 interface PlaybackRadialMenuProps {
   song: Song
@@ -111,8 +111,10 @@ export default function PlaybackRadialMenu({
       let direction: RadialDirection | null = null
 
       if (distance >= DIRECTION_THRESHOLD) {
-        if (Math.abs(deltaX) > Math.abs(deltaY)) direction = deltaX > 0 ? 'right' : 'left'
-        else direction = deltaY > 0 ? 'down' : 'up'
+        const angle = Math.atan2(deltaY, deltaX) * 180 / Math.PI
+        const octant = Math.round((angle + 180) / 45) % 8
+        const directions: RadialDirection[] = ['left', 'up-left', 'up', 'up-right', 'right', 'down-right', 'down', 'down-left']
+        direction = directions[octant]
       }
 
       if (direction !== selectedDirectionRef.current) {
@@ -133,6 +135,9 @@ export default function PlaybackRadialMenu({
         else if (direction === 'down') actionsRef.current.onViewComments(currentSong)
         else if (direction === 'left') actionsRef.current.onViewArtist(currentSong)
         else if (direction === 'right') actionsRef.current.onViewAlbum(currentSong)
+        else if (direction === 'up-left') {
+          window.dispatchEvent(new CustomEvent('waveforge:show-song-detail', { detail: currentSong }))
+        }
         resetGesture()
         return
       }
@@ -176,6 +181,7 @@ export default function PlaybackRadialMenu({
     { direction: 'down', label: '查看评论', Icon: MessageCircle, className: 'bottom-3 left-1/2 -translate-x-1/2' },
     { direction: 'left', label: '查看歌手', Icon: UserRound, className: 'left-3 top-1/2 -translate-y-1/2' },
     { direction: 'right', label: '查看专辑', Icon: Disc3, className: 'right-3 top-1/2 -translate-y-1/2' },
+    { direction: 'up-left', label: '查看详情', Icon: Info, className: 'left-3 top-3' },
   ]
 
   return (

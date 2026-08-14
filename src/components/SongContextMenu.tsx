@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { Play, ListPlus, Heart, HeartOff, MessageSquare, Disc, User, Copy, ChevronRight } from 'lucide-react'
+import { Play, ListPlus, Heart, HeartOff, MessageSquare, Disc, User, Copy, ChevronRight, Info } from 'lucide-react'
 import { Song, getProxiedImageUrl } from '../services/musicApi'
 import { useEffect, useLayoutEffect, useState, useRef } from 'react'
 import CachedImage from './CachedImage'
@@ -333,6 +333,14 @@ export default function SongContextMenu({
         onClose()
       }
     }] : []),
+    {
+      label: '查看歌曲详情',
+      icon: Info,
+      onClick: () => {
+        window.dispatchEvent(new CustomEvent('waveforge:show-song-detail', { detail: song }))
+        onClose()
+      }
+    },
     ...(onCopyInfo ? [{
       label: '复制歌曲信息',
       icon: Copy,

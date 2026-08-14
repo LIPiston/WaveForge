@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Music, Play, Clock, Crown, Heart, Info } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier } from '../services/musicApi'
+import { subscribePlaylist } from '../services/playlistService'
 import { useState, useRef, useEffect, useCallback, useMemo, type UIEvent } from 'react'
 import CachedImage from './CachedImage'
 import { imageCache } from '../utils/imageCache'
@@ -81,6 +82,8 @@ export default function PlaylistDetailPanel({
 }: PlaylistDetailPanelProps) {
   const isVip = currentPlatform === 'netease' ? neteaseVip : qqVip
   const [heightVh, setHeightVh] = useState(80) // 从80vh开始，最大90vh
+  const [subscribing, setSubscribing] = useState(false)
+  const [collected, setCollected] = useState(Boolean(playlist?.isCollected))
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [imagesLoaded, setImagesLoaded] = useState(false)
   const [loadedImageCount, setLoadedImageCount] = useState(0)
@@ -93,6 +96,34 @@ export default function PlaylistDetailPanel({
   const viewportFrameRef = useRef<number | null>(null)
   const pendingViewportRef = useRef({ scrollTop: 0, height: 0 })
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 })
+
+  // 同步收藏状态（切换歌单时刷新）
+  useEffect(() => {
+    setCollected(Boolean(playlist?.isCollected))
+  }, [playlist?.id, playlist?.isCollected])
+
+  const handleSubscribe = async () => {
+    if (!playlist || subscribing) return
+    setSubscribing(true)
+    try {
+      const next = !collected
+      const platform = playlist.platform || currentPlatform
+      const result = await subscribePlaylist(String(playlist.id), next, platform)
+      // 后端成功响应可能带 message（如 QQ 的「已收藏歌单」），不能把 message 当错误
+      if (result && (result.error || result.errMsg)) {
+        throw new Error(result.error || result.errMsg)
+      }
+      if (result && result.result != null && result.result !== 100 && result.result !== 0) {
+        throw new Error('收藏操作失败，请重试')
+      }
+      setCollected(next)
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: next ? '已收藏歌单' : '已取消收藏', type: 'success' } }))
+    } catch (error) {
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: error instanceof Error ? error.message : '收藏操作失败，请重试', type: 'error' } }))
+    } finally {
+      setSubscribing(false)
+    }
+  }
   
   // 右键菜单相关状态
   const [contextMenu, setContextMenu] = useState<{
@@ -322,7 +353,7 @@ export default function PlaylistDetailPanel({
             exit={{ opacity: 0 }}
             transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
             onClick={onClose}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+            className={`fixed inset-0 backdrop-blur-sm z-40 ${playerTheme === 'dark' ? 'bg-black/60' : 'bg-white/40'}`}
           />
 
           {/* 歌单详情面板 */}
@@ -358,9 +389,11 @@ export default function PlaylistDetailPanel({
               style={{
                 borderTopLeftRadius: '32px',
                 borderTopRightRadius: '32px',
-                border: '1px solid rgba(255, 255, 255, 0.2)',
+                border: playerTheme === 'dark' ? '1px solid rgba(255, 255, 255, 0.2)' : '1px solid rgba(0,0,0,0.12)',
                 borderBottom: 'none',
-                boxShadow: '0 -8px 32px 0 rgba(0, 0, 0, 0.5), inset 0 1px 0 0 rgba(255, 255, 255, 0.1)',
+                boxShadow: playerTheme === 'dark'
+                  ? '0 -8px 32px 0 rgba(0, 0, 0, 0.5), inset 0 1px 0 0 rgba(255, 255, 255, 0.1)'
+                  : '0 -8px 32px 0 rgba(0,0,0,0.15), inset 0 1px 0 0 rgba(255,255,255,0.8)',
                 overflow: 'hidden'
               }}
             >
@@ -374,7 +407,7 @@ export default function PlaylistDetailPanel({
                       backgroundImage: `url(http://localhost:3001/api/proxy-image?url=${encodeURIComponent(playlist.coverImgUrl)})`,
                       backgroundSize: 'cover',
                       backgroundPosition: 'center',
-                      filter: 'blur(60px) brightness(0.8)',
+                      filter: playerTheme === 'dark' ? 'blur(60px) brightness(0.8)' : 'blur(60px) brightness(1.05)',
                       transform: 'scale(1.2)',
                     }}
                   />
@@ -382,7 +415,9 @@ export default function PlaylistDetailPanel({
                   <div 
                     className="absolute inset-0"
                     style={{
-                      background: 'linear-gradient(135deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.75) 50%, rgba(0,0,0,0.8) 100%)',
+                      background: playerTheme === 'dark'
+                        ? 'linear-gradient(135deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.75) 50%, rgba(0,0,0,0.8) 100%)'
+                        : 'linear-gradient(135deg, rgba(252,252,250,0.82) 0%, rgba(246,246,244,0.74) 50%, rgba(250,250,248,0.8) 100%)',
                       backdropFilter: 'blur(80px) saturate(180%)',
                       WebkitBackdropFilter: 'blur(80px) saturate(180%)',
                     }}
@@ -406,7 +441,9 @@ export default function PlaylistDetailPanel({
               ) : (
                 // 没有封面时的默认背景
                 <div className="absolute inset-0 z-0" style={{
-                  background: 'linear-gradient(135deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.75) 50%, rgba(0,0,0,0.8) 100%)',
+                  background: playerTheme === 'dark'
+                    ? 'linear-gradient(135deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.75) 50%, rgba(0,0,0,0.8) 100%)'
+                    : 'linear-gradient(135deg, rgba(252,252,250,0.82) 0%, rgba(246,246,244,0.74) 50%, rgba(250,250,248,0.8) 100%)',
                   backdropFilter: 'blur(80px) saturate(180%)',
                   WebkitBackdropFilter: 'blur(80px) saturate(180%)',
                   borderTopLeftRadius: '32px',
@@ -419,22 +456,22 @@ export default function PlaylistDetailPanel({
               {/* 顶部拖拽指示器和关闭按钮 - 整条可点击 */}
               <div 
                 onClick={onClose}
-                className="flex flex-col items-center pt-2 pb-1 cursor-pointer hover:bg-white/5 transition-colors flex-shrink-0"
+                className={`flex flex-col items-center pt-2 pb-1 cursor-pointer transition-colors flex-shrink-0 ${playerTheme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-black/5'}`}
               >
                 <motion.div
                   whileHover={{ scale: 1.1 }}
                   className="p-1 rounded-full"
                 >
-                  <ChevronDown className="w-5 h-5 text-white/60" />
+                  <ChevronDown className={`w-5 h-5 ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}`} />
                 </motion.div>
-                <div className="w-10 h-0.5 bg-white/20 rounded-full" />
+                <div className={`w-10 h-0.5 rounded-full ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'}`} />
               </div>
 
               {/* 歌单头部信息 */}
               {playlist && (
-                <div className="flex items-center gap-4 px-6 py-3 border-b border-white/10 flex-shrink-0">
+                <div className={`flex items-center gap-4 px-6 py-3 border-b flex-shrink-0 ${playerTheme === 'dark' ? 'border-white/10' : 'border-black/10'}`}>
                   {/* 封面 */}
-                  <div className="relative w-20 h-20 rounded-lg overflow-hidden bg-white/10 flex-shrink-0 shadow-xl">
+                  <div className={`relative w-20 h-20 rounded-lg overflow-hidden flex-shrink-0 shadow-xl ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
                     {playlist.coverImgUrl ? (
                       <CachedImage 
                         src={playlist.coverImgUrl} 
@@ -443,13 +480,13 @@ export default function PlaylistDetailPanel({
                         lazy={false}
                         fallback={
                           <div className="w-full h-full flex items-center justify-center">
-                            <Music className="w-8 h-8 text-white/20" />
+                            <Music className={`w-8 h-8 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                           </div>
                         }
                       />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
-                        <Music className="w-8 h-8 text-white/20" />
+                        <Music className={`w-8 h-8 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                       </div>
                     )}
                     {playlist.platform === 'qq' && playlist.isLike && (
@@ -465,10 +502,10 @@ export default function PlaylistDetailPanel({
 
                   {/* 歌单信息 */}
                   <div className="flex-1 min-w-0">
-                    <h2 className="text-xl font-bold text-white mb-1.5 truncate">
+                    <h2 className={`text-xl font-bold mb-1.5 truncate ${playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`}>
                       {playlist.name}
                     </h2>
-                    <div className="flex items-center gap-3 text-white/60 text-xs">
+                    <div className={`flex items-center gap-3 text-xs ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}`}>
                       <span>{songs.length < Number(playlist.trackCount || 0) ? `已加载 ${songs.length} / ${playlist.trackCount} 首` : `${playlist.trackCount} 首歌曲`}</span>
                       {songs.length > 0 && (
                         <span className="flex items-center gap-1">
@@ -478,26 +515,42 @@ export default function PlaylistDetailPanel({
                       )}
                     </div>
 
-                    {/* 播放全部按钮 */}
-                    {songs.length > 0 && (
+                    {/* 播放全部 + 收藏 */}
+                    <div className="mt-2 flex items-center gap-2">
+                      {songs.length > 0 && (
+                        <motion.button
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onSongSelect(songs[0], songs)
+                          }}
+                          className="px-4 py-1.5 text-white rounded-full font-medium transition-all flex items-center gap-1.5 text-sm"
+                          style={{
+                            backgroundColor: `${accentColor}e6`,
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = accentColor}
+                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = `${accentColor}e6`}
+                        >
+                          <Play className="w-3.5 h-3.5" fill="currentColor" />
+                          播放全部
+                        </motion.button>
+                      )}
                       <motion.button
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
+                        disabled={subscribing}
                         onClick={(e) => {
                           e.stopPropagation()
-                          onSongSelect(songs[0], songs)
+                          void handleSubscribe()
                         }}
-                        className="mt-2 px-4 py-1.5 text-white rounded-full font-medium transition-all flex items-center gap-1.5 text-sm"
-                        style={{
-                          backgroundColor: `${accentColor}e6`,
-                        }}
-                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = accentColor}
-                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = `${accentColor}e6`}
+                        className={`px-4 py-1.5 rounded-full font-medium transition-all flex items-center gap-1.5 text-sm disabled:opacity-50 ${collected ? '' : playerTheme === 'dark' ? 'border border-white/20 text-white/80 hover:bg-white/10' : 'border border-black/15 text-black/70 hover:bg-black/10'}`}
+                        style={collected ? { backgroundColor: `${accentColor}22`, color: accentColor, border: `1px solid ${accentColor}55` } : undefined}
                       >
-                        <Play className="w-3.5 h-3.5" fill="currentColor" />
-                        播放全部
+                        <Heart className={`w-3.5 h-3.5 ${collected ? 'fill-current' : ''}`} />
+                        {collected ? '已收藏' : '收藏'}
                       </motion.button>
-                    )}
+                    </div>
                   </div>
 
                   {(
@@ -508,7 +561,7 @@ export default function PlaylistDetailPanel({
                         event.stopPropagation()
                         setShowPlaylistInfo(true)
                       }}
-                      className="ml-auto px-4 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 text-white/80 hover:text-white transition-all flex items-center gap-2"
+                      className={`ml-auto px-4 py-2 rounded-xl border transition-all flex items-center gap-2 ${playerTheme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 text-white/80 hover:text-white' : 'border-black/10 bg-black/5 hover:bg-black/10 hover:border-black/20 text-black/70 hover:text-black'}`}
                     >
                       <Info className="w-4 h-4" />
                       详情
@@ -524,7 +577,7 @@ export default function PlaylistDetailPanel({
                 className="flex-1 overflow-y-auto"
                 style={{
                   scrollbarWidth: 'thin',
-                  scrollbarColor: 'rgba(255, 255, 255, 0.3) rgba(255, 255, 255, 0.1)'
+                  scrollbarColor: playerTheme === 'dark' ? 'rgba(255, 255, 255, 0.3) rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.3) rgba(0, 0, 0, 0.08)'
                 }}
               >
                 <div className="px-8 py-4">
@@ -560,7 +613,7 @@ export default function PlaylistDetailPanel({
                       <div className="flex flex-col items-center gap-2">
                         <div className="flex items-center gap-2">
                           <motion.span
-                            className="text-white/90 text-base font-light tracking-wide"
+                            className={`text-base font-light tracking-wide ${playerTheme === 'dark' ? 'text-white/90' : 'text-black/70'}`}
                             animate={{ opacity: [0.4, 1, 0.4] }}
                             transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
                           >
@@ -586,8 +639,8 @@ export default function PlaylistDetailPanel({
                     </div>
                   ) : songs.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-32">
-                      <Music className="w-12 h-12 text-white/20 mb-2" />
-                      <div className="text-white/60">当前歌单暂无歌曲</div>
+                      <Music className={`w-12 h-12 mb-2 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
+                      <div className={playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}>当前歌单暂无歌曲</div>
                     </div>
                   ) : (
                     <div className="relative w-full" style={{ height: `${virtualListHeight}px` }}>
@@ -613,8 +666,8 @@ export default function PlaylistDetailPanel({
                           }}
                           className={`absolute inset-x-0 flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors group ${
                             isCurrentSong 
-                              ? 'bg-pink-500/20 hover:bg-pink-500/30' 
-                              : 'hover:bg-white/8'
+                              ? 'bg-pink-500/20 hover:bg-pink-500/30'
+                              : playerTheme === 'dark' ? 'hover:bg-white/8' : 'hover:bg-black/5'
                           }`}
                           style={{
                             top: `${index * DETAIL_ROW_HEIGHT}px`,
@@ -622,12 +675,12 @@ export default function PlaylistDetailPanel({
                           }}
                         >
                           {/* 序号 */}
-                          <div className="w-6 text-center text-white/40 text-xs group-hover:text-white/60">
+                          <div className={`w-6 text-center text-xs group-hover:opacity-80 ${playerTheme === 'dark' ? 'text-white/40' : 'text-black/40'}`}>
                             {index + 1}
                           </div>
 
                           {/* 封面 */}
-                          <div className="w-10 h-10 rounded-md overflow-hidden bg-white/10 flex-shrink-0">
+                          <div className={`w-10 h-10 rounded-md overflow-hidden flex-shrink-0 ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
                             {song.album?.picUrl ? (
                               <CachedImage 
                                 src={song.album.picUrl} 
@@ -636,13 +689,13 @@ export default function PlaylistDetailPanel({
                                 lazy={false}
                                 fallback={
                                   <div className="w-full h-full flex items-center justify-center">
-                                    <Music className="w-4 h-4 text-white/20" />
+                                    <Music className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                                   </div>
                                 }
                               />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center">
-                                <Music className="w-4 h-4 text-white/20" />
+                                <Music className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                               </div>
                             )}
                           </div>
@@ -651,9 +704,9 @@ export default function PlaylistDetailPanel({
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
                               <div className={`text-sm font-medium truncate transition-colors ${
-                                isCurrentSong 
-                                  ? 'text-pink-400' 
-                                  : 'text-white group-hover:text-pink-400'
+                                isCurrentSong
+                                  ? playerTheme === 'dark' ? 'text-pink-400' : 'text-pink-600'
+                                  : playerTheme === 'dark' ? 'text-white group-hover:text-pink-400' : 'text-black/85 group-hover:text-pink-600'
                               }`}>
                                 {song.name}
                               </div>
@@ -663,19 +716,21 @@ export default function PlaylistDetailPanel({
                               )}
                             </div>
                             <div className={`text-xs truncate ${
-                              isCurrentSong ? 'text-pink-300/70' : 'text-white/50'
+                              isCurrentSong
+                                ? playerTheme === 'dark' ? 'text-pink-300/70' : 'text-pink-600/70'
+                                : playerTheme === 'dark' ? 'text-white/50' : 'text-black/50'
                             }`}>
                               {song.artists?.map((a: any) => a.name).join(', ')}
                             </div>
                           </div>
 
                           {/* 专辑 */}
-                          <div className="hidden md:block text-white/40 text-xs truncate max-w-[200px]">
+                          <div className={`hidden md:block text-xs truncate max-w-[200px] ${playerTheme === 'dark' ? 'text-white/40' : 'text-black/40'}`}>
                             {song.album?.name || '-'}
                           </div>
 
                           {/* 时长 */}
-                          <div className="text-white/40 text-xs w-12 text-right">
+                          <div className={`text-xs w-12 text-right ${playerTheme === 'dark' ? 'text-white/40' : 'text-black/40'}`}>
                             {formatDuration(song.duration)}
                           </div>
                         </div>

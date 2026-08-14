@@ -607,13 +607,13 @@ export default function SearchPanel({
                   key={`fused-artist-${artist.platform}-${artist.mid || artist.id}`}
                   whileHover={{ y: -1 }}
                   onClick={() => setSelectedArtist(artist)}
-                  className={`${bgCard} border ${borderColor} rounded-lg p-2 text-left flex items-center gap-2 transition-colors hover:bg-white/10 min-w-0`}
+                  className={`${bgCard} border ${borderColor} rounded-lg p-2 text-left flex items-center gap-2 transition-colors ${hoverBg} min-w-0`}
                 >
                   <div className="w-10 h-10 rounded-full overflow-hidden bg-white/5 flex-shrink-0">
                     {artist.picUrl ? (
                       <CachedImage src={getProxiedImageUrl(artist.picUrl)} alt={artist.name} className="w-full h-full object-cover" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center"><User className="w-5 h-5 text-white/20" /></div>
+                      <div className="w-full h-full flex items-center justify-center"><User className={`w-5 h-5 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} /></div>
                     )}
                   </div>
                   <div className={`${textPrimary} text-sm font-medium truncate flex-1 min-w-0`}>{artist.name}</div>
@@ -641,13 +641,13 @@ export default function SearchPanel({
                 key={`fused-album-${album.platform}-${album.mid || album.id}`}
                 whileHover={{ y: -1 }}
                 onClick={() => setSelectedAlbum(album)}
-                className={`${bgCard} border ${borderColor} rounded-lg p-2 text-left flex items-center gap-2 transition-colors hover:bg-white/10 min-w-0`}
+                className={`${bgCard} border ${borderColor} rounded-lg p-2 text-left flex items-center gap-2 transition-colors ${hoverBg} min-w-0`}
               >
                 <div className="w-10 h-10 rounded-md overflow-hidden bg-white/5 flex-shrink-0">
                   {album.picUrl ? (
                     <CachedImage src={getProxiedImageUrl(album.picUrl)} alt={album.name} className="w-full h-full object-cover" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center"><Disc className="w-5 h-5 text-white/20" /></div>
+                    <div className="w-full h-full flex items-center justify-center"><Disc className={`w-5 h-5 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} /></div>
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
@@ -675,7 +675,7 @@ export default function SearchPanel({
       style={{
         backdropFilter: 'blur(2px)',
         WebkitBackdropFilter: 'blur(2px)',
-        backgroundColor: 'rgba(0, 0, 0, 0.28)',
+        backgroundColor: playerTheme === 'dark' ? 'rgba(0, 0, 0, 0.28)' : 'rgba(255, 255, 255, 0.35)',
       }}
       onClick={(e) => {
         console.log('🖱️ SearchPanel 背景被点击，准备关闭')
@@ -698,27 +698,31 @@ export default function SearchPanel({
           <div
             className="absolute inset-0"
             style={{
-              background: 'linear-gradient(135deg, rgba(0,0,0,0.90) 0%, rgba(20,20,30,0.95) 50%, rgba(0,0,0,0.92) 100%)',
+              background: playerTheme === 'dark'
+                ? 'linear-gradient(135deg, rgba(0,0,0,0.90) 0%, rgba(20,20,30,0.95) 50%, rgba(0,0,0,0.92) 100%)'
+                : 'linear-gradient(135deg, rgba(252,252,250,0.92) 0%, rgba(246,246,244,0.95) 50%, rgba(250,250,248,0.93) 100%)',
               backdropFilter: 'blur(24px) saturate(160%)',
               WebkitBackdropFilter: 'blur(24px) saturate(160%)',
             }}
           />
-          
+
           {/* 光泽层 */}
           <div
             className="absolute inset-0"
             style={{
-              background: 'radial-gradient(circle at 25% 20%, rgba(255,255,255,0.1) 0%, transparent 50%)',
+              background: playerTheme === 'dark'
+                ? 'radial-gradient(circle at 25% 20%, rgba(255,255,255,0.1) 0%, transparent 50%)'
+                : 'radial-gradient(circle at 25% 20%, rgba(255,255,255,0.65) 0%, transparent 50%)',
               pointerEvents: 'none',
             }}
           />
-          
+
           {/* 边框高光 */}
-          <div 
+          <div
             className="absolute inset-0 rounded-3xl"
             style={{
-              border: '1px solid rgba(255,255,255,0.15)',
-              boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.1)',
+              border: playerTheme === 'dark' ? '1px solid rgba(255,255,255,0.15)' : '1px solid rgba(0,0,0,0.1)',
+              boxShadow: playerTheme === 'dark' ? 'inset 0 1px 1px rgba(255,255,255,0.1)' : 'inset 0 1px 1px rgba(255,255,255,0.8)',
               pointerEvents: 'none',
             }}
           />
@@ -732,7 +736,7 @@ export default function SearchPanel({
             <h2 className={`text-2xl font-bold ${textPrimary}`}>搜索音乐</h2>
             <button
               onClick={onClose}
-              className="p-2 hover:bg-white/10 rounded-full transition-colors"
+              className={`p-2 rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}
             >
               <X className={`w-6 h-6 ${textPrimary}/60`} />
             </button>
@@ -745,7 +749,9 @@ export default function SearchPanel({
               className={`px-6 py-3 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg flex items-center gap-2 ${
                 platform === 'fused'
                   ? 'bg-gradient-to-r from-violet-600/95 to-blue-600/95 text-white shadow-violet-500/20'
-                  : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                  : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
               }`}
             >
               <Sparkles className="w-4 h-4" />
@@ -756,7 +762,9 @@ export default function SearchPanel({
               className={`px-6 py-3 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg ${
                 platform === 'netease'
                   ? 'bg-red-600/90 text-white hover:bg-red-600'
-                  : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                  : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
               }`}
             >
               网易云音乐
@@ -766,14 +774,16 @@ export default function SearchPanel({
               className={`px-6 py-3 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg ${
                 platform === 'qq'
                   ? 'bg-green-600/90 text-white hover:bg-green-600'
-                  : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                  : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
               }`}
             >
               QQ音乐
             </button>
             <div className="flex-1 min-w-4" />
             {isFused ? (
-              <div className="px-4 py-2 rounded-2xl bg-violet-500/10 border border-violet-400/20 text-violet-200/80 text-xs leading-5">
+              <div className={`px-4 py-2 rounded-2xl bg-violet-500/10 border border-violet-400/20 text-xs leading-5 ${playerTheme === 'dark' ? 'text-violet-200/80' : 'text-violet-700/80'}`}>
                 自动识别艺人、专辑与歌曲<br />
                 QQ：{entitlementLabel('qq')} · 网易云：{entitlementLabel('netease')}
               </div>
@@ -786,7 +796,9 @@ export default function SearchPanel({
                   className={`px-4 py-2 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg disabled:opacity-50 ${
                     searchType === 'artist'
                       ? 'bg-purple-600/90 text-white hover:bg-purple-600'
-                      : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                      : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
                   }`}
                 >
                   <User className="w-4 h-4 inline-block mr-1" />
@@ -798,7 +810,9 @@ export default function SearchPanel({
                   className={`px-4 py-2 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg disabled:opacity-50 ${
                     searchType === 'album'
                       ? 'bg-blue-600/90 text-white hover:bg-blue-600'
-                      : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                      : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
                   }`}
                 >
                   <Disc className="w-4 h-4 inline-block mr-1" />
@@ -810,7 +824,9 @@ export default function SearchPanel({
                   className={`px-4 py-2 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg disabled:opacity-50 ${
                     searchType === 'song'
                       ? 'bg-green-600/90 text-white hover:bg-green-600'
-                      : 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                      : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
                   }`}
                 >
                   <Music className="w-4 h-4 inline-block mr-1" />
@@ -839,7 +855,7 @@ export default function SearchPanel({
                 }}
                 onKeyDown={handleKeyPress}
                 placeholder="搜索歌曲、艺术家..."
-                className={`w-full ${bgCard} border ${borderColor} rounded-xl pl-12 pr-12 py-3 ${textPrimary} placeholder-white/40 focus:outline-none focus:border-white/30 transition-colors`}
+                className={`w-full ${bgCard} border ${borderColor} rounded-xl pl-12 pr-12 py-3 ${textPrimary} ${playerTheme === 'dark' ? 'placeholder-white/40 focus:border-white/30' : 'placeholder-black/35 focus:border-black/30'} focus:outline-none transition-colors`}
                 autoFocus
               />
               {/* 清空按钮 */}
@@ -853,7 +869,7 @@ export default function SearchPanel({
                     setArtistResults([])
                     setAlbumResults([])
                   }}
-                  className={`absolute right-4 top-1/2 transform -translate-y-1/2 p-1 rounded-full hover:bg-white/10 transition-colors`}
+                  className={`absolute right-4 top-1/2 transform -translate-y-1/2 p-1 rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}
                 >
                   <X className={`w-4 h-4 ${textPrimary}/40 hover:${textPrimary}/60`} />
                 </button>
@@ -866,13 +882,15 @@ export default function SearchPanel({
                   animate={{ opacity: 1, y: 0 }}
                   className="absolute top-full left-0 right-0 mt-2 rounded-xl overflow-hidden z-10 shadow-2xl"
                   style={{
-                    background: 'linear-gradient(135deg, rgba(20,20,30,0.92) 0%, rgba(0,0,0,0.95) 100%)',
+                    background: playerTheme === 'dark'
+                      ? 'linear-gradient(135deg, rgba(20,20,30,0.92) 0%, rgba(0,0,0,0.95) 100%)'
+                      : 'linear-gradient(135deg, rgba(250,250,248,0.94) 0%, rgba(244,244,242,0.96) 100%)',
                     backdropFilter: 'blur(20px) saturate(150%)',
                     WebkitBackdropFilter: 'blur(20px) saturate(150%)',
-                    border: '1px solid rgba(255,255,255,0.1)',
+                    border: playerTheme === 'dark' ? '1px solid rgba(255,255,255,0.1)' : '1px solid rgba(0,0,0,0.08)',
                   }}
                 >
-                  <div className="flex items-center justify-between px-4 py-2 border-b border-white/5">
+                  <div className={`flex items-center justify-between px-4 py-2 border-b ${playerTheme === 'dark' ? 'border-white/5' : 'border-black/5'}`}>
                     <div className={`flex items-center gap-2 ${textPrimary}/60 text-sm`}>
                       <Clock className="w-4 h-4" />
                       <span>搜索历史</span>
@@ -891,7 +909,7 @@ export default function SearchPanel({
                         setKeyword(item)
                         handleSearch(item)
                       }}
-                      className={`flex items-center px-4 py-3 cursor-pointer transition-colors border-b border-white/5 last:border-b-0 hover:${bgCard} ${textPrimary}/80 hover:${textPrimary}`}
+                      className={`flex items-center px-4 py-3 cursor-pointer transition-colors border-b ${playerTheme === 'dark' ? 'border-white/5' : 'border-black/5'} last:border-b-0 hover:${bgCard} ${textPrimary}/80 hover:${textPrimary}`}
                     >
                       <History className={`w-4 h-4 mr-2 flex-shrink-0 ${textPrimary}/40`} />
                       <span>{item}</span>
@@ -911,11 +929,13 @@ export default function SearchPanel({
                     maxHeight: '288px', // 6个建议 * 48px高度 = 288px
                     overflowY: 'auto',
                     scrollbarWidth: 'thin',
-                    scrollbarColor: 'rgba(255,255,255,0.2) transparent',
-                    background: 'linear-gradient(135deg, rgba(20,20,30,0.92) 0%, rgba(0,0,0,0.95) 100%)',
+                    scrollbarColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.2) transparent' : 'rgba(0,0,0,0.25) transparent',
+                    background: playerTheme === 'dark'
+                      ? 'linear-gradient(135deg, rgba(20,20,30,0.92) 0%, rgba(0,0,0,0.95) 100%)'
+                      : 'linear-gradient(135deg, rgba(250,250,248,0.94) 0%, rgba(244,244,242,0.96) 100%)',
                     backdropFilter: 'blur(20px) saturate(150%)',
                     WebkitBackdropFilter: 'blur(20px) saturate(150%)',
-                    border: '1px solid rgba(255,255,255,0.1)',
+                    border: playerTheme === 'dark' ? '1px solid rgba(255,255,255,0.1)' : '1px solid rgba(0,0,0,0.08)',
                   }}
                 >
                   {suggestions.map((suggestion, index) => {
@@ -967,7 +987,7 @@ export default function SearchPanel({
               minHeight: searched ? 'calc(85vh - 240px)' : '380px', // 缩短高度，往上收
               maxHeight: 'calc(85vh - 240px)',
               scrollbarWidth: 'thin',
-              scrollbarColor: 'rgba(255,255,255,0.3) transparent'
+              scrollbarColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.3) transparent' : 'rgba(0,0,0,0.3) transparent'
             }}
           >
           {!loading && isFused && fusionUnavailablePlatforms.length > 0 && (

@@ -158,6 +158,25 @@ contextBridge.exposeInMainWorld('electron', {
       return () => ipcRenderer.removeListener('desktop-lyrics:enabled-changed', listener)
     },
   },
+
+  // 遥控器：局域网 Web 服务（手机扫码连接）+ 虚拟鼠标桥接
+  remote: {
+    start: (port) => ipcRenderer.invoke('remote:start', port),
+    stop: () => ipcRenderer.invoke('remote:stop'),
+    getStatus: () => ipcRenderer.invoke('remote:get-status'),
+    getSettings: () => ipcRenderer.invoke('remote:get-settings'),
+    updateSettings: (partial) => ipcRenderer.invoke('remote:update-settings', partial),
+    onCursor: (callback) => {
+      const listener = (_event, command) => callback(command)
+      ipcRenderer.on('remote:cursor', listener)
+      return () => ipcRenderer.removeListener('remote:cursor', listener)
+    },
+    onClientsChange: (callback) => {
+      const listener = (_event, status) => callback(status)
+      ipcRenderer.on('remote:clients', listener)
+      return () => ipcRenderer.removeListener('remote:clients', listener)
+    },
+  },
 })
 
 

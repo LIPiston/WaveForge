@@ -5,10 +5,10 @@
 
 ---
 
-## 1. 项目状态（2026-08-13）
+## 1. 项目状态（2026-08-14）
 
 - **阶段**：功能基本完整，处于维护/收尾阶段。核心功能（双平台搜索/播放/歌词/无缝衔接/桌面模式/壁纸联动）均已实现且通过自动化验证。
-- **代码基线**：当前仓库来自远程 `YoshinoRinn/WaveForge` 的**朋友优化合并版**（`f5d59b9`）——本地 git 历史已重置为远程 2 条提交（原本地 11 条提交被清除，其成果绝大部分已并入远程版）。
+- **代码基线**：当前 HEAD `b0a487a`（2026-08-14 双会话合并提交：遥控器/SongDetail/模式切换重构 + 完整浅色模式与 UI 修复，详见 SESSION_SUMMARY(3)/(4)）；更早历史来自远程 `YoshinoRinn/WaveForge` 的**朋友优化合并版**（`f5d59b9`）。
 - **稳定性**：最近一次完整回归通过 —— `npm run lint` 0 报错、`vite build` 成功、Python 节拍服务与分析/渲染 worker 在嵌入式 3.13 上端到端实测通过（分析→渲染全链路）、后端安全修复点复测通过、Playwright 生产构建冒烟通过（首页加载/标签切换/播放/进度推进）。
 - **代码规模**：前端 137 个 TS/TSX，后端 `local-server.mjs` 单文件约 8.2k 行，Python 服务约 2.1k 行。
 
@@ -68,6 +68,18 @@
 - 2026-08-14：并行收尾未决事项 —— vitest 测试套件（111 用例）、cuefield 死代码清理、TransitionRenderer 缓存 key 修复、渲染 worker 声道统一立体声、CHUNK 体积优化（8.8MB→752KB）+ 壁纸前端改进（立即同步/动态壁纸提示/UNC 容错）；license 门控尝试后撤销（避免限制现有功能）
 - 2026-08-14：**Gapless 业务代码模块化** —— 从 `useAudioPlayer.ts`（1948 行）抽离到 `src/services/gapless/` 独立模块（`gaplessConstants.ts` / `seamlessJoinController.ts` / `gaplessTransition.ts`，共 413 行），hook 只剩调用接口（净减 254 行）；行为等价（lint 0 / 111 用例 / build 通过）。后续改无缝逻辑优先改 `src/services/gapless/`
 - 2026-08-14：**UpNext 弹窗修复** —— gapless 启用时「即将播放下一首」通知不显示（`transitionStartTime` null 无 fallback），改为回退 `duration` 倒计时；**EPIPE 防护**（stdout/stderr 管道关闭时主进程不再崩溃）；**版本号更迭机制**（`npm run version:*`）
+- 2026-08-14：**遥控器 / SongDetail / 模式切换重构 / QQ 音乐修复（本会话）** —— 与并行浅色会话合并为提交 `b0a487a`，本会话改动（文件 → 业务代码）：
+  - **遥控器**（新增 `desktop/remote-server.cjs`、`desktop/remote-ui.html`、`src/components/RemoteControlModal.tsx`、`RemoteControlSettingsModal.tsx`、`RemoteCursor.tsx`）—— 手机扫码 → 局域网 WebSocket 控制 + 虚拟鼠标 overlay（合成点击/右键/hover、6s 自动隐藏）。
+    - 改 `desktop/main.cjs`：遥控 IPC（start/stop/get-status/get-settings/update-settings）+ 控制桥 + 光标事件 + 快照补 `volume`/`muted`；
+    - 改 `desktop/preload.cjs`：新增 `window.electron.remote`；`src/electron.d.ts`：补 `remote` 类型；
+    - 改 `src/App.tsx`：控制桥扩展（seek/volume/mute/back/home/show-song/show-comment/show-artist）+ 渲染 RemoteControlModal/RemoteCursor/SongDetailModal；
+    - 改 `src/components/ExploreView.tsx` / `HomeView.tsx` / `DesktopView.tsx`：三模式各加遥控按钮（搜索按钮左侧）；`SettingsPanel.tsx`：个性化新增「远程遥控器」节；
+    - 改 `package.json` + `package-lock.json`：新增 `ws`、`qrcode.react`。
+  - **SongDetailModal**（新增 `src/components/SongDetailModal.tsx`）—— 歌曲详情弹窗；改 `SongContextMenu.tsx`（右键「查看歌曲详情」）、`PlaybackRadialMenu.tsx`（8 方向 + 左上「查看详情」）、`App.tsx`（监听 `waveforge:show-song-detail`）。
+  - **模式切换重构** —— `App.tsx` 抽 `applyMode()` + `.catch` 兜底，修正事件名 `viewModeChange` → `viewModeChanged`。
+  - **desktop 快照扩展** —— `src/desktop-lyrics/DesktopLyricsApp.tsx` / `src/desktop-player/DesktopPlayerApp.tsx` 的 DEFAULT_STATE 补 `volume`/`muted`/`page`。
+  - **QQ 音乐**（`local-server.mjs`）—— 收藏歌单旧接口 `fcg_qm_order_diss.fcg` 由 GET 改为 POST + 表单体（实测 `qqmusic_key` 返回 `code 0` 成功）；AI 歌单详情逐首 `qqSongDetail` 补封面/时长；歌曲详情时长毫秒÷1000 + 音质徽章/音质行。
+  - **PlaylistDetailPanel** —— 新增「收藏/已收藏」按钮（`subscribePlaylist`）。
 
 ## 7. 常用操作速查
 

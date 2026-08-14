@@ -220,7 +220,7 @@ export interface ElectronAPI {
       partial: Partial<
         Pick<
           DesktopPlayerSnapshot,
-          'song' | 'lyric' | 'playing' | 'spectrum' | 'accentColor' | 'playlist' | 'currentIndex' | 'progress' | 'hasTranslation' | 'hasRomaji'
+          'song' | 'lyric' | 'playing' | 'spectrum' | 'accentColor' | 'playlist' | 'currentIndex' | 'progress' | 'hasTranslation' | 'hasRomaji' | 'volume' | 'muted' | 'page'
         >
       >
     ) => void
@@ -232,6 +232,15 @@ export interface ElectronAPI {
     getSettings: () => Promise<DesktopLyricsSettings>
     updateSettings: (partial: Partial<DesktopLyricsSettings>) => Promise<DesktopLyricsSettings>
     onEnabledChanged: (callback: (enabled: boolean) => void) => () => void
+  }
+  remote: {
+    start: (port?: number) => Promise<RemoteStatus & { error?: string }>
+    stop: () => Promise<RemoteStatus>
+    getStatus: () => Promise<RemoteStatus>
+    getSettings: () => Promise<RemoteSettings>
+    updateSettings: (partial: Partial<RemoteSettings>) => Promise<RemoteSettings>
+    onCursor: (callback: (command: RemoteCursorCommand) => void) => () => void
+    onClientsChange: (callback: (status: RemoteStatus) => void) => () => void
   }
 }
 
@@ -278,6 +287,51 @@ export interface DesktopLyricsSettings {
   locked: boolean
 }
 
+// ===== 遥控器（局域网 Web 服务 + 虚拟鼠标）=====
+export type RemoteTheme = 'dark' | 'light'
+export type RemoteTopRightAction = 'song' | 'comment' | 'artist' | 'favorite' | 'desktop-lyrics' | 'mode-switch'
+
+export interface RemoteGestureSettings {
+  doubleTap: boolean
+  swipe: boolean
+  twoFinger: boolean
+  twoFingerTap: boolean
+}
+
+export interface RemoteSettings {
+  theme: RemoteTheme
+  topRightAction: RemoteTopRightAction
+  gestures: RemoteGestureSettings
+}
+
+export interface RemoteLanAddress {
+  name: string
+  address: string
+}
+
+export interface RemoteClientInfo {
+  name: string
+  ip: string
+  connectedAt: number
+}
+
+export interface RemoteStatus {
+  running: boolean
+  port: number
+  token: string
+  clientCount: number
+  maxClients: number
+  clients: RemoteClientInfo[]
+  ips: RemoteLanAddress[]
+  error?: string
+}
+
+export interface RemoteCursorCommand {
+  cmd: 'move' | 'click' | 'hold-start' | 'hold-cancel' | 'hold-complete' | 'right-click' | 'scroll'
+  dx?: number
+  dy?: number
+}
+
 export interface DesktopPlayerPlaylistItem {
   index: number
   name: string
@@ -297,6 +351,9 @@ export interface DesktopPlayerSnapshot {
   progress: number
   hasTranslation: boolean
   hasRomaji: boolean
+  volume: number
+  muted: boolean
+  page: 'home' | 'playback'
 }
 
 export type DesktopPlayerControlAction =
