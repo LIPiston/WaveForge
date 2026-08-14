@@ -24,6 +24,19 @@ except ImportError:
     LIBROSA_AVAILABLE = False
 
 
+def ensure_stereo(audio: np.ndarray) -> np.ndarray:
+    """单声道输入上采样为立体声，立体声/多声道保持原样。
+
+    与 server/render_worker.py 的 _ensure_stereo 契约一致——音乐是立体声，
+    折叠 mono 会丢失声像信息。AudioFile.read() 返回 (channels, frames) 布局。
+    """
+    if audio.ndim == 1:
+        audio = audio[None, :]
+    if audio.shape[0] == 1:
+        return np.repeat(audio, 2, axis=0)
+    return audio
+
+
 def common_output_beat_durations(
     source_beat_times: list[float],
     target_beat_times: list[float],
@@ -443,6 +456,11 @@ def render_transition(params: dict) -> dict:
                 )
         
         output_sample_rate = source_sample_rate
+
+        # 统一为立体声输出（与 server/render_worker.py 契约一致）：
+        # 单声道输入上采样为立体声，避免折叠 mono 丢失声像信息
+        source_audio = ensure_stereo(source_audio)
+        target_audio = ensure_stereo(target_audio)
         
         # Get beat times relative to the audio segments
         source_beat_times = plan.get('sourceBeatTimes', [])
