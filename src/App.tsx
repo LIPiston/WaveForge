@@ -1162,7 +1162,10 @@ function App() {
         // 检查是否接近结束，显示"即将播放下一首"提示
         // 立即切换到下一首，不等待当前歌曲播放完
       const useTransitionCountdown = autoMixEnabled || gaplessEnabled
-      const eventTime = useTransitionCountdown ? transitionStartTime : duration
+      // gapless/autoMix 启用时以 transitionStartTime 为倒计时基准；但该值在
+      // preparing-next、播放加载、取消等路径会为 null——必须 fallback 到 duration，
+      // 否则下方 `eventTime !== null` 检查失败，「即将播放下一首」弹窗永不显示。
+      const eventTime = useTransitionCountdown ? (transitionStartTime ?? duration) : duration
       const timeRemaining = (eventTime ?? duration) - state.currentTime
       
       // 提前1秒开始淡出
