@@ -145,6 +145,9 @@ export interface ElectronAPI {
     }>
     onControl: (callback: (action: 'toggle' | 'next' | 'prev') => void) => () => void
   }
+  audio: {
+    getSystemVolume: () => Promise<{ success: boolean; volume: number }>
+  }
   desktopWidgets: {
     getSystemStatus: () => Promise<{
       cpuUsage: number

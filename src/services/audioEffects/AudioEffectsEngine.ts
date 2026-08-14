@@ -225,6 +225,9 @@ export class AudioEffectsEngine {
   private masterGain: GainNode | null = null
   private analyser: AnalyserNode | null = null
 
+  // 附着代次：每次 attach/dispose 递增，供异步 initSoundtouch 在 await 之后回查自身是否仍有效
+  private attachSeq = 0
+
   private input: GainNode | null = null
   private output: GainNode | null = null
 
@@ -309,6 +312,7 @@ export class AudioEffectsEngine {
   // 音频图就绪后由 useAudioPlayer 调用：在 masterGain 与 analyser 之间插入效果链
   attach(handle: { audioContext: AudioContext; masterGain: GainNode; analyser: AnalyserNode }): void {
     if (this.context) return // 已附加
+    this.attachSeq += 1
     const { audioContext: context, masterGain, analyser } = handle
     this.context = context
     this.masterGain = masterGain
@@ -404,8 +408,8 @@ export class AudioEffectsEngine {
     output.connect(this.limiter)
     this.limiter.connect(analyser)
 
-    // 重连：masterGain → 引擎 input（analyser 已由引擎 output 接入）
-    masterGain.disconnect(analyser)
+    // 重连：masterGain → 引擎 input（analyser 已由引擎 output 接入；先全断，切换引擎时幂等安全）
+    masterGain.disconnect()
     masterGain.connect(input)
 
     // 异步注册 SoundTouch（变调/变速），成功后插入到 masterGain 与 input 之间
@@ -418,11 +422,19 @@ export class AudioEffectsEngine {
   }
 
   private async initSoundtouch(context: AudioContext, masterGain: GainNode, input: GainNode): Promise<void> {
+    const seq = this.attachSeq // 记录本次附着的代次，await 之后校验
     try {
       await SoundTouchNode.register(context, processorUrl)
+      // 异步注册期间可能已 dispose / 已切换引擎（甚至切换后又重新 attach 到同一张图）：
+      // 用「上下文引用 + 附着代次」双重校验，不过即放弃接线——否则旧链的 soundtouch 会
+      // 插回 masterGain，与当前效果链并联打架，或把声音路由进已拆除的死节点导致整段无声。
+      if (this.context !== context || this.masterGain !== masterGain || this.attachSeq !== seq) {
+        this.soundtouchNode = null
+        return
+      }
       const node = new SoundTouchNode({ context, outputChannelCount: 2 })
       this.soundtouchNode = node
-      masterGain.disconnect(input)
+      masterGain.disconnect()
       masterGain.connect(node)
       node.connect(input)
       this.applyPitchSettings()
@@ -442,9 +454,15 @@ export class AudioEffectsEngine {
 
   dispose(): void {
     this.stopSurroundRotation()
-    if (this.context && this.input && this.masterGain && this.analyser) {
+    this.attachSeq += 1 // 作废在途的异步 initSoundtouch，防止其晚到重新接线
+    if (this.context && this.masterGain && this.analyser) {
       try {
-        this.masterGain.disconnect(this.input)
+        // 全断 + 摘除本引擎插过的节点（soundtouch / limiter），再恢复 masterGain→analyser 直连。
+        // 切换引擎时旧链必须彻底拆除，否则两套效果链并联打架。
+        this.masterGain.disconnect()
+        try { this.soundtouchNode?.disconnect() } catch { /* noop */ }
+        this.soundtouchNode = null
+        try { this.limiter?.disconnect() } catch { /* noop */ }
         this.masterGain.connect(this.analyser)
       } catch {
         // 忽略重连失败

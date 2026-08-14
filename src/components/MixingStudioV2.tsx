@@ -1,14 +1,18 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, AudioLines, SlidersHorizontal, Music2, Music, Mic2, Headphones, Save, Copy, ClipboardPaste, Trash2, Info, FileAudio } from 'lucide-react'
+import { X, AudioLines, SlidersHorizontal, Music2, Music, Mic2, Headphones, Save, Copy, ClipboardPaste, Trash2, Info, FileAudio, Moon, Activity, Volume2, Sparkles, RotateCcw } from 'lucide-react'
 import {
   AudioEffectsEngine,
   type AudioEffectsSettings,
   type DeepPartial,
   type EqMode,
+  type SceneSnapshot,
+  type ReverbType,
   SIMPLE_EQ_BANDS,
   PRO_EQ_FREQUENCIES,
-} from '../services/audioEffects/AudioEffectsEngine'
+  REVERB_TYPES,
+} from '../services/audio-effects-v2/AudioEffectsEngine'
+import { COMPENSATION_PRESETS } from '../services/audio-effects-v2/compensationService'
 
 interface MixingStudioProps {
   engine: AudioEffectsEngine
@@ -53,20 +57,27 @@ function savePresets(presets: EqPreset[]): void {
   }
 }
 
-// 云澜音效：上次启用的音效（顶部总开关再次打开时恢复它，而不是总回退到全景声厅）
-const LAST_EFFECT_KEY = 'waveforge:last-effect'
-const EFFECT_KEYS = ['hall', 'surround3d', 'bassBoost', 'vocalBoost', 'accompanimentBoost'] as const
+// 自定义频段：固定频率控制点（gain 可调），bands 缺失/为空时回退默认 5 段全 0
+const CUSTOM_BAND_FREQUENCIES = [80, 250, 1000, 4000, 12000]
+const defaultCustomBands = () => CUSTOM_BAND_FREQUENCIES.map(frequency => ({ frequency, gain: 0 }))
+const resolveCustomBands = (bands?: { frequency: number; gain: number }[]): { frequency: number; gain: number }[] =>
+  Array.isArray(bands) && bands.length > 0 ? bands : defaultCustomBands()
+
+// 全部效果（可叠加，互斥时代已废弃；频响补偿与 EQ 的互斥由引擎强制）
+const EFFECT_KEYS = ['hall', 'surround3d', 'bassBoost', 'vocalBoost', 'accompanimentBoost', 'compressor', 'nightMode'] as const
 type EffectKey = (typeof EFFECT_KEYS)[number]
 
 const EFFECT_META: Record<EffectKey, { name: string; desc: string; intro: string; icon: typeof Music2 }> = {
-  hall: { name: '全景声厅', desc: '声场加宽 + 大厅混响', intro: '通过中/侧声道加宽声场，并叠加大厅卷积混响，营造宽敞、有纵深感的听感。可左右拖动声场图调整宽度，混响程度单独可调。', icon: AudioLines },
-  surround3d: { name: '3D 环绕', desc: '耳机内环绕旋转', intro: '用 HRTF 双耳算法让声音在耳机内绕头旋转，营造环绕感。可在圆形图上拖动圆点调整旋转角度与环绕距离，并设置旋转方向与速度。', icon: Headphones },
+  hall: { name: '全景声厅', desc: '声场加宽 + 混响', intro: '通过中/侧声道加宽声场，并叠加卷积混响（支持大厅/房间/板式/弹簧/舞台五种类型），营造有纵深感的空间听感。', icon: AudioLines },
+  surround3d: { name: '3D 环绕', desc: '耳机内环绕旋转', intro: '用 HRTF 双耳算法让声音在耳机内绕头旋转。可在圆形图上拖动圆点调整旋转角度与环绕距离，并设置旋转方向与速度。', icon: Headphones },
   bassBoost: { name: '低音增强', desc: '增强低频厚度与力度', intro: '通过低频搁架 + 次低频共振峰增强鼓点与贝斯的冲击力。深度控制起始频率，强度控制增强幅度。', icon: Music2 },
   vocalBoost: { name: '人声加强', desc: '提升人声存在感', intro: '聚焦 3kHz 人声存在感频段做窄带提升，并用中/侧分离适度增强中置人声，不会连带放大吉他等乐器。', icon: Mic2 },
   accompanimentBoost: { name: '伴奏加强', desc: '突出伴奏、削弱人声', intro: '通过中/侧分离增强侧声道（乐器/伴奏）并压低中置人声，让伴奏真正更突出，而不只是减弱人声。', icon: Music },
+  compressor: { name: '动态压缩', desc: '让响度更平稳', intro: '压缩器压平音量起伏，让轻的部分更清晰、重的部分不爆。阈值越低压缩越狠，比率越大效果越强，输出增益补偿压缩损失的电平。', icon: Activity },
+  nightMode: { name: '夜间模式', desc: '软限幅不吵人', intro: '用软限幅把整体响度压到舒适范围，深夜低音量听感不刺耳。强度越高压得越狠。', icon: Moon },
 }
 
-export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, sourceDuration, anchorRect, engineVersion = 'v1', onSwitchEngine }: MixingStudioProps) {
+export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, sourceDuration, anchorRect, engineVersion = 'v2', onSwitchEngine }: MixingStudioProps) {
   const [activeTab, setActiveTab] = useState<Tab>('effects')
   const [settings, setSettings] = useState<AudioEffectsSettings>(engine.getSettings())
   const [presets, setPresets] = useState<EqPreset[]>(loadPresets)
@@ -75,14 +86,12 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
   const [exportText, setExportText] = useState('')
   const [exporting, setExporting] = useState(false)
   const [effectModal, setEffectModal] = useState<EffectKey | null>(null)
-  const [lastEffectKey, setLastEffectKey] = useState<EffectKey>(() => {
-    try {
-      const saved = localStorage.getItem(LAST_EFFECT_KEY)
-      return saved && (EFFECT_KEYS as readonly string[]).includes(saved) ? (saved as EffectKey) : 'hall'
-    } catch {
-      return 'hall'
-    }
-  })
+  // 频响补偿独立弹窗（与音效卡片分离：它是响度相关设置，与响度归一化并列）
+  const [compensationModal, setCompensationModal] = useState(false)
+  // 场景应用确认弹窗：customized 时点击场景弹出（覆盖 / 保存并应用 / 取消）
+  const [sceneConfirm, setSceneConfirm] = useState<SceneSnapshot | null>(null)
+  const [sceneName, setSceneName] = useState('')
+  const [myScenes, setMyScenes] = useState<SceneSnapshot[]>(engine.getMyScenes())
 
   const dark = playerTheme === 'dark'
 
@@ -101,7 +110,6 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
   }, [])
 
   // ── liquid glass 视觉变量（暗色 / 亮色双主题）──
-  // 面板背景低不透明度 + 更强毛玻璃：更透更"液态"，背景内容透过玻璃清晰可见
   const glassPanel = dark
     ? 'rgba(10, 12, 20, 0.38)'
     : 'rgba(255, 255, 255, 0.45)'
@@ -112,7 +120,6 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
     ? 'linear-gradient(150deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.025) 100%)'
     : 'linear-gradient(150deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.30) 100%)'
   const glassBorder = dark ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.55)'
-  // 毛玻璃强度提升约 20%：主面板 24px→30px，卡片 14px→18px，饱和度同步上调
   const glassBlur = 'blur(30px) saturate(185%)'
   const glassCardBlur = 'blur(18px) saturate(160%)'
   const textPrimary = dark ? 'text-white' : 'text-black'
@@ -137,25 +144,79 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
     update({ pitch: patch })
   }, [update])
 
-  // 激活/关闭音效（互斥）。必须同步回 React 状态，否则开关和「使用」按钮不会刷新。
-  const activateEffect = useCallback((key: EffectKey | null) => {
-    engine.activateEffect(key)
-    setSettings(engine.getSettings())
-    if (key) {
-      setLastEffectKey(key)
-      try { localStorage.setItem(LAST_EFFECT_KEY, key) } catch { /* 忽略 */ }
+  // 切换单个效果开关（可叠加）
+  const toggleEffect = useCallback((key: EffectKey) => {
+    const current = settings.effects[key]
+    if (!current || typeof current !== 'object') return
+    update({ effects: { [key]: { ...current, enabled: !('enabled' in current ? current.enabled : false) } } } as unknown as DeepPartial<AudioEffectsSettings>)
+  }, [update, settings.effects])
+
+  // ---- 场景方案（快照式，ADR-0001） ----
+  const builtinScenes = engine.getBuiltinScenes()
+  const allScenes = [...builtinScenes, ...myScenes]
+  const activeSceneName = useMemo(() => {
+    if (settings.customized) return '自定义'
+    if (!settings.activeScene) return '无'
+    return allScenes.find(s => s.id === settings.activeScene)?.name || '无'
+  }, [settings.activeScene, settings.customized, allScenes])
+
+  // 点击场景：处于自定义状态时先弹确认（覆盖 / 保存并应用 / 取消）
+  const handleSceneClick = useCallback((scene: SceneSnapshot) => {
+    if (settings.customized) {
+      setSceneConfirm(scene)
+    } else {
+      engine.applyScene(scene)
+      setSettings(engine.getSettings())
     }
+  }, [engine, settings.customized])
+
+  const handleSceneOverwrite = useCallback(() => {
+    if (!sceneConfirm) return
+    engine.applyScene(sceneConfirm)
+    setSettings(engine.getSettings())
+    setSceneName('')
+    setSceneConfirm(null)
+  }, [engine, sceneConfirm])
+
+  // 恢复默认：应用「原声监听」内置场景（关闭全部音效与 EQ）
+  const handleResetScene = useCallback(() => {
+    const flat = engine.getBuiltinScenes().find(s => s.id === 'scene-flat')
+    if (!flat) return
+    engine.applyScene(flat)
+    setSettings(engine.getSettings())
+    window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '已恢复默认（原声监听）', type: 'info' } }))
   }, [engine])
 
-  // 顶部总开关：打开时恢复上一次使用的音效（而不是总回退到全景声厅）
-  const toggleMasterEffect = useCallback((on: boolean) => {
-    if (!on) {
-      activateEffect(null)
-      return
+  const handleSceneSaveAndApply = useCallback(() => {
+    if (!sceneConfirm) return
+    const name = sceneName.trim() || `我的场景 ${myScenes.length + 1}`
+    if (engine.saveAsMyScene(name)) {
+      setMyScenes(engine.getMyScenes())
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: `已保存场景「${name}」`, type: 'info' } }))
+    } else {
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '我的场景已达上限（8 个），未保存当前设置', type: 'error' } }))
     }
-    const current = EFFECT_KEYS.find(k => engine.getSettings().effects[k].enabled) || null
-    activateEffect(current || lastEffectKey)
-  }, [activateEffect, lastEffectKey])
+    engine.applyScene(sceneConfirm)
+    setSettings(engine.getSettings())
+    setSceneName('')
+    setSceneConfirm(null)
+  }, [engine, sceneConfirm, sceneName, myScenes.length])
+
+  const handleSaveCurrentScene = useCallback(() => {
+    const name = sceneName.trim() || `我的场景 ${myScenes.length + 1}`
+    if (engine.saveAsMyScene(name)) {
+      setMyScenes(engine.getMyScenes())
+      setSceneName('')
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: `已保存场景「${name}」`, type: 'info' } }))
+    } else {
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '我的场景已达上限（8 个）', type: 'error' } }))
+    }
+  }, [engine, sceneName, myScenes.length])
+
+  const handleDeleteMyScene = useCallback((id: string) => {
+    engine.deleteMyScene(id)
+    setMyScenes(engine.getMyScenes())
+  }, [engine])
 
   // ---- EQ 预设 ----
   const currentPresetJson = useMemo(() => {
@@ -187,6 +248,15 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
     setPresets(next)
     savePresets(next)
   }
+
+  // 清空均衡器：全部频段增益归零（恢复默认曲线）
+  const handleResetEq = useCallback(() => {
+    patchEq({
+      simpleBands: [0, 0, 0, 0, 0],
+      proBands: PRO_EQ_FREQUENCIES.map(frequency => ({ frequency, gain: 0, q: 1.1 })),
+    })
+    window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '均衡器已全部归零', type: 'info' } }))
+  }, [patchEq])
 
   const handleExport = () => {
     setExportText(currentPresetJson)
@@ -240,8 +310,6 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
   const sliderTrack = (value: number, min: number, max: number) =>
     `linear-gradient(to right, ${accentColor} 0%, ${accentColor} ${((value - min) / (max - min)) * 100}%, ${dark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.14)'} ${((value - min) / (max - min)) * 100}%, ${dark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.14)'} 100%)`
 
-  const activeEffectKey = EFFECT_KEYS.find(k => settings.effects[k].enabled) || null
-
   // 全景声厅：声场可视化拖拽（横向位置 → 宽度级别 1-10）
   const hallSpread = (settings.effects.hall.level / 10) * 70
   const setHallLevelFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -269,7 +337,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
   const renderToggle = (checked: boolean, onChange: (v: boolean) => void) => (
     <button
       type="button"
-      onClick={() => onChange(!checked)}
+      onClick={(e) => { e.stopPropagation(); onChange(!checked) }}
       className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${checked ? '' : dark ? 'bg-white/20' : 'bg-black/15'}`}
       style={checked ? { backgroundColor: accentColor, boxShadow: `0 0 12px ${accentColor}55` } : undefined}
     >
@@ -323,6 +391,47 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
       {children}
     </div>
   )
+
+  // 效果卡片（网格，可叠加）
+  const renderEffectCard = (key: EffectKey) => {
+    const meta = EFFECT_META[key]
+    const effect = settings.effects[key]
+    const enabled = !!effect?.enabled
+    const Icon = meta.icon
+    return (
+      <div
+        key={key}
+        role="button"
+        tabIndex={0}
+        onClick={() => setEffectModal(key)}
+        onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) setEffectModal(key) }}
+        className="relative cursor-pointer rounded-2xl p-3 flex flex-col items-center gap-2 transition-all hover:brightness-110"
+        style={{
+          background: enabled ? `${accentColor}26` : glassCard,
+          backdropFilter: glassCardBlur,
+          WebkitBackdropFilter: glassCardBlur,
+          border: `1px solid ${enabled ? accentColor : glassBorder}`,
+          boxShadow: enabled ? `0 0 16px ${accentColor}44` : '0 4px 14px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.12)',
+        }}
+      >
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: `${accentColor}22`, color: accentColor }}>
+          <Icon className="w-4.5 h-4.5" />
+        </div>
+        <div className={`text-xs font-medium ${textPrimary} text-center leading-tight`}>{meta.name}</div>
+        {/* v1 式大按钮：点卡片本体开配置弹窗，点按钮切换开关（可叠加） */}
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); toggleEffect(key) }}
+          className="w-full py-1.5 rounded-lg text-xs font-medium transition-colors"
+          style={enabled
+            ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
+            : { backgroundColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', color: dark ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.7)' }}
+        >
+          {enabled ? '已启用' : '使用'}
+        </button>
+      </div>
+    )
+  }
 
   return (
     <>
@@ -378,8 +487,6 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
         onClick={onClose}
       >
         <motion.div
-          // 弹窗从打开按钮的锚点侧弹出（缩放 + 透明度 + 位移），关闭时收缩回按钮位置后消失。
-          // 无锚点（如初次渲染兜底）时退化为居中缩放弹出。
           initial={{ scale: 0.5, opacity: 0, x: anchorRect ? anchorRect.x - (window.innerWidth / 2) : 0, y: anchorRect ? anchorRect.y - (window.innerHeight / 2) : 0 }}
           animate={{ scale: 1, opacity: 1, x: 0, y: 0 }}
           exit={{ scale: 0.5, opacity: 0, x: anchorRect ? anchorRect.x - (window.innerWidth / 2) : 0, y: anchorRect ? anchorRect.y - (window.innerHeight / 2) : 0 }}
@@ -408,7 +515,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
               </div>
               <div>
                 <h2 className={`text-lg font-semibold ${textPrimary}`}>调音室</h2>
-                <div className={`${textTertiary} text-[11px] -mt-0.5`}>云澜音效 · 均衡器 · 变调变速 · WAV 导出</div>
+                <div className={`${textTertiary} text-[11px] -mt-0.5`}>场景方案 · 云澜音效 · 均衡器 · 调音器 · WAV 导出</div>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -453,7 +560,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
           {/* Tab 栏 */}
           <div className="relative flex px-3 pt-2 gap-1" style={{ borderBottom: `1px solid ${glassBorder}` }}>
             {([
-              { key: 'effects', label: '云澜音效', icon: Music2 },
+              { key: 'effects', label: '音效场景', icon: Sparkles },
               { key: 'eq', label: '均衡器', icon: SlidersHorizontal },
               { key: 'tuner', label: '调音器', icon: AudioLines },
             ] as const).map((tab) => {
@@ -489,57 +596,180 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
             <AnimatePresence mode="wait">
               {activeTab === 'effects' && (
                 <motion.div key="effects" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="space-y-3">
-                  {/* 顶部总开关 */}
+                  {/* 当前场景 + 场景方案区 */}
                   {glassCardShell(
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className={`${textPrimary} font-medium`}>{activeEffectKey ? `当前音效：${EFFECT_META[activeEffectKey].name}` : '开启音效'}</div>
-                        <div className={`${textSecondary} text-xs mt-0.5`}>{activeEffectKey ? '可尝试自定义选择当前音效自定义配置' : '选择下方音效卡片，点击即可开启'}</div>
-                      </div>
-                      {renderToggle(activeEffectKey !== null, toggleMasterEffect)}
-                    </div>
-                  )}
-
-                  {/* 效果卡片（一行 4 个，点击卡片打开配置弹窗） */}
-                  <div className="grid grid-cols-4 gap-2.5">
-                    {EFFECT_KEYS.map((key) => {
-                      const meta = EFFECT_META[key]
-                      const enabled = settings.effects[key].enabled
-                      const Icon = meta.icon
-                      return (
-                        <div
-                          key={key}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => setEffectModal(key)}
-                          onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) setEffectModal(key) }}
-                          className="relative cursor-pointer rounded-2xl p-3 flex flex-col items-center gap-2 transition-all hover:brightness-110"
-                          style={{
-                            background: enabled ? `${accentColor}26` : glassCard,
-                            backdropFilter: glassCardBlur,
-                            WebkitBackdropFilter: glassCardBlur,
-                            border: `1px solid ${enabled ? accentColor : glassBorder}`,
-                            boxShadow: enabled ? `0 0 16px ${accentColor}44` : '0 4px 14px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.12)',
-                          }}
-                        >
-                          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: `${accentColor}22`, color: accentColor }}>
-                            <Icon className="w-4.5 h-4.5" />
+                    <>
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <div className={`${textPrimary} font-medium flex items-center gap-2`}>
+                            <Sparkles className="w-4 h-4" style={{ color: accentColor }} />
+                            场景方案
                           </div>
-                          <div className={`text-xs font-medium ${textPrimary} text-center leading-tight`}>{meta.name}</div>
+                          <div className={`${textSecondary} text-xs mt-0.5`}>当前：<span className="font-medium" style={{ color: accentColor }}>{activeSceneName}</span> {settings.customized && '（已手动调整）'}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            value={sceneName}
+                            onChange={(e) => setSceneName(e.target.value)}
+                            placeholder="场景名称"
+                            className={`w-28 px-2.5 py-1.5 rounded-lg text-xs outline-none ${textPrimary}`}
+                            style={{ background: inputBg, border: `1px solid ${glassBorder}` }}
+                          />
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); activateEffect(enabled ? null : key) }}
-                            className="w-full py-1.5 rounded-lg text-xs font-medium transition-colors"
-                            style={enabled
-                              ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
-                              : { backgroundColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', color: dark ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.7)' }}
+                            onClick={handleResetScene}
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs transition-all hover:brightness-110 active:scale-95"
+                            style={{ background: inputBg, border: `1px solid ${glassBorder}`, color: textSecondary }}
+                            title="清空全部音效与均衡器，恢复原声监听"
                           >
-                            {enabled ? '已启用' : '使用'}
+                            <RotateCcw className="w-3.5 h-3.5" /> 恢复默认
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSaveCurrentScene}
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-white transition-all hover:brightness-110 active:scale-95"
+                            style={{ backgroundColor: accentColor, boxShadow: `0 4px 14px ${accentColor}44` }}
+                          >
+                            <Save className="w-3.5 h-3.5" /> 保存为场景
                           </button>
                         </div>
-                      )
-                    })}
-                  </div>
+                      </div>
+                      <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: 'thin' }}>
+                        {allScenes.map(scene => {
+                          const active = !settings.customized && settings.activeScene === scene.id
+                          return (
+                            <div key={scene.id} className="relative shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleSceneClick(scene)}
+                                className="rounded-xl px-3 py-2 text-left transition-all hover:brightness-110 active:scale-[0.97]"
+                                style={{
+                                  background: active ? `${accentColor}26` : inputBg,
+                                  border: `1px solid ${active ? accentColor : glassBorder}`,
+                                  boxShadow: active ? `0 0 14px ${accentColor}44` : 'none',
+                                  backdropFilter: 'blur(8px)',
+                                  minWidth: '96px',
+                                }}
+                              >
+                                <div className={`text-xs font-medium ${active ? '' : textPrimary}`} style={active ? { color: accentColor } : undefined}>
+                                  {scene.builtin ? '' : '★ '}{scene.name}
+                                </div>
+                                {scene.description && <div className={`${textTertiary} text-[10px] mt-0.5 max-w-[130px] leading-snug line-clamp-2`}>{scene.description}</div>}
+                              </button>
+                              {!scene.builtin && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); handleDeleteMyScene(scene.id) }}
+                                  className={`absolute -top-1.5 -right-1.5 p-1 rounded-full ${dark ? 'bg-black/70' : 'bg-white/80'} shadow-md`}
+                                  title="删除场景"
+                                >
+                                  <Trash2 className="w-3 h-3" style={{ color: textSecondary }} />
+                                </button>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                      <div className={`${textTertiary} text-[11px] mt-2 flex items-center gap-1`}>
+                        <Info className="w-3 h-3" /> 点击场景一键应用整套听感；手动调整过参数后再次点击会询问是否覆盖或先保存当前设置。
+                      </div>
+                    </>
+                  )}
+
+                  {/* 效果开关（可叠加） */}
+                  {glassCardShell(
+                    <>
+                      <div className={`${textPrimary} font-medium mb-3`}>音效（可叠加）</div>
+                      <div className="grid grid-cols-4 gap-2.5">
+                        {EFFECT_KEYS.map(renderEffectCard)}
+                      </div>
+
+                      {/* 3D 环绕开启时展开子设置横条（关闭自动收缩，AnimatePresence 渐隐） */}
+                      <AnimatePresence>
+                        {!!settings.effects.surround3d.enabled && (
+                          <motion.div
+                            key="surround3d-sub-settings"
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            exit={{ opacity: 0, height: 0 }}
+                            transition={{ duration: 0.25, ease: 'easeOut' }}
+                            className="overflow-hidden mt-3"
+                          >
+                            <div
+                              className="rounded-2xl p-3.5"
+                              style={{ background: `${accentColor}12`, border: `1px solid ${accentColor}44` }}
+                            >
+                              <div className="flex items-center justify-between mb-2">
+                                <div className={`${textSecondary} text-xs flex items-center gap-1.5`}>
+                                  <Headphones className="w-3.5 h-3.5" style={{ color: accentColor }} />
+                                  3D 环绕子设置
+                                </div>
+                                <span className={`${textTertiary} text-[11px]`}>关闭「3D 环绕」后自动收起</span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4">
+                                {renderRange('环绕速度', settings.effects.surround3d.speed ?? 1, 0.2, 3, 0.1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, speed: v } }), `${(settings.effects.surround3d.speed ?? 1).toFixed(1)}x`)}
+                                {renderRange('环绕近远', settings.effects.surround3d.distance ?? 5, 1, 10, 1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, distance: v } }))}
+                                {renderRange('旋转角度', settings.effects.surround3d.angle ?? 0, 0, 360, 1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, angle: v } }), `${settings.effects.surround3d.angle ?? 0}°`)}
+                              </div>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </>
+                  )}
+
+                  {/* 频响补偿（响度相关，独立于音效卡片；点击打开配置弹窗） */}
+                  {glassCardShell(
+                    <>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className={`${textPrimary} font-medium flex items-center gap-2`}>
+                            <Volume2 className="w-4 h-4" style={{ color: accentColor }} />
+                            频响补偿
+                          </div>
+                          <div className={`${textSecondary} text-xs mt-0.5`}>低音量自适应提频 · 场景预设 · 自定义曲线（与均衡器、响度归一化互斥）</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {renderToggle(settings.effects.loudnessCompensation.enabled, (v) => {
+                            patchEffects({ loudnessCompensation: { ...settings.effects.loudnessCompensation, enabled: v } })
+                          })}
+                          <button
+                            type="button"
+                            onClick={() => setCompensationModal(true)}
+                            className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-white transition-all hover:brightness-110 active:scale-95"
+                            style={{ backgroundColor: accentColor, boxShadow: `0 4px 14px ${accentColor}44` }}
+                          >
+                            配置
+                          </button>
+                        </div>
+                      </div>
+                      <div className={`${textTertiary} text-[11px] mt-2 flex items-center gap-1`}>
+                        <Info className="w-3 h-3 shrink-0" /> 由独立补偿服务（3004）生成 ISO 226 / 预设 / 自定义补偿曲线；服务不可用时回退内置近似，不影响播放。
+                      </div>
+                    </>
+                  )}
+
+                  {/* 响度归一化（独立于效果，逐曲自动对齐） */}
+                  {glassCardShell(
+                    <>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className={`${textPrimary} font-medium flex items-center gap-2`}>
+                            <Volume2 className="w-4 h-4" style={{ color: accentColor }} />
+                            响度归一化
+                          </div>
+                          <div className={`${textSecondary} text-xs mt-0.5`}>逐曲测量响度并对齐（目标 -14 LUFS），切换歌曲音量一致（与频响补偿互斥）</div>
+                        </div>
+                        {renderToggle(settings.normalizationEnabled, (v) => {
+                          update({ normalizationEnabled: v })
+                          window.dispatchEvent(new CustomEvent('normalizationEnabledChanged', { detail: v }))
+                        })}
+                      </div>
+                      <div className={`${textTertiary} text-[11px] mt-2 flex items-center gap-1`}>
+                        <Info className="w-3 h-3 shrink-0" /> 需要本地响度服务（3003）；测量失败自动回退原声，不影响播放。
+                      </div>
+                    </>
+                  )}
                 </motion.div>
               )}
 
@@ -652,7 +882,18 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                   {/* 预设 */}
                   {glassCardShell(
                     <>
-                      <div className={`${textPrimary} font-medium mb-2`}>预设（{presets.length}/8）</div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className={`${textPrimary} font-medium`}>预设（{presets.length}/8）</div>
+                        <button
+                          type="button"
+                          onClick={handleResetEq}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] transition-all hover:brightness-110 active:scale-95"
+                          style={{ background: inputBg, border: `1px solid ${glassBorder}`, color: textSecondary }}
+                          title="所有频段增益归零，恢复平坦曲线"
+                        >
+                          <RotateCcw className="w-3 h-3" /> 清空均衡器
+                        </button>
+                      </div>
                       <div className="flex gap-2 mb-3">
                         <input
                           value={presetName}
@@ -781,7 +1022,8 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
         {effectModal && (() => {
           const key = effectModal
           const meta = EFFECT_META[key]
-          const enabled = settings.effects[key].enabled
+          const effect = settings.effects[key]
+          const enabled = !!effect?.enabled
           const Icon = meta.icon
           return (
             <motion.div
@@ -823,9 +1065,38 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
 
                   <p className={`${textSecondary} text-xs leading-relaxed mb-4`}>{meta.intro}</p>
 
+                  {/* 效果开关 */}
+                  <div className="flex items-center justify-between mb-4">
+                    <span className={`${textPrimary} text-sm font-medium`}>启用 {meta.name}</span>
+                    {renderToggle(enabled, (v) => toggleEffect(key))}
+                  </div>
+
                   {key === 'hall' && (
                     <>
-                      {/* 声场可视化（优化：左右声源点 + 听者中线 + 级别徽标） */}
+                      {/* 混响类型 */}
+                      <div className="mb-3">
+                        <div className={`${textSecondary} text-xs mb-1.5`}>混响类型</div>
+                        <div className="grid grid-cols-5 gap-1.5">
+                          {REVERB_TYPES.map(rt => {
+                            const activeType = settings.effects.hall.type === rt.value
+                            return (
+                              <button
+                                key={rt.value}
+                                type="button"
+                                title={rt.hint}
+                                onClick={() => patchEffects({ hall: { ...settings.effects.hall, type: rt.value as ReverbType } })}
+                                className="py-1.5 rounded-lg text-[11px] transition-all"
+                                style={activeType
+                                  ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
+                                  : { background: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', color: textSecondary }}
+                              >
+                                {rt.label}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      {/* 声场可视化 */}
                       <div
                         className="relative h-24 rounded-xl mb-3 cursor-ew-resize touch-none overflow-hidden select-none"
                         style={{
@@ -845,7 +1116,9 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                         <span className="absolute top-1.5 right-2 text-[10px] font-semibold" style={{ color: accentColor }}>{settings.effects.hall.level} 级</span>
                         <span className="absolute bottom-1 inset-x-0 text-center text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)' }}>← 左右拖动调整声场宽度 →</span>
                       </div>
-                      {renderRange('混响程度', settings.effects.hall.reverb, 0, 10, 1, (v) => patchEffects({ hall: { ...settings.effects.hall, reverb: v } }), `${settings.effects.hall.reverb}`)}
+                      {renderRange('混响量', settings.effects.hall.reverb, 0, 10, 1, (v) => patchEffects({ hall: { ...settings.effects.hall, reverb: v } }), `${settings.effects.hall.reverb}`)}
+                      {renderRange('预延迟', settings.effects.hall.preDelay, 0, 200, 1, (v) => patchEffects({ hall: { ...settings.effects.hall, preDelay: v } }), `${settings.effects.hall.preDelay}ms`)}
+                      {renderRange('衰减时间', settings.effects.hall.decay, 0.5, 6, 0.1, (v) => patchEffects({ hall: { ...settings.effects.hall, decay: v } }), `${settings.effects.hall.decay.toFixed(1)}s`)}
                     </>
                   )}
 
@@ -898,22 +1171,258 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                     renderRange('强度', settings.effects.accompanimentBoost.intensity, 0, 9, 0.5, (v) => patchEffects({ accompanimentBoost: { ...settings.effects.accompanimentBoost, intensity: v } }), `+${settings.effects.accompanimentBoost.intensity.toFixed(1)}dB`)
                   )}
 
-                  {/* 启用按钮 */}
-                  <button
-                    type="button"
-                    onClick={() => activateEffect(enabled ? null : key)}
-                    className="mt-4 w-full py-2.5 rounded-xl text-sm font-medium transition-all active:scale-[0.98]"
-                    style={enabled
-                      ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 16px ${accentColor}55` }
-                      : { backgroundColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', color: dark ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.7)' }}
-                  >
-                    {enabled ? '已启用 · 点击关闭' : '使用此音效'}
-                  </button>
+                  {key === 'compressor' && (
+                    <>
+                      {renderRange('阈值', settings.effects.compressor.threshold, -60, 0, 1, (v) => patchEffects({ compressor: { ...settings.effects.compressor, threshold: v } }), `${settings.effects.compressor.threshold}dB`)}
+                      {renderRange('比率', settings.effects.compressor.ratio, 1, 20, 0.5, (v) => patchEffects({ compressor: { ...settings.effects.compressor, ratio: v } }), `${settings.effects.compressor.ratio.toFixed(1)}:1`)}
+                      {renderRange('起始时间', settings.effects.compressor.attack, 0, 0.5, 0.005, (v) => patchEffects({ compressor: { ...settings.effects.compressor, attack: v } }), `${settings.effects.compressor.attack.toFixed(3)}s`)}
+                      {renderRange('释放时间', settings.effects.compressor.release, 0, 1, 0.01, (v) => patchEffects({ compressor: { ...settings.effects.compressor, release: v } }), `${settings.effects.compressor.release.toFixed(2)}s`)}
+                      {renderRange('输出增益', settings.effects.compressor.outputGain, 0, 12, 0.5, (v) => patchEffects({ compressor: { ...settings.effects.compressor, outputGain: v } }), `+${settings.effects.compressor.outputGain.toFixed(1)}dB`)}
+                    </>
+                  )}
+
+                  {key === 'nightMode' && (
+                    renderRange('强度', settings.effects.nightMode.amount, 0, 10, 1, (v) => patchEffects({ nightMode: { ...settings.effects.nightMode, amount: v } }), `${settings.effects.nightMode.amount} 级`)
+                  )}
                 </div>
               </motion.div>
             </motion.div>
           )
         })()}
+      </AnimatePresence>
+
+      {/* 频响补偿配置弹窗（独立于音效卡片，与响度归一化同属响度相关设置） */}
+      <AnimatePresence>
+        {compensationModal && (() => {
+          const comp = settings.effects.loudnessCompensation
+          const compMode = comp.mode || 'auto'
+          const compPreset = comp.preset || 'flat'
+          return (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[90] flex items-center justify-center p-4"
+              style={{ backgroundColor: dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.2)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+              onClick={() => setCompensationModal(false)}
+            >
+              <motion.div
+                initial={{ scale: 0.9, opacity: 0, y: 12 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 12 }}
+                transition={{ type: 'spring', damping: 26, stiffness: 320 }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-sm overflow-hidden rounded-3xl"
+                style={{
+                  background: glassPanel,
+                  backdropFilter: glassBlur,
+                  WebkitBackdropFilter: glassBlur,
+                  border: `1px solid ${glassBorder}`,
+                  boxShadow: '0 24px 64px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.2)',
+                }}
+              >
+                <div className="p-5">
+                  {/* 头部 */}
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: `${accentColor}22`, color: accentColor, border: `1px solid ${accentColor}55` }}>
+                        <Volume2 className="w-4.5 h-4.5" />
+                      </div>
+                      <div className={`${textPrimary} font-semibold`}>频响补偿</div>
+                    </div>
+                    <button type="button" onClick={() => setCompensationModal(false)} className={`p-2 rounded-full transition-colors ${dark ? 'hover:bg-white/15' : 'hover:bg-black/10'}`}>
+                      <X className={`w-4.5 h-4.5 ${textSecondary}`} />
+                    </button>
+                  </div>
+
+                  <p className={`${textSecondary} text-xs leading-relaxed mb-4`}>低音量下人耳对低频/高频不敏感。按系统音量动态补偿低频/高频（等响度模型）、场景预设曲线或自定义频段增益，让低音量听感更平衡。与均衡器、响度归一化互斥。</p>
+
+                  {/* 启用开关 */}
+                  <div className="flex items-center justify-between mb-4">
+                    <span className={`${textPrimary} text-sm font-medium`}>启用 频响补偿</span>
+                    {renderToggle(comp.enabled, (v) => patchEffects({ loudnessCompensation: { ...comp, enabled: v } }))}
+                  </div>
+
+                  {/* 模式选择 */}
+                  <div className="flex gap-1.5 mb-4">
+                    {([
+                      { value: 'auto' as const, label: '自适应（等响度）' },
+                      { value: 'preset' as const, label: '场景预设' },
+                      { value: 'custom' as const, label: '自定义频段' },
+                    ]).map((m) => {
+                      const active = compMode === m.value
+                      return (
+                        <button
+                          key={m.value}
+                          type="button"
+                          onClick={() => patchEffects({ loudnessCompensation: { ...comp, mode: m.value } })}
+                          className={`flex-1 py-2 rounded-lg text-xs transition-all ${active ? 'text-white font-medium' : `${textSecondary} ${dark ? 'bg-white/5' : 'bg-black/5'}`}`}
+                          style={active ? { backgroundColor: accentColor, boxShadow: `0 4px 14px ${accentColor}44` } : undefined}
+                        >
+                          {m.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {compMode === 'auto' && (
+                    <div className={`${textTertiary} text-xs leading-relaxed flex items-start gap-1.5`}>
+                      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span>按系统音量动态补偿低频/高频：音量越低补偿越强（等响度模型，线性跟随），低频最高 +12dB、高频最高 +6dB，音量恢复后自动回平。</span>
+                    </div>
+                  )}
+
+                  {compMode === 'preset' && (
+                    <>
+                      <div className={`${textSecondary} text-xs mb-1.5`}>选择目标听感曲线</div>
+                      <div className="flex flex-wrap gap-1.5 mb-1.5">
+                        {COMPENSATION_PRESETS.map(p => {
+                          const active = compPreset === p.id
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => patchEffects({ loudnessCompensation: { ...comp, mode: 'preset', preset: p.id } })}
+                              className="px-3 py-1.5 rounded-lg text-xs transition-all"
+                              style={active
+                                ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
+                                : { background: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', color: textSecondary }}
+                            >
+                              {p.name}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <div className={`${textTertiary} text-xs leading-relaxed flex items-start gap-1.5`}>
+                        <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span>预设按固定等响度曲线补偿，不随系统音量变化；适合固定听音习惯。</span>
+                      </div>
+                    </>
+                  )}
+
+                  {compMode === 'custom' && (
+                    <>
+                      <div className={`${textTertiary} text-xs leading-relaxed flex items-start gap-1.5 mb-3`}>
+                        <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span>自定义目标补偿曲线：拖动各频段增益（-8 ~ +8dB）。点击保存后按此曲线补偿。</span>
+                      </div>
+                      {resolveCustomBands(comp.bands).map((band, i) => {
+                        const freqs = CUSTOM_BAND_FREQUENCIES
+                        const bandFreq = freqs[i] ?? band.frequency
+                        const bandGain = band.gain || 0
+                        return (
+                          <div key={bandFreq}>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className={`${textSecondary} text-xs`}>{bandFreq >= 1000 ? `${bandFreq / 1000}k` : bandFreq}Hz</span>
+                              <span className={`${textPrimary} text-xs font-medium`}>{bandGain > 0 ? '+' : ''}{bandGain.toFixed(1)}dB</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={-8}
+                              max={8}
+                              step={0.5}
+                              value={bandGain}
+                              onChange={(e) => {
+                                const current = resolveCustomBands(comp.bands)
+                                const next = current.map(b => ({ ...b }))
+                                if (next[i]) next[i].gain = parseFloat(e.target.value)
+                                patchEffects({ loudnessCompensation: { ...comp, mode: 'custom', bands: next } })
+                              }}
+                              className="wf-glass-range w-full h-2 rounded-full appearance-none cursor-pointer"
+                              style={{ background: sliderTrack(bandGain, -8, 8) }}
+                            />
+                          </div>
+                        )
+                      })}
+                    </>
+                  )}
+
+                  {/* 互斥说明 */}
+                  <div className={`${textTertiary} text-xs leading-relaxed flex items-start gap-1.5 mt-3`}>
+                    <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>开启后均衡器与响度归一化会自动关闭（互斥）。</span>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          )
+        })()}
+      </AnimatePresence>
+
+      {/* 场景应用确认弹窗（自定义状态下点击场景） */}
+      <AnimatePresence>
+        {sceneConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[95] flex items-center justify-center p-4"
+            style={{ backgroundColor: dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.25)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+            onClick={() => { setSceneConfirm(null); setSceneName('') }}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 12 }}
+              transition={{ type: 'spring', damping: 26, stiffness: 320 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm overflow-hidden rounded-3xl"
+              style={{
+                background: glassPanel,
+                backdropFilter: glassBlur,
+                WebkitBackdropFilter: glassBlur,
+                border: `1px solid ${glassBorder}`,
+                boxShadow: '0 24px 64px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.2)',
+              }}
+            >
+              <div className="p-5">
+                <div className="flex items-center gap-2.5 mb-3">
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: `${accentColor}22`, color: accentColor, border: `1px solid ${accentColor}55` }}>
+                    <Sparkles className="w-4.5 h-4.5" />
+                  </div>
+                  <div className={`${textPrimary} font-semibold`}>应用场景「{sceneConfirm.name}」</div>
+                </div>
+                <p className={`${textSecondary} text-xs leading-relaxed mb-4`}>
+                  你当前有手动调整的听感参数（自定义状态），应用该场景会覆盖它们。可以选择先保存当前设置为「我的场景」，或直接覆盖。
+                </p>
+                <div className="flex items-center gap-2 mb-4">
+                  <input
+                    value={sceneName}
+                    onChange={(e) => setSceneName(e.target.value)}
+                    placeholder={`保存为：我的场景 ${myScenes.length + 1}`}
+                    className={`flex-1 px-3 py-2 rounded-lg text-xs outline-none ${textPrimary}`}
+                    style={{ background: inputBg, border: `1px solid ${glassBorder}` }}
+                  />
+                </div>
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSceneSaveAndApply}
+                    className="w-full py-2.5 rounded-xl text-sm font-medium text-white transition-all hover:brightness-110 active:scale-[0.98] flex items-center justify-center gap-1.5"
+                    style={{ backgroundColor: accentColor, boxShadow: `0 6px 18px ${accentColor}44` }}
+                  >
+                    <Save className="w-4 h-4" /> 保存当前设置并应用场景
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSceneOverwrite}
+                    className={`w-full py-2.5 rounded-xl text-sm font-medium transition-all active:scale-[0.98] ${dark ? 'text-white/85' : 'text-black/80'}`}
+                    style={{ background: dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)' }}
+                  >
+                    直接覆盖
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setSceneConfirm(null); setSceneName('') }}
+                    className={`w-full py-2 rounded-xl text-xs transition-opacity hover:opacity-70 ${textTertiary}`}
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
     </>
   )

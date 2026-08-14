@@ -9,6 +9,7 @@ import CrossfadeBackground from './components/CrossfadeBackground'
 
 import MiniPlayer from './components/MiniPlayer'
 import Toast from './components/Toast'
+import GaplessModeToast from './components/GaplessModeToast'
 import { extractDominantColor, useColorThief } from './hooks/useColorThief'
 import { useAudioPlayer, type AudioGraphHandle } from './hooks/useAudioPlayer'
 import { useAudioAnalyzer } from './hooks/useAudioAnalyzer'
@@ -18,6 +19,9 @@ import { cacheManager } from './services/cacheManager'
 import { indexedDBCache } from './services/indexedDBCache'
 import { autoMixAnalysisService } from './services/autoMixAnalysisService'
 import { AudioEffectsEngine } from './services/audioEffects/AudioEffectsEngine'
+import { AudioEffectsEngine as AudioEffectsEngineV2, LOUDNESS_COMPENSATION_THRESHOLD } from './services/audio-effects-v2/AudioEffectsEngine'
+import { loudnessNormalizationService } from './services/audio-effects-v2/loudnessNormalization'
+import { getAudioEngineVersion, setAudioEngineVersion, type AudioEngineVersion } from './services/audioEngineVersion'
 import { sequenceTracksHam2, type SequencingEntry } from './services/playlistSequencing'
 import { likeSong, addSongToPlaylist, getUserPlaylists, updateCachedUserPlaylists } from './services/playlistService'
 import { fetchExploreRecommendationBatch } from './services/exploreApi'
@@ -43,6 +47,8 @@ const loadSettingsPanel = () => import('./components/SettingsPanel')
 const LazySettingsPanel = lazy(loadSettingsPanel)
 const loadMixingStudio = () => import('./components/MixingStudio')
 const LazyMixingStudio = lazy(loadMixingStudio)
+const loadMixingStudioV2 = () => import('./components/MixingStudioV2')
+const LazyMixingStudioV2 = lazy(loadMixingStudioV2)
 const loadPlaylistPanel = () => import('./components/PlaylistPanel')
 const loadLoginView = () => import('./components/LoginView')
 const loadProfileView = () => import('./components/ProfileView')
@@ -316,6 +322,18 @@ function getSongIdentifiers(song: Song | null): string[] {
     .map(value => String(value))
 }
 
+// #10 Gapless 方案判定辅助：切歌提交时判断当前曲与目标曲是否同专辑。
+// 与 useAudioPlayer 设置 metadata.albumId 的判定方式一致（getLocalAlbumIdentifier），
+// 用于区分 gapless 首选「直接拼接」（仅专辑场景）与备选「60ms 淡入淡出」。
+function isSameAlbumPlayback(source: Song | undefined, target: Song | undefined): boolean {
+  if (!source || !target) return false
+  const sourcePlatform = (source.platform || 'netease') as 'netease' | 'qq'
+  const targetPlatform = (target.platform || 'netease') as 'netease' | 'qq'
+  const sourceAlbumId = getLocalAlbumIdentifier(source, sourcePlatform)
+  const targetAlbumId = getLocalAlbumIdentifier(target, targetPlatform)
+  return Boolean(sourceAlbumId && targetAlbumId && sourceAlbumId === targetAlbumId)
+}
+
 function normalizeSongCover(song: Song): Song {
   const picUrl = song.album?.picUrl ? getProxiedImageUrl(song.album.picUrl) : ''
 
@@ -388,6 +406,24 @@ function App() {
   const [showRemote, setShowRemote] = useState(false)
   const [showSongDetail, setShowSongDetail] = useState(false)
   const [songDetailSong, setSongDetailSong] = useState<Song | null>(null)
+  // 音效引擎版本（v1 远程原版 / v2 本地增强版），默认 v1；切换见 switchAudioEngine
+  const [audioEngineVersion, setAudioEngineVersionState] = useState<AudioEngineVersion>(getAudioEngineVersion)
+  // 与 state 同步的 ref：switchAudioEngine 切换中同步读写它，规避闭包陈旧 / 同帧连点竞态
+  const audioEngineVersionRef = useRef<AudioEngineVersion>(audioEngineVersion)
+  audioEngineVersionRef.current = audioEngineVersion
+  // 引擎切换时的右上角小弹窗（2s 后淡出）
+  const [engineSwitchToast, setEngineSwitchToast] = useState<string | null>(null)
+  // 弹窗淡出定时器 ref：连点切换时先清旧再设新，防止旧定时器提前清掉新弹窗
+  const engineSwitchToastTimerRef = useRef<number | null>(null)
+  // #10 Gapless 方案弹窗：切歌提交时底部提示本次衔接方案（2.5s 后淡出）
+  const [gaplessModeToast, setGaplessModeToast] = useState<string | null>(null)
+  // 弹窗淡出定时器 ref：连续切歌时先清旧定时器再弹新方案，旧弹窗不残留
+  const gaplessModeToastTimerRef = useRef<number | null>(null)
+  // 卸载时清理弹窗定时器，避免卸载后 setState
+  useEffect(() => () => {
+    if (engineSwitchToastTimerRef.current !== null) window.clearTimeout(engineSwitchToastTimerRef.current)
+    if (gaplessModeToastTimerRef.current !== null) window.clearTimeout(gaplessModeToastTimerRef.current)
+  }, [])
   // 调音室弹窗锚点：记录打开按钮的位置，弹窗从按钮侧弹出/关闭时收缩回按钮
   const mixingStudioAnchorRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
   useEffect(() => {
@@ -1144,14 +1180,114 @@ function App() {
   const handleNextRef = useRef<() => void>(() => undefined)
   const dominantColorRef = useRef<string>('#3B82F6')
   
-  // 调音室音效引擎（懒创建一次，音频图就绪后 attach）
-  const audioEffectsEngineRef = useRef<AudioEffectsEngine | null>(null)
-  if (audioEffectsEngineRef.current === null) {
-    audioEffectsEngineRef.current = new AudioEffectsEngine()
-  }
+  // 调音室音效引擎：v1（远程原版）/ v2（本地增强版）双实例，按版本激活。
+  // v1/v2 类同名但来自不同模块，activeEngine 用版本分支取用，避免两套实例互相干扰。
+  const v1EngineRef = useRef<AudioEffectsEngine | null>(null)
+  const v2EngineRef = useRef<AudioEffectsEngineV2 | null>(null)
+  if (v1EngineRef.current === null) v1EngineRef.current = new AudioEffectsEngine()
+  if (v2EngineRef.current === null) v2EngineRef.current = new AudioEffectsEngineV2()
+  const audioGraphHandleRef = useRef<AudioGraphHandle | null>(null)
+
   const handleAudioGraphReady = useCallback((handle: AudioGraphHandle) => {
-    audioEffectsEngineRef.current?.attach(handle)
+    audioGraphHandleRef.current = handle
+    if (audioEngineVersion === 'v2') v2EngineRef.current?.attach(handle)
+    else v1EngineRef.current?.attach(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioEngineVersion])
+
+  // 引擎切换：热切换（暂停音乐 → 替换音频图效果链 → 恢复播放），
+  // 音频图未就绪时退化为冷切换（仅保存配置，下次启动生效）。切换后右上角弹 2s 提示。
+  // 注意：audioPlayer 在其后声明，此回调仅作引用传递，由调用方（调音室）在运行时触发。
+  const switchAudioEngineRef = useRef<(next: AudioEngineVersion) => void>(() => undefined)
+
+  // 系统音量检测：告知 v2 引擎（频响补偿自适应）+ 低音量一次性提示（localStorage 防重复）
+  useEffect(() => {
+    // 频响补偿是 v2 专属能力；v1 下不轮询系统音量，避免每 10 分钟一次 IPC 空转
+    if (audioEngineVersion !== 'v2') return
+    let cancelled = false
+    let timer: number | null = null
+    const checkSystemVolume = async () => {
+      try {
+        const result = await window.electron?.audio?.getSystemVolume()
+        if (cancelled || !result || !result.success) return
+        if (v2EngineRef.current) {
+          v2EngineRef.current.setSystemVolume(result.volume)
+          const compEnabled = v2EngineRef.current.getSettings().effects.loudnessCompensation.enabled
+          if (!compEnabled && result.volume >= 0 && result.volume < LOUDNESS_COMPENSATION_THRESHOLD) {
+            const key = 'waveforge:loudness-comp-hinted'
+            if (!localStorage.getItem(key)) {
+              localStorage.setItem(key, '1')
+              addToast(`系统音量较低（${result.volume}%），可在调音室开启频响补偿改善低音量听感`, 'info')
+            }
+          }
+        }
+      } catch {
+        // 忽略：系统音量不可用（非 Windows / 读取失败）
+      }
+    }
+    void checkSystemVolume()
+    // 每 10 分钟刷新一次，让频响补偿跟随音量变化
+    timer = window.setInterval(() => { void checkSystemVolume() }, 600_000)
+    return () => {
+      cancelled = true
+      if (timer !== null) window.clearInterval(timer)
+    }
+    // eslint 无：addToast 为渲染内稳定函数（useCallback 未使用也安全，闭包读取最新 state）
+  }, [audioEngineVersion])
+
+  // 服务健康检测：应用启动后约 3s（等待 Python 子进程就绪），检测频响补偿（3004）与响度（3003）
+  // 服务是否正常；就绪时各弹一次 toast（localStorage 防重复）。失败静默——服务降级已有回退，
+  // 浏览器预览等无服务环境不会弹提示。
+  useEffect(() => {
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      const checkService = async (port: number, readyMessage: string, storageKey: string) => {
+        try {
+          if (localStorage.getItem(storageKey)) return
+          const controller = new AbortController()
+          const timeoutId = window.setTimeout(() => controller.abort(), 2000)
+          const res = await fetch(`http://localhost:${port}/health`, { signal: controller.signal })
+          window.clearTimeout(timeoutId)
+          if (cancelled || !res.ok) return
+          localStorage.setItem(storageKey, '1')
+          addToast(readyMessage, 'info')
+        } catch {
+          // 忽略：服务未就绪 / 不存在（浏览器预览、服务未启动等），静默降级
+        }
+      }
+      void checkService(3004, '频响补偿服务已就绪', 'waveforge:service-3004-toasted')
+      void checkService(3003, '响度服务已就绪', 'waveforge:service-3003-toasted')
+    }, 3000)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+    // 仅挂载时检测一次；addToast 为渲染内稳定函数，闭包读取最新 state
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 响度归一化（v2 专属）：开关在调音室切换时即时应用/回退（利用最新 activeTrackKeyRef 与预载 url）
+  useEffect(() => {
+    // 归一化是 v2 专属；v1 下不挂监听（事件也只会由 v2 调音室派发）
+    if (audioEngineVersion !== 'v2') return
+    const handleNormalizationChange = (e: Event) => {
+      const enabled = (e as CustomEvent).detail === true
+      const engine = v2EngineRef.current
+      if (!engine) return
+      if (!enabled) {
+        loudnessNormalizationService.reset(engine)
+        return
+      }
+      const trackKey = activeTrackKeyRef.current
+      if (!trackKey) return
+      const cached = preloadCacheRef.current.get(trackKey)
+      const url = cached?.url || ''
+      if (url) void loudnessNormalizationService.apply(engine, trackKey, url)
+    }
+    window.addEventListener('normalizationEnabledChanged', handleNormalizationChange)
+    return () => window.removeEventListener('normalizationEnabledChanged', handleNormalizationChange)
+  }, [audioEngineVersion])
   
   // 播放器状态监听器
   const audioPlayer = useAudioPlayer(
@@ -1289,6 +1425,51 @@ function App() {
       setTransitionToAccentColor(null)
     }
 
+    // ── #10 Gapless 方案弹窗：真实切歌提交时识别本次衔接方案 ──
+    // 只使用现有 state 可读信息：transitionCommit（isVisualSwitch=false 才是真切换）、
+    // transitionState/'seamlessTransition'、playlistRef 中的 source/target 专辑归属。
+    // 三方案判定：
+    //   ① 直接拼接：transitionStrategy === 'gapless' 且 source/target 同专辑（专辑无缝首选）
+    //   ② 60ms 淡入淡出：transitionStrategy === 'gapless' 且非同专辑（非专辑默认/专辑兜底）
+    //   ③ albumGapless 交叉淡化：adoptExternalAudio 路径（albumGaplessHandoff），
+    //      无 transitionCommit，仅发 transitionState='committed' + seamlessTransition=true
+    //   AutoMix：'smart-rendered' / 'beat-crossfade' / 'fixed-crossfade'
+    const triggerGaplessModeToast = (message: string) => {
+      // 防抖：连续切歌时先清旧定时器，旧弹窗被新弹窗直接替换
+      if (gaplessModeToastTimerRef.current !== null) window.clearTimeout(gaplessModeToastTimerRef.current)
+      setGaplessModeToast(message)
+      gaplessModeToastTimerRef.current = window.setTimeout(() => {
+        gaplessModeToastTimerRef.current = null
+        setGaplessModeToast(null)
+      }, 2500)
+    }
+    if (state.transitionCommit && !state.transitionCommit.isVisualSwitch) {
+      const commit = state.transitionCommit
+      let toastMessage: string | null = null
+      if (commit.strategy === 'gapless') {
+        const sourceSong = playlistRef.current.find(s => getSongKey(s) === commit.sourceTrackKey)
+        const targetSong = playlistRef.current.find(s => getSongKey(s) === commit.targetTrackKey)
+        toastMessage = isSameAlbumPlayback(sourceSong, targetSong)
+          ? '已用「直接拼接」无缝切换'
+          : '已用「60ms 淡入淡出」切换'
+      } else if (commit.strategy === 'smart-rendered') {
+        toastMessage = '已用「Smart AutoMix 智能渲染」切换'
+      } else if (commit.strategy === 'beat-crossfade') {
+        toastMessage = '已用「Smart AutoMix 节拍交叉淡化」切换'
+      } else if (commit.strategy === 'fixed-crossfade') {
+        toastMessage = '已用「交叉淡化」切换'
+      }
+      if (toastMessage) triggerGaplessModeToast(toastMessage)
+    } else if (
+      state.transitionState === 'committed'
+      && state.transitioning === false
+      && state.seamlessTransition === true
+      && !state.transitionCommit
+    ) {
+      // ③ albumGapless 交叉淡化 handoff（adoptExternalAudio 路径）
+      triggerGaplessModeToast('已用「albumGapless 交叉淡化」切换')
+    }
+
     if (state.ended && playlist.length > 0 && state.transitionState !== 'committed') {
       if (playMode === 'repeat') {
         // 尝试播放失败，可能需要重新登录
@@ -1317,6 +1498,58 @@ function App() {
   // 保持最新 audioPlayer 引用的 ref，供 useCallback 处理器读取，避免处理器身份随渲染变化
   const audioPlayerRef = useRef(audioPlayer)
   audioPlayerRef.current = audioPlayer
+
+  // 引擎切换（实现放在 audioPlayer 之后，规避 TDZ）：
+  // 热切换 = 暂停音乐 → dispose 旧链 → attach 新链 → 恢复播放；
+  // 音频图未就绪 = 冷切换（仅保存配置，下次启动生效）。切换后右上角弹 2s 提示。
+  // 版本读写走 ref：同帧连点（v1→v2→v1）时每次调用读到的都是最新目标，避免闭包陈旧
+  // 导致第二次被误判为"已切到目标"而吞掉，最终停在用户最后点击的版本上。
+  const switchAudioEngine = useCallback((next: AudioEngineVersion) => {
+    if (next === audioEngineVersionRef.current) return
+    const handle = audioGraphHandleRef.current
+    // 仅热切换需要暂停音乐（换链瞬间避免爆音）；冷切换引擎尚未接入音频图，无需暂停。
+    // 注意：必须用 getAudioElement()（读 activePrimaryRef）取「当前真正在播的 deck」——
+    // audioElement 是 state，只在初次加载/过渡提交时更新，双 deck 静默转正/gapless 拼接
+    // 路径下是陈旧引用，用它判断会误判未在播 → 恢复播放打在错误的元素上 → 热切换后无声。
+    const activeAudio = audioPlayerRef.current?.getAudioElement() ?? null
+    const wasPlaying = !!handle && !!activeAudio && !activeAudio.paused
+    if (wasPlaying) void activeAudio?.pause()
+
+    // 换引擎：dispose 旧链（恢复 masterGain→analyser 直连），attach 新链
+    if (handle) {
+      if (audioEngineVersionRef.current === 'v2') v2EngineRef.current?.dispose()
+      else v1EngineRef.current?.dispose()
+    }
+    audioEngineVersionRef.current = next
+    setAudioEngineVersionState(next)
+    setAudioEngineVersion(next)
+    if (handle) {
+      if (next === 'v2') v2EngineRef.current?.attach(handle)
+      else v1EngineRef.current?.attach(handle)
+      // 切到 v2 时补挂响度归一化（若调音室已开启；apply 内部按 settings 判断，未开启即跳过）
+      if (next === 'v2' && v2EngineRef.current) {
+        const trackKey = activeTrackKeyRef.current
+        if (trackKey) {
+          const cached = preloadCacheRef.current.get(trackKey)
+          const url = cached?.url || ''
+          if (url) void loudnessNormalizationService.apply(v2EngineRef.current, trackKey, url)
+        }
+      }
+      // 恢复播放（热切换成功路径）：恢复同一个活跃 deck
+      if (wasPlaying && activeAudio) {
+        window.setTimeout(() => { void activeAudio?.play().catch(() => { /* 用户暂停等场景忽略 */ }) }, 80)
+      }
+    }
+    // 右上角 2s 淡出弹窗（连点/重入时先清旧定时器，避免旧弹窗提前清掉新弹窗）
+    if (engineSwitchToastTimerRef.current !== null) window.clearTimeout(engineSwitchToastTimerRef.current)
+    setEngineSwitchToast(`音效引擎已切换至 ${next === 'v2' ? 'v2（增强版）' : 'v1（原版）'}${handle ? '' : '，下次启动生效'}`)
+    engineSwitchToastTimerRef.current = window.setTimeout(() => {
+      engineSwitchToastTimerRef.current = null
+      setEngineSwitchToast(null)
+    }, 2000)
+    setShowMixingStudio(false)
+  }, [])
+  switchAudioEngineRef.current = switchAudioEngine
   
   // 封面律动效果
   const [coverPulseEnabled, setCoverPulseEnabled] = useState(() => {
@@ -2597,6 +2830,11 @@ function App() {
       }
       if (!started || !isLatestLoad()) return
       
+      // 响度归一化（v2 专属）：按曲目测量 LUFS 并施加链首增益（独立服务，失败自动回退原声）
+      if (audioEngineVersion === 'v2' && v2EngineRef.current) {
+        void loudnessNormalizationService.apply(v2EngineRef.current, cacheKey, url)
+      }
+      
       // 请求可能已经由下一首预载启动；这里仅保持引用，避免重复调用。
       void lyricsPromise
       
@@ -3826,21 +4064,65 @@ function App() {
             } as any)} />
         </Suspense>
 
-        {/* 调音室 */}
+        {/* 调音室（v1/v2 按版本渲染） */}
         <AnimatePresence>
           {showMixingStudio && (
             <Suspense fallback={null}>
-              <LazyMixingStudio
-                engine={audioEffectsEngineRef.current!}
-                onClose={() => setShowMixingStudio(false)}
-                playerTheme={playerTheme}
-                sourceUrl={audioPlayer.audioElement?.src || undefined}
-                sourceDuration={audioPlayer.audioElement?.duration || undefined}
-                anchorRect={mixingStudioAnchorRef.current}
-              />
+              {audioEngineVersion === 'v2' ? (
+                <LazyMixingStudioV2
+                  engine={v2EngineRef.current!}
+                  onClose={() => setShowMixingStudio(false)}
+                  playerTheme={playerTheme}
+                  sourceUrl={audioPlayer.audioElement?.src || undefined}
+                  sourceDuration={audioPlayer.audioElement?.duration || undefined}
+                  anchorRect={mixingStudioAnchorRef.current}
+                  engineVersion={audioEngineVersion}
+                  onSwitchEngine={switchAudioEngine}
+                />
+              ) : (
+                <LazyMixingStudio
+                  engine={v1EngineRef.current!}
+                  onClose={() => setShowMixingStudio(false)}
+                  playerTheme={playerTheme}
+                  sourceUrl={audioPlayer.audioElement?.src || undefined}
+                  sourceDuration={audioPlayer.audioElement?.duration || undefined}
+                  anchorRect={mixingStudioAnchorRef.current}
+                  engineVersion={audioEngineVersion}
+                  onSwitchEngine={switchAudioEngine}
+                />
+              )}
             </Suspense>
           )}
         </AnimatePresence>
+
+        {/* 引擎切换右上角小弹窗（2s 后淡出） */}
+        <AnimatePresence>
+          {engineSwitchToast && (
+            <motion.div
+              initial={{ opacity: 0, y: -16, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 0.97 }}
+              transition={{ duration: 0.25 }}
+              className="fixed top-16 right-6 z-[9998] pointer-events-none"
+            >
+              <div
+                className="px-4 py-2.5 rounded-2xl text-sm font-medium shadow-2xl"
+                style={{
+                  background: 'rgba(10, 12, 20, 0.55)',
+                  backdropFilter: 'blur(20px) saturate(180%)',
+                  WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  color: '#fff',
+                }}
+              >
+                {engineSwitchToast}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* #10 Gapless 方案底部弹窗（切歌完成时提示本次衔接方案，2.5s 后淡出） */}
+        <GaplessModeToast message={gaplessModeToast} playerTheme={playerTheme} />
         
         {/* 主内容区 */}
         <div className="relative flex-1 flex items-center justify-center overflow-hidden">
