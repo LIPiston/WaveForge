@@ -72,6 +72,8 @@ export interface TrackAnalysis {
   confidence: number
   sections: SectionMarker[]
   beatFeatures: BeatFeatureFrame[]
+  /** ITU-R BS.1770 积分响度（LUFS，Python 分析提供；响度归一化用） */
+  integratedLufs?: number
   introSilence: number
   outroSilence: number
   sourceSignature?: string
