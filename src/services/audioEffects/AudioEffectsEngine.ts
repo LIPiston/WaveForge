@@ -7,8 +7,8 @@ import processorUrl from '@soundtouchjs/audio-worklet/processor?url'
 export type EqMode = 'simple' | 'pro'
 
 export interface CloudEffectsSettings {
-  hall: { enabled: boolean; level: number } // 全景声厅：全景幅度 1-6
-  surround3d: { enabled: boolean; distance: number; speed: number } // 3D 环绕
+  hall: { enabled: boolean; level: number; reverb: number } // 全景声厅：声场 1-10 + 混响 0-10
+  surround3d: { enabled: boolean; distance: number; speed: number; angle: number; direction: 1 | -1 } // 3D 环绕
   bassBoost: { enabled: boolean; depth: number; intensity: number } // 低音增强
   vocalBoost: { enabled: boolean; intensity: number } // 人声加强
   accompanimentBoost: { enabled: boolean; intensity: number } // 伴奏加强
@@ -62,8 +62,8 @@ const SETTINGS_KEY = 'waveforge:audio-effects-settings'
 function defaultSettings(): AudioEffectsSettings {
   return {
     effects: {
-      hall: { enabled: false, level: 3 },
-      surround3d: { enabled: false, distance: 3, speed: 1 },
+      hall: { enabled: false, level: 5, reverb: 5 },
+      surround3d: { enabled: false, distance: 5, speed: 1, angle: 0, direction: 1 },
       bassBoost: { enabled: false, depth: 100, intensity: 6 },
       vocalBoost: { enabled: false, intensity: 4 },
       accompanimentBoost: { enabled: false, intensity: 4 },
@@ -89,8 +89,16 @@ function loadSettings(): AudioEffectsSettings {
     const raw = localStorage.getItem(SETTINGS_KEY)
     if (!raw) return defaults
     const parsed = JSON.parse(raw) as Partial<AudioEffectsSettings>
+    const de = defaults.effects
+    const pe = (parsed.effects || {}) as DeepPartial<CloudEffectsSettings>
     return {
-      effects: { ...defaults.effects, ...(parsed.effects || {}) },
+      effects: {
+        hall: { ...de.hall, ...(pe.hall || {}) },
+        surround3d: { ...de.surround3d, ...(pe.surround3d || {}) },
+        bassBoost: { ...de.bassBoost, ...(pe.bassBoost || {}) },
+        vocalBoost: { ...de.vocalBoost, ...(pe.vocalBoost || {}) },
+        accompanimentBoost: { ...de.accompanimentBoost, ...(pe.accompanimentBoost || {}) },
+      },
       eq: {
         ...defaults.eq,
         ...(parsed.eq || {}),
@@ -286,6 +294,18 @@ export class AudioEffectsEngine {
     this.rebuildFromSettings()
   }
 
+  // 激活某个音效（互斥：同时只能开一个），传 null 关闭全部
+  activateEffect(key: keyof CloudEffectsSettings | null): void {
+    const effects: CloudEffectsSettings = {
+      hall: { ...this.settings.effects.hall, enabled: key === 'hall' },
+      surround3d: { ...this.settings.effects.surround3d, enabled: key === 'surround3d' },
+      bassBoost: { ...this.settings.effects.bassBoost, enabled: key === 'bassBoost' },
+      vocalBoost: { ...this.settings.effects.vocalBoost, enabled: key === 'vocalBoost' },
+      accompanimentBoost: { ...this.settings.effects.accompanimentBoost, enabled: key === 'accompanimentBoost' },
+    }
+    this.updateSettings({ effects })
+  }
+
   // 音频图就绪后由 useAudioPlayer 调用：在 masterGain 与 analyser 之间插入效果链
   attach(handle: { audioContext: AudioContext; masterGain: GainNode; analyser: AnalyserNode }): void {
     if (this.context) return // 已附加
@@ -334,13 +354,13 @@ export class AudioEffectsEngine {
     this.bassPunchFilter.gain.value = 0
     this.vocalFilter = context.createBiquadFilter()
     this.vocalFilter.type = 'peaking'
-    this.vocalFilter.frequency.value = 2500
-    this.vocalFilter.Q.value = 1.1
+    this.vocalFilter.frequency.value = 3000
+    this.vocalFilter.Q.value = 2.4
     this.vocalFilter.gain.value = 0
     this.accompFilter = context.createBiquadFilter()
     this.accompFilter.type = 'peaking'
-    this.accompFilter.frequency.value = 2500
-    this.accompFilter.Q.value = 1.4
+    this.accompFilter.frequency.value = 2800
+    this.accompFilter.Q.value = 1.6
     this.accompFilter.gain.value = 0
 
     // 均衡器：简约 5 段 / 专业 10 段都基于同一组 biquad，按 mode 重建
@@ -454,10 +474,12 @@ export class AudioEffectsEngine {
 
     // 人声/伴奏增强（M/S：人声=中置、伴奏=侧置）
     if (this.presenceMatrix) {
-      const vocalCenter = effects.vocalBoost.enabled ? 1 + effects.vocalBoost.intensity * 0.16 : 1
-      const accompSide = effects.accompanimentBoost.enabled ? 1 + effects.accompanimentBoost.intensity * 0.16 : 1
-      const accompCenter = effects.accompanimentBoost.enabled ? 1 - effects.accompanimentBoost.intensity * 0.09 : 1
-      this.presenceMatrix.centerGain.gain.setTargetAtTime(Math.max(0.3, vocalCenter * accompCenter), t, 0.03)
+      // 人声加强：中置声道适度增强（避免连带把吉他/低频一起放大），配合窄带存在感
+      const vocalCenter = effects.vocalBoost.enabled ? 1 + effects.vocalBoost.intensity * 0.08 : 1
+      // 伴奏加强：侧置声道明显增强（真正放大伴奏），同时压低中置
+      const accompSide = effects.accompanimentBoost.enabled ? 1 + effects.accompanimentBoost.intensity * 0.22 : 1
+      const accompCenter = effects.accompanimentBoost.enabled ? 1 - effects.accompanimentBoost.intensity * 0.1 : 1
+      this.presenceMatrix.centerGain.gain.setTargetAtTime(Math.max(0.25, vocalCenter * accompCenter), t, 0.03)
       this.presenceMatrix.sideGain.gain.setTargetAtTime(accompSide, t, 0.03)
     }
 
@@ -468,26 +490,27 @@ export class AudioEffectsEngine {
       this.bassPunchFilter.gain.setTargetAtTime(effects.bassBoost.enabled ? effects.bassBoost.intensity * 0.55 : 0, t, 0.02)
     }
 
-    // 人声加强（频段存在感提升，比单段更明显）
+    // 人声加强：窄带 3kHz 存在感提升（Q=2.4，聚焦人声、不误伤吉他），增益克制避免破音
     if (this.vocalFilter) {
-      this.vocalFilter.gain.setTargetAtTime(effects.vocalBoost.enabled ? effects.vocalBoost.intensity * 1.25 : 0, t, 0.02)
+      this.vocalFilter.gain.setTargetAtTime(effects.vocalBoost.enabled ? effects.vocalBoost.intensity * 0.7 : 0, t, 0.02)
     }
 
-    // 伴奏加强（削减人声频段，突出伴奏）
+    // 伴奏加强：削减人声频段（更窄、更克制），主要靠侧声道增强放大伴奏
     if (this.accompFilter) {
-      this.accompFilter.gain.setTargetAtTime(effects.accompanimentBoost.enabled ? -effects.accompanimentBoost.intensity * 1.25 : 0, t, 0.02)
+      this.accompFilter.gain.setTargetAtTime(effects.accompanimentBoost.enabled ? -effects.accompanimentBoost.intensity * 0.7 : 0, t, 0.02)
     }
 
-    // 全景声厅：M/S 加宽 + 卷积混响
+    // 全景声厅：声场加宽（1-10 级）+ 独立混响（0-10）
     if (this.hallMatrix && this.hallWetGain) {
-      const level = effects.hall.enabled ? effects.hall.level : 0 // 0-6
-      // 加宽：大幅提升侧声道、压低中置，声场明显变宽
-      const sideGain = 1 + (level / 6) * 1.9 // 1 → 2.9
-      const centerGain = 1 - (level / 6) * 0.42 // 1 → 0.58
+      const level = effects.hall.enabled ? effects.hall.level : 0 // 0-10
+      const reverb = effects.hall.enabled ? effects.hall.reverb : 0 // 0-10
+      // 加宽：侧声道增益随级别增加（10 级≈强烈）
+      const sideGain = 1 + (level / 10) * 2.2 // 1 → 3.2
+      const centerGain = 1 - (level / 10) * 0.42 // 1 → 0.58
       this.hallMatrix.sideGain.gain.setTargetAtTime(sideGain, t, 0.03)
       this.hallMatrix.centerGain.gain.setTargetAtTime(Math.max(0.4, centerGain), t, 0.03)
-      // 混响湿电平（有基础量 + 随级别增强）
-      this.hallWetGain.gain.setTargetAtTime(effects.hall.enabled ? 0.22 + Math.min(1, level / 6) * 0.78 : 0, t, 0.05)
+      // 混响湿电平（独立可调）
+      this.hallWetGain.gain.setTargetAtTime(Math.min(1, reverb / 10) * 0.95, t, 0.05)
     }
 
     // 3D 环绕
@@ -560,11 +583,14 @@ export class AudioEffectsEngine {
       const dt = Math.min(0.1, (now - this.surroundLastTime) / 1000)
       this.surroundLastTime = now
       const speed = this.settings.effects.surround3d.speed // 速度
+      const direction = this.settings.effects.surround3d.direction // 1=正转 / -1=反转
+      const baseAngle = this.settings.effects.surround3d.angle * Math.PI / 180 // 用户设定的旋转角度
       // 半径更大、旋转更快，让耳机内的环绕轨迹更明显
       const radius = 0.6 + this.settings.effects.surround3d.distance * 0.95
-      this.surroundAngle += dt * speed * 2.6
-      const x = Math.sin(this.surroundAngle) * radius
-      const z = Math.cos(this.surroundAngle) * radius
+      this.surroundAngle += dt * speed * 2.6 * direction
+      const a = this.surroundAngle + baseAngle
+      const x = Math.sin(a) * radius
+      const z = Math.cos(a) * radius
       const p = this.panner
       if (p.positionX) {
         p.positionX.setTargetAtTime(x, this.context!.currentTime, 0.03)
@@ -656,9 +682,9 @@ export class AudioEffectsEngine {
 
     if (effects.hall.enabled) {
       const convolver = offline.createConvolver()
-      convolver.buffer = generateHallImpulseResponse(offline, 2.8, 3.2)
+      convolver.buffer = generateHallImpulseResponse(offline, 3.6, 2.2)
       const wet = offline.createGain()
-      wet.gain.value = Math.min(1, effects.hall.level / 6) * 0.9
+      wet.gain.value = Math.min(1, effects.hall.reverb / 10) * 0.95
       prev.connect(convolver)
       convolver.connect(wet)
       wet.connect(offline.destination)
