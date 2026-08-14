@@ -5,6 +5,10 @@ import { planTransition } from '../audio/transitionPlanner'
 import { TransitionRenderer } from '../audio/TransitionRenderer'
 import { createPlaybackTimeStore } from '../audio/playbackTimeStore'
 import { GaplessIntegration } from '../services/gaplessIntegration'
+import { createSeamlessJoinController, type SeamlessJoinController } from '../services/gapless/seamlessJoinController'
+import { runGaplessDeckFade } from '../services/gapless/gaplessTransition'
+import { GAPLESS_SEAMLESS_WARMUP_SECONDS } from '../services/gapless/gaplessConstants'
+import type { GaplessSettings } from '../services/gapless/gaplessConstants'
 import type {
   PlaybackEngineState,
   PreloadTrack,
@@ -22,10 +26,7 @@ export interface CrossfadeSettings {
   duration: number
 }
 
-export interface GaplessSettings {
-  enabled: boolean
-  albumGapless: boolean
-}
+// GaplessSettings 已移入 src/services/gapless/gaplessConstants（本文件 re-export 保持兼容）
 
 export interface AutoMixSettings {
   enabled: boolean
@@ -51,15 +52,6 @@ const DEFAULT_VOLUME = 0.7
 const CURVE_POINTS = 64
 const EXTERNAL_HANDOFF_FADE_MS = 72
 const EXTERNAL_HANDOFF_SYNC_TOLERANCE_SECONDS = 0.025
-const GAPLESS_DECK_FADE_MS = 60  // Gapless 双 deck 极短等功率淡入淡出，消除数字硬切爆音
-// ── 首选无缝拼接（standby 已缓存就绪时）：头尾都不掐，直接拼接 ──
-const GAPLESS_SEAMLESS_PREROLL_SECONDS = 0.08  // source 结束前静音预启动 standby 的提前量（消除 play() 启动延迟）
-const GAPLESS_SEAMLESS_PREROLL_POLL_MS = 40    // 预启动窗口监测间隔（timeupdate 约 250ms 一次，需更高频定位窗口）
-const GAPLESS_SEAMLESS_TIMEOUT_MS = 600        // 首选兜底：source 异常未 ended 时，超时后强制回退备选
-const GAPLESS_SEAMLESS_WARMUP_SECONDS = 20     // 结束前 20s 开始强制预热下一首（保证首选拼接大概率成功）
-const GAPLESS_SEAMLESS_WARMUP_BUFFER_SECONDS = 10  // 预热目标：下一首前 10s 完成缓存
-const GAPLESS_SEAMLESS_WARMUP_POLL_MS = 250    // 预热缓冲进度轮询间隔
-const GAPLESS_SEAMLESS_WARMUP_TIMEOUT_MS = 13_000  // 预热硬超时：最坏情况也回拨 0 停住（0 已缓冲即可拼接）
 const CURRENT_MEDIA_LOAD_TIMEOUT_MS = 18_000
 const PRELOAD_MEDIA_LOAD_TIMEOUT_MS = 15_000
 
@@ -117,13 +109,6 @@ export function useAudioPlayer(
   const transitionStateRef = useRef<TransitionState>('idle')
   const transitionPlanRef = useRef<TransitionPlan | null>(null)
   const transitionTimerRef = useRef<number | null>(null)
-  const gaplessBoundaryScheduledRef = useRef(false)
-  const seamlessJoinArmedRef = useRef(false)          // 首选拼接已武装（standby 缓存就绪，等待 ended 直接拼接）
-  const seamlessJoinPrerollRef = useRef(false)        // standby 已静音预启动（消除 ended→play 启动延迟）
-  const seamlessPrerollPollRef = useRef<number | null>(null)  // 预启动窗口监测 timer
-  const seamlessWarmupInFlightRef = useRef(false)  // 预热进行中（防重入）
-  const seamlessWarmupDoneRef = useRef(false)      // 预热已完成（本首歌 standby 前 10s 已缓存）
-  const seamlessWarmupPollRef = useRef<number | null>(null)  // 预热缓冲进度轮询 timer
   const fallbackAnimationRef = useRef<number | null>(null)
   const transitionProgressAnimationRef = useRef<number | null>(null)  // 过渡进度动画帧
   const transitionStartTimeRef = useRef<number | null>(null)  // 过渡开始时间
@@ -147,6 +132,8 @@ export function useAudioPlayer(
   const [analyserNode, setAnalyserNode] = useState<AnalyserNode | null>(null)
   const transitionRendererRef = useRef<TransitionRenderer | null>(null)
   const gaplessIntegrationRef = useRef<GaplessIntegration | null>(null)
+  // Gapless 首选无缝拼接控制器（独立模块，逻辑见 src/services/gapless/）
+  const seamlessJoinControllerRef = useRef<SeamlessJoinController | null>(null)
   const playAtCallbackRef = useRef<((index: number, options: any) => Promise<boolean>) | null>(null)
   const [playbackTimeStore] = useState(createPlaybackTimeStore)
 
@@ -253,19 +240,7 @@ export function useAudioPlayer(
     visualSwitchTimerRef.current = null
     preloadReadyCleanupRef.current?.()
     preloadReadyCleanupRef.current = null
-    gaplessBoundaryScheduledRef.current = false
-    seamlessJoinArmedRef.current = false
-    seamlessJoinPrerollRef.current = false
-    if (seamlessPrerollPollRef.current !== null) {
-      window.clearTimeout(seamlessPrerollPollRef.current)
-      seamlessPrerollPollRef.current = null
-    }
-    seamlessWarmupInFlightRef.current = false
-    seamlessWarmupDoneRef.current = false
-    if (seamlessWarmupPollRef.current !== null) {
-      window.clearTimeout(seamlessWarmupPollRef.current)
-      seamlessWarmupPollRef.current = null
-    }
+    seamlessJoinControllerRef.current?.reset()
     transitionRendererRef.current?.stopPlayback()
     if (fallbackAnimationRef.current !== null) cancelAnimationFrame(fallbackAnimationRef.current)
     fallbackAnimationRef.current = null
@@ -615,28 +590,17 @@ export function useAudioPlayer(
         // BUG-A1：原实现让 target.play() 满音量硬起、source.pause() 立即硬停，
         // 数字硬切落在非零交叉点会产生咔哒/爆音。这里在切换瞬间加入极短（60ms）
         // 等功率淡入淡出：source 淡出 + standby 淡入同时开始，双 deck 短暂同声，
-        // 消除爆音且短到人耳听不出任何滞后。
-        const gaplessContext = audioContextRef.current
-        const gaplessSourceGain = getActiveGain()
-        const gaplessTargetGain = getStandbyGain()
-        const gaplessFadeDone = () => {
-          if (executionRevision !== transitionExecutionRevisionRef.current) return
-          source.pause()
-          source.currentTime = 0
-        }
-        if (gaplessContext && gaplessSourceGain && gaplessTargetGain) {
-          const now = gaplessContext.currentTime
-          gaplessSourceGain.gain.cancelScheduledValues(now)
-          gaplessTargetGain.gain.cancelScheduledValues(now)
-          gaplessSourceGain.gain.setValueAtTime(Math.max(0.0001, gaplessSourceGain.gain.value), now)
-          gaplessTargetGain.gain.setValueAtTime(Math.max(0.0001, gaplessTargetGain.gain.value), now)
-          gaplessSourceGain.gain.setValueCurveAtTime(equalPowerCurve(false), now, GAPLESS_DECK_FADE_MS / 1000)
-          gaplessTargetGain.gain.setValueCurveAtTime(equalPowerCurve(true), now, GAPLESS_DECK_FADE_MS / 1000)
-          window.setTimeout(gaplessFadeDone, GAPLESS_DECK_FADE_MS)
-        } else {
-          // Web Audio 增益图不可用时，用元素 volume 做同样的等功率短淡入淡出
-          runFallbackGainAnimation(source, target, GAPLESS_DECK_FADE_MS / 1000, gaplessFadeDone)
-        }
+        // 消除爆音且短到人耳听不出任何滞后（逻辑已抽到 gapless/gaplessTransition.ts）。
+        runGaplessDeckFade({
+          context: audioContextRef.current,
+          sourceGain: getActiveGain(),
+          targetGain: getStandbyGain(),
+          source,
+          target,
+          isCurrentRevision: () => executionRevision === transitionExecutionRevisionRef.current,
+          equalPowerCurve,
+          runFallbackFade: runFallbackGainAnimation,
+        })
         
         // 启动视觉过渡进度追踪
         let visualSwitchSent = false
@@ -1074,57 +1038,24 @@ export function useAudioPlayer(
       },
     })
 
-    // ── 首选预热：结束前 20s 开始静音预启动 standby 并推进到前 10s 已缓冲，
-    //    完成后暂停回拨 0，让剩余 1s 的首选判定必然就绪，保证拼接大概率成功。
-    //    幂等（warmupInFlight/warmupDone 防重入），失败静默不影响后续回退。
-    const warmupStandbyForSeamlessJoin = () => {
-      if (!gaplessRef.current.enabled || seamlessWarmupInFlightRef.current || seamlessWarmupDoneRef.current) return
-      const activeAudio = getActiveAudio()
-      const standbyAudio = getStandbyAudio()
-      if (!activeAudio || !standbyAudio || !standbyAudio.src || standbyAudio.error) return
-      if (transitionStateRef.current === 'running-transition') return
-      if (gaplessIntegrationRef.current?.hasActiveTransition()) return
-      seamlessWarmupInFlightRef.current = true
-
-      try {
-        setDeckGain(getStandbyGain(), standbyAudio, 0)
-        standbyAudio.currentTime = 0
-        void standbyAudio.play().then(() => {
-          // 播放中推进缓冲；每 250ms 查一次前 10s 是否已缓冲
-          let pollCount = 0
-          const poll = () => {
-            if (!seamlessWarmupInFlightRef.current) return  // 已被取消（切歌/暂停/seek）
-            pollCount += 1
-            const bufferedOk = standbyAudio.buffered.length > 0
-              && standbyAudio.buffered.end(standbyAudio.buffered.length - 1) >= GAPLESS_SEAMLESS_WARMUP_BUFFER_SECONDS
-            if (bufferedOk || pollCount * GAPLESS_SEAMLESS_WARMUP_POLL_MS >= GAPLESS_SEAMLESS_WARMUP_TIMEOUT_MS) {
-              // 缓冲到位（或超时）→ 暂停并回拨 0，结束预热。0 位置已缓冲，
-              // 后续首选拼接的 seek(0) 毫秒级完成，无需重新拉取。
-              seamlessWarmupInFlightRef.current = false
-              seamlessWarmupDoneRef.current = true
-              seamlessWarmupPollRef.current = null
-              try {
-                standbyAudio.pause()
-                standbyAudio.currentTime = 0
-              } catch {
-                // 元素可能已被释放
-              }
-              debugLog(`⚡ [Gapless] 首选预热完成：下一首前 ${GAPLESS_SEAMLESS_WARMUP_BUFFER_SECONDS}s 已缓存 (${pollCount * GAPLESS_SEAMLESS_WARMUP_POLL_MS}ms)`)
-              return
-            }
-            seamlessWarmupPollRef.current = window.setTimeout(poll, GAPLESS_SEAMLESS_WARMUP_POLL_MS)
-          }
-          seamlessWarmupPollRef.current = window.setTimeout(poll, GAPLESS_SEAMLESS_WARMUP_POLL_MS)
-        }).catch(() => {
-          // 预启动被拦截/失败：放弃预热，剩余 1s 的判定会走备选淡入淡出
-          seamlessWarmupInFlightRef.current = false
-          seamlessWarmupDoneRef.current = false
-        })
-      } catch {
-        seamlessWarmupInFlightRef.current = false
-        seamlessWarmupDoneRef.current = false
-      }
-    }
+    // 首选预热/边界调度/ended 拼接逻辑已抽离到 src/services/gapless/seamlessJoinController.ts
+    // （createSeamlessJoinController），本 effect 只负责创建控制器并接线。
+    seamlessJoinControllerRef.current = createSeamlessJoinController({
+      getActiveAudio,
+      getStandbyAudio,
+      getStandbyGain,
+      setDeckGain,
+      isGaplessEnabled: () => gaplessRef.current.enabled,
+      isTransitionRunning: () => transitionStateRef.current === 'running-transition',
+      hasActiveTransition: () => Boolean(gaplessIntegrationRef.current?.hasActiveTransition()),
+      getRevision: () => transitionExecutionRevisionRef.current,
+      commitTransition,
+      startGaplessTransition: () => void startTransition('gapless'),
+      resetGaplessIntegration: () => gaplessIntegrationRef.current?.reset(),
+      setTransitionState: (state, extra) => setTransitionState(state, (extra ?? {}) as never),
+      setBoundaryTimer: (timer) => { transitionTimerRef.current = timer },
+      getBoundaryTimer: () => transitionTimerRef.current,
+    })
 
     const handleTimeUpdate = (event: Event) => {
       const active = getActiveAudio()
@@ -1150,129 +1081,18 @@ export function useAudioPlayer(
         } else if (crossfadeRef.current.enabled && remaining <= Math.max(0.25, crossfadeRef.current.duration)) {
           debugLog('🎬 [Crossfade] 到达交叉淡化点，剩余时间:', remaining.toFixed(2), 's')
           void startTransition('fixed-crossfade')
-        } else if (
-          gaplessRef.current.enabled
-          && Number.isFinite(remaining)
-          && remaining > 1
-          && remaining <= GAPLESS_SEAMLESS_WARMUP_SECONDS
-          && albumPlayback
-          && !gaplessIntegrationRef.current?.hasActiveTransition()
-        ) {
-          // 专辑播放预热（第一种方案配套）：结束前 20s 强制预启动 standby 并缓存前 10s，
-          // 保证剩余 1s 时的首选拼接判定大概率就绪（幂等，重复触发无副作用）。
-          // 非专辑场景不做预热——它走第二种（60ms 淡入淡出），无需提前缓存。
-          warmupStandbyForSeamlessJoin()
-        } else if (
-          gaplessRef.current.enabled
-          && Number.isFinite(remaining)
-          && remaining > 0
-          && remaining <= 1
-          && !gaplessBoundaryScheduledRef.current
-          && !gaplessIntegrationRef.current?.hasActiveTransition()
-        ) {
-          // 无缝衔接三方案分流：
-          //  第一种（直接拼接，头尾都不掐）：仅专辑场景，standby 已缓存就绪时，
-          //         source 完整播到尾、standby 从 0 开头直接拼接（无提前淡入淡出）。
-          //  第二种（60ms 淡入淡出）：非专辑场景默认；专辑场景 standby 未就绪时兜底。
-          //  第三种（albumGapless 交叉淡化）：由 gaplessIntegration 在非专辑/特殊场景
-          //         保留实现，专辑场景被第一种替代（不激活）。
-          // timer 与 ended 的竞态统一由 gaplessBoundaryScheduledRef 与 handleEnded 互斥兜底。
-          gaplessBoundaryScheduledRef.current = true
-          const scheduledSource = active
-          const scheduledStandby = getStandbyAudio()
-          const standbySeamlessReady = Boolean(
-            // 预热已完成（前 10s 已缓存、回拨 0 停住）即视为就绪；否则按实时缓冲判定
-            seamlessWarmupDoneRef.current
-            || (
-              scheduledStandby?.src
-              && !scheduledStandby.error
-              && scheduledStandby.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA
-              && scheduledStandby.buffered.length > 0
-              && scheduledStandby.buffered.end(scheduledStandby.buffered.length - 1) >= 0.5
-            )
-          )
-
-          if (albumPlayback && standbySeamlessReady) {
-            // ── 首选：无缝拼接（头尾都不掐）──
-            seamlessJoinArmedRef.current = true
-            seamlessJoinPrerollRef.current = false
-            debugLog('⚡ [Gapless] 首选：standby 已缓存就绪，source 完整播完后直接拼接下一首开头')
-
-            // 高频监测：source 剩余 PREROLL 秒时静音预启动 standby，
-            // 让切换瞬间 play() 已在解码，消除 ended→play 的启动延迟。
-            const pollPreroll = () => {
-              seamlessPrerollPollRef.current = null
-              if (!seamlessJoinArmedRef.current) return
-              const liveSource = getActiveAudio()
-              if (liveSource !== scheduledSource || liveSource.paused) return  // 已被取消/暂停/切歌
-              if (seamlessJoinPrerollRef.current) return  // 已预启动，停止监测
-              const liveRemaining = (liveSource.duration || 0) - liveSource.currentTime
-              if (liveRemaining <= GAPLESS_SEAMLESS_PREROLL_SECONDS) {
-                seamlessJoinPrerollRef.current = true
-                const standbyAudio = getStandbyAudio()
-                try {
-                  setDeckGain(getStandbyGain(), standbyAudio, 0)
-                  if (standbyAudio) {
-                    standbyAudio.currentTime = 0
-                    void standbyAudio.play().catch(() => {
-                      // 预启动被拦截/失败：放弃首选，兜底 timer 回退备选
-                      debugLog('⚠️ [Gapless] 首选预启动失败，等待兜底回退备选')
-                      seamlessJoinArmedRef.current = false
-                      seamlessJoinPrerollRef.current = false
-                    })
-                    debugLog('⚡ [Gapless] 首选：standby 静音预启动（对齐解码管线）')
-                  }
-                } catch {
-                  seamlessJoinArmedRef.current = false
-                  seamlessJoinPrerollRef.current = false
-                }
-                return
-              }
-              seamlessPrerollPollRef.current = window.setTimeout(pollPreroll, GAPLESS_SEAMLESS_PREROLL_POLL_MS)
+        } else if (gaplessRef.current.enabled && Number.isFinite(remaining)) {
+          // Gapless 三方案分流已抽离到 src/services/gapless/seamlessJoinController.ts：
+          //   remaining ∈ (1, 20] 且专辑 → 预热缓存前 10s（保证首选拼接就绪）
+          //   remaining ∈ (0, 1]     → scheduleBoundary（首选直接拼接 / 备选 60ms 淡入淡出）
+          // 控制器内部自带 hasActiveTransition / boundaryScheduled 互斥检查。
+          const controller = seamlessJoinControllerRef.current
+          if (controller) {
+            if (remaining > 1 && remaining <= GAPLESS_SEAMLESS_WARMUP_SECONDS && albumPlayback) {
+              controller.warmup()
+            } else if (remaining > 0 && remaining <= 1) {
+              controller.scheduleBoundary({ active, remaining, albumPlayback })
             }
-            seamlessPrerollPollRef.current = window.setTimeout(pollPreroll, GAPLESS_SEAMLESS_PREROLL_POLL_MS)
-
-            // 兜底：正常情况由 source 的 ended 事件完成拼接；若异常未 ended（解码卡尾），
-            // 超时后取消首选回退备选，避免歌曲永远切不过去。
-            const fallbackDelayMs = Math.max(0, remaining * 1000) + GAPLESS_SEAMLESS_TIMEOUT_MS
-            transitionTimerRef.current = window.setTimeout(() => {
-              transitionTimerRef.current = null
-              gaplessBoundaryScheduledRef.current = false
-              if (!seamlessJoinArmedRef.current) return
-              debugLog('⚠️ [Gapless] 首选超时未见 ended，回退备选淡入淡出')
-              seamlessJoinArmedRef.current = false
-              seamlessJoinPrerollRef.current = false
-              if (
-                getActiveAudio() === scheduledSource
-                && gaplessRef.current.enabled
-                && transitionStateRef.current !== 'running-transition'
-                && getStandbyAudio()?.src
-                && !gaplessIntegrationRef.current?.hasActiveTransition()
-              ) {
-                void startTransition('gapless')
-              }
-            }, fallbackDelayMs)
-          } else {
-            // ── 第二种方案：60ms 淡入淡出 ──
-            // 非专辑场景默认走这里（无需提前缓存）；专辑场景 standby 未就绪时兜底。
-            // BUG-A2：不再提前 -12ms 丢弃原曲尾部，delayMs 取 remaining*1000 让原曲完整播完。
-            const delayMs = Math.max(0, remaining * 1000)
-            transitionTimerRef.current = window.setTimeout(() => {
-              transitionTimerRef.current = null
-              gaplessBoundaryScheduledRef.current = false
-              if (
-                getActiveAudio() === scheduledSource
-                && gaplessRef.current.enabled
-                && transitionStateRef.current !== 'running-transition'
-                && getStandbyAudio()?.src
-                && !gaplessIntegrationRef.current?.hasActiveTransition()
-              ) {
-                debugLog(albumPlayback
-                  ? '⚡ [Gapless] 第二种方案（专辑 standby 未就绪兜底）：60ms 淡入淡出'
-                  : '⚡ [Gapless] 第二种方案（非专辑）：60ms 淡入淡出')
-                void startTransition('gapless')
-              }
-            }, delayMs)
           }
         }
       }
@@ -1313,12 +1133,9 @@ export function useAudioPlayer(
 
       // A timer normally performs the boundary handoff. If `ended` wins the race, cancel the
       // timer and execute immediately so a delayed callback cannot start the same deck twice.
-      if (gaplessBoundaryScheduledRef.current && transitionTimerRef.current !== null) {
-        window.clearTimeout(transitionTimerRef.current)
-        transitionTimerRef.current = null
-        gaplessBoundaryScheduledRef.current = false
-      }
-      
+      // （边界 timer 与竞态互斥由 seamlessJoinController 管理）
+      seamlessJoinControllerRef.current?.cancelBoundaryTimer()
+
       const standby = getStandbyAudio()
       debugLog('🔍 [Event] 检查过渡状态:', transitionStateRef.current)
       debugLog('   待机音频:', standby ? '存在' : '不存在')
@@ -1327,69 +1144,10 @@ export function useAudioPlayer(
 
       // ── 首选：无缝拼接（头尾都不掐）──
       // source 已完整播到 ended。standby 可能处于三种就绪形态：PREROLL 静音预启动中、
-      // 预热完成后暂停回拨 0、或已缓冲暂停。这里统一"确保 standby 从头播放"：
+      // 预热完成后暂停回拨 0、或已缓冲暂停。控制器统一"确保 standby 从头播放"：
       // 未在播则启动（0 位置已缓冲 → 快），回拨 0 后瞬时切换增益——
       // 不做任何淡入淡出、不掐 source 尾部、不跳过 standby 开头。
-      if (seamlessJoinArmedRef.current) {
-        seamlessJoinArmedRef.current = false
-        seamlessJoinPrerollRef.current = false
-        seamlessWarmupInFlightRef.current = false   // ended 已到，停止预热轮询（幂等）
-        seamlessWarmupDoneRef.current = true        // 视为完成，无需再预热
-        if (seamlessPrerollPollRef.current !== null) {
-          window.clearTimeout(seamlessPrerollPollRef.current)
-          seamlessPrerollPollRef.current = null
-        }
-        if (seamlessWarmupPollRef.current !== null) {
-          window.clearTimeout(seamlessWarmupPollRef.current)
-          seamlessWarmupPollRef.current = null
-        }
-        const standbyBufferedOk = Boolean(
-          standby?.buffered.length
-          && standby.buffered.end(standby.buffered.length - 1) >= 0.5
-        )
-        if (
-          standby?.src
-          && !standby.error
-          && standbyBufferedOk
-          && gaplessRef.current.enabled
-          && transitionStateRef.current !== 'running-transition'
-        ) {
-          // 防御：即使 AlbumGapless 意外激活（外部 preload deck 正在混音），首选拼接
-          // 仍然优先——先 reset 停掉外部 deck（含其混音/主增益恢复），再接管 managed
-          // standby deck 从头播放。专辑场景已由 gaplessIntegration 改为不激活
-          // albumGapless，此分支仅作兜底。
-          if (gaplessIntegrationRef.current?.hasActiveTransition()) {
-            debugLog('⚡ [Gapless] 首选拼接优先：先停用 AlbumGapless 外部 deck')
-            gaplessIntegrationRef.current.reset()
-          }
-          debugLog('⚡ [Gapless] 首选拼接：source 完整播完，standby 无缝接上（从头开始）')
-          void (async () => {
-            try {
-              setDeckGain(getStandbyGain(), standby, 0)
-              if (standby.paused) {
-                await standby.play().catch(() => { throw new Error('standby play failed') })
-              }
-              standby.currentTime = 0
-              await waitForSeek(standby)
-              if (standby.paused) return  // 拼接前被并发操作暂停，放弃
-              // 复用 commitTransition：先置 running-transition 通过状态校验，
-              // 由它完成增益切换/翻转/transitionCommit（React 18 自动批处理，
-              // 两次状态更新合并为一次渲染，无过渡动画闪烁）。
-              setTransitionState('running-transition', {
-                transitioning: true,
-                seamlessTransition: true,
-                transitionStrategy: 'gapless',
-              })
-              commitTransition('gapless', standby.currentTime, transitionExecutionRevisionRef.current)
-            } catch (error) {
-              console.warn('⚠️ [Gapless] 首选拼接失败，回退备选淡入淡出:', error)
-              void startTransition('gapless')
-            }
-          })()
-          return
-        }
-        // 预启动未成功/standby 不可用：落入下方备选/普通分支
-      }
+      if (seamlessJoinControllerRef.current?.onEnded(standby)) return
 
       if (transitionStateRef.current === 'running-transition' && standby && !standby.paused) {
         debugLog('✅ [Event] 过渡正在进行中，提交过渡')
@@ -1439,19 +1197,7 @@ export function useAudioPlayer(
       currentLoadRevisionRef.current += 1
       currentLoadWaitCancelRef.current?.()
       currentLoadWaitCancelRef.current = null
-      gaplessBoundaryScheduledRef.current = false
-      seamlessJoinArmedRef.current = false
-      seamlessJoinPrerollRef.current = false
-      if (seamlessPrerollPollRef.current !== null) {
-        window.clearTimeout(seamlessPrerollPollRef.current)
-        seamlessPrerollPollRef.current = null
-      }
-      seamlessWarmupInFlightRef.current = false
-      seamlessWarmupDoneRef.current = false
-      if (seamlessWarmupPollRef.current !== null) {
-        window.clearTimeout(seamlessWarmupPollRef.current)
-        seamlessWarmupPollRef.current = null
-      }
+      seamlessJoinControllerRef.current?.reset()
       if (fallbackAnimationRef.current !== null) cancelAnimationFrame(fallbackAnimationRef.current)
       if (transitionProgressAnimationRef.current !== null) cancelAnimationFrame(transitionProgressAnimationRef.current)
       transitionProgressAnimationRef.current = null
