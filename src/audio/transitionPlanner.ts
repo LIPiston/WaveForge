@@ -5,6 +5,8 @@ const safeBpm = (value: number) => Math.max(40, Math.min(240, value || 120))
 const DEFAULT_BEAT_COUNTS = [8, 16, 24, 32]
 const MAX_SMART_MIX_BPM_DIFFERENCE = 5
 const MIN_ANALYSIS_CONFIDENCE = 0.55
+// 渲染器/算法版本标识：并入 plan.id，避免不同版本渲染结果在缓存中互相碰撞。
+const RENDERER_VERSION = 'pitch-preserving-beatgrid-djfx-v4'
 
 interface CandidatePoint {
   time: number
@@ -356,7 +358,7 @@ export function planTransition(
   } : undefined
 
   return {
-    id: `${source.trackKey}->${target.trackKey}:${sourceStartTime.toFixed(3)}:${targetStartTime.toFixed(3)}:${beatCount}`,
+    id: `${source.trackKey}->${target.trackKey}:${finalStrategy}:${sourceStartTime.toFixed(3)}-${sourceEndTime.toFixed(3)}:${targetStartTime.toFixed(3)}-${targetEndTime.toFixed(3)}:${beatCount}:${RENDERER_VERSION}`,
     sourceTrackKey: source.trackKey,
     targetTrackKey: target.trackKey,
     sourceStartTime,
@@ -382,6 +384,6 @@ export function planTransition(
     strategy: finalStrategy,
     fallbackReason: reason,
     analysisVersion: source.analysisVersion === target.analysisVersion ? source.analysisVersion : 'mixed-analysis',
-    rendererVersion: 'pitch-preserving-beatgrid-djfx-v4',
+    rendererVersion: RENDERER_VERSION,
   }
 }
