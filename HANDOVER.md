@@ -47,12 +47,14 @@
 
 ## 5. 未决事项（可选做）
 
-- [ ] **license 机制未强制执行**：`desktop/device-license.cjs` 计算授权但无功能门控（纯展示）。若未来要付费功能，需在主进程强制校验而非仅 UI。
-- [ ] **cuefield 时间线执行器为死代码**：`gaplessIntegration.ts` 的 `startMonitoring()` 无调用点，cuefield 自动触发路径整体不可达（仅手动/降级路径在用）。可清理或接通。
-- [ ] **TransitionRenderer 缓存 key**：`transitionPlanner.ts` 的 `plan.id` 未含 strategy/endTime/rendererVersion，极端情况下不同策略同 id 碰撞（当前实际影响低）。若要动缓存逻辑需一并考虑。
-- [ ] **server/render_worker 单声道 vs desktop 立体声**：两 worker 输出声道行为不一致（server 折叠为 mono、desktop 保留立体声），属既有契约差异，未来可统一。
-- [ ] **CHUNK 体积警告**：`vite build` 报 `locationHierarchy` 8.7MB 等 chunk 过大（数据文件），可考虑 manualChunks/懒加载优化。
-- [ ] **测试覆盖**：无自动化测试套件（无 jest/vitest 配置），当前靠手动 + Playwright 冒烟 + 命令行脚本验证。若长期维护建议补核心逻辑单测。
+> 2026-08-14 已并行处理大部分（见 §6 历史决策）。剩余：
+
+- [ ] **license 机制未强制执行**：`desktop/device-license.cjs` 计算授权但无功能门控（纯展示）。曾尝试加入"激活后拦截未授权播放"的门控，因会**限制现有功能**而被撤销——正确方向是"激活解锁**新**功能"而非限制已有功能，等付费功能规划时再做。
+- [x] ~~**cuefield 时间线执行器为死代码**~~：✅ 已清理（2026-08-14）——删除 `cuefieldAutoMix.ts`/`cuefieldTimelineExecutor.ts`/`cuefieldApi.ts` 三文件 + `gaplessIntegration.ts` 约 400 行不可达代码（三方案分流/albumGapless 完整保留）。**遗留**：后端 `local-server.mjs:8027` 的 `/api/cuefield/transition` 路由无前端调用方，可后续清理。
+- [x] ~~**TransitionRenderer 缓存 key**~~：✅ 已修复——`plan.id` 加入实际裁决策略/起止时长/rendererVersion（`RENDERER_VERSION` 常量）。
+- [x] ~~**render_worker 声道不一致**~~：✅ 已统一为立体声（server 去掉 mono 折叠 + 修复 librosa 帧布局 bug；desktop 补 mono→stereo 上采样），19 项音频冒烟断言全过。
+- [x] ~~**CHUNK 体积警告**~~：✅ 已优化——`locationHierarchy` 8.8MB → 752KB（`city.json` 按国家拆分 + 动态 import），build 无告警。
+- [x] ~~**测试覆盖**~~：✅ 已补 vitest 套件（10 文件 / 111 用例全过）——`npm run test`。
 
 ## 6. 历史决策速览（详见 PROJECT_HISTORY.md）
 
@@ -62,6 +64,7 @@
 - 2026-08-13：代码安全修复（SSRF/路径穿越/IPC 启动通道/will-navigate）→ 运行时升级 3.13.15 → 全链路回归 → 文档整理（29→13 个 md）
 - 2026-08-13：合并朋友优化版（WaveForge(4)）—— 安全加固 + 音频/渲染修复 + **QQ 音乐 QMK API Key 领取功能** + 打包修复；本地仓库重置为远程基线（2 条提交）
 - 2026-08-14：无缝衔接三方案分流（专辑直接拼接/非专辑 60ms 淡入淡出）、调音室（3D 环绕无声修复 + liquid glass UI + 锚点动画）、设置页 Tab 蓝色滑动指示条、启动 splash 黑/白屏修复（软件合成适配）；确立 **Releases 只发安装版** 的发布策略
+- 2026-08-14：并行收尾未决事项 —— vitest 测试套件（111 用例）、cuefield 死代码清理、TransitionRenderer 缓存 key 修复、渲染 worker 声道统一立体声、CHUNK 体积优化（8.8MB→752KB）+ 壁纸前端改进（立即同步/动态壁纸提示/UNC 容错）；license 门控尝试后撤销（避免限制现有功能）
 
 ## 7. 常用操作速查
 
