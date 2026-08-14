@@ -2472,6 +2472,7 @@ export default function SettingsPanel({
                         <div className="min-w-0">
                           <p className={`text-xs ${textTertiary} mb-1`}>开发者</p>
                           <p className={`text-lg font-semibold leading-6 ${textPrimary}`}>Yoshino / Castorice</p>
+                          <p className={`text-lg font-semibold leading-6 ${textPrimary}`}>IceFire_Icer</p>
                           <p className={`text-sm leading-6 ${textSecondary} mt-1`}>WaveForge 澜音工坊的开发与维护</p>
                         </div>
                       </div>
