@@ -9,6 +9,7 @@ npm run dev:electron     # Full dev: Vite (3000) + API server (3001) + Electron 
 npm run dev              # Vite dev server only (port 3000)
 npm run dev:api          # Express backend only (local-server.mjs, port 3001)
 npm run lint             # Typecheck: tsc --noEmit (covers src/ only; no ESLint in repo)
+npm run test             # vitest 单测 (test/*.test.ts, 111 用例)
 npm run build            # vite build -> dist/ (multi-entry: every *.html in repo root)
 npm run build:electron   # build + electron-builder NSIS -> release/
 npm run build:full       # bundle-python + build:electron (完整发布流水线)
@@ -16,6 +17,8 @@ npm run build:electron:dir  # build + electron-builder --win dir (未打包目�
 npm run bundle-python    # Rebuild embedded Python runtime (3.13.15) -> resources/python-embed/
 npm run test:license     # 设备授权自测 (scripts/test-device-license.cjs)
 npm run sync:sponsors    # 从爱发电 API 刷新 src/data/afdianSponsors.generated.json
+npm run version:patch|minor|major|pre  # 版本号更迭 (scripts/bump-version.mjs, 自动 commit/tag/push)
+npm run version:dry      # 预览版本更迭 (不落地)
 start-full.bat           # One-click: Python beat service (3002) + app
 test-python-service.bat  # Health-check Python service on port 3002
 ```

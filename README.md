@@ -57,10 +57,12 @@ npm run dev:electron    # 完整开发（前端+后端+Electron）
 npm run dev             # 仅 Vite（3000）
 npm run dev:api         # 仅 API（3001）
 npm run lint            # TypeScript 类型检查（tsc --noEmit）
+npm run test            # vitest 单测（核心逻辑 111 用例）
 npm run build           # 生产构建 -> dist/
 npm run build:electron  # 打包 NSIS 安装版 -> release/（发布用）
 npm run build:full      # 完整发布：bundle-python + build:electron
 npm run build:electron:dir  # 构建 + 未打包目录（本地调试用，不发布）
+npm run version:patch|minor|major  # 版本号更迭（自动 commit/tag/push）
 npm run bundle-python   # 重建嵌入式 Python 运行时（3.13.15）
 npm run test:license    # 设备授权自测
 npm run sync:sponsors   # 刷新爱发电赞助名单（构建前会自动以可选模式运行）
@@ -96,6 +98,7 @@ gh release create v<version> release/WaveForge-<version>-Setup.exe --title "v<ve
 
 - [AGENTS.md](./AGENTS.md) — 给 AI 代理的项目指令（必读）
 - [HANDOVER.md](./HANDOVER.md) — 交接文档：状态、已知问题、未决事项
+- [SESSION_SUMMARY(2).md](./SESSION_SUMMARY(2).md) — v0.1.0 发布后工作记录（测试/版本机制/gapless 模块化/UpNext 修复）
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) — 故障排除
 - [CACHE_SYSTEM.md](./CACHE_SYSTEM.md) — 缓存系统设计
 - [LICENSE_SYSTEM.md](./LICENSE_SYSTEM.md) — 设备授权机制
