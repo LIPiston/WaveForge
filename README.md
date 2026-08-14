@@ -86,6 +86,12 @@ gh release create v<version> release/WaveForge-<version>-Setup.exe --title "v<ve
 | 3000 | Vite / 生产 preview | 前端（后端 CORS 白名单） |
 | 3001 | Express API | 后端（绑定 127.0.0.1，仅放行 localhost:3000 / file:// / null） |
 | 3002 | Python 节拍服务 | Flask（Smart AutoMix） |
+| 3003 | Python 响度测量服务 | Flask（响度归一化 `/lufs`，ITU-R BS.1770） |
+| 3004 | Python 频响补偿设计服务 | Flask（`/compensation`，ISO 226 简化等响度模型/预设/自定义 → 多段 Biquad 参数） |
+
+## 音效引擎 v1 / v2
+
+调音室头部可切换音效引擎版本（默认 **v1 原版**；v2 为增强版：场景方案 / 可叠加效果 / 混响类型 / 压缩 / 夜间模式 / 频响补偿 / 响度归一化）。v2 频响补偿为**等响度动态补偿**：多段 Biquad 链，auto 按系统音量线性提升低频（0-12dB）/高频（0-6dB，shelf 结构防中频污染）+ 场景预设（flat/bass/vocal/warm/bright/night）+ 自定义频段，设计结果由独立服务 3004 `/compensation` 下发。切换为热切换（暂停音乐换链后恢复），音频图未就绪时退化为冷切换（下次启动生效），右上角弹 2s 提示。详见 `AGENTS.md` 与 `CONTEXT.md`。
 
 ## 已知限制
 
@@ -93,11 +99,15 @@ gh release create v<version> release/WaveForge-<version>-Setup.exe --title "v<ve
 2. Smart AutoMix 依赖节拍服务，未启动时自动降级
 3. 歌词第三方源（lrclib / amll-ttml-db）部分歌曲无词，属正常
 4. 首次播放网易云高音质需后端启动时联网拉取 xeapi 公钥（已自动化）
+5. 响度归一化依赖响度服务（3003），未启动/失败时自动回退原声
+6. 频响补偿与均衡器、响度归一化互斥（避免同一频段叠加/双重整形），与低音/人声/伴奏增强可叠加
 
 ## 文档
 
 - [AGENTS.md](./AGENTS.md) — 给 AI 代理的项目指令（必读）
 - [HANDOVER.md](./HANDOVER.md) — 交接文档：状态、已知问题、未决事项
+- [CONTEXT.md](./CONTEXT.md) — 音效域词汇表（音效/场景方案/自定义状态/频响补偿等术语定义）
+- [docs/adr/](./docs/adr/) — 架构决策记录（叠加效果模型/频响补偿互斥/导出链共享构建）
 - [SESSION_SUMMARY(2).md](./SESSION_SUMMARY(2).md) — v0.1.0 发布后工作记录（测试/版本机制/gapless 模块化/UpNext 修复）
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) — 故障排除
 - [CACHE_SYSTEM.md](./CACHE_SYSTEM.md) — 缓存系统设计

@@ -30,9 +30,11 @@
 |---|---|
 | 3000 | Vite dev / preview（后端 CORS 白名单仅放行此端口 + file:// + null） |
 | 3001 | Express API（127.0.0.1） |
-| 3002 | Python 节拍服务（Flask） |
+| 3002 | Python 节拍服务（Flask，beat_analyzer.py） |
+| 3003 | Python 响度测量服务（Flask，loudness_server.py，`/lufs`） |
+| 3004 | Python 频响补偿设计服务（Flask，compensation_server.py，`/compensation`） |
 
-> ⚠️ 历史文档中 5001 均为过时信息；`test-python-service.bat` 已修正为 3002。
+> ⚠️ 历史文档中 5001 均为过时信息；`test-python-service.bat` 已修正为 3002。响度服务 3003、频响补偿服务 3004 均独立于节拍服务：dev 由 `dev-electron.mjs` 拉起、打包版由 `main.cjs` startLocalBackend() 拉起、手动可用 `start-full.bat`。
 
 ## 4. 已知问题 / 踩坑记录
 
@@ -56,6 +58,8 @@
 - [x] ~~**CHUNK 体积警告**~~：✅ 已优化——`locationHierarchy` 8.8MB → 752KB（`city.json` 按国家拆分 + 动态 import），build 无告警。
 - [x] ~~**测试覆盖**~~：✅ 已补 vitest 套件（10 文件 / 111 用例全过）——`npm run test`。
 - [x] ~~**UpNext「即将播放下一首」弹窗在 gapless 模式不显示**~~：✅ 已修复（2026-08-14）——`src/App.tsx` 的 `eventTime = useTransitionCountdown ? transitionStartTime : duration` 无 fallback，`transitionStartTime` 为 null（preparing-next/加载/取消路径）时弹窗永不触发；改为 `transitionStartTime ?? duration` 回退歌曲剩余时长倒计时。已实测弹窗恢复。
+- [x] ~~**license 机制未强制执行**~~：保留——方向为"激活解锁新功能"而非限制旧功能，等付费功能规划时再做。
+- [x] ~~**音效模块升级**~~：✅ 已完成（2026-08-14）——效果可叠加、场景方案（内置 7 + 我的场景 8 上限、快照式 + 覆盖/保存确认）、混响类型（大厅/房间/板式/弹簧/舞台 + 预延迟/衰减可调）、动态压缩、夜间模式、频响补偿（等响度动态补偿：低频 0-12dB/高频 0-6dB shelf 结构防中频污染，auto 按系统音量线性提升，与 EQ、响度归一化互斥）、响度归一化（独立服务 3003 + 目标 -14 LUFS）、导出 WAV 与实时链共享构建。详见 CONTEXT.md + docs/adr/。
 
 ## 6. 历史决策速览（详见 PROJECT_HISTORY.md）
 
@@ -68,7 +72,10 @@
 - 2026-08-14：并行收尾未决事项 —— vitest 测试套件（111 用例）、cuefield 死代码清理、TransitionRenderer 缓存 key 修复、渲染 worker 声道统一立体声、CHUNK 体积优化（8.8MB→752KB）+ 壁纸前端改进（立即同步/动态壁纸提示/UNC 容错）；license 门控尝试后撤销（避免限制现有功能）
 - 2026-08-14：**Gapless 业务代码模块化** —— 从 `useAudioPlayer.ts`（1948 行）抽离到 `src/services/gapless/` 独立模块（`gaplessConstants.ts` / `seamlessJoinController.ts` / `gaplessTransition.ts`，共 413 行），hook 只剩调用接口（净减 254 行）；行为等价（lint 0 / 111 用例 / build 通过）。后续改无缝逻辑优先改 `src/services/gapless/`
 - 2026-08-14：**UpNext 弹窗修复** —— gapless 启用时「即将播放下一首」通知不显示（`transitionStartTime` null 无 fallback），改为回退 `duration` 倒计时；**EPIPE 防护**（stdout/stderr 管道关闭时主进程不再崩溃）；**版本号更迭机制**（`npm run version:*`）
-- 2026-08-14：**遥控器 / SongDetail / 模式切换重构 / QQ 音乐修复（本会话）** —— 与并行浅色会话合并为提交 `b0a487a`，本会话改动（文件 → 业务代码）：
+- 2026-08-14：**音效模块全面升级** —— 可叠加模型 + 快照式场景方案（覆盖/保存确认）、混响类型切换、动态压缩、夜间模式、频响补偿（与 EQ 互斥）、响度归一化（独立 loudness_server.py 端口 3003）、导出 WAV 与实时链共享 `buildEffectChain`（修漂移）；调音室 UI 改版（场景区 + 独立开关）；单测 111→119
+- 2026-08-14：**音效引擎 v1/v2 双版本** —— 本地增强版定为 v2（`src/services/audio-effects-v2/` + `MixingStudioV2.tsx`），远程原版恢复为 v1（`src/services/audioEffects/` + `MixingStudio.tsx`，默认）；`audioEngineVersion.ts` 记录选择（localStorage）；调音室头部 v1/v2 切换 → 热切换（暂停→换链→恢复）或冷切换（未就绪时下次启动生效），右上角 2s 切换弹窗；两引擎 dispose 全断 masterGain + 摘 soundtouch/limiter 防并联打架；响度归一化/频响补偿按 v2 路由
+- 2026-08-14：**频响补偿升级** —— 新增独立服务 `compensation_server.py`（端口 3004，`/compensation` 端点）：目标曲线 = ISO 226 等响度自适应（按系统音量）+ 场景预设（flat/bass/vocal/warm/bright/night）+ 自定义频段，离散为多段 Biquad 链（lowshelf/peaking/highshelf）；前端 `compensationService.ts` 调 3004 并按 mode+preset+volume 档位缓存，服务不可用回退内置近似；三启动入口（dev-electron.mjs / main.cjs / start-full.bat）同 3003 模式拉起；**算法重写（081401/081402 方法论）**——修复旧实现 ISO 226 数据表错误（全频段 ±12dB 钳制）与多 peaking 级联过冲（1kHz 被拉到 +5dB），改为简化等响度公式（音量→SPL 线性映射）+ shelf 结构（LowShelf 120Hz / HighShelf 12000Hz，防中频污染），数值验证 1kHz 级联响应 0.00dB；与响度归一化（3003）互斥/解耦
+- 2026-08-14：**遥控器 / SongDetail / 模式切换重构 / QQ 音乐修复（远程会话）** —— 合并为提交 `3c2fc6a`：
   - **遥控器**（新增 `desktop/remote-server.cjs`、`desktop/remote-ui.html`、`src/components/RemoteControlModal.tsx`、`RemoteControlSettingsModal.tsx`、`RemoteCursor.tsx`）—— 手机扫码 → 局域网 WebSocket 控制 + 虚拟鼠标 overlay（合成点击/右键/hover、6s 自动隐藏）。
     - 改 `desktop/main.cjs`：遥控 IPC（start/stop/get-status/get-settings/update-settings）+ 控制桥 + 光标事件 + 快照补 `volume`/`muted`；
     - 改 `desktop/preload.cjs`：新增 `window.electron.remote`；`src/electron.d.ts`：补 `remote` 类型；
@@ -80,6 +87,7 @@
   - **desktop 快照扩展** —— `src/desktop-lyrics/DesktopLyricsApp.tsx` / `src/desktop-player/DesktopPlayerApp.tsx` 的 DEFAULT_STATE 补 `volume`/`muted`/`page`。
   - **QQ 音乐**（`local-server.mjs`）—— 收藏歌单旧接口 `fcg_qm_order_diss.fcg` 由 GET 改为 POST + 表单体（实测 `qqmusic_key` 返回 `code 0` 成功）；AI 歌单详情逐首 `qqSongDetail` 补封面/时长；歌曲详情时长毫秒÷1000 + 音质徽章/音质行。
   - **PlaylistDetailPanel** —— 新增「收藏/已收藏」按钮（`subscribePlaylist`）。
+- 2026-08-14：**完整浅色模式（远程会话）** —— 播放页/简约首页/探索模式全表面浅色落地（桌面模式不生效）；设置-个性化新增深浅色开关（`localStorage.playerTheme` + `playerThemeChanged` 事件 + `<html data-wf-theme>`）；修复 2 个交互 bug（「即将播放」提示不再关闭用户面板、首页自定义 BlurAdjustModal 因 SettingsPanel 卸载被销毁 → 改为保持挂载）；60+ 探索 token 集中 CSS 映射。
 
 ## 7. 常用操作速查
 
@@ -90,7 +98,7 @@ test-python-service.bat       # 检查节拍服务 3002
 
 # 验证
 npm run lint                  # 类型检查
-npm run test                  # vitest 单测（111 用例）
+npm run test                  # vitest 单测（119 用例）
 npm run build                 # 生产构建
 npm run test:license          # 设备授权自测
 ./resources/python-embed/python.exe -m pip install --no-index --find-links=python-beat-service/packages --dry-run -r python-beat-service/requirements.txt  # 验证离线安装可解析
