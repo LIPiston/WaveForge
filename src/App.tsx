@@ -2090,6 +2090,31 @@ function App() {
     setSelectedCommentSong(null)
   }
 
+  // 完全关闭歌手/专辑弹窗并清空导航栈。
+  // 与 close*Detail（返回上一级）不同：选中歌曲、查看评论等场景要的是"彻底关闭"，
+  // 若沿用 close*Detail 会在栈非空时把上一级弹窗重新打开，留下脏栈条目。
+  const dismissArtistDetail = () => {
+    navigationStack.current = []
+    setShowArtistDetail(false)
+    setSelectedArtistId(null)
+    setSelectedArtistAlbumId(undefined)
+  }
+
+  const dismissAlbumDetail = () => {
+    navigationStack.current = []
+    setShowAlbumDetail(false)
+    setSelectedAlbumId(null)
+  }
+
+  // 压栈统一入口：栈顶去重 + 深度上限，避免相似歌手自引用造成无限入栈
+  const pushNavigation = (entry: { type: 'artist' | 'album'; id: string; platform: 'netease' | 'qq'; tab?: string }) => {
+    const stack = navigationStack.current
+    const top = stack[stack.length - 1]
+    if (top && top.type === entry.type && top.id === entry.id && top.platform === entry.platform) return
+    if (stack.length >= 20) stack.shift()
+    stack.push(entry)
+  }
+
   // 处理歌曲选择
   const handleSongSelect = async (song: Song, playlistFromSource?: Song[], origin?: PlaybackOrigin) => {
     // Keep the source view painted while the first-use playback chunks are prepared. Without
@@ -2169,8 +2194,8 @@ function App() {
     closeCommentModal()
     navigationStack.current = savedStack
     // 压入导航栈
-    if (prevAlbum) navigationStack.current.push(prevAlbum)
-    if (prevArtist) navigationStack.current.push(prevArtist)
+    if (prevAlbum) pushNavigation(prevAlbum)
+    if (prevArtist) pushNavigation(prevArtist)
     setSelectedArtistId(artistId)
     setSelectedArtistPlatform(platform)
     setSelectedArtistAlbumId(undefined)
@@ -2191,8 +2216,8 @@ function App() {
     closeCommentModal()
     navigationStack.current = savedStack
     // 压入导航栈
-    if (prevArtist) navigationStack.current.push(prevArtist)
-    if (prevAlbum) navigationStack.current.push(prevAlbum)
+    if (prevArtist) pushNavigation(prevArtist)
+    if (prevAlbum) pushNavigation(prevAlbum)
     setSelectedAlbumId(albumId)
     setSelectedAlbumPlatform(platform)
     setShowAlbumDetail(true)
@@ -2210,6 +2235,8 @@ function App() {
     setShowProfile(false)
     setShowArtistDetail(false)
     setShowAlbumDetail(false)
+    // 回到来源页：弹窗全部关闭，导航栈一并清空，避免残留脏条目
+    navigationStack.current = []
 
     if ((origin.surface === 'artist' || origin.surface === 'artist-album') && origin.artistId && origin.platform) {
       setSelectedArtistId(String(origin.artistId))
@@ -2353,8 +2380,8 @@ function App() {
 
   // 查看评论页面
   const handleViewComments = (song: Song) => {
-    closeArtistDetail()
-    closeAlbumDetail()
+    dismissArtistDetail()
+    dismissAlbumDetail()
     setSelectedCommentSong(song)
     setShowCommentModal(true)
   }
@@ -5048,7 +5075,7 @@ function App() {
             platform={selectedArtistPlatform}
             onClose={closeArtistDetail}
             onSongSelect={(song, songs) => {
-              closeArtistDetail()
+              dismissArtistDetail()
               void handleSongSelect(song, songs)
             }}
             initialAlbumId={selectedArtistAlbumId}
@@ -5082,7 +5109,7 @@ function App() {
             platform={selectedAlbumPlatform}
             onClose={closeAlbumDetail}
             onSongSelect={(song, songs) => {
-              closeAlbumDetail()
+              dismissAlbumDetail()
               void handleSongSelect(song, songs)
             }}
             accentColor={dominantColor || '#3B82F6'}
