@@ -1193,14 +1193,16 @@ export default function LyricsDisplay({
                 style={{
                   ['--word-progress' as string]: `${fillWidth}%`,
                   ['--word-accent' as string]: sustainGlowColor.css,
-                  color: isSpace ? 'transparent' : (fullyFilled ? activeLyricColor : effectConfig.inactiveColor),
+                  color: isSpace || fullyFilled ? 'transparent' : effectConfig.inactiveColor,
                   opacity: isSpace ? 0 : 1,
                   textShadow: isSustainGlowActive
                     ? sustainTextShadow
                     : isActiveCharacter && effectiveLyricGlow
                     ? effectConfig.activeTextShadow
                     : fullyFilled
-                    ? effectConfig.completedTextShadow
+                    // 唱完后白色填充层常驻显示，基础层不再需要阴影，
+                    // 否则阴影从填充层边缘露出会让字显得“厚”。
+                    ? 'none'
                     : effectConfig.baseTextShadow,
                   marginRight: isSpace ? '0.24em' : 0,
                   minWidth: 0,
@@ -1233,6 +1235,10 @@ export default function LyricsDisplay({
                        // 唱完后填充层保留为完整白色（不再卸载切换），
                        // 避免“填充层消失→基础层变色”瞬间露出灰色基底（敲下去+灰闪）。
                        ...(fullyFilled ? { WebkitMaskImage: 'none', maskImage: 'none' } : {}),
+                       // 垂直居中对齐基础层文字（absolute top-0 会让 overlay 从顶部开始，
+                       // 与行内居中的基础层文字错位 → 叠印像两个字、切换时“砸一下”）。
+                       top: '50%',
+                       transform: 'translateY(-50%)',
                        color: activeLyricColor,
                        textShadow: 'none',
                        transition: 'none',
@@ -1299,14 +1305,16 @@ export default function LyricsDisplay({
                       style={{
                         ['--word-progress' as string]: `${fillWidth}%`,
                         ['--word-accent' as string]: sustainGlowColor.css,
-                        color: fullyFilled ? activeLyricColor : effectConfig.inactiveColor,
+                        color: fullyFilled ? 'transparent' : effectConfig.inactiveColor,
                         opacity: 1,
                         textShadow: isSustainGlowActive
                           ? sustainTextShadow
                           : isActiveCharacter && effectiveLyricGlow
                           ? effectConfig.activeTextShadow
                           : fullyFilled
-                          ? effectConfig.completedTextShadow
+                          // 唱完后白色填充层常驻显示，基础层不再需要阴影，
+                          // 否则阴影从填充层边缘露出会让字显得“厚”。
+                          ? 'none'
                           : effectConfig.baseTextShadow,
                         paddingLeft: effectConfig.wordPaddingX,
                         paddingRight: effectConfig.wordPaddingX,
@@ -1337,6 +1345,10 @@ export default function LyricsDisplay({
                             // 唱完后填充层保留为完整白色（不再卸载切换），
                             // 避免“填充层消失→基础层变色”瞬间露出灰色基底（敲下去+灰闪）。
                             ...(fullyFilled ? { WebkitMaskImage: 'none', maskImage: 'none' } : {}),
+                            // 垂直居中对齐基础层文字（absolute top-0 会让 overlay 从顶部开始，
+                            // 与行内居中的基础层文字错位 → 叠印像两个字、切换时“砸一下”）。
+                            top: '50%',
+                            transform: 'translateY(-50%)',
                             color: activeLyricColor,
                             textShadow: 'none',
                             transition: 'none',
