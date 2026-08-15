@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { useState, useEffect } from 'react'
+import { memo, useState, useEffect } from 'react'
 import { SlidersHorizontal, Plus, Minus, X } from 'lucide-react'
 
 interface QuickSettingsProps {
@@ -12,7 +12,9 @@ type CoverPulseMode = 'dynamic' | 'soft' | 'restless'
 type WordByWordEffectMode = 'clear' | 'soft'
 type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious'
 
-export default function QuickSettings({
+// 大体积设置面板（约 900 行 JSX）：props 均为原语（forceClose/playerTheme/isPureMusic），
+// memo 让 1Hz 播放重渲染（经 ImmersiveControls 传递）不再连带重渲染整个面板
+export default memo(function QuickSettings({
   forceClose,
   playerTheme = 'dark',
   isPureMusic = false,
@@ -892,4 +894,4 @@ export default function QuickSettings({
       </AnimatePresence>
     </div>
   )
-}
+})

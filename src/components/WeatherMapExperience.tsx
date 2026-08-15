@@ -258,6 +258,9 @@ class WeatherWindParticleLayer extends L.Layer {
     pane?.appendChild(this.canvas)
     map.on('movestart zoomstart', this.handleMoveStart)
     map.on('moveend zoomend resize', this.handleMoveEnd)
+    // 窗口隐藏时暂停粒子循环（rAF 后台不执行，但保留帧引用与矢量场会空耗；
+    // 隐藏时主动停帧，回到可见时恢复）
+    document.addEventListener('visibilitychange', this.handleVisibilityChange)
     this.resetCanvas()
     this.restart()
     return this
@@ -266,6 +269,7 @@ class WeatherWindParticleLayer extends L.Layer {
   onRemove(map: LeafletMap): this {
     map.off('movestart zoomstart', this.handleMoveStart)
     map.off('moveend zoomend resize', this.handleMoveEnd)
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange)
     window.cancelAnimationFrame(this.animationFrame)
     window.clearTimeout(this.vectorTimer)
     this.canvas?.remove()
@@ -281,6 +285,19 @@ class WeatherWindParticleLayer extends L.Layer {
     this.hourOffset = value
     if (Math.abs(value - this.lastVectorHour) >= 0.45) this.scheduleVectorField()
     return this
+  }
+
+  private handleVisibilityChange = () => {
+    if (document.visibilityState === 'hidden') {
+      // 停掉待执行的帧，动画循环不再自我续帧
+      if (this.animationFrame !== 0) {
+        window.cancelAnimationFrame(this.animationFrame)
+        this.animationFrame = 0
+      }
+      return
+    }
+    // 回到可见：校验画布/矢量场/移动状态后恢复循环
+    this.restart()
   }
 
   private handleMoveStart = () => {
@@ -360,9 +377,11 @@ class WeatherWindParticleLayer extends L.Layer {
     this.restart()
   }
 
-  // 在画布/网格就绪且未移动时重启粒子循环（空闲时 animate 会自行停止）
+  // 在画布/网格就绪且未移动时重启粒子循环（空闲时 animate 会自行停止；
+  // 窗口隐藏时不启动，避免后台空转）
   private restart = () => {
     if (this.animationFrame !== 0) return
+    if (document.visibilityState === 'hidden') return
     if (this.moving || !this.canvas || !this.context || this.vectorGrid.length === 0) return
     this.animationFrame = window.requestAnimationFrame(this.animate)
   }
@@ -391,8 +410,8 @@ class WeatherWindParticleLayer extends L.Layer {
   }
 
   private animate = (timestamp: number) => {
-    // 空闲/移动/无数据时停止循环，避免空转；由 rebuildVectorField 触发 restart 重新开始
-    if (this.moving || !this.context || !this.canvas || this.vectorGrid.length === 0) {
+    // 空闲/移动/无数据/窗口隐藏时停止循环，避免空转；由 rebuildVectorField 触发 restart 重新开始
+    if (this.moving || document.visibilityState === 'hidden' || !this.context || !this.canvas || this.vectorGrid.length === 0) {
       this.animationFrame = 0
       return
     }

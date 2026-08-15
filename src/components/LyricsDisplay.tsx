@@ -1,6 +1,6 @@
 ﻿import { motion, AnimatePresence } from 'framer-motion'
 import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudioPulse'
-import { useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { reconcileBoundaryParentheses } from '../utils/lyricBoundaryParentheses'
 import { normalizeSequentialWordTiming, prepareLyricWords } from '../utils/lyricWordTiming'
 
@@ -418,7 +418,7 @@ interface LyricsDisplayProps {
   playerTheme?: 'light' | 'dark'
 }
 
-export default function LyricsDisplay({ 
+export default memo(function LyricsDisplay({ 
   currentTime, 
   isPlaying, 
   accentColor, 
@@ -522,6 +522,18 @@ export default function LyricsDisplay({
     () => displayLyricsData.map(lyric => prepareLyricLine(lyric, sustainGlowEnabled)),
     [displayLyricsData, sustainGlowEnabled]
   )
+  // 是否有需要逐字时钟的歌词（逐字词或注音逐字词）
+  const hasWordTimedLines = useMemo(
+    () => preparedLyricsData.some(line => line.wordsWithIndex.length > 0 || line.romanWordsToRender.length > 0),
+    [preparedLyricsData]
+  )
+  // 是否有生成的间奏行（其圆点进度动画依赖平滑时钟）
+  const hasGeneratedInterludes = useMemo(
+    () => displayLyricsData.some(line => line.isGeneratedInterlude),
+    [displayLyricsData]
+  )
+  // 无逐字歌词且无间奏动画时，30fps 平滑时钟无消费者，播放中应停止空转
+  const needsSmoothPlaybackClock = hasWordTimedLines || hasGeneratedInterludes
 
   useEffect(() => {
     const updatePulseScale = () => {
@@ -541,7 +553,8 @@ export default function LyricsDisplay({
   }, [currentTime])
 
   useEffect(() => {
-    if (!isPlaying) {
+    // 暂停、无逐字歌词且无间奏动画时无需 30fps 平滑时钟
+    if (!isPlaying || !needsSmoothPlaybackClock) {
       if (wordRafRef.current !== null) {
         cancelAnimationFrame(wordRafRef.current)
         wordRafRef.current = null
@@ -567,7 +580,7 @@ export default function LyricsDisplay({
         wordRafRef.current = null
       }
     }
-  }, [isPlaying])
+  }, [isPlaying, needsSmoothPlaybackClock])
 
   const clearReturnTimer = () => {
     if (returnTimerRef.current) {
@@ -2027,5 +2040,5 @@ export default function LyricsDisplay({
       </div>
     </div>
   )
-}
+})
 

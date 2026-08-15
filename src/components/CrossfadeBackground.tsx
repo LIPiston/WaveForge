@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { memo, useEffect, useRef, useState, type CSSProperties } from 'react'
 
 interface CrossfadeBackgroundProps {
   coverUrl: string
@@ -14,7 +14,7 @@ function isUsableCover(url?: string): url is string {
   return Boolean(url?.trim() && !url.includes('picsum.photos'))
 }
 
-export default function CrossfadeBackground({
+function CrossfadeBackground({
   coverUrl,
   transitionFromUrl,
   transitionToUrl,
@@ -106,3 +106,8 @@ export default function CrossfadeBackground({
     </div>
   )
 }
+
+// memo 包装：transitionProgress 变化时仍会重渲染（背景过渡依赖），
+// 但父级其他重渲染且 props 未变时可跳过。注意：App.tsx 中 imageStyle 为内联对象，
+// 每次父渲染都会新建引用，会削弱 memo 命中率（transitionProgress 变化时本组件本就该渲染）。
+export default memo(CrossfadeBackground)

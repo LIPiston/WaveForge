@@ -82,9 +82,15 @@ export class GaplessIntegration {
     })
 
     if (!trackProgress) return
+    // 进度以 30fps 节流发布（保留 rAF 驱动保证暂停/恢复响应），结束帧强制发布 1
+    let lastEmitAt = 0
     const tick = () => {
       const progress = Math.min(1, (performance.now() - startedAt) / (safeDuration * 1000))
-      this.emitTransitionProgress(progress)
+      const now = performance.now()
+      if (progress >= 1 || now - lastEmitAt >= 30) {
+        this.emitTransitionProgress(progress)
+        lastEmitAt = now
+      }
       if (progress < 1) this.transitionProgressFrame = requestAnimationFrame(tick)
       else this.transitionProgressFrame = 0
     }

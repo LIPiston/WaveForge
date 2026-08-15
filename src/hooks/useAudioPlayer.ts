@@ -112,6 +112,9 @@ export function useAudioPlayer(
   const fallbackAnimationRef = useRef<number | null>(null)
   const transitionProgressAnimationRef = useRef<number | null>(null)  // 过渡进度动画帧
   const transitionStartTimeRef = useRef<number | null>(null)  // 过渡开始时间
+  // 过渡进度 emit 节流：rAF 仍每帧驱动，但仅当距上次 emit ≥30ms 才 emit（约 30fps），
+  // 降低 App 整树重渲染频率；progress 到达 1 时强制 emit 最终值确保状态复位
+  const transitionProgressEmitTimeRef = useRef(0)
   const retiredDeckCleanupTimerRef = useRef<number | null>(null)
   const preparationAbortRef = useRef<AbortController | null>(null)
   const autoMixPreparationKeyRef = useRef<string | null>(null)
@@ -492,11 +495,18 @@ export function useAudioPlayer(
                 transitionDuration: transitionAudioDuration,
                 visualSwitchCommit: visualCommit,
               })
+              // 一次性关键事件不节流，但刷新节流基准避免紧随其后的普通帧重复发
+              transitionProgressEmitTimeRef.current = performance.now()
             } else {
-              emit({
-                transitionProgress: progress,
-                transitionDuration: transitionAudioDuration,
-              })
+              const now = performance.now()
+              // 30fps 节流：距上次 emit ≥30ms 才 emit；progress 到达 1 强制发最终值
+              if (progress >= 1 || now - transitionProgressEmitTimeRef.current >= 30) {
+                emit({
+                  transitionProgress: progress,
+                  transitionDuration: transitionAudioDuration,
+                })
+                transitionProgressEmitTimeRef.current = now
+              }
             }
             
             if (progress < 1) {
@@ -634,11 +644,18 @@ export function useAudioPlayer(
               transitionDuration: visualDuration,
               visualSwitchCommit: visualCommit,
             })
+            // 一次性关键事件不节流，但刷新节流基准
+            transitionProgressEmitTimeRef.current = performance.now()
           } else {
-            emit({
-              transitionProgress: progress,
-              transitionDuration: visualDuration,
-            })
+            const now = performance.now()
+            // 30fps 节流：距上次 emit ≥30ms 才 emit；progress 到达 1 强制发最终值
+            if (progress >= 1 || now - transitionProgressEmitTimeRef.current >= 30) {
+              emit({
+                transitionProgress: progress,
+                transitionDuration: visualDuration,
+              })
+              transitionProgressEmitTimeRef.current = now
+            }
           }
           
           if (progress < 1) {
@@ -688,11 +705,18 @@ export function useAudioPlayer(
             transitionDuration: audioDuration,
             visualSwitchCommit: visualCommit,
           })
+          // 一次性关键事件不节流，但刷新节流基准
+          transitionProgressEmitTimeRef.current = performance.now()
         } else {
-          emit({
-            transitionProgress: progress,
-            transitionDuration: audioDuration,
-          })
+          const now = performance.now()
+          // 30fps 节流：距上次 emit ≥30ms 才 emit；progress 到达 1 强制发最终值
+          if (progress >= 1 || now - transitionProgressEmitTimeRef.current >= 30) {
+            emit({
+              transitionProgress: progress,
+              transitionDuration: audioDuration,
+            })
+            transitionProgressEmitTimeRef.current = now
+          }
         }
         
         if (progress < 1) {

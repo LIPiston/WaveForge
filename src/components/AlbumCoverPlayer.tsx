@@ -1,6 +1,6 @@
 ﻿import { motion, AnimatePresence } from 'framer-motion'
 import CachedImage from './CachedImage'
-import { useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useRef } from 'react'
 import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudioPulse'
 
 interface Track {
@@ -20,7 +20,10 @@ interface AlbumCoverPlayerProps {
   pulseStore?: AudioPulseStore
 }
 
-export default function AlbumCoverPlayer({ 
+// memo 包装：transitionProgress 变化时仍会重渲染（过渡动画依赖），
+// 但父级因 currentTime/toast 等其他状态重渲染且本组件 props 未变时可跳过。
+// 注意 AnimatePresence 被 import 但未在 JSX 中使用，保留以维持原引用。
+function AlbumCoverPlayer({ 
   coverUrl, 
   isPlaying, 
   dominantColor, 
@@ -166,5 +169,4 @@ export default function AlbumCoverPlayer({
   )
 }
 
-
-
+export default memo(AlbumCoverPlayer)

@@ -4046,6 +4046,21 @@ function App() {
     }
   }, [])
 
+  // 设置面板常驻挂载，关闭回调需稳定引用以配合 memo 跳过播放中的重渲染
+  const closeSettings = useCallback(() => setShowSettings(false), [])
+
+  // 歌手/专辑弹窗选中歌曲需先清空导航栈（dismiss*），与 handleSongSelect 内部
+  // 仅 setShow*Detail(false) 不同，不能直接复用 viewCallbacks.onSongSelect。
+  // 经 handleSongSelectRef 取最新实现，避免 [] 依赖闭包捕获过期函数。
+  const handleArtistDetailSongSelect = useCallback((song: Song, playlist?: Song[]) => {
+    dismissArtistDetail()
+    void handleSongSelectRef.current(song, playlist)
+  }, [])
+  const handleAlbumDetailSongSelect = useCallback((song: Song, playlist?: Song[]) => {
+    dismissAlbumDetail()
+    void handleSongSelectRef.current(song, playlist)
+  }, [])
+
   return (
     <>
       {/* 自定义窗口标题栏 */}
@@ -4314,17 +4329,17 @@ function App() {
         <Suspense fallback={null}>
           <LazySettingsPanel {...({
           show: showSettings,
-          onClose: () => setShowSettings(false),
+          onClose: closeSettings,
           neteaseLoggedIn,
           neteaseUsername,
-          onNeteaseLogin: handleNeteaseLogin,
-          onNeteaseLogout: handleNeteaseLogout,
+          onNeteaseLogin: viewCallbacks.onNeteaseLogin,
+          onNeteaseLogout: viewCallbacks.onNeteaseLogout,
           qqLoggedIn,
           qqUsername,
           neteaseVip,
           qqVip,
-          onQQLogin: handleQQLogin,
-          onQQLogout: handleQQLogout,
+          onQQLogin: viewCallbacks.onQQLogin,
+          onQQLogout: viewCallbacks.onQQLogout,
           playerTheme,
             } as any)} />
         </Suspense>
@@ -5141,10 +5156,7 @@ function App() {
         <AnimatePresence>
           {showSearch && (
             <LazySearchPanel
-            onSongSelect={(song, searchResults, origin) => {
-              setShowSearch(false)
-              void handleSongSelect(song, searchResults, origin)
-            }}
+            onSongSelect={viewCallbacks.onSongSelect}
             restorePlaybackOrigin={restorePlaybackOrigin}
             onClose={() => {
               setShowSearch(false)
@@ -5157,14 +5169,14 @@ function App() {
             neteaseLoggedIn={neteaseLoggedIn}
             qqLoggedIn={qqLoggedIn}
             currentSong={currentSong}
-            onPlayNext={handlePlayNext}
-            onAddToFavorites={handleAddToFavorites}
-            onRemoveFromFavorites={handleRemoveFromFavorites}
-            onAddToPlaylist={handleAddToPlaylist}
-            onViewComments={handleViewComments}
-            onOpenArtist={handleOpenArtist}
-            onOpenAlbum={handleOpenAlbum}
-            onCopyInfo={handleCopyInfo}
+            onPlayNext={viewCallbacks.onPlayNext}
+            onAddToFavorites={viewCallbacks.onAddToFavorites}
+            onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+            onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+            onViewComments={viewCallbacks.onViewComments}
+            onOpenArtist={viewCallbacks.onOpenArtist}
+            onOpenAlbum={viewCallbacks.onOpenAlbum}
+            onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
         </AnimatePresence>
@@ -5196,10 +5208,7 @@ function App() {
             artistId={selectedArtistId}
             platform={selectedArtistPlatform}
             onClose={closeArtistDetail}
-            onSongSelect={(song, songs) => {
-              dismissArtistDetail()
-              void handleSongSelect(song, songs)
-            }}
+            onSongSelect={handleArtistDetailSongSelect}
             initialAlbumId={selectedArtistAlbumId}
             onAlbumOpen={setSelectedArtistAlbumId}
             initialTab={selectedArtistTab || 'hotSongs'}
@@ -5209,14 +5218,14 @@ function App() {
             currentSong={currentSong}
             neteaseVip={neteaseVip}
             qqVip={qqVip}
-            onPlayNext={handlePlayNext}
-            onAddToFavorites={handleAddToFavorites}
-            onRemoveFromFavorites={handleRemoveFromFavorites}
-            onAddToPlaylist={handleAddToPlaylist}
-            onViewComments={handleViewComments}
-            onOpenArtist={handleOpenArtist}
-            onOpenAlbum={handleOpenAlbum}
-            onCopyInfo={handleCopyInfo}
+            onPlayNext={viewCallbacks.onPlayNext}
+            onAddToFavorites={viewCallbacks.onAddToFavorites}
+            onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+            onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+            onViewComments={viewCallbacks.onViewComments}
+            onOpenArtist={viewCallbacks.onOpenArtist}
+            onOpenAlbum={viewCallbacks.onOpenAlbum}
+            onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
         </AnimatePresence>
@@ -5230,23 +5239,20 @@ function App() {
             albumId={selectedAlbumId}
             platform={selectedAlbumPlatform}
             onClose={closeAlbumDetail}
-            onSongSelect={(song, songs) => {
-              dismissAlbumDetail()
-              void handleSongSelect(song, songs)
-            }}
+            onSongSelect={handleAlbumDetailSongSelect}
             accentColor={dominantColor || '#3B82F6'}
             playerTheme={playerTheme}
             currentSong={currentSong}
             neteaseVip={neteaseVip}
             qqVip={qqVip}
-            onPlayNext={handlePlayNext}
-            onAddToFavorites={handleAddToFavorites}
-            onRemoveFromFavorites={handleRemoveFromFavorites}
-            onAddToPlaylist={handleAddToPlaylist}
-            onViewComments={handleViewComments}
-            onOpenArtist={handleOpenArtist}
-            onOpenAlbum={handleOpenAlbum}
-            onCopyInfo={handleCopyInfo}
+            onPlayNext={viewCallbacks.onPlayNext}
+            onAddToFavorites={viewCallbacks.onAddToFavorites}
+            onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+            onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+            onViewComments={viewCallbacks.onViewComments}
+            onOpenArtist={viewCallbacks.onOpenArtist}
+            onOpenAlbum={viewCallbacks.onOpenAlbum}
+            onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
         </AnimatePresence>
@@ -5275,10 +5281,7 @@ function App() {
             userId={profileInitialPlatform === 'netease' ? neteaseUserId : qqUserId}
             cookie={profileInitialPlatform === 'netease' ? _neteaseCookie : _qqCookie}
             onClose={() => setShowProfile(false)}
-            onSongSelect={(song, songs) => {
-              setShowProfile(false)
-              void handleSongSelect(song, songs)
-            }}
+            onSongSelect={viewCallbacks.onSongSelect}
             handleSwitchPlatform={() => setProfileInitialPlatform(prev => prev === 'netease' ? 'qq' : 'netease')}
             onLogout={(platform) => {
               if (platform === 'netease') handleNeteaseLogout()
@@ -5286,14 +5289,14 @@ function App() {
             }}
             currentSong={currentSong}
             playerTheme={playerTheme}
-            onOpenArtist={handleOpenArtist}
-            onOpenAlbum={handleOpenAlbum}
-            onPlayNext={handlePlayNext}
-            onAddToFavorites={handleAddToFavorites}
-            onRemoveFromFavorites={handleRemoveFromFavorites}
-            onAddToPlaylist={handleAddToPlaylist}
-            onViewComments={handleViewComments}
-            onCopyInfo={handleCopyInfo}
+            onOpenArtist={viewCallbacks.onOpenArtist}
+            onOpenAlbum={viewCallbacks.onOpenAlbum}
+            onPlayNext={viewCallbacks.onPlayNext}
+            onAddToFavorites={viewCallbacks.onAddToFavorites}
+            onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+            onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+            onViewComments={viewCallbacks.onViewComments}
+            onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
         </AnimatePresence>
