@@ -1370,7 +1370,9 @@ export default function MixingStudioV3({
         )}
       </motion.div>
 
-      {/* 场景应用确认弹窗（自定义状态下手动调整过后：覆盖 / 保存并应用 / 取消，与 v2 一致） */}
+      {/* 场景应用确认弹窗（自定义状态下手动调整过后：覆盖 / 保存并应用 / 取消，与 v2 一致）
+          注意：外层容器是 pointerEvents:'none'（面板内部才 auto），pointer-events 可继承——
+          遮罩必须显式 auto，否则整个弹窗（含按钮）不可点击且点击穿透到后面面板的按钮。 */}
       <AnimatePresence>
         {sceneConfirm && (
           <motion.div
@@ -1378,7 +1380,7 @@ export default function MixingStudioV3({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[110] flex items-center justify-center p-4"
-            style={{ backgroundColor: dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.25)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+            style={{ backgroundColor: dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.25)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', pointerEvents: 'auto' }}
             onClick={() => setSceneConfirm(null)}
           >
             <motion.div
