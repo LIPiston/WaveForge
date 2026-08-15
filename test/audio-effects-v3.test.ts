@@ -51,6 +51,7 @@ import { getDefaultDevice } from '../src/services/audio-effects-v3/deviceDb'
 import { designBandpassCoeffs, buildDeesserProcessorSource } from '../src/services/audio-effects-v3/deesserWorklet'
 import { summarizeCapabilities, type AudioCapabilitiesReport } from '../src/services/audio-effects-v3/audioCapabilities'
 import { exportShareString, importShareString, isShareString } from '../src/services/audio-effects-v3/shareCodec'
+import { AudioEffectsEngineV3 } from '../src/services/audio-effects-v3/AudioEffectsEngineV3'
 
 // localStorage stub 由 test/setup.ts 注入；此处只需每次清空
 beforeEach(() => {
@@ -444,5 +445,45 @@ describe('设备音效能力检测摘要（纯函数）', () => {
     expect(summary).toContain('能力降级')
     expect(summary).toContain('卷积')
     expect(summary).toContain('离线渲染')
+  })
+})
+
+describe('内置场景（综合场景 + 预设 + 设备档案）', () => {
+  const engine = new AudioEffectsEngineV3()
+  const scenes = engine.getBuiltinScenes()
+  const names = scenes.map(s => s.name)
+
+  it('包含 5 套设备档案 + 4 套 EQ 预设 + 6 套综合场景', () => {
+    // 设备档案（DEVICE_PROFILES 5 套）+ 预设场景（索引 1-4 跳过自定义）+ 综合场景
+    expect(scenes.length).toBeGreaterThanOrEqual(15)
+  })
+
+  it('综合场景已就位（深夜助眠/重低音/人声加强/通透/怀旧/监听直白）', () => {
+    for (const n of ['深夜助眠', '重低音轰头', '人声加强', '通透高解析', '怀旧温暖', '监听直白']) {
+      expect(names).toContain(n)
+    }
+  })
+
+  it('监听直白场景全效果关闭、EQ 平直、机型清空', () => {
+    const flat = scenes.find(s => s.name === '监听直白')!
+    expect(flat.settings.eq.enabled).toBe(false)
+    expect(flat.settings.eq.mode).toBe('flat')
+    expect(flat.settings.advanced.nightMode.enabled).toBe(false)
+    expect(flat.settings.advanced.bassEnhance.enabled).toBe(false)
+    expect(flat.settings.advanced.virtualBass.enabled).toBe(false)
+    expect(flat.settings.device.modelCode).toBeNull()
+    expect(flat.settings.scheme).toBe('standard')
+  })
+
+  it('深夜助眠场景组合夜间模式 + 低频增强', () => {
+    const night = scenes.find(s => s.name === '深夜助眠')!
+    expect(night.settings.advanced.nightMode.enabled).toBe(true)
+    expect(night.settings.advanced.bassEnhance.enabled).toBe(true)
+    expect(night.settings.scheme).toBe('spatial')
+  })
+
+  it('人声加强场景人声/伴奏平衡偏向人声', () => {
+    const vocal = scenes.find(s => s.name === '人声加强')!
+    expect(vocal.settings.master.voiceBalance).toBeGreaterThan(0)
   })
 })

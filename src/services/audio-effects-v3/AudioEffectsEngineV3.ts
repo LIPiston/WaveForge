@@ -398,6 +398,146 @@ function buildBuiltinScenes(): V3SceneSnapshot[] {
       },
     })
   })
+  // 综合场景（组合多个效果，独立于单点 EQ 预设）：深夜助眠 / 重低音 / 人声加强 / 通透解析 /
+  // 怀旧温暖 / 监听直白（一键恢复全直通）
+  const combinedScenes: Array<Pick<V3SceneSnapshot, 'id' | 'name' | 'description'> & { build: (base: V3Settings) => V3Settings }> = [
+    {
+      id: 'scene-night-comfort',
+      name: '深夜助眠',
+      description: '夜间模式 + 温和低频 + 高频收敛，深夜低音量舒适听感',
+      build: (base) => ({
+        ...base,
+        scheme: 'spatial',
+        eq: {
+          ...base.eq,
+          enabled: true,
+          mode: 'preset',
+          presetIndex: 2, // 低频增强曲线
+          curve: EQ_BANDS_10_ODD.map((freq, j) => ({ freq, gain: quantizeGain(EQ_PRESET_CURVES[2]![j]!), q: 1 })),
+        },
+        advanced: {
+          ...base.advanced,
+          bassEnhance: { ...base.advanced.bassEnhance, enabled: true, intensity: 5, cutoff: 110, width: 0.8 },
+          nightMode: { ...base.advanced.nightMode, enabled: true, amount: 7 },
+        },
+      }),
+    },
+    {
+      id: 'scene-heavy-bass',
+      name: '重低音轰头',
+      description: '低频增强 + 虚拟低频谐波合成，动次打次拉满',
+      build: (base) => ({
+        ...base,
+        scheme: 'spatial',
+        eq: {
+          ...base.eq,
+          enabled: true,
+          mode: 'preset',
+          presetIndex: 2, // 低频增强曲线
+          curve: EQ_BANDS_10_ODD.map((freq, j) => ({ freq, gain: quantizeGain(EQ_PRESET_CURVES[2]![j]!), q: 1 })),
+        },
+        advanced: {
+          ...base.advanced,
+          bassEnhance: { ...base.advanced.bassEnhance, enabled: true, intensity: 9, cutoff: 100, width: 1.0 },
+          virtualBass: { ...base.advanced.virtualBass, enabled: true, amount: 8, baseFreq: 50, harmonics: 4, blend: 0.7 },
+        },
+      }),
+    },
+    {
+      id: 'scene-vocal-focus',
+      name: '人声加强',
+      description: '人声/伴奏平衡偏向人声 + 对白清晰度 + 齿音抑制',
+      build: (base) => ({
+        ...base,
+        scheme: 'spatial',
+        eq: {
+          ...base.eq,
+          enabled: true,
+          mode: 'preset',
+          presetIndex: 3, // 人声清晰曲线
+          curve: EQ_BANDS_10_ODD.map((freq, j) => ({ freq, gain: quantizeGain(EQ_PRESET_CURVES[3]![j]!), q: 1 })),
+        },
+        master: { ...base.master, voiceBalance: 0.35 },
+        advanced: {
+          ...base.advanced,
+          dialogueClarity: { ...base.advanced.dialogueClarity, enabled: true, amount: 6 },
+          deesser: { ...base.advanced.deesser, enabled: true, amount: 5, mode: 'static' },
+        },
+      }),
+    },
+    {
+      id: 'scene-airiness',
+      name: '通透高解析',
+      description: '高频空气感 + 智能均衡 IEQ 通透风格（空间增强）',
+      build: (base) => ({
+        ...base,
+        scheme: 'spatial',
+        eq: {
+          ...base.eq,
+          enabled: true,
+          mode: 'preset',
+          presetIndex: 4, // 通透氛围曲线
+          curve: EQ_BANDS_10_ODD.map((freq, j) => ({ freq, gain: quantizeGain(EQ_PRESET_CURVES[4]![j]!), q: 1 })),
+        },
+        ieq: { ...base.ieq, enabled: true, style: 2, trebleAmount: 7 },
+      }),
+    },
+    {
+      id: 'scene-warm-vintage',
+      name: '怀旧温暖',
+      description: '中低频温暖厚实 + 高频收敛，老式模拟味',
+      build: (base) => ({
+        ...base,
+        scheme: 'spatial',
+        eq: {
+          ...base.eq,
+          enabled: true,
+          mode: 'curve',
+          curve: sortCurve([
+            { freq: 47, gain: 4, q: 0.9 }, { freq: 141, gain: 3, q: 0.8 }, { freq: 469, gain: 1.5, q: 0.9 },
+            { freq: 1313, gain: -1, q: 1.0 }, { freq: 3750, gain: -1.5, q: 1.0 }, { freq: 9000, gain: -2.5, q: 0.8 },
+          ]),
+        },
+        advanced: {
+          ...base.advanced,
+          compressor: { ...base.advanced.compressor, enabled: true, threshold: -20, ratio: 2.5, outputGain: 2 },
+        },
+      }),
+    },
+    {
+      id: 'scene-monitor-flat',
+      name: '监听直白',
+      description: '全效果关闭、EQ 平直，还原录音室原声',
+      build: (base) => ({
+        ...base,
+        scheme: 'standard',
+        eq: { ...base.eq, enabled: false, mode: 'flat', curve: flatCurve() },
+        peq: { ...base.peq, enabled: false },
+        frequencyResponse: { ...base.frequencyResponse, enabled: false, targetCurve: null },
+        ieq: { ...base.ieq, enabled: false },
+        advanced: {
+          bassEnhance: { ...base.advanced.bassEnhance, enabled: false },
+          virtualBass: { ...base.advanced.virtualBass, enabled: false },
+          deesser: { ...base.advanced.deesser, enabled: false },
+          dialogueClarity: { ...base.advanced.dialogueClarity, enabled: false },
+          convolution: { ...base.advanced.convolution, enabled: false },
+          compressor: { ...base.advanced.compressor, enabled: false },
+          nightMode: { ...base.advanced.nightMode, enabled: false },
+        },
+        master: { ...base.master, voiceBalance: 0, smartLoudness: { ...base.master.smartLoudness, enabled: false } },
+        device: { ...base.device, modelCode: null, modelName: null, autoDetect: false, outputKind: 'unknown' },
+      }),
+    },
+  ]
+  for (const s of combinedScenes) {
+    scenes.push({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      builtin: true,
+      settings: s.build(defaultV3Settings()),
+    })
+  }
   return scenes
 }
 
@@ -449,6 +589,8 @@ function buildV3Chain(context: BaseAudioContext): BuiltV3Chain {
   output.gain.value = 1
 
   // M/S 矩阵（独立实现的标准 mid/side 编解码：center=人声、side=伴奏）
+  // 注意：mid=0.5(L+R)、side=0.5(L−R) 的标准归一化——否则解码后 L'=2L、R'=2R，
+  // 信号整体放大 6dB 会频繁触发输出限幅器（-6dB 阈值），反而把平均响度压低（听感音量变小）。
   const mkMatrix = () => {
     const matInput = context.createGain()
     const left = context.createChannelSplitter(2)
@@ -457,12 +599,24 @@ function buildV3Chain(context: BaseAudioContext): BuiltV3Chain {
     const right = context.createChannelMerger(2)
     const lInv = context.createGain()
     lInv.gain.value = -1
-    // L+R → mid；L-R → side
+    // L+R → mid；L-R → side（编码端 0.5 归一化）
+    const mL = context.createGain()
+    mL.gain.value = 0.5
+    const mR = context.createGain()
+    mR.gain.value = 0.5
+    const sL = context.createGain()
+    sL.gain.value = 0.5
+    const sR = context.createGain()
+    sR.gain.value = 0.5
     matInput.connect(left)
-    left.connect(mid, 0)
-    left.connect(mid, 1)
-    left.connect(side, 0)
-    left.connect(lInv, 1)
+    left.connect(mL, 0)
+    left.connect(mR, 1)
+    mL.connect(mid)
+    mR.connect(mid)
+    left.connect(sL, 0)
+    left.connect(sR, 1)
+    sL.connect(side)
+    sR.connect(lInv)
     lInv.connect(side)
     // 混合输出
     const midToL = context.createGain()
@@ -1054,7 +1208,9 @@ export class AudioEffectsEngineV3 {
    * （不自动开启合并，由用户决定）。传 null 清除机型预设。
    */
   applyDeviceModel(code: string | null): void {
-    const device = code ? findDevice(code) : null
+    // 优先按设备代号匹配（Xiaomi/Redmi 的 fuxi/alioth 等）；代号为空（JBL 全系列）时
+    // 回退按型号名匹配——UI 传入的可能是 code 或 model（见 MixingStudioV3 机型按钮）。
+    const device = code ? findDevice(code, code) : null
     this.settings.device = { ...this.settings.device, modelCode: code, modelName: device?.model ?? null }
     if (device && device.curveA) {
       // 设备频响预设（speaker_response 语义）：完整频响预设启用时锁定均衡器，
