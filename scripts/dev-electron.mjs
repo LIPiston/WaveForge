@@ -195,7 +195,11 @@ async function startDev() {
         }
       }
     )
-    
+    // spawn 失败（嵌入式 python 缺失等）时避免未捕获的 'error' 事件崩掉启动器
+    pythonProc.on('error', (error) => {
+      console.error(`[BeatService] spawn 失败: ${error?.message || error}`)
+    })
+
     // 后台等待，不阻塞主流程
     waitForPort(3002, 15000).then(success => {
       if (success) {

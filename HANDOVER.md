@@ -94,6 +94,18 @@
   - **延音（sustainGlow）收紧**：触发门槛（相对倍数 1.5/1.7→1.7/2.0、超出毫秒 430/480→600/650、绝对下限 1050/1100→1300/1400、每行上限 25%→15%）+ 辉光强度减弱（半径/alpha 降约 30%、brightness/saturate 系数下调）。
   - **新增独立「Apple」逐字模式**（`WordByWordEffectMode` 加 `'apple'`，QuickSettings 三选一：清晰/柔和/Apple）——**严格隔离，不影响 clear/soft 任何渲染路径**：词内从左到右填充推进（逆向 LyricsBlossom「整行高亮重绘」）、行字号/字重统一不缩放（已播/正在播/未播等大）、非当前行常驻模糊 blur(2.2px)（手动滚动时暂时取消、0.45s tween 过渡恢复）、SF Pro 风格字体链、已唱空格连续白、中文逐字/英文整词。
   - **相关逆向工作**：LyricsBlossom（Apple Music 1:1 还原，闭源）二进制逆向完成架构级分析（SDL3+Skia+Vulkan、SMTC 数据管线、TTML 逐音节、SF Pro 字体链、行切换 blur 机制），工具/反汇编/分析文档在 `D:\opencode\LyricsBlossom-re\`，接力交接文档在桌面 `LyricsBlossom逆向交接.md`；对比分析见 `docs/歌词对比-LyricsBlossom.md`。
+- 2026-08-16：**QQ/网易云 API 全面补齐 + 社交/个人中心重构（本会话）**：
+  - **QQ MV 播放修复**：`/api/qq/mv/url` 弃用 qq-music-api 库版（缺认证字段返回空），改为**直接调 `GetMvUrls`**（完整 comm + tmeLoginType + request_typet，实测返回免费流 URL）；VIP 专属 MV 仍受限（平台限制）。
+  - **QQ 关注歌手逆向成功**：网页版 JS 逆向出正确接口 `Concern.ConcernSystemServer/cgi_concern_user_v2`（param: `{ opertype: 1关注/0取关, source: 0, userinfo: { usertype: 1, userid: mid }, encrypt_singerid: 1 }`），后端已按此修正（原用错误的 cgi_add_concern + opertype 2）；**认证必须用最新登录的 qm_keyst**（旧 cookie 返回 1000）。
+  - **QQ/网易云关注与粉丝列表**：QQ 用 `music.concern.RelationList`（GetFollowList/GetFansList，param `{ From, Size, HostUin: encUin }`，支持 EncUin 查他人）；网易云 user/follows、user/followeds；关注/回关（QQ `cgi_concern_user_v2` usertype=0 + EncUin；网易云 `follow_user`），按钮三态（已关注/回关/关注，按"TA 是否关注我"判断——加载自己的粉丝集合比对）。
+  - **QQ 用户个人中心（查看他人）**：ProfileView 增加 **viewStack 导航栈**——点关注/粉丝里的用户 push 进入对方个人中心（复用 ProfileView，网易云完整歌单/关注/粉丝；QQ 显示关注/粉丝/用户信息，歌单受限）；返回箭头 pop 上一级、小字「点击返回个人中心」（≥2 层显示，hover 红）清栈回自己的粉丝界面、点弹窗外清栈；网易云他人完整可查，**QQ 他人歌单/我喜欢歌曲受限**（EncUin 打码无法解析数字 uin，已穷尽接口）。
+  - **QQ 我喜欢（他人）**：`music.favor_system_read/get_favor_list_byid`（EncUin 支持，fav_type=1 作品/专辑）→ `/api/qq/user/favs` + 个人中心「我喜欢」tab。
+  - **API 死代码补齐**：网易云关注/回关用户、收藏专辑（`getSubscribedAlbums`）、关注歌手（`getSubscribedArtists`）、QQ 收藏专辑（`/api/qq/album/sublist`）、QQ 关注歌手（RelationList 过滤歌手，`/api/qq/artist/sublist2` 替代需 skey 的 fcg）、网易云热评（CommentModal hotComments 区块）、QQ 搜索联想（smartbox `searchQuick`）、**歌单搜索**（网易云 type=1000 + QQ t=2，SearchPanel「搜歌单」）、**私人 FM**（探索页顶部按钮）、**智能播放**（歌单详情按钮）。
+  - **探索页新增**：双平台首页 Banner 轮播（网易云 `/api/netease/banner` + QQ `/api/qq/banner`）、网易云电台（dj/recommend/catelist/hot）、热门歌手/新碟/MV 榜/歌单分类/精品歌单/相似歌单/相似 MV/每日签到/歌曲百科/QQ 歌曲所在歌单/网易云收藏 MV（后端路由全部就绪，前端 Banner/签到/百科/所在歌单/收藏 MV 已接入）。
+  - **修复**：QQ 排行榜速览歌曲封面为空（官方榜单 songs `coverUrl` 硬编码空 → 复用 community 数据补封面）；后端 `qqMusicApi.api('playlist/hot')` 死调用（QQ SDK 无此路由）改用 `songlist/list`；歌手详情「播放全部」按钮 `text-slate-950` 硬编码黑字 → `text-white`。
+  - **新增后端路由**（一批）：`/api/qq/banner`、`/api/qq/song/playlist`、`/api/qq/songlist/category|list`、`/api/qq/album/sublist`、`/api/qq/artist/sublist2`、`/api/qq/user/favs`、`/api/qq/user/profile`、`/api/qq/user/subscribe`、`/api/netease/banner`、`/api/netease/playlist/hot|catlist|highquality|simi|related`、`/api/netease/top/artists|album|mv`、`/api/netease/artist/list`、`/api/netease/dj/recommend|catelist|hot`、`/api/netease/daily/signin`、`/api/netease/song/wiki`、`/api/netease/simi/mv`、`/api/netease/mv/sublist`。
+  - **新建组件**：`MVExploreModal.tsx`（MV 分类浏览+搜索，探索页顶栏 Film 入口）、`UserProfileView.tsx`（查看他人全屏个人中心，后被 ProfileView viewStack 替代为内部切换）、`UserProfileModal.tsx`（临时弹窗，已被 viewStack 取代）。
+  - **使用注意**：所有 QQ 关注/粉丝/主页接口**必须用最新登录的 qm_keyst**（应用内重新粘贴 QQ cookie，旧 key 返回 1000/空）；QQ 他人创建歌单/我喜欢歌曲/评论回复/听歌排行为平台限制。
 
 ## 7. 常用操作速查
 

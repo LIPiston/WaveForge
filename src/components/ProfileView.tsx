@@ -1,8 +1,8 @@
 import { getQQUserDisplayName } from '../utils/qqUser'
 import { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { X, Music, Heart, List, User, Crown, Calendar, MapPin, RefreshCw, LogOut, Plus, MoreHorizontal, Play, History, Disc3, Radio, Mic2 } from 'lucide-react'
-import { Song, resolveSongAlbumIdentifier } from '../services/musicApi'
+import { X, Music, Heart, List, User, Crown, Calendar, MapPin, RefreshCw, LogOut, Plus, MoreHorizontal, Play, History, Disc3, Radio, Mic2, Users, TrendingUp, ArrowLeft, Film } from 'lucide-react'
+import { Song, resolveSongAlbumIdentifier, getUserFollows, getUserFolloweds, getUserRecordRank, getQQFollows, getQQFans, getQQUserProfile, getQQUserFavs, subscribeQQUser, subscribeNeteaseUser, getSubscribedAlbums, getSubscribedArtists, getQQSubscribedAlbums, getQQSubscribedArtists, getNeteaseMvSublist, neteaseDailySignin } from '../services/musicApi'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
 import CachedImage from './CachedImage'
 import PlaylistContextMenu from './PlaylistContextMenu'
@@ -74,8 +74,15 @@ interface UserDetail {
   listenLevel?: string    // 听歌等级图标
 }
 
-type ProfileTab = 'created' | 'subscribed' | 'detail' | 'recent'
+type ProfileTab = 'created' | 'subscribed' | 'detail' | 'recent' | 'social' | 'rank' | 'favs' | 'collections'
 type RecentPlaybackType = 'song' | 'playlist' | 'album' | 'dj' | 'voice'
+
+const formatCount = (value?: number) => {
+  const count = Number(value || 0)
+  if (count >= 100000000) return `${(count / 100000000).toFixed(1)}亿`
+  if (count >= 10000) return `${(count / 10000).toFixed(1)}万`
+  return count ? String(count) : '0'
+}
 
 interface RecentPlaybackItem {
   id: string
@@ -144,6 +151,29 @@ export default function ProfileView({
     revision: 0,
     controller: null,
   })
+  // 社交（关注/粉丝）状态 —— 仅网易云
+  const [socialType, setSocialType] = useState<'follows' | 'followeds'>('follows')
+  const [socialItems, setSocialItems] = useState<{ userId: string; nickname: string; avatarUrl: string; signature: string; isFollow: boolean }[]>([])
+  const [socialLoading, setSocialLoading] = useState(false)
+  const [socialError, setSocialError] = useState('')
+  // QQ 社交状态（关注用户/粉丝列表）
+  const [qqSocialType, setQqSocialType] = useState<'follows' | 'fans'>('follows')
+  const [qqSocialItems, setQqSocialItems] = useState<{ encUin: string; mid: string; name: string; desc: string; avatarUrl: string; isFollow: boolean; isSelf: boolean }[]>([])
+  // QQ 他人“我喜欢”列表
+  const [qqFavItems, setQqFavItems] = useState<any[]>([])
+  const [qqFavLoading, setQqFavLoading] = useState(false)
+  // 网易云收藏的专辑 / 关注的歌手 / 收藏的 MV
+  const [collectedAlbums, setCollectedAlbums] = useState<any[]>([])
+  const [collectedArtists, setCollectedArtists] = useState<any[]>([])
+  const [collectedMvs, setCollectedMvs] = useState<any[]>([])
+  const [collectionsLoading, setCollectionsLoading] = useState(false)
+  const [qqSocialLoading, setQqSocialLoading] = useState(false)
+  const [qqSocialError, setQqSocialError] = useState('')
+  // 听歌排行状态 —— 仅网易云
+  const [rankType, setRankType] = useState<0 | 1>(0)
+  const [rankItems, setRankItems] = useState<Song[]>([])
+  const [rankLoading, setRankLoading] = useState(false)
+  const [rankError, setRankError] = useState('')
   const [createdPlaylists, setCreatedPlaylists] = useState<Playlist[]>([])
   const [subscribedPlaylists, setSubscribedPlaylists] = useState<Playlist[]>([])
   const [userDetail, setUserDetail] = useState<UserDetail | null>(null)
@@ -167,8 +197,24 @@ export default function ProfileView({
   }>({ show: false, x: 0, y: 0, song: null, songs: [] })
   const [managementPlaylist, setManagementPlaylist] = useState<Playlist | null>(null)
 
-  // 获取当前平台
-  const platform = currentPlatform
+  // 查看他人模式导航栈：点关注/粉丝里的用户后 push 进入，返回箭头 pop 上一级
+  interface ViewEntry {
+    platform: 'netease' | 'qq'
+    userId: string
+    nickname?: string
+    avatarUrl?: string
+    signature?: string
+    returnTab: ProfileTab // 返回时恢复的 tab（进入前的）
+  }
+  const [viewStack, setViewStack] = useState<ViewEntry[]>([])
+  const viewTarget = viewStack.length > 0 ? viewStack[viewStack.length - 1] : null
+
+  // 获取当前平台（查看他人时锁定为目标平台）
+  const platform = viewTarget?.platform || currentPlatform
+  // 活动用户 ID（查看他人时为目标用户，否则为自己）
+  const activeUserId = viewTarget?.userId || userId
+  // 查看他人时禁用歌单写操作与平台切换
+  const isViewingOther = Boolean(viewTarget)
   
   // 根据主题色生成渐变色
   const generateGradientColors = (baseColor: string) => {
@@ -246,6 +292,8 @@ export default function ProfileView({
   }
 
   const handlePlaylistContextMenu = (playlist: Playlist, event: React.MouseEvent) => {
+    // 查看他人个人中心时禁用歌单管理（不操作对方歌单）
+    if (viewTarget) return
     event.preventDefault()
     event.stopPropagation()
     setManagementPlaylist(playlist)
@@ -727,11 +775,186 @@ export default function ProfileView({
   }, [activeTab, recentType, currentPlatform, cookie])
   useEffect(() => {
     fetchUserData()
-  }, [currentPlatform, userId])  // 当切换平台或userId变化时重新加载
+    // 查看他人或切换用户时清空社交/排行数据
+    if (viewTarget) {
+      setSocialItems([])
+      setQqSocialItems([])
+      setRankItems([])
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform, activeUserId, viewTarget])
+
+  // 社交（关注/粉丝）数据获取 —— 网易云（查看他人时展示对方关注/粉丝）
+  useEffect(() => {
+    if (activeTab !== 'social' || platform !== 'netease') return
+    let cancelled = false
+    setSocialLoading(true)
+    setSocialError('')
+    const task = socialType === 'follows'
+      ? getUserFollows(activeUserId, { cookie })
+      : getUserFolloweds(activeUserId, { cookie })
+    task.then((data) => {
+      if (cancelled) return
+      const raw = socialType === 'follows' ? data?.follow : data?.followeds
+      setSocialItems(Array.isArray(raw) ? raw.map((u: any) => ({
+        userId: String(u.userId || u.id || ''),
+        nickname: u.nickname || '未知用户',
+        avatarUrl: u.avatarUrl || '',
+        signature: u.signature || '',
+        // 关注列表都是已关注；粉丝列表看 mutual（是否互关）
+        isFollow: socialType === 'follows' ? true : Boolean(u.mutual),
+      })) : [])
+      setSocialLoading(false)
+    }).catch(() => {
+      if (cancelled) return
+      setSocialError('获取失败，请确认已登录网易云')
+      setSocialLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [activeTab, socialType, platform, activeUserId, cookie])
+
+  // QQ 关注用户/粉丝列表数据获取（查看他人时用 RelationList HostUin=EncUin）
+  useEffect(() => {
+    if (activeTab !== 'social' || platform !== 'qq') return
+    let cancelled = false
+    setQqSocialLoading(true)
+    setQqSocialError('')
+    const task = viewTarget
+      ? getQQUserProfile(activeUserId).then((data) => ({
+          data: { list: qqSocialType === 'follows' ? data?.data?.follows : data?.data?.fans },
+        }))
+      : (qqSocialType === 'follows' ? getQQFollows({ cookie }) : getQQFans({ cookie }))
+    task.then((data) => {
+      if (cancelled) return
+      const list = data?.data?.list || []
+      setQqSocialItems(Array.isArray(list) ? list.map((u: any) => ({
+        encUin: u.EncUin || u.encUin || '',
+        mid: u.MID || u.mid || '',
+        name: u.Name || u.name || '未知用户',
+        desc: u.Desc || u.desc || '',
+        avatarUrl: u.AvatarUrl || u.avatarUrl || '',
+        isFollow: Boolean(u.IsFollow || u.isFollow),
+        isSelf: Boolean(u.OtherInfo?.IsSelf || u.isSelf),
+      })) : [])
+      setQqSocialLoading(false)
+    }).catch(() => {
+      if (cancelled) return
+      setQqSocialError('获取失败，请确认 QQ 登录态有效')
+      setQqSocialLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [activeTab, qqSocialType, platform, activeUserId, viewTarget, cookie])
+
+  // 打开用户个人中心（push 进导航栈，进入后默认看歌单概览）
+  const openUserProfile = (targetPlatform: 'netease' | 'qq', targetUserId: string, nickname?: string, avatarUrl?: string, signature?: string) => {
+    setViewStack(prev => [...prev, { platform: targetPlatform, userId: targetUserId, nickname, avatarUrl, signature, returnTab: activeTab }])
+    setActiveTab('created')
+  }
+
+  // QQ 他人“我喜欢”数据获取（music.favor_system_read/get_favor_list_byid）
+  useEffect(() => {
+    if (activeTab !== 'favs' || platform !== 'qq' || !viewTarget) return
+    let cancelled = false
+    setQqFavLoading(true)
+    getQQUserFavs(activeUserId, 1).then((data) => {
+      if (cancelled) return
+      setQqFavItems(Array.isArray(data?.data?.list) ? data.data.list : [])
+      setQqFavLoading(false)
+    }).catch(() => {
+      if (cancelled) return
+      setQqFavItems([])
+      setQqFavLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [activeTab, platform, activeUserId, viewTarget, cookie])
+
+  // 收藏的专辑 / 关注的歌手（仅自己的个人中心；QQ 用 RelationList/collect）
+  useEffect(() => {
+    if (activeTab !== 'collections' || viewTarget) return
+    let cancelled = false
+    setCollectionsLoading(true)
+    const task = platform === 'netease'
+      ? Promise.all([getSubscribedAlbums('netease', { cookie }), getSubscribedArtists('netease', { cookie }), getNeteaseMvSublist({ cookie })])
+      : Promise.all([getQQSubscribedAlbums({ cookie }), getQQSubscribedArtists({ cookie })])
+    void task.then(([albumsData, artistsData, mvsData]) => {
+      if (cancelled) return
+      setCollectedAlbums(Array.isArray(albumsData?.data?.list) ? albumsData.data.list : Array.isArray(albumsData?.data) ? albumsData.data : [])
+      setCollectedArtists(Array.isArray(artistsData?.data?.list) ? artistsData.data.list : Array.isArray(artistsData?.data) ? artistsData.data : [])
+      if (platform === 'netease') setCollectedMvs(Array.isArray(mvsData) ? mvsData : [])
+      setCollectionsLoading(false)
+    }).catch(() => {
+      if (cancelled) return
+      setCollectionsLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [activeTab, platform, viewTarget, cookie])
+
+  // 返回箭头：pop 上一级，恢复进入前的 tab
+  const popView = () => {
+    setViewStack(prev => {
+      if (prev.length === 0) return prev
+      const last = prev[prev.length - 1]
+      const next = prev.slice(0, -1)
+      setActiveTab(last.returnTab || 'created')
+      return next
+    })
+  }
+
+  // 小字/点外部：清空栈，回到自己的个人中心（粉丝界面）
+  const clearView = () => {
+    setViewStack([])
+    setActiveTab('social')
+  }
+
+  // 听歌排行数据获取 —— 仅网易云（需要登录，只能查自己）
+  useEffect(() => {
+    if (activeTab !== 'rank' || currentPlatform !== 'netease') return
+    if (viewTarget) {
+      setRankItems([])
+      return
+    }
+    let cancelled = false
+    setRankLoading(true)
+    setRankError('')
+    getUserRecordRank(userId, rankType, { cookie }).then((data) => {
+      if (cancelled) return
+      const raw = rankType === 1 ? data?.weekData : data?.allData
+      setRankItems(Array.isArray(raw) ? raw.map((item: any) => {
+        // 兼容扁平结构 {id,name,ar,al} 与嵌套结构 {song:{...}}（部分网易云接口版本返回嵌套）
+        const track = (item && typeof item === 'object' && item.song && typeof item.song === 'object')
+          ? item.song
+          : item
+        const arList = Array.isArray(track.ar) ? track.ar
+          : Array.isArray(track.artists) ? track.artists
+          : Array.isArray(item.ar) ? item.ar
+          : Array.isArray(item.artists) ? item.artists
+          : []
+        const albumInfo = track.al || item.al
+        return {
+          id: track.id ?? item.id,
+          name: track.name || item.name || '',
+          artists: arList.map((a: any) => ({ name: a.name || a.title || '' })),
+          album: albumInfo ? { name: albumInfo.name, picUrl: albumInfo.picUrl || albumInfo.pic || '' } : undefined,
+          duration: track.dt || item.dt || 0,
+          playCount: track.playCount ?? item.playCount ?? 0,
+          platform: 'netease'
+        } as Song
+      }) : [])
+      setRankLoading(false)
+    }).catch(() => {
+      if (cancelled) return
+      setRankError('获取听歌排行失败，请确认已登录网易云')
+      setRankLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [activeTab, rankType, currentPlatform, userId, cookie])
 
   // 同步initialPlatform的变化
   useEffect(() => {
     setCurrentPlatform(initialPlatform)
+    // 平台切换瞬间内部 state currentPlatform 还是旧值，而 userId/cookie 已是新平台——
+    // 直接以 prop 平台拉取，避免用「旧平台 state + 新平台 userId」的错误组合导致歌单为空
+    fetchUserData(initialPlatform)
   }, [initialPlatform])
 
   useEffect(() => {
@@ -758,8 +981,9 @@ export default function ProfileView({
     return () => window.removeEventListener('playlist-content-changed', handlePlaylistContentChanged)
   }, [currentPlatform])
 
-  // 切换平台
+  // 切换平台（查看他人时锁定目标平台，禁止切换）
   const handlePlatformSwitch = () => {
+    if (viewTarget) return
     recentRequestRef.current.controller?.abort()
     recentRequestRef.current.revision += 1
     setRecentItems([])
@@ -769,13 +993,15 @@ export default function ProfileView({
     handleSwitchPlatform()  // 调用父组件的回调
   }
 
-  const fetchUserData = async () => {
+  const fetchUserData = async (targetPlatform?: 'netease' | 'qq') => {
     setLoading(true)
-    
+    const platform = targetPlatform || (viewTarget?.platform || currentPlatform)
+    const uid = activeUserId
+
     if (platform === 'netease') {
       try {
-        // 获取用户歌单
-        const playlistRes = await fetch(`http://localhost:3001/api/netease/user/playlist?uid=${userId}&cookie=${encodeURIComponent(cookie)}`)
+        // 获取用户歌单（查看他人时展示对方的歌单/我喜欢）
+        const playlistRes = await fetch(`http://localhost:3001/api/netease/user/playlist?uid=${uid}&cookie=${encodeURIComponent(cookie)}`)
         const playlistData = await playlistRes.json()
         
         if (playlistData.playlist) {
@@ -786,16 +1012,16 @@ export default function ProfileView({
             trackCount: Number(playlist.trackCount ?? playlist.trackNumber ?? 0),
             platform: 'netease',
             isLike: playlist.specialType === 5 || playlist.name === '我喜欢的音乐',
-            isCollected: playlist.userId?.toString() !== userId.toString()
+            isCollected: playlist.userId?.toString() !== uid.toString()
           }))
-          const created = playlists.filter((playlist) => playlist.userId?.toString() === userId.toString())
-          const subscribed = playlists.filter((playlist) => playlist.userId?.toString() !== userId.toString())
+          const created = playlists.filter((playlist) => playlist.userId?.toString() === uid.toString())
+          const subscribed = playlists.filter((playlist) => playlist.userId?.toString() !== uid.toString())
           setCreatedPlaylists(created)
           setSubscribedPlaylists(subscribed)
         }
 
         // 获取用户详情
-        const detailRes = await fetch(`http://localhost:3001/api/netease/user/detail?uid=${userId}`)
+        const detailRes = await fetch(`http://localhost:3001/api/netease/user/detail?uid=${uid}`)
         const detailData = await detailRes.json()
         
         if (detailData.profile) {
@@ -825,6 +1051,19 @@ export default function ProfileView({
         console.error('获取网易云用户数据失败:', error)
       }
     } else if (platform === 'qq') {
+      // 查看他人（QQ）：EncUin 打码无法查歌单/详情，使用列表传入的资料
+      if (viewTarget) {
+        setUserDetail({
+          nickname: viewTarget.nickname || '未知用户',
+          avatarUrl: viewTarget.avatarUrl || '',
+          userId: viewTarget.userId,
+          signature: viewTarget.signature || '',
+        })
+        setCreatedPlaylists([])
+        setSubscribedPlaylists([])
+        setLoading(false)
+        return
+      }
       try {
         console.log('📤 正在获取QQ音乐用户数据...')
         
@@ -888,11 +1127,11 @@ export default function ProfileView({
           backdropFilter: 'blur(20px)',
           WebkitBackdropFilter: 'blur(20px)',
         }}
-        onClick={onClose}
+        onClick={() => (viewStack.length > 0 ? clearView() : onClose())}
       />
 
       {/* 内容区 */}
-      <div className="relative z-10 w-full h-full flex items-center justify-center p-6" onClick={onClose}>
+      <div className="relative z-10 w-full h-full flex items-center justify-center p-6" onClick={() => (viewStack.length > 0 ? clearView() : onClose())}>
                              <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -911,12 +1150,36 @@ export default function ProfileView({
           {/* 头部 */}
           <div className="flex items-center justify-between p-6 border-b border-white/10">
             <div className="flex items-center gap-3">
-              <User className="w-6 h-6 text-white" />
-              <h2 className="text-2xl font-bold text-white">个人中心</h2>
+              {viewTarget ? (
+                <>
+                  <button type="button" onClick={popView} className="p-2 -ml-2 hover:bg-white/10 rounded-full transition-colors" title="返回上一级" aria-label="返回">
+                    <ArrowLeft className="w-5 h-5 text-white/70" />
+                  </button>
+                  <User className="w-6 h-6 text-white" />
+                  <div>
+                    <h2 className="text-xl font-bold text-white leading-tight truncate max-w-60">{viewTarget.nickname || '用户'} 的个人中心</h2>
+                    {viewStack.length >= 2 && (
+                      <button
+                        type="button"
+                        onClick={clearView}
+                        className="text-[11px] text-white/40 hover:text-red-400 transition-colors"
+                        title="回到我的个人中心粉丝界面"
+                      >
+                        点击返回个人中心
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <User className="w-6 h-6 text-white" />
+                  <h2 className="text-2xl font-bold text-white">个人中心</h2>
+                </>
+              )}
             </div>
             
             <div className="flex items-center gap-2">
-              {activeTab !== 'detail' && (
+              {activeTab !== 'detail' && !viewTarget && (
                 <motion.button
                   whileHover={{ scale: 1.08, rotate: 30 }}
                   whileTap={{ scale: 0.92 }}
@@ -929,7 +1192,27 @@ export default function ProfileView({
                   <RefreshCw className={`w-5 h-5 text-white/70 ${loading ? 'animate-spin' : ''}`} />
                 </motion.button>
               )}
-              {activeTab === 'created' && (
+              {currentPlatform === 'netease' && !viewTarget && (
+                <motion.button
+                  whileHover={{ scale: 1.08 }}
+                  whileTap={{ scale: 0.92 }}
+                  onClick={() => {
+                    void neteaseDailySignin(1).then((result) => {
+                      if (result?.code === 200 || result?.message?.includes('签到')) {
+                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '每日签到成功', type: 'success' } }))
+                      } else {
+                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: result?.message || '今日已签到或签到失败', type: 'info' } }))
+                      }
+                    })
+                  }}
+                  className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                  title="每日签到"
+                  aria-label="每日签到"
+                >
+                  <Calendar className="w-5 h-5 text-white/70" />
+                </motion.button>
+              )}
+              {activeTab === 'created' && !viewTarget && (
                 <motion.button
                   whileHover={{ scale: 1.08 }}
                   whileTap={{ scale: 0.92 }}
@@ -985,7 +1268,7 @@ export default function ProfileView({
               } : {}}
             >
               <List className="w-5 h-5" />
-              我创建的歌单 ({createdPlaylists.length})
+              {viewTarget && platform === 'qq' ? '创建的歌单' : `我创建的歌单 (${createdPlaylists.length})`}
             </button>
             <button
               onClick={() => setActiveTab('subscribed')}
@@ -999,8 +1282,9 @@ export default function ProfileView({
               } : {}}
             >
               <Heart className="w-5 h-5" />
-              收藏的歌单 ({subscribedPlaylists.length})
+              {viewTarget && platform === 'qq' ? '收藏的歌单' : `收藏的歌单 (${subscribedPlaylists.length})`}
             </button>
+            {!viewTarget && (
             <button
               onClick={() => setActiveTab('recent')}
               className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
@@ -1011,6 +1295,67 @@ export default function ProfileView({
               <History className="w-5 h-5" />
               最近播放
             </button>
+            )}
+            {currentPlatform === 'netease' && (
+              <button
+                onClick={() => setActiveTab('social')}
+                className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
+                  activeTab === 'social' ? 'text-white bg-white/10' : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+                style={activeTab === 'social' ? { borderBottom: `2px solid ${accentColor}` } : {}}
+              >
+                <Users className="w-5 h-5" />
+                关注/粉丝
+              </button>
+            )}
+            {currentPlatform === 'qq' && (
+              <button
+                onClick={() => setActiveTab('social')}
+                className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
+                  activeTab === 'social' ? 'text-white bg-white/10' : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+                style={activeTab === 'social' ? { borderBottom: `2px solid ${accentColor}` } : {}}
+              >
+                <Users className="w-5 h-5" />
+                关注/粉丝
+              </button>
+            )}
+            {viewTarget && platform === 'qq' && (
+              <button
+                onClick={() => setActiveTab('favs')}
+                className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
+                  activeTab === 'favs' ? 'text-white bg-white/10' : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+                style={activeTab === 'favs' ? { borderBottom: `2px solid ${accentColor}` } : {}}
+              >
+                <Heart className="w-5 h-5" />
+                我喜欢
+              </button>
+            )}
+            {!viewTarget && (
+              <button
+                onClick={() => setActiveTab('collections')}
+                className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
+                  activeTab === 'collections' ? 'text-white bg-white/10' : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+                style={activeTab === 'collections' ? { borderBottom: `2px solid ${accentColor}` } : {}}
+              >
+                <Disc3 className="w-5 h-5" />
+                收藏
+              </button>
+            )}
+            {currentPlatform === 'netease' && !viewTarget && (
+              <button
+                onClick={() => setActiveTab('rank')}
+                className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
+                  activeTab === 'rank' ? 'text-white bg-white/10' : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+                style={activeTab === 'rank' ? { borderBottom: `2px solid ${accentColor}` } : {}}
+              >
+                <TrendingUp className="w-5 h-5" />
+                听歌排行
+              </button>
+            )}
             <button
               onClick={() => setActiveTab('detail')}
               className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
@@ -1045,7 +1390,13 @@ export default function ProfileView({
             ) : (
               <>
                 {/* 我创建的歌单 */}
-                {activeTab === 'created' && (
+                {activeTab === 'created' && viewTarget && platform === 'qq' && (
+                  <div className="py-14 text-center">
+                    <p className="text-white/45 text-sm">QQ 音乐平台限制，无法获取他人的歌单数据</p>
+                    <p className="text-white/30 text-xs mt-2">可在 QQ 音乐网页版查看对方的歌单</p>
+                  </div>
+                )}
+                {activeTab === 'created' && !(viewTarget && platform === 'qq') && (
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                     {createdPlaylists.map((playlist, index) => (
                       <motion.div
@@ -1127,7 +1478,13 @@ export default function ProfileView({
                 )}
 
                 {/* 收藏的歌单 */}
-                {activeTab === 'subscribed' && (
+                {activeTab === 'subscribed' && viewTarget && platform === 'qq' && (
+                  <div className="py-14 text-center">
+                    <p className="text-white/45 text-sm">QQ 音乐平台限制，无法获取他人的歌单数据</p>
+                    <p className="text-white/30 text-xs mt-2">可在 QQ 音乐网页版查看对方的歌单</p>
+                  </div>
+                )}
+                {activeTab === 'subscribed' && !(viewTarget && platform === 'qq') && (
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                     {subscribedPlaylists.map((playlist, index) => (
                       <motion.div
@@ -1277,7 +1634,293 @@ export default function ProfileView({
                       </div>
                     )}
                   </div>
-                )}                {activeTab === 'detail' && userDetail && (
+                )}                {activeTab === 'social' && platform === 'netease' && (
+                  <div className="space-y-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <h3 className="text-xl font-semibold text-white">社交关系</h3>
+                      <div className="flex rounded-lg bg-white/5 p-0.5">
+                        <button onClick={() => setSocialType('follows')} className={`px-3 py-1.5 rounded-md text-sm transition-colors ${socialType === 'follows' ? 'text-white' : 'text-white/55 hover:text-white'}`} style={socialType === 'follows' ? { background: `${accentColor}55` } : {}}>关注</button>
+                        <button onClick={() => setSocialType('followeds')} className={`px-3 py-1.5 rounded-md text-sm transition-colors ${socialType === 'followeds' ? 'text-white' : 'text-white/55 hover:text-white'}`} style={socialType === 'followeds' ? { background: `${accentColor}55` } : {}}>粉丝</button>
+                      </div>
+                    </div>
+                    {socialError && <div className="text-sm text-red-300 bg-red-400/10 border border-red-300/20 rounded-lg p-3">{socialError}</div>}
+                    {socialLoading ? <div className="py-16 text-center text-white/55">正在加载{socialType === 'follows' ? '关注' : '粉丝'}列表…</div>
+                      : socialItems.length === 0 ? <div className="py-16 text-center text-white/45">暂无{socialType === 'follows' ? '关注' : '粉丝'}</div>
+                      : (
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                          {socialItems.map((u, index) => (
+                            <div
+                              key={`${u.userId}-${index}`}
+                              className="rounded-xl p-4 transition-all cursor-pointer"
+                              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+                              onClick={() => { if (u.userId) openUserProfile('netease', u.userId, u.nickname, u.avatarUrl, u.signature) }}
+                              title="点击查看用户主页"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 bg-white/10">
+                                  {u.avatarUrl ? <img src={u.avatarUrl} alt={u.nickname} className="w-full h-full object-cover" /> : <User className="w-6 h-6 m-auto mt-3 text-white/30" />}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-white text-sm font-medium truncate">{u.nickname}</p>
+                                  <p className="text-white/40 text-xs truncate mt-0.5">{u.signature || '这个人很懒，什么都没写'}</p>
+                                </div>
+                                {/* 关注/回关/取关（网易云） */}
+                                {u.userId && (
+                                  <button
+                                    type="button"
+                                    className={`shrink-0 px-2.5 py-1 rounded-full text-xs transition-colors ${u.isFollow ? 'text-white/50 hover:text-white/80' : 'text-white'}`}
+                                    style={u.isFollow ? { background: 'rgba(255,255,255,0.1)' } : { background: `${accentColor}55`, border: `1px solid ${accentColor}88` }}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      const next = !u.isFollow
+                                      setSocialItems(prev => prev.map(item =>
+                                        item.userId === u.userId ? { ...item, isFollow: next } : item
+                                      ))
+                                      void subscribeNeteaseUser(u.userId, next).then((result) => {
+                                        if (!(result?.code === 200 || result?.result === 100)) {
+                                          setSocialItems(prev => prev.map(item =>
+                                            item.userId === u.userId ? { ...item, isFollow: u.isFollow } : item
+                                          ))
+                                        }
+                                      })
+                                    }}
+                                  >
+                                    {u.isFollow ? '已关注' : (socialType === 'followeds' ? '回关' : '关注')}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                  </div>
+                )}
+                {activeTab === 'social' && platform === 'qq' && (
+                  <div className="space-y-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <h3 className="text-xl font-semibold text-white">社交关系</h3>
+                      <div className="flex rounded-lg bg-white/5 p-0.5">
+                        <button onClick={() => setQqSocialType('follows')} className={`px-3 py-1.5 rounded-md text-sm transition-colors ${qqSocialType === 'follows' ? 'text-white' : 'text-white/55 hover:text-white'}`} style={qqSocialType === 'follows' ? { background: `${accentColor}55` } : {}}>关注</button>
+                        <button onClick={() => setQqSocialType('fans')} className={`px-3 py-1.5 rounded-md text-sm transition-colors ${qqSocialType === 'fans' ? 'text-white' : 'text-white/55 hover:text-white'}`} style={qqSocialType === 'fans' ? { background: `${accentColor}55` } : {}}>粉丝</button>
+                      </div>
+                    </div>
+                    {qqSocialError && <div className="text-sm text-red-300 bg-red-400/10 border border-red-300/20 rounded-lg p-3">{qqSocialError}</div>}
+                    {qqSocialLoading ? <div className="py-16 text-center text-white/55">正在加载{qqSocialType === 'follows' ? '关注' : '粉丝'}列表…</div>
+                      : qqSocialItems.length === 0 ? <div className="py-16 text-center text-white/45">暂无{qqSocialType === 'follows' ? '关注' : '粉丝'}</div>
+                      : (
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                          {qqSocialItems.map((u, index) => (
+                            <div
+                              key={`${u.encUin || u.mid}-${index}`}
+                              className="rounded-xl p-4 transition-all cursor-pointer"
+                              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+                              onClick={() => {
+                                // 关注列表里有歌手的 mid → 应用内打开歌手详情
+                                if (u.mid) {
+                                  if (onOpenArtist) onOpenArtist(u.mid, 'qq')
+                                  else if (u.encUin) openUserProfile('qq', u.encUin, u.name, u.avatarUrl)
+                                } else if (u.encUin) {
+                                  openUserProfile('qq', u.encUin, u.name, u.avatarUrl)
+                                }
+                              }}
+                              title={u.mid ? '点击打开歌手详情' : '点击查看用户主页'}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 bg-white/10">
+                                  {u.avatarUrl ? <img src={u.avatarUrl} alt={u.name} className="w-full h-full object-cover" /> : <Users className="w-6 h-6 m-auto mt-3 text-white/30" />}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-white text-sm font-medium truncate">{u.name}</p>
+                                  <p className="text-white/40 text-xs truncate mt-0.5">{u.desc || (u.mid ? '歌手' : '这个人很懒，什么都没写')}</p>
+                                </div>
+                                {/* 关注/回关按钮（仅用户；自己不显示；歌手关注走歌手详情内） */}
+                                {!u.mid && !u.isSelf && u.encUin && (
+                                  <button
+                                    type="button"
+                                    className={`shrink-0 px-2.5 py-1 rounded-full text-xs transition-colors ${u.isFollow ? 'text-white/50 hover:text-white/80' : 'text-white'}`}
+                                    style={u.isFollow ? { background: 'rgba(255,255,255,0.1)' } : { background: `${accentColor}55`, border: `1px solid ${accentColor}88` }}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      const next = !u.isFollow
+                                      // 乐观更新，失败时回滚
+                                      setQqSocialItems(prev => prev.map(item =>
+                                        item.encUin === u.encUin ? { ...item, isFollow: next } : item
+                                      ))
+                                      void subscribeQQUser(u.encUin, next).then((result) => {
+                                        if (!(result?.result === 100 || result?.code === 200)) {
+                                          setQqSocialItems(prev => prev.map(item =>
+                                            item.encUin === u.encUin ? { ...item, isFollow: u.isFollow } : item
+                                          ))
+                                        }
+                                      })
+                                    }}
+                                  >
+                                    {/* 粉丝 tab 里未关注的是“回关”（对方已关注我）；关注 tab 里都是“已关注”；已关注再点取关 */}
+                                    {u.isFollow ? '已关注' : (qqSocialType === 'fans' ? '回关' : '关注')}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                  </div>
+                )}
+                {activeTab === 'favs' && viewTarget && platform === 'qq' && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <Heart className="w-4 h-4 text-white/60" />
+                      <h3 className="text-sm font-medium text-white/80">我喜欢（{qqFavItems.length}）</h3>
+                    </div>
+                    {qqFavLoading ? <div className="py-12 text-center text-white/45 text-sm">加载中...</div>
+                      : qqFavItems.length === 0 ? <div className="py-12 text-center text-white/45 text-sm">暂无我喜欢数据</div>
+                      : (
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                          {qqFavItems.map((item, index) => (
+                            <div key={`${item.id || index}-${index}`} className="rounded-xl p-2.5 transition-all" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                              <div className="relative w-full aspect-square rounded-lg overflow-hidden mb-2" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                                {item.logo ? <img src={item.logo} alt={item.title || ''} className="w-full h-full object-cover" /> : <Music className="w-8 h-8 m-auto text-white/20" />}
+                              </div>
+                              <p className="text-white/90 text-xs font-medium truncate">{item.title || item.name || '未知'}</p>
+                              <p className="text-white/40 text-[11px] truncate mt-0.5">
+                                {Array.isArray(item.vec_singer) ? item.vec_singer.map((s: any) => s.name).join(' / ') : ''}
+                                {item.song_num ? ` · ${item.song_num} 首` : ''}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                  </div>
+                )}
+                {activeTab === 'collections' && !viewTarget && (
+                  <div className="space-y-6">
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <Disc3 className="w-4 h-4 text-white/60" />
+                        <h3 className="text-sm font-medium text-white/80">收藏的专辑（{collectedAlbums.length}）</h3>
+                      </div>
+                      {collectionsLoading ? <div className="py-10 text-center text-white/45 text-sm">加载中...</div>
+                        : collectedAlbums.length === 0 ? <div className="py-10 text-center text-white/45 text-sm">暂无收藏专辑</div>
+                        : (
+                          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                            {collectedAlbums.map((album, index) => {
+                              const albumId = album.id || album.albumid || album.albumId
+                              const albumName = album.name || album.albumname || '未知专辑'
+                              const cover = album.picUrl || album.pic || ''
+                              const singerName = album.artist?.name || album.singername || ''
+                              return (
+                                <div key={`${albumId || index}-${index}`} className="rounded-xl p-2.5 transition-all cursor-pointer" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+                                  onClick={() => { if (albumId && onOpenAlbum) onOpenAlbum(String(albumId), platform) }} title="点击打开专辑">
+                                  <div className="relative w-full aspect-square rounded-lg overflow-hidden mb-2" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                                    {cover ? <img src={cover} alt={albumName} className="w-full h-full object-cover" /> : <Music className="w-8 h-8 m-auto text-white/20" />}
+                                  </div>
+                                  <p className="text-white/90 text-xs font-medium truncate">{albumName}</p>
+                                  <p className="text-white/40 text-[11px] truncate mt-0.5">{singerName}</p>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 mb-3">
+                        <Music className="w-4 h-4 text-white/60" />
+                        <h3 className="text-sm font-medium text-white/80">关注的歌手（{collectedArtists.length}）</h3>
+                      </div>
+                      {collectedArtists.length === 0 ? <div className="py-10 text-center text-white/45 text-sm">暂无关注歌手</div>
+                        : (
+                          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                            {collectedArtists.map((artist, index) => {
+                              const artistId = artist.id || artist.singerid || artist.mid
+                              const artistName = artist.name || artist.singername || '未知歌手'
+                              const cover = artist.picUrl || artist.pic || artist.singerpic || ''
+                              return (
+                                <div key={`${artistId || index}-${index}`} className="rounded-xl p-4 transition-all cursor-pointer flex items-center gap-3" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+                                  onClick={() => { if (artistId && onOpenArtist) onOpenArtist(String(artistId), platform) }} title="点击打开歌手">
+                                  <div className="w-12 h-12 rounded-full overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.1)' }}>
+                                    {cover ? <img src={cover} alt={artistName} className="w-full h-full object-cover" /> : <Music className="w-6 h-6 m-auto mt-3 text-white/30" />}
+                                  </div>
+                                  <p className="text-white/90 text-xs font-medium truncate">{artistName}</p>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                    </div>
+                    {platform === 'netease' && (
+                      <div>
+                        <div className="flex items-center gap-2 mb-3">
+                          <Film className="w-4 h-4 text-white/60" />
+                          <h3 className="text-sm font-medium text-white/80">收藏的 MV（{collectedMvs.length}）</h3>
+                        </div>
+                        {collectedMvs.length === 0 ? <div className="py-10 text-center text-white/45 text-sm">暂无收藏 MV</div>
+                          : (
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                              {collectedMvs.map((mv, index) => {
+                                const mvName = mv.name || mv.title || '未知 MV'
+                                const cover = mv.cover || mv.picUrl || mv.imgurl16v9 || ''
+                                return (
+                                  <div key={`${mv.id || index}-${index}`} className="rounded-xl p-2.5 transition-all cursor-pointer" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+                                    onClick={() => { if (mv.id) window.dispatchEvent(new CustomEvent('play-mv', { detail: { id: mv.id, name: mvName, platform: 'netease' } })) }} title="点击播放 MV">
+                                    <div className="relative w-full aspect-video rounded-lg overflow-hidden mb-2" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                                      {cover ? <img src={cover} alt={mvName} className="w-full h-full object-cover" /> : <Film className="w-8 h-8 m-auto text-white/20" />}
+                                    </div>
+                                    <p className="text-white/90 text-xs font-medium truncate">{mvName}</p>
+                                    <p className="text-white/40 text-[11px] truncate mt-0.5">{mv.artistName || mv.artist?.name || ''}</p>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {activeTab === 'rank' && currentPlatform === 'netease' && (
+                  <div className="space-y-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <h3 className="text-xl font-semibold text-white">听歌排行</h3>
+                      <div className="flex rounded-lg bg-white/5 p-0.5">
+                        <button onClick={() => setRankType(0)} className={`px-3 py-1.5 rounded-md text-sm transition-colors ${rankType === 0 ? 'text-white' : 'text-white/55 hover:text-white'}`} style={rankType === 0 ? { background: `${accentColor}55` } : {}}>所有时间</button>
+                        <button onClick={() => setRankType(1)} className={`px-3 py-1.5 rounded-md text-sm transition-colors ${rankType === 1 ? 'text-white' : 'text-white/55 hover:text-white'}`} style={rankType === 1 ? { background: `${accentColor}55` } : {}}>最近一周</button>
+                      </div>
+                    </div>
+                    {rankError && <div className="text-sm text-red-300 bg-red-400/10 border border-red-300/20 rounded-lg p-3">{rankError}</div>}
+                    {rankLoading ? <div className="py-16 text-center text-white/55">正在加载听歌排行…</div>
+                      : rankItems.length === 0 ? <div className="py-16 text-center text-white/45">暂无听歌记录</div>
+                      : (
+                        <div className="space-y-1">
+                          {rankItems.map((song, index) => (
+                            <div
+                              key={`${song.id}-${index}`}
+                              className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-white/5 transition-colors group cursor-pointer"
+                              onClick={() => handleSongSelection(song, rankItems)}
+                              onContextMenu={(event) => {
+                                event.preventDefault()
+                                setRecentSongContextMenu({ show: true, x: event.clientX, y: event.clientY, song, songs: rankItems })
+                              }}
+                            >
+                              <span className={`w-8 text-center text-sm font-semibold shrink-0 ${index < 3 ? '' : 'text-white/40'}`} style={index < 3 ? { color: accentColor } : {}}>{index + 1}</span>
+                              <div className="w-11 h-11 rounded-lg overflow-hidden shrink-0 bg-white/10">
+                                {song.album?.picUrl ? <CachedImage src={song.album.picUrl} alt={song.name} className="w-full h-full object-cover" fallback={<div className="w-full h-full flex items-center justify-center"><Music className="w-5 h-5 text-white/20" /></div>} /> : <div className="w-full h-full flex items-center justify-center"><Music className="w-5 h-5 text-white/20" /></div>}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-white text-sm font-medium truncate">{song.name}</p>
+                                <p className="text-white/45 text-xs truncate">{(song.artists || []).map(a => a.name).join(' / ') || '未知歌手'}</p>
+                              </div>
+                              {song.playCount ? (
+                                <span className="text-white/40 text-[11px] shrink-0 mr-1">{formatCount(song.playCount)} 次</span>
+                              ) : null}
+                              <button type="button" onClick={(event) => { event.stopPropagation(); handleSongSelection(song, rankItems) }} className="p-2 rounded-full bg-black/60 hover:bg-black/80 text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg" aria-label="播放">
+                                <Play className="w-4 h-4" fill="currentColor" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                  </div>
+                )}
+                {activeTab === 'detail' && userDetail && (
                   <div className="max-w-2xl mx-auto">
                     <div className="flex flex-col items-center mb-8">
                       {/* 大头像 */}

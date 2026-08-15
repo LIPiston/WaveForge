@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { X, Music, Disc3, Clock, BadgeCheck, Crown, Calendar, Video, CircleDollarSign } from 'lucide-react'
+import { X, Music, Disc3, Clock, BadgeCheck, Crown, Calendar, Video, CircleDollarSign, ListMusic, Mic2, ScrollText, BookOpen } from 'lucide-react'
 import type { Song } from '../services/musicApi'
+import { getLyrics, getNeteaseSongWiki, getQQSongPlaylist } from '../services/musicApi'
 
 interface SongDetailModalProps {
   song: Song
@@ -36,6 +37,14 @@ export default function SongDetailModal({ song, onClose, playerTheme }: SongDeta
   const dark = playerTheme === 'dark'
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
   const [extra, setExtra] = useState<{ publishTime?: number; mvId?: number; fee?: number; quality?: string } | null>(null)
+  // QQ 歌曲详情的板块数据
+  const [qqInfo, setQqInfo] = useState<any>(null)
+  const [credits, setCredits] = useState<string[]>([])
+  const [lyrics, setLyrics] = useState<{ time: number; text: string }[]>([])
+  const [lyricsLoading, setLyricsLoading] = useState(false)
+  // 网易云歌曲百科 / QQ 所在歌单
+  const [wiki, setWiki] = useState<string>('')
+  const [songPlaylists, setSongPlaylists] = useState<{ id: string; name: string; coverUrl: string }[]>([])
 
   useEffect(() => {
     const handleAccent = (e: Event) => {
@@ -63,6 +72,19 @@ export default function SongDetailModal({ song, onClose, playerTheme }: SongDeta
               quality: data.song.vip ? '无损 / 高品质' : '标准',
             })
           }
+          // 基础信息板块（语种/流派/唱片公司/发行时间/简介）
+          if (!cancelled && data?.detail?.info) setQqInfo(data.detail.info)
+          // 歌词 + 幕后团队（歌词前几行的“词/曲/编曲/制作人”等）
+          setLyricsLoading(true)
+          const lyricLines = await getLyrics(mid, 'qq', song.name, Array.isArray(song.artists) ? song.artists.map(a => a.name).join(', ') : '', song.duration)
+          if (!cancelled && Array.isArray(lyricLines)) {
+            setLyrics(lyricLines)
+            const creditLines = lyricLines.slice(0, 20)
+              .map(l => (l.text || '').trim())
+              .filter(t => /^(词|曲|编曲|制作人|合声|和声|吉他|贝斯|鼓|录音|混音|母带|弦乐|小提琴|钢琴|键盘|监制)/.test(t))
+            setCredits(creditLines)
+          }
+          if (!cancelled) setLyricsLoading(false)
         } else {
           const res = await fetch(`http://localhost:3001/api/netease/song/detail?ids=${encodeURIComponent(String(song.id))}`)
           const data = await res.json()
@@ -87,6 +109,27 @@ export default function SongDetailModal({ song, onClose, playerTheme }: SongDeta
       }
     }
     void fetchDetail()
+    return () => { cancelled = true }
+  }, [song.id, song.mid, song.platform])
+
+  // 网易云歌曲百科 / QQ 歌曲所在歌单
+  useEffect(() => {
+    let cancelled = false
+    if (song.platform === 'netease') {
+      void getNeteaseSongWiki(song.id).then((summary) => {
+        if (!cancelled && summary) setWiki(String(summary).slice(0, 300))
+      })
+    } else if (song.platform === 'qq' && song.mid) {
+      void getQQSongPlaylist(String(song.mid)).then((data) => {
+        if (cancelled || !data) return
+        const list = data?.list || data?.songList || []
+        setSongPlaylists(Array.isArray(list) ? list.slice(0, 5).map((p: any) => ({
+          id: String(p.dissid || p.tid || ''),
+          name: p.dissname || p.name || '未知歌单',
+          coverUrl: p.imgurl || p.picUrl || '',
+        })) : [])
+      })
+    }
     return () => { cancelled = true }
   }, [song.id, song.mid, song.platform])
 
@@ -126,7 +169,7 @@ export default function SongDetailModal({ song, onClose, playerTheme }: SongDeta
         exit={{ scale: 0.92, opacity: 0, y: 12 }}
         transition={{ type: 'spring', damping: 26, stiffness: 320 }}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-sm overflow-hidden rounded-3xl shadow-2xl"
+        className="w-full max-w-lg overflow-hidden rounded-3xl shadow-2xl max-h-[88vh] flex flex-col"
         style={{ background: dark ? 'rgba(14,17,24,0.86)' : 'rgba(255,255,255,0.9)', border: `1px solid ${dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)'}`, backdropFilter: 'blur(30px)' }}
       >
         {/* 头部 */}
@@ -145,7 +188,7 @@ export default function SongDetailModal({ song, onClose, playerTheme }: SongDeta
           </button>
         </div>
 
-        <div className="p-6">
+        <div className="flex-1 overflow-y-auto p-6">
           {/* 封面 + 标题 */}
           <div className="flex gap-4 items-center">
             <div className="w-24 h-24 rounded-2xl overflow-hidden shrink-0" style={{ background: dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)', border: `1px solid ${border}` }}>
@@ -178,6 +221,97 @@ export default function SongDetailModal({ song, onClose, playerTheme }: SongDeta
             {platformLabel && infoRow(<BadgeCheck className="w-4 h-4" />, '来源', platformLabel)}
             {typeof song.commentCount === 'number' && infoRow(<Music className="w-4 h-4" />, '评论', song.commentCount.toLocaleString(), true)}
           </div>
+
+          {/* QQ 基础信息板块（语种/流派/唱片公司/发行时间/简介） */}
+          {song.platform === 'qq' && qqInfo && (
+            <div className="mt-6">
+              <div className="flex items-center gap-2 mb-2.5">
+                <ListMusic className="w-4 h-4" style={{ color: accentColor }} />
+                <h4 className={`text-sm font-semibold ${textPrimary}`}>基础信息</h4>
+              </div>
+              <div className="space-y-2">
+                {qqInfo.lan?.content?.[0]?.value && infoRow(<Mic2 className="w-4 h-4" />, '语种', qqInfo.lan.content[0].value)}
+                {qqInfo.genre?.content?.[0]?.value && infoRow(<Music className="w-4 h-4" />, '流派', qqInfo.genre.content[0].value)}
+                {qqInfo.company?.content?.[0]?.value && infoRow(<Disc3 className="w-4 h-4" />, '唱片公司', qqInfo.company.content[0].value)}
+                {qqInfo.pub_time?.content?.[0]?.value && infoRow(<Calendar className="w-4 h-4" />, '发行时间', qqInfo.pub_time.content[0].value)}
+              </div>
+              {qqInfo.intro?.content?.[0]?.value && (
+                <div className="mt-3 rounded-xl px-3 py-2.5" style={{ background: dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }}>
+                  <p className={`${textSecondary} text-xs mb-1`}>歌曲简介</p>
+                  <p className={`${textPrimary} text-sm leading-relaxed`}>{qqInfo.intro.content[0].value}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 幕后团队（QQ 歌词头部信息） */}
+          {song.platform === 'qq' && credits.length > 0 && (
+            <div className="mt-6">
+              <div className="flex items-center gap-2 mb-2.5">
+                <Mic2 className="w-4 h-4" style={{ color: accentColor }} />
+                <h4 className={`text-sm font-semibold ${textPrimary}`}>幕后团队</h4>
+              </div>
+              <div className="rounded-xl px-3 py-2.5" style={{ background: dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }}>
+                {credits.map((line, i) => (
+                  <p key={i} className={`${textPrimary} text-sm leading-6`}>{line}</p>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 歌词 */}
+          {song.platform === 'qq' && (
+            <div className="mt-6">
+              <div className="flex items-center gap-2 mb-2.5">
+                <ScrollText className="w-4 h-4" style={{ color: accentColor }} />
+                <h4 className={`text-sm font-semibold ${textPrimary}`}>歌词</h4>
+              </div>
+              {lyricsLoading ? (
+                <p className={`${textSecondary} text-sm py-3`}>加载歌词中...</p>
+              ) : lyrics.length === 0 ? (
+                <p className={`${textSecondary} text-sm py-3`}>暂无歌词</p>
+              ) : (
+                <div className="rounded-xl px-3 py-2.5 max-h-64 overflow-y-auto" style={{ background: dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }}>
+                  {lyrics.map((l, i) => (
+                    <p key={i} className={`${textPrimary} text-sm leading-6`}>{l.text || '\u00A0'}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 网易云歌曲百科 */}
+          {song.platform === 'netease' && wiki && (
+            <div className="mt-6">
+              <div className="flex items-center gap-2 mb-2.5">
+                <BookOpen className="w-4 h-4" style={{ color: accentColor }} />
+                <h4 className={`text-sm font-semibold ${textPrimary}`}>歌曲百科</h4>
+              </div>
+              <div className="rounded-xl px-3 py-2.5" style={{ background: dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }}>
+                <p className={`${textPrimary} text-sm leading-relaxed`}>{wiki}</p>
+              </div>
+            </div>
+          )}
+
+          {/* QQ 歌曲所在歌单 */}
+          {song.platform === 'qq' && songPlaylists.length > 0 && (
+            <div className="mt-6">
+              <div className="flex items-center gap-2 mb-2.5">
+                <ListMusic className="w-4 h-4" style={{ color: accentColor }} />
+                <h4 className={`text-sm font-semibold ${textPrimary}`}>收录于歌单</h4>
+              </div>
+              <div className="space-y-2">
+                {songPlaylists.map((p, i) => (
+                  <div key={`${p.id}-${i}`} className="flex items-center gap-3 rounded-xl px-3 py-2" style={{ background: dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }}>
+                    <div className="w-9 h-9 rounded-md overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                      {p.coverUrl ? <img src={p.coverUrl} alt={p.name} className="w-full h-full object-cover" /> : <Music className="w-5 h-5 m-auto mt-2 text-white/30" />}
+                    </div>
+                    <p className={`${textPrimary} text-sm truncate`}>{p.name}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </motion.div>
     </motion.div>

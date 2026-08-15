@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Pause, Volume2, VolumeX, Maximize, Minimize } from 'lucide-react'
-import { getMVUrl, getMVDetail } from '../services/musicApi'
+import { getMVPlaybackInfo, getMVDetail } from '../services/musicApi'
 
 interface MV {
   id: number | string
@@ -22,6 +22,7 @@ export default function VideoPlayer({ mvId, mvName, platform = 'netease', onClos
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [playError, setPlayError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
@@ -65,6 +66,7 @@ export default function VideoPlayer({ mvId, mvName, platform = 'netease', onClos
     setCurrentMVIndex(index)
     setIsLoading(true)
     setShowReplayButton(false)
+    setPlayError(null)
     
     try {
       console.log('🎬 开始加载MV:', mv.id, mv.name, 'platform:', mv.platform)
@@ -77,12 +79,15 @@ export default function VideoPlayer({ mvId, mvName, platform = 'netease', onClos
       }
       
       // 获取播放地址
-      const url = await getMVUrl(mv.id, 1080, mv.platform || 'netease')
-      if (url) {
-        setVideoUrl(url)
-        console.log('✅ MV URL加载成功:', url)
+      const info = await getMVPlaybackInfo(mv.id, 1080, mv.platform || 'netease')
+      if (info.url) {
+        setVideoUrl(info.url)
+        setPlayError(null)
+        console.log('✅ MV URL加载成功:', info.url)
       } else {
-        console.error('❌ 无法获取MV播放地址')
+        setVideoUrl(null)
+        setPlayError(info.error || '无法获取MV播放地址')
+        console.error('❌ 无法获取MV播放地址:', info.error || '')
       }
     } catch (error) {
       console.error('加载MV失败:', error)
@@ -96,6 +101,7 @@ export default function VideoPlayer({ mvId, mvName, platform = 'netease', onClos
     const fetchMVUrl = async () => {
       setIsLoading(true)
       setShowReplayButton(false)
+      setPlayError(null)
       try {
         console.log('🎬 开始加载MV:', mvId, mvName, 'platform:', platform)
         
@@ -107,12 +113,15 @@ export default function VideoPlayer({ mvId, mvName, platform = 'netease', onClos
         }
         
         // 获取播放地址
-        const url = await getMVUrl(mvId, 1080, platform)
-        if (url) {
-          setVideoUrl(url)
-          console.log('✅ MV URL加载成功:', url)
+        const info = await getMVPlaybackInfo(mvId, 1080, platform)
+        if (info.url) {
+          setVideoUrl(info.url)
+          setPlayError(null)
+          console.log('✅ MV URL加载成功:', info.url)
         } else {
-          console.error('❌ 无法获取MV播放地址')
+          setVideoUrl(null)
+          setPlayError(info.error || '无法获取MV播放地址')
+          console.error('❌ 无法获取MV播放地址:', info.error || '')
         }
       } catch (error) {
         console.error('加载MV失败:', error)
@@ -462,9 +471,9 @@ export default function VideoPlayer({ mvId, mvName, platform = 'netease', onClos
               </AnimatePresence>
             </>
           ) : (
-            <div className="text-white text-center">
+            <div className="text-white text-center px-8">
               <p className="text-lg">无法加载视频</p>
-              <p className="text-sm text-white/60 mt-2">该MV可能暂时无法播放</p>
+              <p className="text-sm text-white/60 mt-2">{playError || '该MV可能暂时无法播放'}</p>
             </div>
           )}
         </div>

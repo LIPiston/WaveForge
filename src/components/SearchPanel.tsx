@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Search, X, Music, History, Clock, User, Disc, Sparkles, TrendingUp } from 'lucide-react'
-import { searchSongs, searchSuggest, searchArtists, searchAlbums, Song, Artist, Album, SearchSuggestion, getProxiedImageUrl, loadAlbumCovers, resolveSongAlbumIdentifier, searchHot } from '../services/musicApi'
+import { Search, X, Music, History, Clock, User, Disc, Sparkles, TrendingUp, ListMusic } from 'lucide-react'
+import { searchSongs, searchSuggest, searchArtists, searchAlbums, searchQuick, searchPlaylists, Song, Artist, Album, SearchSuggestion, getProxiedImageUrl, loadAlbumCovers, resolveSongAlbumIdentifier, searchHot } from '../services/musicApi'
 import { mergeFusedSearchResults, type FusedSearchIntent, type MusicPlatform } from '../services/fusedSearch'
 import CachedImage from './CachedImage'
 import ArtistDetailModal from './ArtistDetailModal'
@@ -101,6 +101,28 @@ export default function SearchPanel({
     return parseStoredArray<Song>(saved)
   })
   const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([])
+
+  // QQ 快速联想（smartbox）：结构化返回歌手/歌曲/专辑
+  const buildQqQuickSuggestions = async (keyword: string): Promise<SearchSuggestion[]> => {
+    try {
+      const data = await searchQuick(keyword)
+      const raw = data?.data || {}
+      const suggestions: SearchSuggestion[] = []
+      ;(raw.singer?.itemlist || []).slice(0, 3).forEach((s: any) => {
+        if (s?.name) suggestions.push({ keyword: s.name, type: 'artist' })
+      })
+      ;(raw.song?.itemlist || []).slice(0, 4).forEach((s: any) => {
+        if (s?.name) suggestions.push({ keyword: s.name, type: 'song' })
+      })
+      ;(raw.album?.itemlist || []).slice(0, 2).forEach((a: any) => {
+        if (a?.name) suggestions.push({ keyword: a.name, type: 'album' })
+      })
+      if (suggestions.length > 0) return suggestions
+    } catch {
+      /* smartbox 失败回退 */
+    }
+    return (await searchSuggest(keyword, 'qq')) || []
+  }
   const [searchHistory, setSearchHistory] = useState<string[]>([]) // 搜索历史
   const [hotSearch, setHotSearch] = useState<any[]>([]) // 搜索热词
   const [loading, setLoading] = useState(false)
@@ -156,7 +178,7 @@ export default function SearchPanel({
     const saved = localStorage.getItem('waveforge_last_search_platform')
     return (saved === 'qq' || saved === 'netease' || saved === 'fused') ? saved : 'netease'
   })
-  const [searchType, setSearchType] = useState<'song' | 'artist' | 'album'>(() => {
+  const [searchType, setSearchType] = useState<'song' | 'artist' | 'album' | 'playlist'>(() => {
     const sessionSaved = sessionStorage.getItem('waveforge_search_type')
     if (sessionSaved === 'artist' || sessionSaved === 'album' || sessionSaved === 'song') return sessionSaved
     const saved = localStorage.getItem('waveforge_last_search_type')
@@ -196,6 +218,7 @@ export default function SearchPanel({
     const saved = sessionStorage.getItem('waveforge_search_album_results')
     return parseStoredArray<Album>(saved)
   })
+  const [playlistResults, setPlaylistResults] = useState<{ id: string; name: string; coverImgUrl: string; trackCount: number; creator: string; platform: 'netease' | 'qq' }[]>([])
   const [fusionUnavailablePlatforms, setFusionUnavailablePlatforms] = useState<MusicPlatform[]>([])
   const [fusionIntent, setFusionIntent] = useState<FusedSearchIntent>(() => {
     const saved = sessionStorage.getItem('waveforge_search_fusion_intent')
@@ -397,11 +420,14 @@ export default function SearchPanel({
           ? (await Promise.allSettled([
               searchSuggest(keyword.trim(), 'netease'),
               searchSuggest(keyword.trim(), 'qq'),
+              searchQuick(keyword.trim()),
             ]))
               .flatMap(item => item.status === 'fulfilled' ? item.value : [])
               .filter((item, index, list) => list.findIndex(candidate => candidate.keyword.trim().toLocaleLowerCase() === item.keyword.trim().toLocaleLowerCase()) === index)
               .slice(0, 8)
-          : await searchSuggest(keyword.trim(), platform)
+          : platform === 'qq'
+            ? await buildQqQuickSuggestions(keyword.trim())
+            : await searchSuggest(keyword.trim(), platform)
         if (!active) return
         console.log('📝 搜索建议结果:', result)
         setSuggestions(result)
@@ -518,6 +544,20 @@ export default function SearchPanel({
         console.log('🔍 第一个专辑数据:', albums[0])
         setAlbumResults(albums)
         console.log('🔍 专辑结果已设置，调用 setAlbumResults，长度:', albums.length)
+      } else if (searchType === 'playlist') {
+        console.log('🔍 开始搜索歌单:', finalKeyword, 'platform:', platform)
+        const data = await searchPlaylists(finalKeyword, platform)
+        if (requestId !== searchRequestRef.current) return
+        const raw = platform === 'qq' ? (data?.playlists || []) : (data?.result?.playlists || [])
+        setPlaylistResults(Array.isArray(raw) ? raw.map((p: any) => ({
+          id: String(p.id || ''),
+          name: p.name || '',
+          coverImgUrl: p.coverImgUrl || p.picUrl || '',
+          trackCount: Number(p.trackCount ?? p.trackNumber ?? 0),
+          creator: p.creator?.nickname || p.creator?.nick || p.creator || '',
+          platform,
+        })) : [])
+        console.log('🔍 歌单搜索结果:', raw.length)
       }
     } catch (error) {
       console.error('❌ 搜索失败:', error)
@@ -528,7 +568,7 @@ export default function SearchPanel({
   }
 
   // 切换搜索类型（不立即搜索）
-  const handleSearchByType = (type: 'song' | 'artist' | 'album') => {
+  const handleSearchByType = (type: 'song' | 'artist' | 'album' | 'playlist') => {
     setSearchType(type)
   }
 
@@ -880,6 +920,20 @@ export default function SearchPanel({
                   <Music className="w-4 h-4 inline-block mr-1" />
                   搜歌曲
                 </button>
+                <button
+                  onClick={() => handleSearchByType('playlist')}
+                  disabled={loading}
+                  className={`px-4 py-2 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg disabled:opacity-50 ${
+                    searchType === 'playlist'
+                      ? 'bg-amber-600/90 text-white hover:bg-amber-600'
+                      : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
+                  }`}
+                >
+                  <ListMusic className="w-4 h-4 inline-block mr-1" />
+                  搜歌单
+                </button>
               </div>
             </div>}
           </div>
@@ -1134,6 +1188,38 @@ export default function SearchPanel({
                       <span>专辑: {artist.albumSize}</span>
                     )}
                   </div>
+                </motion.div>
+              ))}
+            </div>
+          ) : !isFused && searchType === 'playlist' && playlistResults.length > 0 ? (
+            // 歌单搜索结果
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {playlistResults.map((playlist, index) => (
+                <motion.div
+                  key={`playlist-${index}`}
+                  whileHover={{ scale: 1.02 }}
+                  onClick={() => {
+                    if (playlist.id) {
+                      const w = (window as any).waveforge
+                      if (w?.openExternal) void w.openExternal(`https://y.qq.com/n/ryqq_v2/playlist/${playlist.id}`)
+                    }
+                  }}
+                  className={`${bgCard} rounded-xl p-4 cursor-pointer transition-all hover:shadow-lg border ${borderColor}`}
+                >
+                  <div className="aspect-square rounded-lg overflow-hidden mb-3">
+                    {playlist.coverImgUrl ? (
+                      <CachedImage
+                        src={getProxiedImageUrl(playlist.coverImgUrl)}
+                        alt={playlist.name}
+                        className="w-full h-full object-cover"
+                        fallback={<div className="w-full h-full flex items-center justify-center bg-white/5"><ListMusic className={`w-12 h-12 ${textPrimary}/20`} /></div>}
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center bg-white/5"><ListMusic className={`w-12 h-12 ${textPrimary}/20`} /></div>
+                    )}
+                  </div>
+                  <h3 className={`${textPrimary} font-medium truncate`}>{playlist.name}</h3>
+                  <p className={`${textSecondary} text-sm mt-1 truncate`}>{playlist.creator || `${playlist.trackCount || 0} 首`}</p>
                 </motion.div>
               ))}
             </div>

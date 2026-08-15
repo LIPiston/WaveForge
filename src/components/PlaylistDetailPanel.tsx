@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { ChevronDown, Music, Play, Clock, Crown, Heart, Info } from 'lucide-react'
+import { ChevronDown, Music, Play, Clock, Crown, Heart, Info, Radio } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier } from '../services/musicApi'
 import { subscribePlaylist } from '../services/playlistService'
 import { useState, useRef, useEffect, useCallback, useMemo, type UIEvent } from 'react'
@@ -84,6 +84,35 @@ export default function PlaylistDetailPanel({
   const [heightVh, setHeightVh] = useState(80) // 从80vh开始，最大90vh
   const [subscribing, setSubscribing] = useState(false)
   const [collected, setCollected] = useState(Boolean(playlist?.isCollected))
+  const [smartLoading, setSmartLoading] = useState(false)
+
+  // 网易云智能播放（playmode/intelligence）：按当前歌单/歌曲生成智能续播列表
+  const handleSmartPlay = async () => {
+    if (!playlist || songs.length === 0 || smartLoading) return
+    const cookie = localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
+    if (!cookie) return
+    setSmartLoading(true)
+    try {
+      const res = await fetch(
+        `http://localhost:3001/api/netease/playmode/intelligence/list?cookie=${encodeURIComponent(cookie)}&id=${encodeURIComponent(String(songs[0].id))}&pid=${encodeURIComponent(String(playlist.id))}`
+      )
+      const data = await res.json()
+      const raw = Array.isArray(data?.data) ? data.data : []
+      const smartSongs: Song[] = raw.map((s: any) => ({
+        id: s.id,
+        name: s.name || '',
+        artists: Array.isArray(s.ar) ? s.ar.map((a: any) => ({ id: a.id, name: a.name })) : [],
+        album: s.al ? { name: s.al.name, picUrl: s.al.picUrl || '' } : { name: '', picUrl: '' },
+        duration: s.dt || 0,
+        platform: 'netease'
+      })).filter((s: Song) => s.id)
+      if (smartSongs.length > 0) onSongSelect(smartSongs[0], smartSongs)
+    } catch {
+      /* 智能播放失败静默 */
+    } finally {
+      setSmartLoading(false)
+    }
+  }
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [imagesLoaded, setImagesLoaded] = useState(false)
   const [loadedImageCount, setLoadedImageCount] = useState(0)
@@ -534,6 +563,21 @@ export default function PlaylistDetailPanel({
                         >
                           <Play className="w-3.5 h-3.5" fill="currentColor" />
                           播放全部
+                        </motion.button>
+                      )}
+                      {(playlist.platform === 'netease' || currentPlatform === 'netease') && songs.length > 0 && (
+                        <motion.button
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          disabled={smartLoading}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void handleSmartPlay()
+                          }}
+                          className={`px-4 py-1.5 rounded-full font-medium transition-all flex items-center gap-1.5 text-sm disabled:opacity-50 ${playerTheme === 'dark' ? 'border border-white/20 text-white/80 hover:bg-white/10' : 'border border-black/15 text-black/70 hover:bg-black/10'}`}
+                        >
+                          <Radio className={`w-3.5 h-3.5 ${smartLoading ? 'animate-pulse' : ''}`} />
+                          智能播放
                         </motion.button>
                       )}
                       <motion.button

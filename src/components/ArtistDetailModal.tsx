@@ -631,7 +631,7 @@ export default function ArtistDetailModal({
                     <div className="flex items-center gap-2">
                       <button
                         onClick={handlePlayAll}
-                        className="px-6 py-2 text-slate-950 rounded-full font-medium transition-all flex items-center gap-2 w-fit text-sm"
+                        className="px-6 py-2 text-white rounded-full font-medium transition-all flex items-center gap-2 w-fit text-sm"
                         style={{
                           backgroundColor: `${readableAccentColor}e6`,
                         }}

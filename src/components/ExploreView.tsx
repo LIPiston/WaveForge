@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Crown,
   Disc3,
+  Film,
   Headphones,
   Loader2,
   LogIn,
@@ -24,6 +25,7 @@ import {
   X,
 } from 'lucide-react'
 import type { Song } from '../services/musicApi'
+import { getNeteaseBanner, getQQBanner } from '../services/musicApi'
 import {
   fetchExploreChannel,
   fetchExploreChart,
@@ -50,6 +52,7 @@ import ExploreSettingsPanel, {
   type ExploreSectionId,
 } from './ExploreSettingsPanel'
 import SongContextMenu from './SongContextMenu'
+import MVExploreModal from './MVExploreModal'
 import { getUserPlaylists } from '../services/playlistService'
 import type { PlaybackOrigin, SongSelectHandler } from '../types/playbackNavigation'
 
@@ -366,6 +369,82 @@ export default function ExploreView({
   }>({ show: false, x: 0, y: 0, song: null, songs: [], continuous: false })
   const [shuffleOffset, setShuffleOffset] = useState(0)
   const [showModePanel, setShowModePanel] = useState(false)
+  const [showMVExplore, setShowMVExplore] = useState(false)
+  const [fmLoading, setFmLoading] = useState(false)
+  // 网易云首页 Banner 轮播
+  const [banners, setBanners] = useState<{ imageUrl: string; url: string; title: string }[]>([])
+  const [bannerIndex, setBannerIndex] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = platform === 'netease' ? getNeteaseBanner() : getQQBanner()
+    void load.then((list) => {
+      if (cancelled) return
+      setBanners(Array.isArray(list) ? list.map((b: any) => ({
+        imageUrl: b.imageUrl || '',
+        url: b.url || '',
+        title: b.title || b.typeTitle || '',
+      })).filter(b => b.imageUrl) : [])
+    })
+    return () => { cancelled = true }
+  }, [platform])
+
+  // Banner 自动轮播
+  useEffect(() => {
+    if (banners.length <= 1) return
+    const timer = setInterval(() => setBannerIndex(i => (i + 1) % banners.length), 5000)
+    return () => clearInterval(timer)
+  }, [banners.length])
+
+  // 处理 Banner 点击（解析网易云 url 打开歌单/歌曲）
+  const handleBannerClick = (banner: { imageUrl: string; url: string; title: string }) => {
+    const url = banner.url || ''
+    const playlistMatch = url.match(/playlist\?id=(\d+)/)
+    const songMatch = url.match(/song\?id=(\d+)/)
+    if (playlistMatch) {
+      void fetchExplorePlaylist({ id: playlistMatch[1], platform: 'netease' } as ExplorePlaylist).then((detail) => {
+        if (detail) {
+          setDetail(detail)
+          setDetailOpen(true)
+          setDetailError('')
+        }
+      })
+    } else if (songMatch) {
+      void fetchExploreHome('netease').then(() => {
+        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '打开歌曲详情请使用搜索', type: 'info' } }))
+      })
+    }
+  }
+
+  // 网易云私人 FM：个性化电台推荐播放
+  const handlePlayFM = async () => {
+    if (fmLoading) return
+    const cookie = getExploreCookie('netease')
+    if (!cookie) {
+      onLoginClick?.('netease')
+      return
+    }
+    setFmLoading(true)
+    try {
+      const res = await fetch(`http://localhost:3001/api/netease/personal_fm?cookie=${encodeURIComponent(cookie)}`)
+      const data = await res.json()
+      const raw = Array.isArray(data?.data) ? data.data : []
+      const songs: Song[] = raw.map((s: any) => ({
+        id: s.id,
+        name: s.name || '',
+        artists: Array.isArray(s.ar) ? s.ar.map((a: any) => ({ id: a.id, name: a.name })) : [],
+        album: s.al ? { name: s.al.name, picUrl: s.al.picUrl || '' } : { name: '', picUrl: '' },
+        duration: s.dt || 0,
+        platform: 'netease'
+      })).filter((s: Song) => s.id)
+      if (songs.length > 0) onSongSelect(songs[0], songs, { surface: 'explore-fm' })
+      else window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '私人 FM 暂无推荐，请稍后再试', type: 'error' } }))
+    } catch {
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '私人 FM 获取失败', type: 'error' } }))
+    } finally {
+      setFmLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (restorePlaybackOrigin?.surface !== 'explore-detail' || !restorePlaybackOrigin.detail) return
@@ -959,6 +1038,26 @@ export default function ExploreView({
             </div>
 
             <div className="ml-auto flex items-center gap-2">
+              {platform === 'netease' && (
+                <button
+                  type="button"
+                  onClick={() => void handlePlayFM()}
+                  className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/[0.08] bg-white/[0.045] text-white/58 transition hover:bg-white/[0.1] hover:text-white"
+                  aria-label="私人FM"
+                  title="私人FM"
+                >
+                  <Radio className={`h-[18px] w-[18px] ${fmLoading ? 'animate-pulse' : ''}`} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowMVExplore(true)}
+                className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/[0.08] bg-white/[0.045] text-white/58 transition hover:bg-white/[0.1] hover:text-white"
+                aria-label="MV专区"
+                title="MV专区"
+              >
+                <Film className="h-[18px] w-[18px]" />
+              </button>
               <button
                 type="button"
                 onClick={onRemoteClick}
@@ -1057,6 +1156,41 @@ export default function ExploreView({
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* 首页 Banner 轮播（网易云 / QQ） */}
+          {banners.length > 0 && (
+            <div className="relative mb-6 h-36 md:h-48 overflow-hidden rounded-[24px] border border-white/[0.08] bg-white/[0.045]">
+              <AnimatePresence initial={false}>
+                <motion.div
+                  key={bannerIndex}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.5 }}
+                  className="absolute inset-0 cursor-pointer"
+                  onClick={() => handleBannerClick(banners[bannerIndex])}
+                >
+                  <img src={banners[bannerIndex].imageUrl} alt={banners[bannerIndex].title} className="w-full h-full object-cover" />
+                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-3">
+                    <p className="text-white/90 text-sm font-medium truncate">{banners[bannerIndex].title}</p>
+                  </div>
+                </motion.div>
+              </AnimatePresence>
+              {banners.length > 1 && (
+                <div className="absolute bottom-2 right-3 flex gap-1.5">
+                  {banners.map((_, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setBannerIndex(i) }}
+                      className={`h-1.5 rounded-full transition-all ${i === bannerIndex ? 'w-5 bg-white' : 'w-1.5 bg-white/40'}`}
+                      aria-label={`Banner ${i + 1}`}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {loading && !payload ? (
             <ExploreSkeleton />
@@ -1659,6 +1793,16 @@ export default function ExploreView({
           platform={songContextMenu.song.platform || platform}
         />
       )}
+
+      <AnimatePresence>
+        {showMVExplore && (
+          <MVExploreModal
+            initialPlatform={platform}
+            playerTheme={playerTheme}
+            onClose={() => setShowMVExplore(false)}
+          />
+        )}
+      </AnimatePresence>
 
       <MiniPlayer
         show={Boolean(currentSong) && !detailOpen}

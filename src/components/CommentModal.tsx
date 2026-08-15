@@ -335,6 +335,24 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           // 新版API返回的数据在 data.comments 中
           const sourceComments = data.data?.comments || []
           
+          // 网易云热评（精彩评论）单独展示
+          if (data.data?.hotComments && Array.isArray(data.data.hotComments)) {
+            setHotComments(data.data.hotComments.map((c: any) => ({
+              commentId: c.commentId,
+              content: c.content,
+              user: {
+                nickname: c.user?.nickname || '匿名用户',
+                avatarUrl: c.user?.avatarUrl || '',
+                userId: c.user?.userId?.toString()
+              },
+              time: c.time,
+              likedCount: c.likedCount || 0,
+              rootCommentId: c.beReplied?.[0]?.beRepliedCommentId,
+              replyCount: 0,
+              replies: []
+            })).filter(Boolean))
+          }
+          
           // 保存cursor用于下次加载（仅最新评论需要）
           if (viewMode === 'latest' && data.data?.cursor) {
             setCursor(String(data.data.cursor))
@@ -1186,8 +1204,8 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
               </div>
             ) : (
               <div>
-                {/* QQ 评论区：热评展示在顶部，下方是全部评论 */}
-                {resourcePlatform === 'qq' && hotComments.length > 0 && (
+                {/* 热评区（网易云/QQ 共用）：热评展示在顶部，下方是全部评论 */}
+                {hotComments.length > 0 && (
                   <div>
                     <div className="flex items-center gap-2 px-2 py-3 text-gray-400 text-sm border-b border-white/5">
                       <span className="text-yellow-500">★</span>
