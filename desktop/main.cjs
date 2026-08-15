@@ -2604,36 +2604,6 @@ ipcMain.handle('audio:get-system-volume', () => {
   return systemVolumeRequest
 })
 
-/** 判定 Windows 默认音频输出端点类型：speaker / headphones / bluetooth / unknown */
-function detectOutputKind() {
-  return new Promise((resolve) => {
-    if (process.platform !== 'win32') return resolve('unknown')
-    // 用 PowerShell 枚举默认音频输出设备（渲染设备 + 蓝牙端点）
-    const ps = [
-      '$def = Get-ItemProperty "HKCU:\\Software\\Microsoft\\Multimedia\\Audio" -ErrorAction SilentlyContinue',
-      'Get-CimInstance Win32_SoundDevice | ForEach-Object { $_.Name }',
-    ].join('; ')
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 5000 }, (err, stdout) => {
-      if (err || !stdout) return resolve('unknown')
-      const names = stdout.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean)
-      const blob = names.join(' ')
-      if (/bluetooth|bt |a2dp|wireless headset/.test(blob)) return resolve('bluetooth')
-      if (/headphone|earphone|耳机|headset|ear/.test(blob)) return resolve('headphones')
-      if (names.length > 0) return resolve('speaker')
-      return resolve('unknown')
-    })
-  })
-}
-
-ipcMain.handle('audio:get-output-kind', async () => {
-  try {
-    const kind = await detectOutputKind()
-    return { success: true, kind }
-  } catch {
-    return { success: false, kind: 'unknown' }
-  }
-})
-
 ipcMain.handle('device-license:copy-id', () => {
   try {
     const identity = deviceLicense.getOrCreateDeviceId(app)

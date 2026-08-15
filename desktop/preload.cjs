@@ -42,10 +42,9 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
 
-  // 系统音量（频响补偿 / 低音量提示）+ 输出设备类型（v3 机型预设自动适配）
+  // 系统音量（频响补偿 / 低音量提示）
   audio: {
     getSystemVolume: () => ipcRenderer.invoke('audio:get-system-volume'),
-    getOutputKind: () => ipcRenderer.invoke('audio:get-output-kind'),
   },
 
   desktopWidgets: {

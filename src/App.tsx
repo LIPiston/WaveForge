@@ -20,7 +20,6 @@ import { indexedDBCache } from './services/indexedDBCache'
 import { autoMixAnalysisService } from './services/autoMixAnalysisService'
 import { AudioEffectsEngine } from './services/audioEffects/AudioEffectsEngine'
 import { AudioEffectsEngine as AudioEffectsEngineV2, LOUDNESS_COMPENSATION_THRESHOLD } from './services/audio-effects-v2/AudioEffectsEngine'
-import { AudioEffectsEngineV3 } from './services/audio-effects-v3/AudioEffectsEngineV3'
 import { loudnessNormalizationService } from './services/audio-effects-v2/loudnessNormalization'
 import { getAudioEngineVersion, setAudioEngineVersion, type AudioEngineVersion } from './services/audioEngineVersion'
 import { sequenceTracksHam2, type SequencingEntry } from './services/playlistSequencing'
@@ -50,8 +49,6 @@ const loadMixingStudio = () => import('./components/MixingStudio')
 const LazyMixingStudio = lazy(loadMixingStudio)
 const loadMixingStudioV2 = () => import('./components/MixingStudioV2')
 const LazyMixingStudioV2 = lazy(loadMixingStudioV2)
-const loadMixingStudioV3 = () => import('./components/MixingStudioV3')
-const LazyMixingStudioV3 = lazy(loadMixingStudioV3)
 const loadPlaylistPanel = () => import('./components/PlaylistPanel')
 const loadLoginView = () => import('./components/LoginView')
 const loadProfileView = () => import('./components/ProfileView')
@@ -1192,16 +1189,13 @@ function App() {
   // 同名但来自不同模块，activeEngine 用版本分支取用，避免两套实例互相干扰。
   const v1EngineRef = useRef<AudioEffectsEngine | null>(null)
   const v2EngineRef = useRef<AudioEffectsEngineV2 | null>(null)
-  const v3EngineRef = useRef<AudioEffectsEngineV3 | null>(null)
   if (v1EngineRef.current === null) v1EngineRef.current = new AudioEffectsEngine()
   if (v2EngineRef.current === null) v2EngineRef.current = new AudioEffectsEngineV2()
-  if (v3EngineRef.current === null) v3EngineRef.current = new AudioEffectsEngineV3()
   const audioGraphHandleRef = useRef<AudioGraphHandle | null>(null)
 
   const handleAudioGraphReady = useCallback((handle: AudioGraphHandle) => {
     audioGraphHandleRef.current = handle
-    if (audioEngineVersion === 'v3') v3EngineRef.current?.attach(handle)
-    else if (audioEngineVersion === 'v2') v2EngineRef.current?.attach(handle)
+    if (audioEngineVersion === 'v2') v2EngineRef.current?.attach(handle)
     else v1EngineRef.current?.attach(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioEngineVersion])
@@ -1246,29 +1240,6 @@ function App() {
     // eslint 无：addToast 为渲染内稳定函数（useCallback 未使用也安全，闭包读取最新 state）
   }, [audioEngineVersion])
 
-  // 输出设备检测（v3 专属）：启动时 + 每 10 分钟查询 Windows 默认音频输出端点类型，
-  // 驱动 v3 引擎 setOutputDeviceKind 自动切设备档案（外放/耳机/蓝牙）。v1/v2 下不轮询。
-  useEffect(() => {
-    if (audioEngineVersion !== 'v3') return
-    let cancelled = false
-    let timer: number | null = null
-    const checkOutputKind = async () => {
-      try {
-        const result = await window.electron?.audio?.getOutputKind()
-        if (cancelled || !result || !result.success || !v3EngineRef.current) return
-        v3EngineRef.current.setOutputDeviceKind(result.kind)
-      } catch {
-        // 忽略：输出设备检测不可用（非 Windows / IPC 缺失 / 读取失败）
-      }
-    }
-    void checkOutputKind()
-    timer = window.setInterval(() => { void checkOutputKind() }, 600_000)
-    return () => {
-      cancelled = true
-      if (timer !== null) window.clearInterval(timer)
-    }
-  }, [audioEngineVersion])
-
   // 服务健康检测：应用启动后约 3s（等待 Python 子进程就绪），检测频响补偿（3004）与响度（3003）
   // 服务是否正常；就绪时各弹一次 toast（localStorage 防重复）。失败静默——服务降级已有回退，
   // 浏览器预览等无服务环境不会弹提示。
@@ -1301,15 +1272,13 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 响度归一化（v2/v3 专属）：开关在调音室切换时即时应用/回退（利用最新 activeTrackKeyRef 与预载 url）
+  // 响度归一化（v2 专属）：开关在调音室切换时即时应用/回退（利用最新 activeTrackKeyRef 与预载 url）
   useEffect(() => {
-    // 归一化是 v2/v3 专属；v1 下不挂监听（事件由 v2/v3 调音室派发）
+    // 归一化是 v2 专属；v1 下不挂监听（事件由 v2 调音室派发）
     if (audioEngineVersion === 'v1') return
     const handleNormalizationChange = (e: Event) => {
       const enabled = (e as CustomEvent).detail === true
-      // v2/v3 引擎的 getSettings().normalizationEnabled + setNormalizationGain 接口契约一致，
-      // 服务内部只调用这两个成员，跨版本复用（类型上以 v2 类声明，运行时行为对 v3 相同）。
-      const engine = (audioEngineVersion === 'v3' ? v3EngineRef.current : v2EngineRef.current) as AudioEffectsEngineV2 | null
+      const engine = v2EngineRef.current
       if (!engine) return
       if (!enabled) {
         loudnessNormalizationService.reset(engine)
@@ -1553,27 +1522,15 @@ function App() {
 
     // 换引擎：dispose 旧链（恢复 masterGain→analyser 直连），attach 新链
     if (handle) {
-      if (audioEngineVersionRef.current === 'v3') v3EngineRef.current?.dispose()
-      else if (audioEngineVersionRef.current === 'v2') v2EngineRef.current?.dispose()
+      if (audioEngineVersionRef.current === 'v2') v2EngineRef.current?.dispose()
       else v1EngineRef.current?.dispose()
     }
     audioEngineVersionRef.current = next
     setAudioEngineVersionState(next)
     setAudioEngineVersion(next)
     if (handle) {
-      if (next === 'v3') v3EngineRef.current?.attach(handle)
-      else if (next === 'v2') v2EngineRef.current?.attach(handle)
+      if (next === 'v2') v2EngineRef.current?.attach(handle)
       else v1EngineRef.current?.attach(handle)
-      // 切到 v3 时补挂曲目档案/智能响度（当前曲目为最新 activeTrackKeyRef）
-      if (next === 'v3' && v3EngineRef.current) {
-        const trackKey = activeTrackKeyRef.current
-        if (trackKey) {
-          v3EngineRef.current.setActiveSource(trackKey)
-          const cached = preloadCacheRef.current.get(trackKey)
-          const url = cached?.url || ''
-          if (url) void loudnessNormalizationService.measure(trackKey, url).then(lufs => v3EngineRef.current?.setTrackLoudness(lufs))
-        }
-      }
       // 切到 v2 时补挂响度归一化（若调音室已开启；apply 内部按 settings 判断，未开启即跳过）
       if (next === 'v2' && v2EngineRef.current) {
         const trackKey = activeTrackKeyRef.current
@@ -1590,7 +1547,7 @@ function App() {
     }
     // 右上角 2s 淡出弹窗（连点/重入时先清旧定时器，避免旧弹窗提前清掉新弹窗）
     if (engineSwitchToastTimerRef.current !== null) window.clearTimeout(engineSwitchToastTimerRef.current)
-    setEngineSwitchToast(`音效引擎已切换至 ${next === 'v3' ? 'v3（机型预设）' : next === 'v2' ? 'v2（增强版）' : 'v1（原版）'}${handle ? '' : '，下次启动生效'}`)
+    setEngineSwitchToast(`音效引擎已切换至 ${next === 'v2' ? 'v2（增强版）' : 'v1（原版）'}${handle ? '' : '，下次启动生效'}`)
     engineSwitchToastTimerRef.current = window.setTimeout(() => {
       engineSwitchToastTimerRef.current = null
       setEngineSwitchToast(null)
@@ -1701,13 +1658,6 @@ function App() {
         const nextRevision = bumpQueueRevision()
         const cacheKey = getSongKey(normalizedSong)
         activeTrackKeyRef.current = cacheKey
-        // v3 专属：无缝接管也是切歌，同步曲目档案与智能响度
-        if (audioEngineVersion === 'v3' && v3EngineRef.current) {
-          v3EngineRef.current.setActiveSource(cacheKey)
-          const cached = preloadCacheRef.current.get(cacheKey)
-          const url = cached?.url || options.preloadedAudioUrl
-          if (url) void loudnessNormalizationService.measure(cacheKey, url).then(lufs => v3EngineRef.current?.setTrackLoudness(lufs))
-        }
         currentIndexRef.current = index
         setCurrentIndex(index)
         setCurrentTrack(createTrackFromSong(normalizedSong))
@@ -2808,13 +2758,6 @@ function App() {
     const cacheKey = getSongKey(normalizedSong)
     
     activeTrackKeyRef.current = cacheKey
-    // v3 专属：切歌（含无缝过渡提交）同步曲目档案与智能响度
-    if (audioEngineVersion === 'v3' && v3EngineRef.current) {
-      v3EngineRef.current.setActiveSource(cacheKey)
-      const cached = preloadCacheRef.current.get(cacheKey)
-      const url = cached?.url || ''
-      if (url) void loudnessNormalizationService.measure(cacheKey, url).then(lufs => v3EngineRef.current?.setTrackLoudness(lufs))
-    }
     currentIndexRef.current = targetIndex
     setCurrentIndex(targetIndex)
     setCurrentTrack(createTrackFromSong(normalizedSong))
@@ -3002,11 +2945,6 @@ function App() {
       // 响度归一化（v2 专属）：按曲目测量 LUFS 并施加链首增益（独立服务，失败自动回退原声）
       if (audioEngineVersion === 'v2' && v2EngineRef.current) {
         void loudnessNormalizationService.apply(v2EngineRef.current, cacheKey, url)
-      }
-      // v3 专属：曲目档案（App 独立音效）自动加载 + 智能响度（按曲目 LUFS 对齐目标响度）
-      if (audioEngineVersion === 'v3' && v3EngineRef.current) {
-        v3EngineRef.current.setActiveSource(cacheKey)
-        void loudnessNormalizationService.measure(cacheKey, url).then(lufs => v3EngineRef.current?.setTrackLoudness(lufs))
       }
       
       // 请求可能已经由下一首预载启动；这里仅保持引用，避免重复调用。
@@ -4264,18 +4202,7 @@ function App() {
         <AnimatePresence>
           {showMixingStudio && (
             <Suspense fallback={null}>
-              {audioEngineVersion === 'v3' ? (
-                <LazyMixingStudioV3
-                  engine={v3EngineRef.current!}
-                  onClose={() => setShowMixingStudio(false)}
-                  playerTheme={playerTheme}
-                  sourceUrl={audioPlayer.audioElement?.src || undefined}
-                  sourceDuration={audioPlayer.audioElement?.duration || undefined}
-                  anchorRect={mixingStudioAnchorRef.current}
-                  engineVersion={audioEngineVersion}
-                  onSwitchEngine={switchAudioEngine}
-                />
-              ) : audioEngineVersion === 'v2' ? (
+              {audioEngineVersion === 'v2' ? (
                 <LazyMixingStudioV2
                   engine={v2EngineRef.current!}
                   onClose={() => setShowMixingStudio(false)}

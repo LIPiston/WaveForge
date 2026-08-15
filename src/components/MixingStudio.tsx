@@ -19,9 +19,9 @@ interface MixingStudioProps {
   /** 打开按钮的锚点位置（弹窗从按钮侧弹出/关闭时收缩回按钮） */
   anchorRect?: { x: number; y: number; width: number; height: number } | null
   /** 当前引擎版本（切换入口显示用） */
-  engineVersion?: 'v1' | 'v2' | 'v3'
+  engineVersion?: 'v1' | 'v2'
   /** 请求切换引擎（App 负责热/冷切换与弹窗） */
-  onSwitchEngine?: (version: 'v1' | 'v2' | 'v3') => void
+  onSwitchEngine?: (version: 'v1' | 'v2') => void
 }
 
 type Tab = 'effects' | 'eq' | 'tuner'
@@ -412,7 +412,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {/* 引擎版本切换（v1 原版 / v2 增强版 / v3 机型预设） */}
+              {/* 引擎版本切换（v1 原版 / v2 增强版） */}
               {onSwitchEngine && (
                 <div
                   className="flex items-center rounded-full p-0.5"
@@ -437,16 +437,6 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                       : { color: textSecondary }}
                   >
                     v2
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onSwitchEngine('v3')}
-                    className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
-                    style={engineVersion === 'v3'
-                      ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
-                      : { color: textSecondary }}
-                  >
-                    v3
                   </button>
                 </div>
               )}
