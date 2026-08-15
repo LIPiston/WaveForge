@@ -85,6 +85,7 @@ export default function ArtistDetailModal({
   }>({ show: false, x: 0, y: 0, song: null, sourceSongs: [] })
   const [following, setFollowing] = useState(false)
   const [followingLoading, setFollowingLoading] = useState(false)
+  const [followError, setFollowError] = useState('')
   const [similarArtists, setSimilarArtists] = useState<any[]>([])
   const allSongsScrollRef = useRef<HTMLDivElement>(null) // 全部歌曲滚动容器的引用
   const hotSongsScrollRef = useRef<HTMLDivElement>(null) // 热门歌曲滚动容器的引用
@@ -109,11 +110,16 @@ export default function ArtistDetailModal({
   const handleFollow = async () => {
     if (followingLoading || !artist) return
     setFollowingLoading(true)
+    setFollowError('')
     try {
       const id = platform === 'qq' ? String(artist.mid || artist.id) : String(artist.id)
       await subscribeArtist(id, !following, platform)
       setFollowing(!following)
-    } catch { /* ignore */ }
+    } catch (error) {
+      // 静默失败会让用户以为点按无效（QQ 关注接口仅支持部分登录方式）
+      const message = error instanceof Error ? error.message : '关注歌手失败'
+      setFollowError(message.includes('请使用网易云') ? message : `${message}，可尝试在网易云音乐中关注`)
+    }
     finally { setFollowingLoading(false) }
   }
 
@@ -673,6 +679,13 @@ export default function ArtistDetailModal({
                       </motion.div>
                     )}
                   </div>
+
+                  {/* 关注失败提示（QQ 关注接口仅支持部分登录方式） */}
+                  {followError && (
+                    <p className="mt-2 text-xs text-red-400" role="alert">
+                      {followError}
+                    </p>
+                  )}
                 </div>
 
                 {/* 关闭按钮 */}
