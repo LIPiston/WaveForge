@@ -147,6 +147,7 @@ export interface ElectronAPI {
   }
   audio: {
     getSystemVolume: () => Promise<{ success: boolean; volume: number }>
+    getOutputKind: () => Promise<{ success: boolean; kind: 'speaker' | 'headphones' | 'bluetooth' | 'unknown' }>
   }
   desktopWidgets: {
     getSystemStatus: () => Promise<{
