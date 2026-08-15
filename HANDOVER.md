@@ -89,6 +89,11 @@
   - **QQ 音乐**（`local-server.mjs`）—— 收藏歌单旧接口 `fcg_qm_order_diss.fcg` 由 GET 改为 POST + 表单体（实测 `qqmusic_key` 返回 `code 0` 成功）；AI 歌单详情逐首 `qqSongDetail` 补封面/时长；歌曲详情时长毫秒÷1000 + 音质徽章/音质行。
   - **PlaylistDetailPanel** —— 新增「收藏/已收藏」按钮（`subscribePlaylist`）。
 - 2026-08-14：**完整浅色模式（远程会话）** —— 播放页/简约首页/探索模式全表面浅色落地（桌面模式不生效）；设置-个性化新增深浅色开关（`localStorage.playerTheme` + `playerThemeChanged` 事件 + `<html data-wf-theme>`）；修复 2 个交互 bug（「即将播放」提示不再关闭用户面板、首页自定义 BlurAdjustModal 因 SettingsPanel 卸载被销毁 → 改为保持挂载）；60+ 探索 token 集中 CSS 映射。
+- 2026-08-16：**歌词逐字渲染修复 + 新增「Apple」逐字模式**（提交 `69f1145` / `58a6037` / `96dd182`）：
+  - **逐字"灰闪/敲击感"根因修复**：词唱完瞬间 `blur(0.5px)` + 填充层卸载 + 基础层变色叠加导致灰闪；修复 = 移除唱完 blur、辉光 180ms 平滑过渡、**唱完后填充层保留为纯白不再卸载**（基础层转透明+去阴影，避免叠字/显厚）、填充层垂直居中对齐基础层文字（消除叠印错位）。
+  - **延音（sustainGlow）收紧**：触发门槛（相对倍数 1.5/1.7→1.7/2.0、超出毫秒 430/480→600/650、绝对下限 1050/1100→1300/1400、每行上限 25%→15%）+ 辉光强度减弱（半径/alpha 降约 30%、brightness/saturate 系数下调）。
+  - **新增独立「Apple」逐字模式**（`WordByWordEffectMode` 加 `'apple'`，QuickSettings 三选一：清晰/柔和/Apple）——**严格隔离，不影响 clear/soft 任何渲染路径**：词内从左到右填充推进（逆向 LyricsBlossom「整行高亮重绘」）、行字号/字重统一不缩放（已播/正在播/未播等大）、非当前行常驻模糊 blur(2.2px)（手动滚动时暂时取消、0.45s tween 过渡恢复）、SF Pro 风格字体链、已唱空格连续白、中文逐字/英文整词。
+  - **相关逆向工作**：LyricsBlossom（Apple Music 1:1 还原，闭源）二进制逆向完成架构级分析（SDL3+Skia+Vulkan、SMTC 数据管线、TTML 逐音节、SF Pro 字体链、行切换 blur 机制），工具/反汇编/分析文档在 `D:\opencode\LyricsBlossom-re\`，接力交接文档在桌面 `LyricsBlossom逆向交接.md`；对比分析见 `docs/歌词对比-LyricsBlossom.md`。
 
 ## 7. 常用操作速查
 
