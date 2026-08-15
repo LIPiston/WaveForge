@@ -6,7 +6,9 @@ class ConfigManager {
     this.app = app
     this.configPath = path.join(app.getPath('userData'), 'config.json')
     this.config = this.loadConfig()
-    this.saveConfig()
+    // 仅当配置与默认值有差异时才落盘：config.json 缺失/无效时 loadConfig 返回默认路径，
+    // 此时跳过启动期的无谓写入（原来每次启动都会无条件重写 config.json）。
+    if (this.config.cachePath !== this.getDefaultCachePath()) this.saveConfig()
   }
 
   getDefaultCachePath() {

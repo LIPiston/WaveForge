@@ -311,7 +311,10 @@ export class AudioEffectsEngine {
 
   // 音频图就绪后由 useAudioPlayer 调用：在 masterGain 与 analyser 之间插入效果链
   attach(handle: { audioContext: AudioContext; masterGain: GainNode; analyser: AnalyserNode }): void {
-    if (this.context) return // 已附加
+    // 幂等守卫：仅在 context 仍有效（未关闭）时提前返回。useAudioPlayer 卸载会 close() 旧 AudioContext
+    // 而引擎实例常驻（App.tsx），音频图重建后再次 attach 时必须用传入的新 context 完整重建链；
+    // 若此处仍以「this.context 存在」为判断，会命中已关闭的旧上下文而永远接不上新图。
+    if (this.context && this.context.state !== 'closed') return // 已附加（且上下文有效）
     this.attachSeq += 1
     const { audioContext: context, masterGain, analyser } = handle
     this.context = context
@@ -461,13 +464,32 @@ export class AudioEffectsEngine {
         // 切换引擎时旧链必须彻底拆除，否则两套效果链并联打架。
         this.masterGain.disconnect()
         try { this.soundtouchNode?.disconnect() } catch { /* noop */ }
-        this.soundtouchNode = null
         try { this.limiter?.disconnect() } catch { /* noop */ }
         this.masterGain.connect(this.analyser)
       } catch {
         // 忽略重连失败
       }
     }
+    // 释放全部节点字段引用（先断链再置空），让旧效果链可被 GC 回收——
+    // 含大 IR AudioBuffer 的 hallConvolver、panner、各 M/S 矩阵与滤波器。
+    for (const filter of this.eqFilters) {
+      try { filter.disconnect() } catch { /* noop */ }
+    }
+    this.eqFilters = []
+    this.soundtouchNode = null
+    this.voiceMatrix = null
+    this.hallMatrix = null
+    this.hallConvolver = null
+    this.hallWetGain = null
+    this.panner = null
+    this.pannerWetGain = null
+    this.pannerDryGain = null
+    this.bassFilter = null
+    this.bassPunchFilter = null
+    this.vocalFilter = null
+    this.accompFilter = null
+    this.presenceMatrix = null
+    this.limiter = null
     this.context = null
     this.input = null
     this.output = null
@@ -645,7 +667,6 @@ export class AudioEffectsEngine {
     const offline = new OfflineAudioContext(2, length, sampleRate)
     const source = offline.createBufferSource()
     source.buffer = decoded
-
     // 3. 搭建与实时链一致的核心效果：EQ → 低音 → 人声 → 伴奏 → 全景声厅（干湿）
     const { eq, effects } = this.settings
     let prev: AudioNode = source
@@ -708,7 +729,9 @@ export class AudioEffectsEngine {
       wet.connect(offline.destination)
     }
 
-    source.start(0)
+    // 显式限定源播放区间为导出时长：即使 OfflineAudioContext 长度已经截断，
+    // 也避免解码后的整曲 buffer 在渲染循环中被无谓读取/混音。
+    source.start(0, 0, length / sampleRate)
     const rendered = await offline.startRendering()
 
     // 4. 编码为 WAV 并下载

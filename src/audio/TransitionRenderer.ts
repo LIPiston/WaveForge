@@ -40,8 +40,15 @@ export class TransitionRenderer {
     this.masterGain = masterGain
   }
 
-  async preRender(params: { sourceUrl: string; targetUrl: string; plan: TransitionPlan }): Promise<void> {
-    const { sourceUrl, targetUrl, plan } = params
+  async preRender(params: {
+    sourceUrl: string
+    targetUrl: string
+    plan: TransitionPlan
+    // 调用方传入的过期校验回调：当该请求已被新的准备批次取代（返回 true）时，
+    // 渲染结果会被丢弃——不写入缓存、不触发播放，避免快速切歌时的资源堆积。
+    isStale?: () => boolean
+  }): Promise<void> {
+    const { sourceUrl, targetUrl, plan, isStale } = params
     
     // Check if already cached
     const cached = this.cache.get(plan.id)
@@ -55,7 +62,7 @@ export class TransitionRenderer {
     
     // Trigger the render without waiting for the AudioBuffer
     // This will download files and render to backend cache
-    await this.renderTransition(plan, sourceUrl, targetUrl)
+    await this.renderTransition(plan, sourceUrl, targetUrl, undefined, undefined, undefined, isStale)
   }
 
   async renderTransition(
@@ -64,7 +71,8 @@ export class TransitionRenderer {
     targetUrl: string,
     sourceBuffer?: AudioBuffer,
     targetBuffer?: AudioBuffer,
-    onProgress?: (progress: RenderProgress) => void
+    onProgress?: (progress: RenderProgress) => void,
+    isStale?: () => boolean
   ): Promise<RenderResult> {
     const startTime = performance.now()
     if (!plan.id?.trim()) throw new Error('Transition plan requires a non-empty ID')
@@ -90,7 +98,7 @@ export class TransitionRenderer {
     let audioBuffer: AudioBuffer
     let renderedPlan: TransitionPlan = plan
     if (plan.strategy === 'smart-rendered') {
-      const rendered = await this.renderSmartTransition(plan, sourceUrl, targetUrl, onProgress)
+      const rendered = await this.renderSmartTransition(plan, sourceUrl, targetUrl, onProgress, isStale)
       audioBuffer = rendered.audioBuffer
       renderedPlan = rendered.plan
     } else {
@@ -104,6 +112,14 @@ export class TransitionRenderer {
     const renderTime = performance.now() - startTime
     debugLog(`[TransitionRenderer] Rendered in ${renderTime.toFixed(2)}ms`)
 
+    // If this render was superseded by a newer request, discard the result:
+    // do not write it into the cache so a stale AudioBuffer (tens of MB) is
+    // not pinned in memory until TTL expiry.
+    if (isStale?.()) {
+      debugLog(`[TransitionRenderer] Discarding superseded render ${plan.id}`)
+      return { audioBuffer, plan: renderedPlan, renderTime }
+    }
+
     // Cache the result (a copy of the plan, never the caller's live object)
     this.addToCache(renderedPlan, audioBuffer)
 
@@ -114,7 +130,8 @@ export class TransitionRenderer {
     plan: TransitionPlan,
     sourceUrl: string,
     targetUrl: string,
-    onProgress?: (progress: RenderProgress) => void
+    onProgress?: (progress: RenderProgress) => void,
+    isStale?: () => boolean
   ): Promise<{ audioBuffer: AudioBuffer; plan: TransitionPlan }> {
     onProgress?.({ stage: 'analyzing', progress: 0.1 })
 
@@ -124,7 +141,11 @@ export class TransitionRenderer {
       sourceUrl,
       plan.sourceTrackKey
     )
-    
+    // Bail out as early as possible once superseded: the downloaded temp file
+    // is managed by the main-process download cache (cleanupOldFiles), and we
+    // skip the expensive render + decode entirely.
+    if (isStale?.()) throw new Error('Transition render superseded')
+
     onProgress?.({ stage: 'analyzing', progress: 0.2 })
     
     debugLog('[TransitionRenderer] Downloading target audio...')
@@ -132,6 +153,7 @@ export class TransitionRenderer {
       targetUrl,
       plan.targetTrackKey
     )
+    if (isStale?.()) throw new Error('Transition render superseded')
     
     onProgress?.({ stage: 'stretching', progress: 0.3 })
 
@@ -142,6 +164,7 @@ export class TransitionRenderer {
       sourceAudioPath,
       targetAudioPath
     )
+    if (isStale?.()) throw new Error('Transition render superseded')
 
     if (!result.success || !result.outputPath || result.stretchApplied !== true) {
       throw new Error(result.error || 'Render failed')
@@ -177,6 +200,10 @@ export class TransitionRenderer {
       arrayBuffer = await renderApi.readAudioFile(result.outputPath)
     }
     const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer)
+    // Decode of a multi-MB AudioBuffer is expensive; if the request was
+    // superseded meanwhile, drop the decoded result here instead of letting
+    // the caller cache it.
+    if (isStale?.()) throw new Error('Transition render superseded')
 
     onProgress?.({ stage: 'finalizing', progress: 1 })
     return { audioBuffer, plan: renderedPlan }

@@ -39,6 +39,9 @@ const SEARCH_HISTORY_KEY_NETEASE = 'waveforge_search_history_netease'
 const SEARCH_HISTORY_KEY_QQ = 'waveforge_search_history_qq'
 const SEARCH_HISTORY_KEY_FUSED = 'waveforge_search_history_fused'
 const MAX_HISTORY = 5
+// 搜索结果缓存上限：每次搜索缓存完整结果集（约 100 首歌对象），面板是常驻单例，
+// 不加上限会导致 Map 无限增长（内存泄漏）。超出上限时按 LRU 淘汰最旧的 cacheKey。
+const SEARCH_CACHE_MAX = 10
 type SearchPlatform = MusicPlatform | 'fused'
 
 const withSearchTimeout = <T,>(promise: Promise<T>, timeoutMs = 5_000): Promise<T> => new Promise((resolve, reject) => {
@@ -54,6 +57,20 @@ const withSearchTimeout = <T,>(promise: Promise<T>, timeoutMs = 5_000): Promise<
     },
   )
 })
+
+/**
+ * 向 LRU Map 写入并维护上限：set 时更新访问顺序（先删后插），
+ * 超限时从队首淘汰最旧的 cacheKey。
+ */
+function setLruCache<K, V>(cache: Map<K, V>, key: K, value: V, maxEntries: number): void {
+  cache.delete(key)
+  cache.set(key, value)
+  while (cache.size > maxEntries) {
+    const oldestKey = cache.keys().next().value
+    if (oldestKey === undefined) break
+    cache.delete(oldestKey as K)
+  }
+}
 
 export default function SearchPanel({
   onSongSelect,
@@ -494,11 +511,11 @@ export default function SearchPanel({
         setAlbumResults(fused.albums)
         setAllResults(fused.songs)
         setDisplayedResults(fused.songs.slice(0, 20))
-        // 缓存结果
-        searchCacheRef.current.set(cacheKey, {
+        // 缓存结果（LRU，超出上限自动淘汰最旧条目）
+        setLruCache(searchCacheRef.current, cacheKey, {
           allResults: fused.songs, artistResults: fused.artists, albumResults: fused.albums,
           artists: fused.artists, albums: fused.albums, unavailable, intent: fused.intent
-        })
+        }, SEARCH_CACHE_MAX)
       } else if (searchType === 'song') {
         const songResult = await searchSongs(finalKeyword, 100, platform)
         if (requestId !== searchRequestRef.current) return

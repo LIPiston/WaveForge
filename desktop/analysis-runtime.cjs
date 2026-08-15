@@ -13,6 +13,9 @@ const TRACK_CACHE_LIMIT_BYTES = 512 * 1024 * 1024
 const WORKER_TIMEOUT_MS = 300000 // 5 minutes
 const WORKER_IDLE_SHUTDOWN_MS = 60000 // 1 minute
 const PYTHON_DETECTION_FAILURE_TTL_MS = 60 * 1000
+// 分析缓存 lastAccessAt 的落盘间隔：get 命中后仅在距上次落盘超过该阈值时才重写文件，
+// 避免每次命中都原子重写整文件。1h 远小于 30d 的清理 TTL，不影响过期判断。
+const LAST_ACCESS_FLUSH_INTERVAL_MS = 60 * 60 * 1000
 
 function externalProcessPath(candidate, app) {
   if (!app.isPackaged) return candidate
@@ -43,6 +46,14 @@ function createAnalysisRuntime(app, ipcMain, getMainWindow, customCachePath = nu
   let workerCapabilities = null
   let cachedPythonExecutable = null
   let pythonDetectionCompletedAt = 0
+  // 崩溃退避：worker 异常退出后进入冷却期，期间不再反复 spawn，请求直接降级失败，
+  // 避免「python 在但脚本坏」时每个请求都拉一个立刻死掉的子进程。
+  const WORKER_RESTART_BASE_COOLDOWN_MS = 30 * 1000
+  const WORKER_RESTART_MAX_COOLDOWN_MS = 5 * 60 * 1000
+  let workerCrashCount = 0
+  let workerRestartBlockedUntil = 0
+  // 空闲主动关闭（非崩溃）不触发退避
+  let workerIdleShutdown = false
 
   function ensureDirectories() {
     for (const directory of [trackRoot, legacyBeatRoot, transitionRenderRoot, tempRoot]) {
@@ -95,8 +106,35 @@ function createAnalysisRuntime(app, ipcMain, getMainWindow, customCachePath = nu
 
     return null
   }
+  // 崩溃退避调度：每次异常退出把冷却时间指数翻倍（30s→60s→120s…，上限 5min）。
+  function scheduleWorkerRestartBackoff() {
+    workerCrashCount += 1
+    const delay = Math.min(
+      WORKER_RESTART_BASE_COOLDOWN_MS * Math.pow(2, Math.min(workerCrashCount - 1, 6)),
+      WORKER_RESTART_MAX_COOLDOWN_MS
+    )
+    workerRestartBlockedUntil = Date.now() + delay
+    console.error(`[AnalysisRuntime] worker 异常退出，${Math.round(delay / 1000)}s 内不再重启（连续失败 ${workerCrashCount} 次）`)
+  }
+
+  // 冷却期内的请求直接降级失败（而非无限排队等 5 分钟超时）。
+  function failPendingRequests(error) {
+    for (const [id, pending] of pendingMessages) {
+      clearTimeout(pending.timeoutHandle)
+      pending.reject(error)
+    }
+    pendingMessages.clear()
+    workerQueue = []
+  }
+
   function startPythonWorker() {
     if (workerStarting || pythonWorker) return
+    
+    // 冷却期内不重启：直接降级，避免反复 spawn 立刻死掉的进程
+    if (Date.now() < workerRestartBlockedUntil) {
+      failPendingRequests(new Error('分析服务暂不可用，正在退避冷却中'))
+      return
+    }
     
     workerStarting = true
     const pythonExe = findPythonExecutable()
@@ -104,6 +142,7 @@ function createAnalysisRuntime(app, ipcMain, getMainWindow, customCachePath = nu
     if (!pythonExe) {
       console.error('Python executable not found')
       workerStarting = false
+      failPendingRequests(new Error('Python executable not found'))
       return
     }
     
@@ -112,6 +151,7 @@ function createAnalysisRuntime(app, ipcMain, getMainWindow, customCachePath = nu
     if (!fs.existsSync(workerScript)) {
       console.error('Analysis worker script not found:', workerScript)
       workerStarting = false
+      failPendingRequests(new Error('Analysis worker script not found'))
       return
     }
     
@@ -148,11 +188,15 @@ function createAnalysisRuntime(app, ipcMain, getMainWindow, customCachePath = nu
     
     pythonWorker.on('error', (error) => {
       console.error('Python worker error:', error)
+      if (!workerIdleShutdown) scheduleWorkerRestartBackoff()
+      workerIdleShutdown = false
       cleanupWorker()
     })
     
     pythonWorker.on('exit', (code) => {
       console.log('Python worker exited with code:', code)
+      if (!workerIdleShutdown) scheduleWorkerRestartBackoff()
+      workerIdleShutdown = false
       cleanupWorker()
     })
     
@@ -192,6 +236,10 @@ function createAnalysisRuntime(app, ipcMain, getMainWindow, customCachePath = nu
       console.log('Worker status:', message.data)
       workerCapabilities = message.data || null
       workerReady = true
+      // 成功就绪说明崩溃已恢复，重置退避计数与冷却
+      workerCrashCount = 0
+      workerRestartBlockedUntil = 0
+      workerIdleShutdown = false
       processWorkerQueue()
       return
     }
@@ -275,6 +323,7 @@ function createAnalysisRuntime(app, ipcMain, getMainWindow, customCachePath = nu
     workerIdleTimer = setTimeout(() => {
       if (pendingMessages.size === 0) {
         console.log('Shutting down idle worker')
+        workerIdleShutdown = true // 主动闲置关闭不算崩溃，不触发退避
         cleanupWorker()
       }
     }, WORKER_IDLE_SHUTDOWN_MS)
@@ -412,8 +461,14 @@ function createAnalysisRuntime(app, ipcMain, getMainWindow, customCachePath = nu
     const target = cacheFile(trackRoot, normalizedTrackKey)
     const value = readJson(target)
     if (!value || value.schemaVersion !== ANALYSIS_SCHEMA_VERSION) return null
+    // 每次命中都原子重写整文件只为更新 lastAccessAt，会把磁盘 IO 放大到每次 get。
+    // 改为仅当距上次落盘超过阈值时才写（清理逻辑按文件 mtime 判过期，
+    // 阈值 1h 远小于 30d TTL，近期访问的文件不会被误删）。
+    const lastFlushedAt = Number(value.lastAccessAt) || 0
     value.lastAccessAt = Date.now()
-    try { atomicWriteJson(target, value) } catch {}
+    if (Date.now() - lastFlushedAt > LAST_ACCESS_FLUSH_INTERVAL_MS) {
+      try { atomicWriteJson(target, value) } catch {}
+    }
     return value
   })
 

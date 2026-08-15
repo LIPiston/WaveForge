@@ -783,6 +783,15 @@ function App() {
   const [transitionFromAccentColor, setTransitionFromAccentColor] = useState<string | null>(null)
   const [transitionToAccentColor, setTransitionToAccentColor] = useState<string | null>(null)
   const wasAudioTransitioningRef = useRef(false)
+  // 过渡状态 1.5s 复位定时器：统一跟踪，避免快速连切时定时器叠加、卸载后迟到 setState
+  const transitionResetTimerRef = useRef<number | null>(null)
+  const clearTransitionResetTimer = () => {
+    if (transitionResetTimerRef.current !== null) {
+      window.clearTimeout(transitionResetTimerRef.current)
+      transitionResetTimerRef.current = null
+    }
+  }
+  useEffect(() => () => clearTransitionResetTimer(), [])
   
   // 当前播放进度
   const currentSong = currentIndex >= 0 && currentIndex < playlist.length ? playlist[currentIndex] : null
@@ -2558,17 +2567,26 @@ function App() {
 
         const shouldAdvance = continuation.advancePending && currentIndexRef.current >= currentQueue.length - 1
         continuation.advancePending = false
-        const nextQueue = [...currentQueue, ...additions]
+        // 无限推荐队列裁剪：只保留当前曲之前 100 首 + 当前曲 + 新增曲目，
+        // 防止长时间连续收听时队列与 playlistKeys 字符串无限膨胀（内存 + O(n) 叠加）。
+        const keepBefore = 100
+        const trimmedPrefix = Math.max(0, currentIndexRef.current - keepBefore)
+        const trimmedQueue = trimmedPrefix > 0 ? currentQueue.slice(trimmedPrefix) : currentQueue
+        const nextQueue = [...trimmedQueue, ...additions]
         playlistRef.current = nextQueue
         const nextRevision = bumpQueueRevision()
+        const currentIndexInNewQueue = currentIndexRef.current - trimmedPrefix
         setPlaylist(nextQueue)
         window.setTimeout(() => {
-          preloadUpcomingSongs(currentIndexRef.current, nextRevision, playMode, nextQueue)
+          currentIndexRef.current = currentIndexInNewQueue
+          preloadUpcomingSongs(currentIndexInNewQueue, nextRevision, playMode, nextQueue)
           if (shouldAdvance) {
-            const nextIndex = currentQueue.length
+            const nextIndex = trimmedQueue.length
             currentIndexRef.current = nextIndex
             setCurrentIndex(nextIndex)
             void loadAndPlaySong(nextQueue[nextIndex], nextIndex, nextQueue)
+          } else {
+            setCurrentIndex(currentIndexInNewQueue)
           }
         }, 0)
       })
@@ -2863,7 +2881,10 @@ function App() {
       if (url === 'SONG_UNAVAILABLE') {
         console.error('获取歌曲URL失败，重试3次')
         addToast('获取歌曲信息失败，请稍后重试', 'error')
+        // 捕获本次加载的 revision：3 秒后重试前校验用户是否已手动切歌，避免迟到跳歌
+        const failedLoadRevision = loadRevision
         setTimeout(() => {
+          if (failedLoadRevision !== songLoadRevisionRef.current) return
           handleNext()
         }, 3000)
         return
@@ -2980,8 +3001,10 @@ function App() {
     if (gaplessEnabled && playlist[newIndex]) {
       setIsTransitioning(true)
       
-      // 1.5秒后重置过渡状态
-      setTimeout(() => {
+      // 1.5秒后重置过渡状态（统一跟踪定时器，快速连切时旧定时器先取消）
+      clearTransitionResetTimer()
+      transitionResetTimerRef.current = window.setTimeout(() => {
+        transitionResetTimerRef.current = null
         setIsTransitioning(false)
       }, 1500)
     }
@@ -3019,8 +3042,10 @@ function App() {
     if (gaplessEnabled && playlist[newIndex]) {
       setIsTransitioning(true)
       
-      // 1.5秒后重置过渡状态
-      setTimeout(() => {
+      // 1.5秒后重置过渡状态（统一跟踪定时器，快速连切时旧定时器先取消）
+      clearTransitionResetTimer()
+      transitionResetTimerRef.current = window.setTimeout(() => {
+        transitionResetTimerRef.current = null
         setIsTransitioning(false)
       }, 1500)
     }

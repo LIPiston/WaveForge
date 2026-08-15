@@ -96,6 +96,9 @@ export default function PlaylistDetailPanel({
   const viewportFrameRef = useRef<number | null>(null)
   const pendingViewportRef = useRef({ scrollTop: 0, height: 0 })
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 })
+  // 高度渐变同样走 rAF 合并：滚动高频触发时同一帧只提交一次 setState
+  const heightFrameRef = useRef<number | null>(null)
+  const pendingHeightRef = useRef(80)
 
   // 同步收藏状态（切换歌单时刷新）
   useEffect(() => {
@@ -207,7 +210,6 @@ export default function PlaylistDetailPanel({
       const scrollTop = container.scrollTop
       
       // 根据滚动位置计算高度：0px -> 80vh, 30px -> 90vh
-      // 非常快速响应
       const maxScroll = 30 // 只需滚动30px就达到最大高度
       const minHeight = 80
       const maxHeight = 90
@@ -223,13 +225,23 @@ export default function PlaylistDetailPanel({
         newHeight = minHeight + (maxHeight - minHeight) * progress
       }
       
-      setHeightVh(newHeight)
+      // rAF 合并：同一帧内多次 scroll 只提交一次 setHeightVh
+      pendingHeightRef.current = newHeight
+      if (heightFrameRef.current !== null) return
+      heightFrameRef.current = window.requestAnimationFrame(() => {
+        heightFrameRef.current = null
+        setHeightVh(pendingHeightRef.current)
+      })
     }
     
     container.addEventListener('scroll', handleScroll, { passive: true })
     
     return () => {
       container.removeEventListener('scroll', handleScroll)
+      if (heightFrameRef.current !== null) {
+        window.cancelAnimationFrame(heightFrameRef.current)
+        heightFrameRef.current = null
+      }
     }
   }, [show])
 
@@ -248,6 +260,7 @@ export default function PlaylistDetailPanel({
 
   useEffect(() => () => {
     if (viewportFrameRef.current !== null) window.cancelAnimationFrame(viewportFrameRef.current)
+    if (heightFrameRef.current !== null) window.cancelAnimationFrame(heightFrameRef.current)
   }, [])
   
   // 重置状态

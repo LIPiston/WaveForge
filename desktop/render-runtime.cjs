@@ -11,6 +11,9 @@ const { app } = require('electron')
 
 const WORKER_IDLE_TIMEOUT = 60_000 // 60 seconds
 const RENDER_TIMEOUT = 120_000 // 2 minutes for complex renders
+// IPC 整文件拷贝上限：render:readAudioFile 会把 WAV 整段 Buffer 穿过主进程 IPC 堆，
+// 常规转换渲染（秒级过渡）远小于此值；超大渲染应走 render:getAudioUrl 流式 URL 路径。
+const MAX_IPC_AUDIO_FILE_BYTES = 256 * 1024 * 1024
 
 function externalProcessPath(candidate) {
   if (!app.isPackaged) return candidate
@@ -456,7 +459,13 @@ class RenderRuntime {
   }
 
   async readRenderedAudioFile(filePath) {
-    return fs.promises.readFile(this.resolveRenderedAudioFile(filePath))
+    const resolved = this.resolveRenderedAudioFile(filePath)
+    const stats = await fs.promises.stat(resolved)
+    // 超限拒绝，避免大文件 Buffer 整段穿主进程 IPC 堆（应改用 render:getAudioUrl 流式 URL）
+    if (stats.size > MAX_IPC_AUDIO_FILE_BYTES) {
+      throw new Error(`Rendered audio file too large for IPC transfer (${stats.size} bytes)`)
+    }
+    return fs.promises.readFile(resolved)
   }
   
   /**

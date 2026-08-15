@@ -120,6 +120,8 @@ export function useAudioPlayer(
   const visualSwitchTimerRef = useRef<number | null>(null)
   const preloadReadyCleanupRef = useRef<(() => void) | null>(null)
   const currentLoadWaitCancelRef = useRef<(() => void) | null>(null)
+  // adoptExternalAudio 接管淡出的动画帧 id：用于卸载/取消路径 cancelAnimationFrame，防止 rAF 自循环泄漏
+  const externalHandoffFadeFrameRef = useRef<number | null>(null)
   const transitionStartingRef = useRef(false)
   const isLoadingRef = useRef(false)
   const currentLoadRevisionRef = useRef(0)
@@ -240,6 +242,10 @@ export function useAudioPlayer(
     visualSwitchTimerRef.current = null
     preloadReadyCleanupRef.current?.()
     preloadReadyCleanupRef.current = null
+    if (externalHandoffFadeFrameRef.current !== null) {
+      cancelAnimationFrame(externalHandoffFadeFrameRef.current)
+      externalHandoffFadeFrameRef.current = null
+    }
     seamlessJoinControllerRef.current?.reset()
     transitionRendererRef.current?.stopPlayback()
     if (fallbackAnimationRef.current !== null) cancelAnimationFrame(fallbackAnimationRef.current)
@@ -847,9 +853,18 @@ export function useAudioPlayer(
             sourceUrl: current.url,
             targetUrl: next.url,
             plan,
+            isStale: () => revision !== preparationRevisionRef.current,
           })
+          // 渲染期间可能已被新的准备请求（如快速切歌）取代：
+          // 该批次号已过期时丢弃结果，避免旧过渡计划覆盖新状态。
+          if (revision !== preparationRevisionRef.current) {
+            debugLog('⏭️ [AutoMix] 预渲染期间已被新请求取代，丢弃本结果')
+            return
+          }
           debugLog('✅ [AutoMix] 智能渲染完成，过渡音频已缓存:', plan.id)
         } catch (renderError) {
+          // 过期中止的错误不应触发回退逻辑（新请求正在准备中）
+          if (revision !== preparationRevisionRef.current) return
           console.warn('⚠️ [AutoMix] 智能渲染失败，回退到普通交叉淡化:', renderError)
           plan.strategy = 'fixed-crossfade'
           plan.fallbackReason = 'Smart rendering failed; using fixed crossfade without beat stretching'
@@ -1201,6 +1216,10 @@ export function useAudioPlayer(
       if (fallbackAnimationRef.current !== null) cancelAnimationFrame(fallbackAnimationRef.current)
       if (transitionProgressAnimationRef.current !== null) cancelAnimationFrame(transitionProgressAnimationRef.current)
       transitionProgressAnimationRef.current = null
+      if (externalHandoffFadeFrameRef.current !== null) {
+        cancelAnimationFrame(externalHandoffFadeFrameRef.current)
+        externalHandoffFadeFrameRef.current = null
+      }
       transitionStartTimeRef.current = null
       if (retiredDeckCleanupTimerRef.current !== null) window.clearTimeout(retiredDeckCleanupTimerRef.current)
       retiredDeckCleanupTimerRef.current = null
@@ -1320,17 +1339,17 @@ export function useAudioPlayer(
       cleanupReady()
       if (preloadReadyCleanupRef.current === cleanupReady) preloadReadyCleanupRef.current = null
       if (!isCurrentPreload()) return
-      debugLog('? [Preload] ???????????')
+      debugLog('🎵 [Preload] 预加载歌曲就绪')
       if (autoMixRef.current.enabled) {
-        debugLog('?? [Preload] autoMix ?????? prepareAutoMix()')
+        debugLog('🎵 [Preload] autoMix 已启用，调用 prepareAutoMix()')
         void prepareAutoMix()
       }
       else if (gaplessRef.current.enabled && gaplessIntegrationRef.current) {
-        debugLog('?? [Preload] ?????????? GaplessIntegration')
+        debugLog('🎵 [Preload] 准备无缝衔接，调用 GaplessIntegration')
         void prepareGaplessTransition()
       }
       else {
-        debugLog('?? [Preload] ????????? armed ??')
+        debugLog('🎵 [Preload] 无衔接方案，歌曲已 armed')
         setTransitionState('armed', {
           transitionStrategy: crossfadeRef.current.enabled ? 'fixed-crossfade' : 'none',
         })
@@ -1455,9 +1474,17 @@ export function useAudioPlayer(
       return true
     } catch (error) {
       if (loadRevision !== currentLoadRevisionRef.current) return false
+      const err = error instanceof Error ? error : null
+      // 用户在加载/播放中暂停会中止在途的 play()（媒体元素以 AbortError 拒绝），
+      // NotAllowedError 也是播放被中断的同类错误——均属正常打断，不应误报为播放失败：
+      // 只清 loading 标志，静默返回 false（暂停状态已由 togglePlay 发布）。
+      if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
+        isLoadingRef.current = false
+        return false
+      }
       console.error('❌ [LoadAndPlay] 播放失败:', error)
       isLoadingRef.current = false
-      setTransitionState('failed', { isPlaying: false, fallbackReason: error instanceof Error ? error.message : 'playback failed' })
+      setTransitionState('failed', { isPlaying: false, fallbackReason: err ? err.message : 'playback failed' })
       throw error
     }
   }, [cancelScheduledTransition, ensureAudioGraph, getActiveAudio, getActiveGain, getStandbyAudio, getStandbyGain, setDeckGain, setTransitionState, prepareAutoMix])
@@ -1502,6 +1529,19 @@ export function useAudioPlayer(
           gaplessIntegrationRef.current.reset()
         }
         emit({ isPlaying: false })
+        // 暂停完成且已确认无进行中的过渡/无缝混音任务后 suspend 音频上下文（省电）：
+        // hasActiveTransition() 已在上方分支早退（有进行中任务不走到这里）；
+        // cancelScheduledTransition 已停止 TransitionRenderer 缓冲源、清除边界/预热 timer，
+        // 双 deck（active/standby）均已 pause，gaplessIntegration.reset() 已取消 albumGapless 混音
+        // 与 preload 媒体——无任何源会继续发声，suspend 不会造成断声/杂音。
+        // 吞掉可能抛出的错误（上下文可能已被关闭）。
+        if (
+          audioContextRef.current
+          && audioContextRef.current.state !== 'suspended'
+          && audioContextRef.current.state !== 'closed'
+        ) {
+          void audioContextRef.current.suspend().catch(() => undefined)
+        }
       }
     } catch (error) {
       console.error('[PlaybackEngine] play/pause failed', error)
@@ -1628,8 +1668,13 @@ export function useAudioPlayer(
             target.volume = Math.sin(progress * Math.PI / 2) * volumeRef.current
           }
 
-          if (progress < 1) requestAnimationFrame(tick)
-          else resolve()
+          if (progress < 1) {
+            // 帧 id 存入 ref：卸载/取消路径据此 cancelAnimationFrame，避免自循环 rAF 泄漏
+            externalHandoffFadeFrameRef.current = requestAnimationFrame(tick)
+          } else {
+            externalHandoffFadeFrameRef.current = null
+            resolve()
+          }
         }
         tick()
       })

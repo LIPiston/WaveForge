@@ -84,8 +84,28 @@ function InterludeDots({ lyric, playing }: { lyric: NonNullable<DesktopPlayerSna
   const [, forceLocalTick] = useState(0)
   useEffect(() => {
     if (!playing) return
-    const timer = window.setInterval(() => forceLocalTick(value => value + 1), 1000 / 30)
-    return () => window.clearInterval(timer)
+    // 窗口隐藏时暂停节拍定时器，恢复可见时重新启动（避免常驻 30fps setInterval 空转）。
+    let interludeTimer: number | null = null
+    const startInterludeTimer = () => {
+      if (interludeTimer !== null) return
+      interludeTimer = window.setInterval(() => forceLocalTick(value => value + 1), 1000 / 30)
+    }
+    const stopInterludeTimer = () => {
+      if (interludeTimer !== null) {
+        window.clearInterval(interludeTimer)
+        interludeTimer = null
+      }
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') startInterludeTimer()
+      else stopInterludeTimer()
+    }
+    startInterludeTimer()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      stopInterludeTimer()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   }, [playing, lyric.interludeStartTime, lyric.interludeEndTime])
   const now = getInterpolatedDesktopProgress(realtime, playing) + 0.2
   const start = lyric.interludeStartTime ?? lyric.lineStart
@@ -119,8 +139,28 @@ function LyricText({ text, words, playing, lineStart, lineDuration, color, fille
   const [overflowWidth, setOverflowWidth] = useState(0)
   useEffect(() => {
     if (!playing) return
-    const timer = window.setInterval(() => forceLocalTick(value => value + 1), 1000 / 30)
-    return () => window.clearInterval(timer)
+    // 窗口隐藏时暂停逐字刷新定时器，恢复可见时重新启动（避免常驻 30fps setInterval 空转）。
+    let lyricTimer: number | null = null
+    const startLyricTimer = () => {
+      if (lyricTimer !== null) return
+      lyricTimer = window.setInterval(() => forceLocalTick(value => value + 1), 1000 / 30)
+    }
+    const stopLyricTimer = () => {
+      if (lyricTimer !== null) {
+        window.clearInterval(lyricTimer)
+        lyricTimer = null
+      }
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') startLyricTimer()
+      else stopLyricTimer()
+    }
+    startLyricTimer()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      stopLyricTimer()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   }, [playing, text, words?.length])
   const progress = getInterpolatedDesktopProgress(realtime, playing)
   const convertedText = traditional ? toTraditional(text) : text

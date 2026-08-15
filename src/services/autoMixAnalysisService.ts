@@ -196,6 +196,35 @@ function buildSections(beatFeatures: BeatFeatureFrame[], duration: number): Sect
   return sections
 }
 
+// 保守降采样：单声道 + 22050Hz，供浏览器本地节拍检测使用。
+// 直接整曲解码（数分钟 48kHz 立体声 ≈ 数十 MB Float32）在播放/切歌热路径
+// 会形成内存峰值；降采样后的单声道 buffer 大幅缩减峰值，且分析的频带最高到
+// 5200Hz（22050Hz 奈奎斯特 11025Hz 完整覆盖），BPM/能量/静音等结果语义不变。
+// 已经是单声道且采样率不超过目标值时直接复用原 buffer，避免多余拷贝。
+function toMonoDownsampled(buffer: AudioBuffer, context: AudioContext, targetRate = 22050): AudioBuffer {
+  const channels = buffer.numberOfChannels
+  const sourceRate = buffer.sampleRate
+  if (channels === 1 && sourceRate <= targetRate) return buffer
+
+  const outLength = Math.max(1, Math.floor(buffer.duration * targetRate))
+  const output = context.createBuffer(1, outLength, targetRate)
+  const outData = output.getChannelData(0)
+  const ratio = sourceRate / targetRate
+  // 盒式滤波降采样：对每个输出样本取对应输入区间内各声道样本的平均，
+  // 既完成单声道混合，又抑制高频混叠并平滑包络。
+  for (let i = 0; i < outLength; i += 1) {
+    const start = Math.floor(i * ratio)
+    const end = Math.min(buffer.length, Math.ceil((i + 1) * ratio))
+    let sum = 0
+    for (let ch = 0; ch < channels; ch += 1) {
+      const data = buffer.getChannelData(ch)
+      for (let j = start; j < end; j += 1) sum += data[j]
+    }
+    outData[i] = sum / Math.max(1, (end - start) * channels)
+  }
+  return output
+}
+
 async function decodeUrl(url: string, signal?: AbortSignal): Promise<AudioBuffer> {
   const response = await fetch(url, { signal })
   if (!response.ok) throw new Error(`audio fetch failed: ${response.status}`)
@@ -205,7 +234,9 @@ async function decodeUrl(url: string, signal?: AbortSignal): Promise<AudioBuffer
   if (!AudioContextCtor) throw new Error('Web Audio is unavailable')
   const context = new AudioContextCtor()
   try {
-    return await context.decodeAudioData(data)
+    const decoded = await context.decodeAudioData(data)
+    // 解码后立即降采样为单声道，避免整曲立体声 PCM 留在内存里
+    return toMonoDownsampled(decoded, context)
   } finally {
     void context.close()
   }

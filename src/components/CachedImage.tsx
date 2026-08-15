@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, memo } from 'react'
 import { imageCache } from '../utils/imageCache'
 import { getProxiedImageUrl } from '../services/musicApi'
 
@@ -13,13 +13,46 @@ interface CachedImageProps {
   lazy?: boolean // 是否启用懒加载，默认 true
 }
 
+// 模块级共享加载去重：同一 URL 在同一时刻被多个 CachedImage 实例请求时，
+// 只发起一次 Image 加载，其余实例复用同一个 Promise，避免每行重复下载封面。
+type SharedLoad = Promise<string> // resolve 为已加载成功的代理 URL
+const pendingImageLoads = new Map<string, SharedLoad>()
+
+function loadImageShared(normalizedSrc: string): SharedLoad {
+  const existing = pendingImageLoads.get(normalizedSrc)
+  if (existing) return existing
+
+  const load: SharedLoad = new Promise((resolve, reject) => {
+    const img = new Image()
+    const settle = (succeeded: boolean) => {
+      // 加载完成后断开引用并释放解码图片，避免残留占用内存
+      img.onload = null
+      img.onerror = null
+      img.src = ''
+      if (succeeded) resolve(normalizedSrc)
+      else reject(new Error('图片加载失败'))
+    }
+    img.onload = () => settle(true)
+    img.onerror = () => settle(false)
+    img.src = normalizedSrc
+  })
+
+  pendingImageLoads.set(normalizedSrc, load)
+  // 加载结束后无论成败都从共享表移除，允许后续重新加载
+  void load.then(
+    () => { if (pendingImageLoads.get(normalizedSrc) === load) pendingImageLoads.delete(normalizedSrc) },
+    () => { if (pendingImageLoads.get(normalizedSrc) === load) pendingImageLoads.delete(normalizedSrc) },
+  )
+  return load
+}
+
 /**
  * 带懒加载功能的图片组件
  * 1. 使用 IntersectionObserver 实现懒加载
  * 2. 通过代理服务器获取图片（解决跨域问题）
  * 3. 使用浏览器内存缓存，不使用 IndexedDB
  */
-export default function CachedImage({ src, alt, className, fallback, onError, onLoad, draggable, lazy = true }: CachedImageProps) {
+function CachedImage({ src, alt, className, fallback, onError, onLoad, draggable, lazy = true }: CachedImageProps) {
   const normalizedSrc = useMemo(() => {
     if (!src || src.trim() === '') return ''
     return getProxiedImageUrl(src) || src
@@ -36,8 +69,6 @@ export default function CachedImage({ src, alt, className, fallback, onError, on
   const currentLoadingUrlRef = useRef<string>('')
   // 图片容器的 ref，用于 IntersectionObserver
   const containerRef = useRef<HTMLDivElement>(null)
-  // 🔧 修复内存泄漏：跟踪预加载的 Image 对象
-  const preloadImageRef = useRef<HTMLImageElement | null>(null)
 
   // 懒加载：只在元素可见时才加载图片（可选）
   useEffect(() => {
@@ -48,6 +79,12 @@ export default function CachedImage({ src, alt, className, fallback, onError, on
     }
 
     if (!containerRef.current) return
+
+    // 图片已在内存缓存中（如其他列表项已加载同一封面），无需再创建 IO 实例观察
+    if (normalizedSrc && imageCache.get(normalizedSrc)) {
+      setIsVisible(true)
+      return
+    }
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -70,7 +107,7 @@ export default function CachedImage({ src, alt, className, fallback, onError, on
     return () => {
       observer.disconnect()
     }
-  }, [lazy])
+  }, [lazy, normalizedSrc])
 
   useEffect(() => {
     // 只有在可见时才加载图片
@@ -97,14 +134,6 @@ export default function CachedImage({ src, alt, className, fallback, onError, on
       currentLoadingUrlRef.current = normalizedSrc
       setError(false)
 
-      // 🔧 修复内存泄漏：清理之前的预加载图片
-      if (preloadImageRef.current) {
-        preloadImageRef.current.onload = null
-        preloadImageRef.current.onerror = null
-        preloadImageRef.current.src = ''
-        preloadImageRef.current = null
-      }
-
       try {
         // 先检查缓存
         const cachedUrl = imageCache.get(normalizedSrc)
@@ -128,64 +157,27 @@ export default function CachedImage({ src, alt, className, fallback, onError, on
         // src 已经是代理后的 URL，直接使用
         const imageUrl = normalizedSrc
 
-        // 使用 Image() 预加载，确保图片完全加载后再显示
-        const img = new Image()
-        preloadImageRef.current = img
-        
-        img.onload = () => {
-          // 检查是否还是当前请求（防止竞态条件）
-          if (currentLoadingUrlRef.current !== normalizedSrc) {
-            return
-          }
-          
-          // 缓存这个 URL
-          imageCache.set(normalizedSrc, imageUrl)
-          // 图片加载完成后才更新显示
-          setImageSrc(imageUrl)
-          setLoading(false)
-          
-          // 🔧 清理预加载图片
-          if (preloadImageRef.current === img) {
-            preloadImageRef.current = null
-          }
-        }
-        img.onerror = () => {
-          if (currentLoadingUrlRef.current !== normalizedSrc) {
-            return
-          }
-          console.error('❌ 加载图片失败:', normalizedSrc)
-          setImageSrc('') // 加载失败时才清空
-          setError(true)
-          setLoading(false)
-          
-          // 🔧 清理预加载图片
-          if (preloadImageRef.current === img) {
-            preloadImageRef.current = null
-          }
-        }
-        img.src = imageUrl
+        // 共享加载：同一 URL 并发请求时只发一次网络请求，完成后所有实例同时显示
+        await loadImageShared(normalizedSrc)
+
+        // 检查是否还是当前请求（防止竞态条件）
+        if (currentLoadingUrlRef.current !== normalizedSrc) return
+
+        // 缓存这个 URL
+        imageCache.set(normalizedSrc, imageUrl)
+        // 图片加载完成后才更新显示
+        setImageSrc(imageUrl)
+        setLoading(false)
       } catch (error) {
-        if (currentLoadingUrlRef.current !== normalizedSrc) {
-          return
-        }
-        console.error('加载图片失败:', error)
+        if (currentLoadingUrlRef.current !== normalizedSrc) return
+        console.error('❌ 加载图片失败:', normalizedSrc)
         setImageSrc('') // 加载失败时才清空
         setError(true)
         setLoading(false)
       }
     }
 
-    loadImage()
-    
-    // 🔧 修复内存泄漏：组件卸载时清理预加载图片
-    return () => {
-      if (preloadImageRef.current) {
-        preloadImageRef.current.onload = null
-        preloadImageRef.current.onerror = null
-        preloadImageRef.current.src = ''
-        preloadImageRef.current = null
-      }
-    }
+    void loadImage()
   }, [normalizedSrc, isVisible, lazy])
 
   const handleError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
@@ -248,6 +240,4 @@ export default function CachedImage({ src, alt, className, fallback, onError, on
   )
 }
 
-
-
-
+export default memo(CachedImage)

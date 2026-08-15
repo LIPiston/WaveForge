@@ -379,6 +379,20 @@ function broadcastRemoteState() {
   if (remoteServer) remoteServer.broadcastState(getDesktopPlayerSnapshot())
 }
 
+// 遥控器端 state 是整包替换语义（state = msg.state），因此高频增量广播必须带上它依赖的
+// 少量基础字段（song/playing/muted/volume/page），再合并本次增量。不带 playlist/spectrum 等
+// 大字段——playlist 最多 500 条，只在低频完整快照里推送。
+function buildRemoteMinimalState(partial) {
+  const base = {
+    song: desktopPlayerState.song || null,
+    playing: desktopPlayerState.playing,
+    muted: desktopPlayerState.muted,
+    volume: desktopPlayerState.volume,
+    page: desktopPlayerState.page,
+  }
+  return Object.assign(base, partial)
+}
+
 function broadcastDesktopPlayerPartial(partial) {
   if (!partial || Object.keys(partial).length === 0) return
   if (desktopPlayerWindow && !desktopPlayerWindow.isDestroyed()) {
@@ -393,7 +407,9 @@ function broadcastDesktopPlayerPartial(partial) {
       desktopLyricsWindow.webContents.send('desktop-lyrics:state', lyricsPartial)
     }
   }
-  broadcastRemoteState()
+  // 高频路径（渲染端每 100ms 推 {spectrum, progress}）只广播最小字段集合，
+  // 避免每 100ms 全量 JSON.stringify 含 500 条 playlist 的完整快照广播给遥控器。
+  if (remoteServer) remoteServer.broadcastState(buildRemoteMinimalState(partial))
 }
 
 function desktopPlayerSetExpanded(expanded) {
@@ -1502,14 +1518,15 @@ function detectImageMime(buffer, filePath) {
 
 let wallpaperPayloadCache = null
 
-function buildWallpaperPayload(wallpaperPath) {
-  const stats = fs.statSync(wallpaperPath)
+async function buildWallpaperPayload(wallpaperPath) {
+  const stats = await fs.promises.stat(wallpaperPath)
   const cacheKey = `${path.resolve(wallpaperPath)}:${stats.size}:${stats.mtimeMs}`
   if (wallpaperPayloadCache?.key === cacheKey) {
     return { ...wallpaperPayloadCache.payload }
   }
 
-  const buffer = fs.readFileSync(wallpaperPath)
+  // 壁纸 2-10MB：异步整读 + base64，避免阻塞主线程（原同步读取会造成事件循环尖峰）
+  const buffer = await fs.promises.readFile(wallpaperPath)
   const mimeType = detectImageMime(buffer, wallpaperPath)
   const payload = {
     path: wallpaperPath,
@@ -1558,16 +1575,22 @@ function registerMediaProtocol() {
 const WALLPAPER_ENGINE_CONFIG_CACHE_MS = 60_000
 let wallpaperEngineConfigPathCache = null
 let wallpaperEngineConfigPathCacheExpiresAt = 0
+let wallpaperEngineConfigRequest = null
 
+// 异步解析 Wallpaper Engine config 路径。原实现用 execFileSync('powershell.exe', ..., timeout:5000)，
+// 被壁纸 watcher（每 10s tick）与 get-current-wallpaper IPC 触发时最坏每 60s 缓存过期一次、
+// 最长冻结主线程 5 秒。改为 execFile 异步 + 缓存 Promise（同 windowsWallpaperRequest / desktopWidgetDiskRequest 模式），
+// 过期期间并发调用共享同一个在途请求。
 function getWallpaperEngineConfigPath() {
   const now = Date.now()
   if (now < wallpaperEngineConfigPathCacheExpiresAt) {
-    return wallpaperEngineConfigPathCache
+    return Promise.resolve(wallpaperEngineConfigPathCache)
   }
+  if (wallpaperEngineConfigRequest) return wallpaperEngineConfigRequest
 
-  const candidates = []
-  try {
-    const processPath = execFileSync(
+  wallpaperEngineConfigRequest = new Promise((resolve) => {
+    const candidates = []
+    execFile(
       'powershell.exe',
       [
         '-NoProfile',
@@ -1575,23 +1598,31 @@ function getWallpaperEngineConfigPath() {
         '-Command',
         '(Get-Process wallpaper32,wallpaper64 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path)',
       ],
-      { encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 5000 }
-    ).trim()
+      { encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 5000 },
+      (error, stdout) => {
+        if (error) {
+          console.warn('[WallpaperEngine] Process lookup failed:', error.message)
+        } else {
+          const processPath = String(stdout || '').trim()
+          if (processPath) candidates.push(path.join(path.dirname(processPath), 'config.json'))
+        }
 
-    if (processPath) candidates.push(path.join(path.dirname(processPath), 'config.json'))
-  } catch (error) {
-    console.warn('[WallpaperEngine] Process lookup failed:', error.message)
-  }
+        candidates.push(
+          path.join(process.env.ProgramFiles || '', 'Steam', 'steamapps', 'common', 'wallpaper_engine', 'config.json'),
+          path.join(process.env['ProgramFiles(x86)'] || '', 'Steam', 'steamapps', 'common', 'wallpaper_engine', 'config.json'),
+          'D:\\SteamLibrary\\steamapps\\common\\wallpaper_engine\\config.json'
+        )
 
-  candidates.push(
-    path.join(process.env.ProgramFiles || '', 'Steam', 'steamapps', 'common', 'wallpaper_engine', 'config.json'),
-    path.join(process.env['ProgramFiles(x86)'] || '', 'Steam', 'steamapps', 'common', 'wallpaper_engine', 'config.json'),
-    'D:\\SteamLibrary\\steamapps\\common\\wallpaper_engine\\config.json'
-  )
+        wallpaperEngineConfigPathCache = candidates.find(candidate => candidate && fs.existsSync(candidate)) || null
+        wallpaperEngineConfigPathCacheExpiresAt = Date.now() + WALLPAPER_ENGINE_CONFIG_CACHE_MS
+        resolve(wallpaperEngineConfigPathCache)
+      }
+    )
+  }).finally(() => {
+    wallpaperEngineConfigRequest = null
+  })
 
-  wallpaperEngineConfigPathCache = candidates.find(candidate => candidate && fs.existsSync(candidate)) || null
-  wallpaperEngineConfigPathCacheExpiresAt = now + WALLPAPER_ENGINE_CONFIG_CACHE_MS
-  return wallpaperEngineConfigPathCache
+  return wallpaperEngineConfigRequest
 }
 
 function getWallpaperEngineSourceType(filePath) {
@@ -1614,9 +1645,9 @@ function findWallpaperEngineUserConfig(config) {
   ))
 }
 
-function getWallpaperEngineSource() {
+async function getWallpaperEngineSource() {
   try {
-    const configPath = getWallpaperEngineConfigPath()
+    const configPath = await getWallpaperEngineConfigPath()
     if (!configPath) return null
 
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
@@ -1739,35 +1770,39 @@ function getWindowsWallpaper() {
       'reg.exe',
       ['query', 'HKCU\\Control Panel\\Desktop', '/v', 'Wallpaper'],
       { encoding: null, maxBuffer: 1024 * 1024, windowsHide: true, timeout: 5000 },
-      (error, stdout, stderr) => {
-        if (error) {
-          console.error('❌ [Wallpaper] 注册表查询失败:', error.message)
-          if (stderr?.length) console.error('❌ [Wallpaper] 错误输出:', new TextDecoder('gbk').decode(stderr))
-          reject(error)
-          return
-        }
+      async (error, stdout, stderr) => {
+        try {
+          if (error) {
+            console.error('❌ [Wallpaper] 注册表查询失败:', error.message)
+            if (stderr?.length) console.error('❌ [Wallpaper] 错误输出:', new TextDecoder('gbk').decode(stderr))
+            reject(error)
+            return
+          }
 
-        const output = stdout?.length ? new TextDecoder('gbk').decode(stdout) : ''
-        const match = output.match(/^\s*Wallpaper\s+REG_\w+\s+(.+?)\s*$/mi)
-        const wallpaperPath = match?.[1]?.trim() || ''
-        logWallpaper('📁 [Wallpaper] 壁纸路径:', wallpaperPath)
+          const output = stdout?.length ? new TextDecoder('gbk').decode(stdout) : ''
+          const match = output.match(/^\s*Wallpaper\s+REG_\w+\s+(.+?)\s*$/mi)
+          const wallpaperPath = match?.[1]?.trim() || ''
+          logWallpaper('📁 [Wallpaper] 壁纸路径:', wallpaperPath)
 
-        if (wallpaperPath && fs.existsSync(wallpaperPath)) {
-          logWallpaper('✓ [Wallpaper] 文件存在验证通过')
-          const wallpaper = buildWallpaperPayload(wallpaperPath)
-          const wallpaperEngine = getWallpaperEngineSource()
-          if (wallpaperEngine) wallpaper.wallpaperEngine = wallpaperEngine
-          logWallpaper('🔗 [Wallpaper] 转换后的URL:', wallpaper.fileUrl)
-          logWallpaper('📊 [Wallpaper] 壁纸数据:', {
-            mimeType: wallpaper.mimeType,
-            size: wallpaper.size,
-            mtimeMs: wallpaper.mtimeMs,
-          })
-          logWallpaper('✓ [Wallpaper] 壁纸获取成功')
-          resolve(wallpaper)
-        } else {
-          console.error('❌ [Wallpaper] 文件不存在:', wallpaperPath)
-          reject(new Error('壁纸文件不存在: ' + wallpaperPath))
+          if (wallpaperPath && fs.existsSync(wallpaperPath)) {
+            logWallpaper('✓ [Wallpaper] 文件存在验证通过')
+            const wallpaper = await buildWallpaperPayload(wallpaperPath)
+            const wallpaperEngine = await getWallpaperEngineSource()
+            if (wallpaperEngine) wallpaper.wallpaperEngine = wallpaperEngine
+            logWallpaper('🔗 [Wallpaper] 转换后的URL:', wallpaper.fileUrl)
+            logWallpaper('📊 [Wallpaper] 壁纸数据:', {
+              mimeType: wallpaper.mimeType,
+              size: wallpaper.size,
+              mtimeMs: wallpaper.mtimeMs,
+            })
+            logWallpaper('✓ [Wallpaper] 壁纸获取成功')
+            resolve(wallpaper)
+          } else {
+            console.error('❌ [Wallpaper] 文件不存在:', wallpaperPath)
+            reject(new Error('壁纸文件不存在: ' + wallpaperPath))
+          }
+        } catch (err) {
+          reject(err)
         }
       }
     )
@@ -1874,6 +1909,13 @@ function startWallpaperWatcher() {
 
   wallpaperWatcher = setInterval(async () => {
     logWallpaper('🔧 [Watcher] 检查壁纸变化..')
+    // 重入保护：上一次 tick 尚未结束（如 powershell 查询最坏 5s 超时）则跳过本次，
+    // 避免 10s interval 与仍在执行的检查重叠。
+    if (wallpaperWatcherBusy) {
+      logWallpaper('⏭️ [Watcher] 上次检查未完成，跳过本次')
+      return
+    }
+    wallpaperWatcherBusy = true
     try {
       const wallpaper = await getWindowsWallpaper()
       const engineSignature = wallpaper.wallpaperEngine
@@ -1902,6 +1944,8 @@ function startWallpaperWatcher() {
       }
     } catch (error) {
       console.error('❌ [Watcher] 壁纸监听出错:', error.message)
+    } finally {
+      wallpaperWatcherBusy = false
     }
   }, 10000) // 每10秒检查一次
   
@@ -1962,6 +2006,33 @@ async function createQQLoginWindow() {
         contextIsolation: true,
         session: mainWindow.webContents.session, // 共享 session 以保留 Cookie
       },
+    })
+
+    // 导航守卫：登录页本身就是 y.qq.com（QQ 音乐官方域），登录流程还可能跳到
+    // ptlogin2/graph 等 QQ 域做认证。只放行 qq.com 域（含子域），其余一律拦截并
+    // 交给系统默认浏览器，避免共享 session 的 Cookie 被引导到外部站点。
+    const isQQDomain = (url) => {
+      try {
+        const hostname = new URL(String(url || '')).hostname.toLowerCase()
+        return hostname === 'qq.com' || hostname.endsWith('.qq.com')
+      } catch {
+        return false
+      }
+    }
+    qqLoginWindow.webContents.on('will-navigate', (event, url) => {
+      if (!isQQDomain(url)) {
+        event.preventDefault()
+        if (/^https?:\/\//i.test(String(url || ''))) {
+          shell.openExternal(String(url)).catch(() => {})
+        }
+      }
+    })
+    // 阻止 window.open 创建新的 Electron 窗口；外链一律交给系统默认浏览器。
+    qqLoginWindow.webContents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//i.test(String(url || ''))) {
+        shell.openExternal(String(url)).catch(() => {})
+      }
+      return { action: 'deny' }
     })
 
     // 加载 QQ 音乐喜欢的歌曲页面（需要登录）
@@ -2945,6 +3016,11 @@ function startLocalBackend() {
       localPythonChild.stderr?.on('data', (chunk) => {
         const text = String(chunk).trim()
         if (text) console.error('[BeatService:err]', text)
+      })
+      // spawn 失败（如嵌入式 python 缺失/启动即退出）时避免 unhandled 'error' 事件
+      localPythonChild.on('error', (error) => {
+        console.error('[BeatService] failed to spawn:', error?.message || error)
+        localPythonChild = null
       })
       localPythonChild.on('exit', (code) => {
         console.warn('[BeatService] exited with code', code)

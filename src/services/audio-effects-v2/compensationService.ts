@@ -69,9 +69,16 @@ function saveCache(cache: Record<string, DesignCacheEntry>): void {
   }
 }
 
-function cacheKeyFor(mode: CompensationMode, preset: string, volume: number | null): string {
+function cacheKeyFor(
+  mode: CompensationMode,
+  preset: string,
+  volume: number | null,
+  customBands?: Array<{ frequency: number; gain: number }>,
+): string {
   if (mode === 'preset') return `preset:${preset}`
-  if (mode === 'custom') return 'custom:manual'
+  // custom 模式缓存键必须包含频段指纹：否则用户拖动自定义频段后 design() 命中旧缓存永不更新。
+  // 指纹与引擎侧 compensationDesignKey()（`custom:${JSON.stringify(bands || [])}`）保持一致。
+  if (mode === 'custom') return `custom:${JSON.stringify(customBands || [])}`
   const bucket = volume === null ? 100 : Math.round(volume / VOLUME_QUANTUM) * VOLUME_QUANTUM
   return `auto:${Math.max(0, Math.min(100, bucket))}`
 }
@@ -89,7 +96,15 @@ export class CompensationService {
   }
 
   private remember(key: string, design: CompensationDesign): void {
+    // 内存层同样做最旧淘汰（与 localStorage 层 CACHE_MAX_ENTRIES 上限对齐）：
+    // delete 后 set 让新条目排到队尾（Map 保序），超限时从头淘汰最旧。
+    this.memoryCache.delete(key)
     this.memoryCache.set(key, design)
+    while (this.memoryCache.size > CACHE_MAX_ENTRIES) {
+      const oldestKey = this.memoryCache.keys().next().value
+      if (oldestKey === undefined) break
+      this.memoryCache.delete(oldestKey)
+    }
     const cache = loadCache()
     cache[key] = { design, at: Date.now() }
     const entries = Object.entries(cache)
@@ -116,7 +131,7 @@ export class CompensationService {
    * 服务不可用/失败返回 null（引擎回退到内置近似）。
    */
   async design(mode: CompensationMode, preset: string, volume: number | null, customBands?: Array<{ frequency: number; gain: number }>): Promise<CompensationDesign | null> {
-    const key = cacheKeyFor(mode, preset, volume)
+    const key = cacheKeyFor(mode, preset, volume, customBands)
     const cached = this.getCached(key)
     if (cached) return cached
 

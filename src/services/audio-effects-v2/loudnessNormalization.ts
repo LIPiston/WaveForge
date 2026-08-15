@@ -78,7 +78,15 @@ export class LoudnessNormalizationService {
   }
 
   private remember(key: string, lufs: number): void {
+    // 内存层同样做最旧淘汰（与 localStorage 层 CACHE_MAX_ENTRIES 上限对齐）：
+    // delete 后 set 让新条目排到队尾（Map 保序），超限时从头淘汰最旧。
+    this.memoryCache.delete(key)
     this.memoryCache.set(key, lufs)
+    while (this.memoryCache.size > CACHE_MAX_ENTRIES) {
+      const oldestKey = this.memoryCache.keys().next().value
+      if (oldestKey === undefined) break
+      this.memoryCache.delete(oldestKey)
+    }
     const cache = loadLufsCache()
     cache[key] = { lufs, at: Date.now() }
     const entries = Object.entries(cache)
