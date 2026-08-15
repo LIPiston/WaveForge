@@ -1175,7 +1175,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
                 </svg>
                 <p className="text-gray-300">{error}</p>
               </div>
-            ) : displayComments.length === 0 ? (
+            ) : displayComments.length === 0 && hotComments.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <svg className="w-16 h-16 text-gray-500 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -1186,8 +1186,6 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
               </div>
             ) : (
               <div>
-                {displayComments.map((comment) => renderComment(comment))}
-
                 {/* QQ 评论区：热评展示在顶部，下方是全部评论 */}
                 {resourcePlatform === 'qq' && hotComments.length > 0 && (
                   <div>
@@ -1202,6 +1200,8 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
                     </div>
                   </div>
                 )}
+
+                {displayComments.map((comment) => renderComment(comment))}
                 
                 {/* 加载更多按钮 */}
                 {hasMoreComments && !loading && (
@@ -1228,9 +1228,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
                 
                 {!hasMoreComments && displayComments.length > 0 && (
                   <div className="flex items-center justify-center py-6 text-gray-500 text-sm">
-                    {resourcePlatform === 'qq' && viewMode === 'hot' && hotComments.length > 0 && displayComments.length <= hotComments.length
-                      ? '已显示全部精彩评论，下方为全部评论'
-                      : '没有更多评论了'}
+                    没有更多评论了
                   </div>
                 )}
               </div>
