@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
 import {
@@ -294,7 +294,7 @@ const writeExploreCache = (platform: ExplorePlatform, payload: ExplorePayload) =
   localStorage.setItem(EXPLORE_CACHE_KEY, JSON.stringify(next))
 }
 
-export default function ExploreView({
+function ExploreView({
   onSongSelect,
   restorePlaybackOrigin,
   currentSong = null,
@@ -1683,3 +1683,5 @@ export default function ExploreView({
     </div>
   )
 }
+// 导出 memo 包装：播放中 App 约 1Hz 重渲染时，props 稳定则跳过整棵探索页子树重渲染
+export default memo(ExploreView)

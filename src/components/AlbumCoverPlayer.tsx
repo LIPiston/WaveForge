@@ -53,12 +53,12 @@ export default function AlbumCoverPlayer({
     applyPulse()
     return pulseStore.subscribe(applyPulse)
   }, [pulseStore])
-  // 浣跨敤鏈湴 SVG 鍗犱綅鍥?
+  // 使用本地 SVG 占位图
   const defaultCover = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTAwIiBoZWlnaHQ9IjUwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNTAwIiBoZWlnaHQ9IjUwMCIgZmlsbD0iIzFhMWExYSIvPjx0ZXh0IHg9IjI1MCIgeT0iMjUwIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMjQiIGZpbGw9IiM2NjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiPk5vIENvdmVyPC90ZXh0Pjwvc3ZnPg=='
   
   const validCoverUrl = coverUrl && coverUrl.trim() !== '' ? coverUrl : defaultCover
   
-  // 鐢ㄤ簬璺熻釜杩囨浮鏃剁殑灏侀潰鐘舵€?
+  // 用于跟踪过渡时的封面状态
   const [previousCoverUrl, setPreviousCoverUrl] = useState(validCoverUrl)
   const prevTrackIdRef = useRef(trackId)
   const hadActiveTransitionRef = useRef(false)
@@ -68,7 +68,7 @@ export default function AlbumCoverPlayer({
     hadActiveTransitionRef.current = isTransitioning && transitionProgress > 0
   }, [isTransitioning, transitionProgress])
   
-  // 褰搕rackId鍙樺寲鏃讹紝淇濆瓨鍓嶄竴涓皝闈綔涓鸿繃娓″簳灞?
+  // 当 trackId 变化时，保存前一个封面作为过渡底层
   useEffect(() => {
     if (trackId !== prevTrackIdRef.current && prevTrackIdRef.current !== undefined) {
       setPreviousCoverUrl(validCoverUrl)
@@ -76,7 +76,7 @@ export default function AlbumCoverPlayer({
     prevTrackIdRef.current = trackId
   }, [trackId, validCoverUrl])
   
-  // 杩囨浮鏃朵娇鐢ㄧ殑灏侀潰锛堜紭鍏堜娇鐢╰ransitionFromTrack/transitionToTrack锛?
+  // 过渡时使用的封面（优先使用 transitionFromTrack/transitionToTrack）
   const fromCover = transitionFromTrack?.coverUrl || previousCoverUrl
   const toCover = transitionToTrack?.coverUrl || validCoverUrl
 
@@ -92,12 +92,12 @@ export default function AlbumCoverPlayer({
       }}
     >
 
-      {/* 灏侀潰鍥剧墖瀹瑰櫒 */}
+      {/* 封面图片容器 */}
       <div className="relative z-10 h-full w-full overflow-hidden rounded-3xl shadow-2xl">
         {isTransitioning && transitionProgress > 0 ? (
-          // 杩囨浮妯″紡锛氬弻灞傚彔鍔犳晥鏋滐紙绫讳技Apple Music锛?
+          // 过渡模式：双层叠加效果（类似 Apple Music）
           <div className="relative h-full w-full">
-            {/* 搴曞眰锛氭棫灏侀潰 */}
+            {/* 底层：旧封面 */}
             <div className="absolute inset-0">
               <CachedImage
                 src={fromCover}
@@ -114,7 +114,7 @@ export default function AlbumCoverPlayer({
               />
             </div>
             
-            {/* 椤跺眰锛氭柊灏侀潰锛堟牴鎹繃娓¤繘搴︽笎鏄撅級 */}
+            {/* 顶层：新封面（根据过渡进度渐变） */}
             <motion.div
               className="absolute inset-0"
               style={{
@@ -137,7 +137,7 @@ export default function AlbumCoverPlayer({
             </motion.div>
           </div>
         ) : (
-          // 姝ｅ父妯″紡锛氬崟灞傚皝闈?
+          // 正常模式：单层封面
           <motion.div
             key={trackId}
             className="h-full w-full overflow-hidden rounded-3xl"

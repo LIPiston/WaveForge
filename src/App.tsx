@@ -3915,6 +3915,137 @@ function App() {
     return () => window.clearInterval(timer)
   }, [pendingGpuChange, revertGpuChange])
 
+  // ===== 三视图稳定回调（latest-ref 模式）=====
+  // HomeView/ExploreView/DesktopView 已包 React.memo；播放中 App 约 1Hz 重渲染时，
+  // 若这些函数 props 每次新建会击穿 memo 导致整棵视图子树反复重渲染。
+  // 这里只暴露一次性创建的稳定引用，实现始终经 ref 取最新，行为与原内联等价。
+  type ViewCallbacks = {
+    onSongSelect: typeof handleSongSelect
+    onOpenArtist: typeof handleOpenArtist
+    onOpenAlbum: typeof handleOpenAlbum
+    onPlayNext: typeof handlePlayNext
+    onAddToFavorites: typeof handleAddToFavorites
+    onRemoveFromFavorites: typeof handleRemoveFromFavorites
+    onAddToPlaylist: typeof handleAddToPlaylist
+    onViewComments: typeof handleViewComments
+    onCopyInfo: typeof handleCopyInfo
+    onPrevious: typeof handlePrevious
+    onNext: typeof handleNext
+    onPlayPause: typeof handlePlayPause
+    onSeek: typeof handleSeek
+    onVolumeChange: typeof handleVolumeChange
+    onNeteaseLogin: typeof handleNeteaseLogin
+    onNeteaseLogout: typeof handleNeteaseLogout
+    onQQLogin: typeof handleQQLogin
+    onQQLogout: typeof handleQQLogout
+    onRemoveQueueItem: typeof handleDesktopQueueRemove
+    onMoveQueueItem: typeof handleDesktopQueueMove
+    onLoginClick: (platform: 'netease' | 'qq') => void
+    onNeteaseLoginClick: () => void
+    onQQLoginClick: () => void
+    onSearchClick: () => void
+    onRemoteClick: () => void
+    onSettingsClick: () => void
+    onProfileClick: (platform: 'netease' | 'qq', initialTab?: 'created' | 'subscribed' | 'detail' | 'recent') => void
+    onOpenPlayer: () => void
+    onExitDesktopMode: () => void
+  }
+  const viewCallbacksRef = useRef<ViewCallbacks>(null as unknown as ViewCallbacks)
+  viewCallbacksRef.current = {
+    onSongSelect: handleSongSelect,
+    onOpenArtist: handleOpenArtist,
+    onOpenAlbum: handleOpenAlbum,
+    onPlayNext: handlePlayNext,
+    onAddToFavorites: handleAddToFavorites,
+    onRemoveFromFavorites: handleRemoveFromFavorites,
+    onAddToPlaylist: handleAddToPlaylist,
+    onViewComments: handleViewComments,
+    onCopyInfo: handleCopyInfo,
+    onPrevious: handlePrevious,
+    onNext: handleNext,
+    onPlayPause: handlePlayPause,
+    onSeek: handleSeek,
+    onVolumeChange: handleVolumeChange,
+    onNeteaseLogin: handleNeteaseLogin,
+    onNeteaseLogout: handleNeteaseLogout,
+    onQQLogin: handleQQLogin,
+    onQQLogout: handleQQLogout,
+    onRemoveQueueItem: handleDesktopQueueRemove,
+    onMoveQueueItem: handleDesktopQueueMove,
+    onLoginClick: (platform) => {
+      setLoginPlatform(platform)
+      setShowLogin(true)
+    },
+    onNeteaseLoginClick: () => {
+      setLoginPlatform('netease')
+      setShowLogin(true)
+    },
+    onQQLoginClick: () => {
+      setLoginPlatform('qq')
+      setShowLogin(true)
+    },
+    onSearchClick: () => setShowSearch(true),
+    onRemoteClick: () => setShowRemote(true),
+    onSettingsClick: () => setShowSettings(true),
+    onProfileClick: (platform, initialTab = 'created') => {
+      setProfileInitialPlatform(platform)
+      setProfileInitialTab(initialTab)
+      setShowProfile(true)
+    },
+    onOpenPlayer: () => {
+      setShowLogin(false)
+      setShowSearch(false)
+      playbackOriginRef.current = { mode: 'explore', surface: 'mode-root' }
+      setRestorePlaybackOrigin(null)
+      setEnteredFromMode('explore')
+      setViewMode('minimal')
+      localStorage.setItem('viewMode', 'minimal')
+      setShowHome(false)
+    },
+    onExitDesktopMode: () => {
+      playbackOriginRef.current = { mode: 'desktop', surface: 'mode-root' }
+      setRestorePlaybackOrigin(null)
+      setViewMode('minimal')
+      localStorage.setItem('viewMode', 'minimal')
+      setShowHome(false)
+      setEnteredFromMode('desktop')
+    },
+  }
+  const viewCallbacks = useMemo<ViewCallbacks>(() => {
+    const latest = viewCallbacksRef
+    return {
+      onSongSelect: (song, playlistFromSource, origin) => latest.current.onSongSelect(song, playlistFromSource, origin),
+      onOpenArtist: (artistId, platform) => latest.current.onOpenArtist(artistId, platform),
+      onOpenAlbum: (albumId, platform) => latest.current.onOpenAlbum(albumId, platform),
+      onPlayNext: (song) => latest.current.onPlayNext(song),
+      onAddToFavorites: (song) => latest.current.onAddToFavorites(song),
+      onRemoveFromFavorites: (song) => latest.current.onRemoveFromFavorites(song),
+      onAddToPlaylist: (song, playlistId) => latest.current.onAddToPlaylist(song, playlistId),
+      onViewComments: (song) => latest.current.onViewComments(song),
+      onCopyInfo: (song) => latest.current.onCopyInfo(song),
+      onPrevious: () => latest.current.onPrevious(),
+      onNext: () => latest.current.onNext(),
+      onPlayPause: () => latest.current.onPlayPause(),
+      onSeek: (time) => latest.current.onSeek(time),
+      onVolumeChange: (newVolume) => latest.current.onVolumeChange(newVolume),
+      onNeteaseLogin: (cookie, showToastMessage) => latest.current.onNeteaseLogin(cookie, showToastMessage),
+      onNeteaseLogout: () => latest.current.onNeteaseLogout(),
+      onQQLogin: (cookie, showToastMessage) => latest.current.onQQLogin(cookie, showToastMessage),
+      onQQLogout: () => latest.current.onQQLogout(),
+      onRemoveQueueItem: (index) => latest.current.onRemoveQueueItem(index),
+      onMoveQueueItem: (from, to) => latest.current.onMoveQueueItem(from, to),
+      onLoginClick: (platform) => latest.current.onLoginClick(platform),
+      onNeteaseLoginClick: () => latest.current.onNeteaseLoginClick(),
+      onQQLoginClick: () => latest.current.onQQLoginClick(),
+      onSearchClick: () => latest.current.onSearchClick(),
+      onRemoteClick: () => latest.current.onRemoteClick(),
+      onSettingsClick: () => latest.current.onSettingsClick(),
+      onProfileClick: (platform, initialTab) => latest.current.onProfileClick(platform, initialTab),
+      onOpenPlayer: () => latest.current.onOpenPlayer(),
+      onExitDesktopMode: () => latest.current.onExitDesktopMode(),
+    }
+  }, [])
+
   return (
     <>
       {/* 自定义窗口标题栏 */}
@@ -3996,7 +4127,7 @@ function App() {
             style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: 2 }}
           >
             <LazyExploreView
-              onSongSelect={handleSongSelect}
+              onSongSelect={viewCallbacks.onSongSelect}
               restorePlaybackOrigin={restorePlaybackOrigin}
               currentSong={currentSong}
               isPlaying={isPlaying}
@@ -4017,40 +4148,24 @@ function App() {
               qqAvatar={qqAvatar}
               qqUserId={qqUserId}
               qqVip={qqVip}
-              onLoginClick={(platform) => {
-                setLoginPlatform(platform)
-                setShowLogin(true)
-              }}
-              onProfileClick={(platform) => {
-                setProfileInitialPlatform(platform)
-                setProfileInitialTab('created')
-                setShowProfile(true)
-              }}
-              onSearchClick={() => setShowSearch(true)}
-              onRemoteClick={() => setShowRemote(true)}
-              onPlayPause={handlePlayPause}
-              onNext={handleNext}
-              onPrevious={handlePrevious}
-              onSeek={handleSeek}
-              onVolumeChange={handleVolumeChange}
-              onOpenPlayer={() => {
-                setShowLogin(false)
-                setShowSearch(false)
-                playbackOriginRef.current = { mode: 'explore', surface: 'mode-root' }
-                setRestorePlaybackOrigin(null)
-                setEnteredFromMode('explore')
-                setViewMode('minimal')
-                localStorage.setItem('viewMode', 'minimal')
-                setShowHome(false)
-              }}
-              onOpenArtist={handleOpenArtist}
-              onOpenAlbum={handleOpenAlbum}
-              onPlayNext={handlePlayNext}
-              onAddToFavorites={handleAddToFavorites}
-              onRemoveFromFavorites={handleRemoveFromFavorites}
-              onAddToPlaylist={handleAddToPlaylist}
-              onViewComments={handleViewComments}
-              onCopyInfo={handleCopyInfo}
+              onLoginClick={viewCallbacks.onLoginClick}
+              onProfileClick={viewCallbacks.onProfileClick}
+              onSearchClick={viewCallbacks.onSearchClick}
+              onRemoteClick={viewCallbacks.onRemoteClick}
+              onPlayPause={viewCallbacks.onPlayPause}
+              onNext={viewCallbacks.onNext}
+              onPrevious={viewCallbacks.onPrevious}
+              onSeek={viewCallbacks.onSeek}
+              onVolumeChange={viewCallbacks.onVolumeChange}
+              onOpenPlayer={viewCallbacks.onOpenPlayer}
+              onOpenArtist={viewCallbacks.onOpenArtist}
+              onOpenAlbum={viewCallbacks.onOpenAlbum}
+              onPlayNext={viewCallbacks.onPlayNext}
+              onAddToFavorites={viewCallbacks.onAddToFavorites}
+              onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+              onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+              onViewComments={viewCallbacks.onViewComments}
+              onCopyInfo={viewCallbacks.onCopyInfo}
             />
 
           </motion.div>
@@ -4065,7 +4180,7 @@ function App() {
             style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: 2 }}
           >
             <LazyDesktopView
-              onSongSelect={handleSongSelect}
+              onSongSelect={viewCallbacks.onSongSelect}
               restorePlaybackOrigin={restorePlaybackOrigin}
               currentSong={currentSong}
               isPlaying={isPlaying}
@@ -4075,43 +4190,34 @@ function App() {
               playbackQueue={playlist}
               currentIndex={currentIndex}
               volume={volume}
-              onVolumeChange={handleVolumeChange}
-              onRemoveQueueItem={handleDesktopQueueRemove}
-              onMoveQueueItem={handleDesktopQueueMove}
-              onPlayPause={handlePlayPause}
-              onNext={handleNext}
-              onPrevious={handlePrevious}
+              onVolumeChange={viewCallbacks.onVolumeChange}
+              onRemoveQueueItem={viewCallbacks.onRemoveQueueItem}
+              onMoveQueueItem={viewCallbacks.onMoveQueueItem}
+              onPlayPause={viewCallbacks.onPlayPause}
+              onNext={viewCallbacks.onNext}
+              onPrevious={viewCallbacks.onPrevious}
               neteaseLoggedIn={neteaseLoggedIn}
               neteaseUserId={neteaseUserId}
               qqLoggedIn={qqLoggedIn}
               qqUserId={qqUserId}
               neteaseVip={neteaseVip}
               qqVip={qqVip}
-              onNeteaseLogin={handleNeteaseLogin}
-              onQQLogin={handleQQLogin}
-            onPlayNext={handlePlayNext}
-            onAddToFavorites={handleAddToFavorites}
-            onRemoveFromFavorites={handleRemoveFromFavorites}
-            onAddToPlaylist={handleAddToPlaylist}
-              onViewComments={handleViewComments}
-              onOpenArtist={handleOpenArtist}
-              onOpenAlbum={handleOpenAlbum}
-              onCopyInfo={handleCopyInfo}
-              onExitDesktopMode={() => {
-                playbackOriginRef.current = { mode: 'desktop', surface: 'mode-root' }
-                setRestorePlaybackOrigin(null)
-                setViewMode('minimal')
-                localStorage.setItem('viewMode', 'minimal')
-                // 鍒囨崲鍥炵畝绾︽ā寮忔椂锛屾樉绀烘挱鏀鹃〉闈?
-                setShowHome(false)
-                // 记录来源，用于返回
-                setEnteredFromMode('desktop')
-              }}
-              onRemoteClick={() => setShowRemote(true)}
+              onNeteaseLogin={viewCallbacks.onNeteaseLogin}
+              onQQLogin={viewCallbacks.onQQLogin}
+              onPlayNext={viewCallbacks.onPlayNext}
+              onAddToFavorites={viewCallbacks.onAddToFavorites}
+              onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+              onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+              onViewComments={viewCallbacks.onViewComments}
+              onOpenArtist={viewCallbacks.onOpenArtist}
+              onOpenAlbum={viewCallbacks.onOpenAlbum}
+              onCopyInfo={viewCallbacks.onCopyInfo}
+              onExitDesktopMode={viewCallbacks.onExitDesktopMode}
+              onRemoteClick={viewCallbacks.onRemoteClick}
             />
           </motion.div>
         ) : (
-          /* 绠€绾︽ā寮?*/
+          /* 简约模式 */
           <motion.div
             key="minimal-mode"
             initial={{ opacity: 0, y: 26, scale: 0.985 }}
@@ -4131,7 +4237,7 @@ function App() {
             type={toast.type}
             accentColor={toast.accentColor}
             style={{ 
-              animationDelay: `${index * 50}ms` // 姣忎釜Toast寤惰繜50ms鍑虹幇锛屼骇鐢熷眰鍙犳晥鏋?
+              animationDelay: `${index * 50}ms` // 每个Toast延迟50ms出现，产生层叠效果
             }}
           />
         ))}
@@ -4165,13 +4271,13 @@ function App() {
                   ? backgroundEffect === 'transparent'
                     ? 'linear-gradient(to bottom, rgba(0,0,0,0.05), rgba(0,0,0,0.05), rgba(0,0,0,0.05))'  // 深色透明模式增加5%白色叠加
                     : backgroundEffect === 'blur'
-                    ? 'linear-gradient(to bottom, rgba(0,0,0,0.65), rgba(0,0,0,0.55), rgba(0,0,0,0.7))'  // 娣辫壊妯＄硦锛氫腑绛夊帇鏆?
-                    : 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.75) 50%, rgba(0,0,0,0.6) 100%)'  // 娣辫壊娌夋蹈锛氬己鍘嬫殫+娓愬彉
+                    ? 'linear-gradient(to bottom, rgba(0,0,0,0.65), rgba(0,0,0,0.55), rgba(0,0,0,0.7))'  // 深色模糊：中等压暗
+                    : 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.75) 50%, rgba(0,0,0,0.6) 100%)'  // 深色沉浸：强压暗+渐变
                   : backgroundEffect === 'transparent'
                     ? 'linear-gradient(to bottom, rgba(255,255,255,0.05), rgba(255,255,255,0.05), rgba(255,255,255,0.05))'  // 浅色透明模式增加5%黑色叠加
                     : backgroundEffect === 'blur'
-                    ? 'linear-gradient(to bottom, rgba(250,250,248,0.42), rgba(250,250,248,0.32), rgba(250,250,248,0.46))'  // 娴呰壊妯＄硦锛氭槑鏄剧櫧闆?
-                    : 'linear-gradient(135deg, rgba(250,250,248,0.3) 0%, rgba(250,250,248,0.52) 50%, rgba(250,250,248,0.4) 100%)'  // 娴呰壊娌夋蹈锛氬己鐧介浘+娓愬彉
+                    ? 'linear-gradient(to bottom, rgba(250,250,248,0.42), rgba(250,250,248,0.32), rgba(250,250,248,0.46))'  // 浅色模糊：明显白雾
+                    : 'linear-gradient(135deg, rgba(250,250,248,0.3) 0%, rgba(250,250,248,0.52) 50%, rgba(250,250,248,0.4) 100%)'  // 浅色沉浸：强白雾+渐变
               }}
             />
             {/* 沉浸模式额外效果 - 边缘渐变和光晕 */}
@@ -4200,8 +4306,8 @@ function App() {
       {/* 鍐呭閸愬懎顔愮仦?*/}
       <div className="relative z-10 w-full h-full flex flex-col">
 
-        {/* 鎼滅储闈㈡澘 */}
-        {/* 设置闈㈡澘 */}
+        {/* 搜索面板 */}
+        {/* 设置面板 */}
         {/* cast props to any to satisfy prop mismatch between App and SettingsPanel typings */}
         {/* 设置面板保持挂载：关闭仅隐藏主面板，内部的首页自定义/模糊度等
             子弹窗链路（HomeCustomizeModal -> BlurAdjustModal）依赖组件存活。 */}
@@ -4305,44 +4411,34 @@ function App() {
               style={{ willChange: 'transform, opacity, filter' }}
             >
             <LazyHomeView
-              onSongSelect={handleSongSelect}
+              onSongSelect={viewCallbacks.onSongSelect}
               restorePlaybackOrigin={restorePlaybackOrigin}
               neteaseLoggedIn={neteaseLoggedIn}
               neteaseUsername={neteaseUsername}
               neteaseAvatar={neteaseAvatar}
               neteaseUserId={neteaseUserId}
               neteaseVip={neteaseVip}
-              onNeteaseLogout={handleNeteaseLogout}
+              onNeteaseLogout={viewCallbacks.onNeteaseLogout}
               qqLoggedIn={qqLoggedIn}
               qqUsername={qqUsername}
               qqAvatar={qqAvatar}
               qqUserId={qqUserId}
               qqVip={qqVip}
-              onQQLogout={handleQQLogout}
-              onNeteaseLoginClick={() => {
-                setLoginPlatform('netease')
-                setShowLogin(true)
-              }}
-              onQQLoginClick={() => {
-                setLoginPlatform('qq')
-                setShowLogin(true)
-              }}
-              onSearchClick={() => setShowSearch(true)}
-              onRemoteClick={() => setShowRemote(true)}
-              onSettingsClick={() => setShowSettings(true)}
-              onProfileClick={(platform, initialTab = 'created') => {
-                setProfileInitialPlatform(platform)
-                setProfileInitialTab(initialTab)
-                setShowProfile(true)
-              }}
-              onOpenArtist={handleOpenArtist}
-              onOpenAlbum={handleOpenAlbum}
-              onPlayNext={handlePlayNext}
-              onAddToFavorites={handleAddToFavorites}
-              onRemoveFromFavorites={handleRemoveFromFavorites}
-              onAddToPlaylist={handleAddToPlaylist}
-              onViewComments={handleViewComments}
-              onCopyInfo={handleCopyInfo}
+              onQQLogout={viewCallbacks.onQQLogout}
+              onNeteaseLoginClick={viewCallbacks.onNeteaseLoginClick}
+              onQQLoginClick={viewCallbacks.onQQLoginClick}
+              onSearchClick={viewCallbacks.onSearchClick}
+              onRemoteClick={viewCallbacks.onRemoteClick}
+              onSettingsClick={viewCallbacks.onSettingsClick}
+              onProfileClick={viewCallbacks.onProfileClick}
+              onOpenArtist={viewCallbacks.onOpenArtist}
+              onOpenAlbum={viewCallbacks.onOpenAlbum}
+              onPlayNext={viewCallbacks.onPlayNext}
+              onAddToFavorites={viewCallbacks.onAddToFavorites}
+              onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+              onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+              onViewComments={viewCallbacks.onViewComments}
+              onCopyInfo={viewCallbacks.onCopyInfo}
               accentColor={dominantColor || '#3B82F6'}
               currentSong={currentSong}
               playerTheme={playerTheme}
@@ -4819,7 +4915,7 @@ function App() {
                   className="flex-1 w-full flex items-center justify-center"
                 >
                   <div className="w-full max-w-7xl h-[85vh] flex gap-12 items-center">
-                  {/* 宸︿晶锛氅皝闈㈠睍绀哄尯 */}
+                  {/* 左侧：封面展示区 */}
                   <div className="flex-1 flex flex-col items-center justify-center gap-6">
                     <AlbumCoverPlayer
                       coverUrl={currentTrack.coverUrl}

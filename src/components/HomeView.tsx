@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Play, Music, TrendingUp, Flame, Clock, LogOut, Crown, User, Heart, MonitorSmartphone, Search, Settings, History } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier, getSongUrl } from '../services/musicApi'
@@ -174,7 +174,7 @@ const getHomeModuleSessionKey = (
   return `${moduleId}:${loggedIn ? userId || 'signed-in' : 'guest'}:${devMode ? 'dev' : 'prod'}`
 }
 
-export default function HomeView({ 
+function HomeView({ 
   onSongSelect,
   restorePlaybackOrigin,
   neteaseLoggedIn,
@@ -2746,6 +2746,8 @@ export default function HomeView({
     </div>
   )
   }
+  // 导出 memo 包装：App 播放中约 1Hz 重渲染时，props 稳定则跳过整棵首页子树重渲染
+  export default memo(HomeView)
 
 
 
