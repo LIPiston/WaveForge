@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useCallback, memo } from 'react'
+import { useState, useEffect, useRef, useCallback, memo, type CSSProperties, type ReactElement } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Music, Disc, Video, Info, Loader, ListMusic, Calendar, Eye, Users, Heart, UserPlus, UserCheck } from 'lucide-react'
+import { List, type ListImperativeAPI, type RowComponentProps } from 'react-window'
 import { getArtistDetail, getArtistTopSongs, getArtistAllSongs, getArtistAlbums, getArtistMVs, Artist, Song, Album, getProxiedImageUrl, resolveSongAlbumIdentifier, subscribeArtist, getSimilarArtists } from '../services/musicApi'
 import CachedImage from './CachedImage'
 import AlbumDetailModal from './AlbumDetailModal'
@@ -147,6 +148,79 @@ const ArtistSongRow = memo(function ArtistSongRow({
     </motion.div>
   )
 })
+
+// 全部歌曲虚拟化行：react-window List 的行组件（index/style 由库注入 + rowProps）。
+// 前 N 行渲染歌曲，最后一行渲染「加载更多/已加载全部」提示（rowCount 多计一行）。
+// 与组件内 isCurrentSong 同逻辑（无闭包依赖，供模块级虚拟行使用）
+const songIsCurrent = (song: Song, currentSong: Song | null | undefined) =>
+  Boolean(currentSong && currentSong.id === song.id && currentSong.platform === song.platform)
+
+// 全部歌曲虚拟化行数据（不含 index/style，由 react-window 注入）
+type AllSongsRowData = {
+  songs: Song[]
+  currentSong: Song | null | undefined
+  playerTheme: 'light' | 'dark'
+  accentColor: string
+  readableAccentColor: string
+  isVip: boolean
+  onSelect: (song: Song) => void
+  onContextMenu: (event: React.MouseEvent, song: Song) => void
+  loading: boolean
+  hasMore: boolean
+  textPrimary: string
+  textSecondary: string
+  textTertiary: string
+}
+
+// 虚拟化已限制同时渲染的行数，行组件无需再 memo。
+function AllSongsRow({ index, style, ...data }: RowComponentProps<AllSongsRowData>): ReactElement | null {
+  const {
+    songs,
+    currentSong,
+    playerTheme,
+    accentColor,
+    readableAccentColor,
+    isVip,
+    onSelect,
+    onContextMenu,
+    loading,
+    hasMore,
+    textPrimary,
+    textSecondary,
+    textTertiary,
+  } = data
+  if (index < songs.length) {
+    const song = songs[index]
+    return (
+      <div style={style} className="px-4">
+        <ArtistSongRow
+          song={song}
+          index={index}
+          isCurrent={songIsCurrent(song, currentSong)}
+          playerTheme={playerTheme}
+          accentColor={accentColor}
+          readableAccentColor={readableAccentColor}
+          isVip={isVip}
+          onSelect={onSelect}
+          onContextMenu={onContextMenu}
+        />
+      </div>
+    )
+  }
+  // 列表尾部提示行：加载中显示 spinner；加载完成且无更多时显示总数；还有更多时（列表仍在续页间隙）不渲染内容
+  return (
+    <div style={style} className="flex items-center justify-center">
+      {loading ? (
+        <div className="flex items-center justify-center gap-2">
+          <Loader className={`w-6 h-6 ${textPrimary}/60 animate-spin`} />
+          <span className={`${textSecondary} text-sm`}>加载更多...</span>
+        </div>
+      ) : hasMore ? null : (
+        <span className={`${textTertiary} text-sm`}>已加载全部 {songs.length} 首歌曲</span>
+      )}
+    </div>
+  )
+}
 
 interface ArtistAlbumCardProps {
   album: Album
@@ -369,6 +443,21 @@ export default function ArtistDetailModal({
   const [similarArtists, setSimilarArtists] = useState<any[]>([])
   const allSongsScrollRef = useRef<HTMLDivElement>(null) // 全部歌曲滚动容器的引用
   const hotSongsScrollRef = useRef<HTMLDivElement>(null) // 热门歌曲滚动容器的引用
+  // 虚拟化列表：react-window List 的外层 div 即滚动容器。allSongs 激活时把它的
+  // DOM 元素同步进 allSongsScrollRef（供 ScrollToTop/ScrollToCurrentSong 使用），
+  // 离开 allSongs 时恢复为外层内容容器。外层容器用函数 ref 保存，避免被覆盖。
+  const allSongsOuterRef = useRef<HTMLDivElement | null>(null)
+  const allSongsListRef = useRef<ListImperativeAPI | null>(null)
+  // 歌曲行固定高度（p-3 上下留白 + 40px 封面）；列表尾部提示条高度
+  const ALL_SONG_ROW_HEIGHT = 64
+  useEffect(() => {
+    if (activeTab !== 'allSongs') return
+    const listEl = allSongsListRef.current?.element ?? null
+    if (listEl) allSongsScrollRef.current = listEl
+    return () => {
+      allSongsScrollRef.current = allSongsOuterRef.current
+    }
+  }, [activeTab, allSongs.length])
   
   const textPrimary = playerTheme === 'dark' ? 'text-white' : 'text-black'
   const textSecondary = playerTheme === 'dark' ? 'text-white/60' : 'text-black/60'
@@ -1120,7 +1209,7 @@ export default function ArtistDetailModal({
 
           {/* 内容区（添加滚动） */}
           <div 
-            ref={allSongsScrollRef}
+            ref={(el) => { allSongsOuterRef.current = el }}
             onScroll={handleScroll}
             className="flex-1 overflow-y-auto p-4 custom-scrollbar"
             style={{
@@ -1192,35 +1281,32 @@ export default function ArtistDetailModal({
               <div className="space-y-1">
                 {allSongs.length > 0 ? (
                   <>
-                    {allSongs.map((song, index) => (
-                      <ArtistSongRow
-                        key={`all-song-${song.platform}-${song.mid || song.id}-${index}`}
-                        song={song}
-                        index={index}
-                        isCurrent={isCurrentSong(song)}
-                        playerTheme={playerTheme}
-                        accentColor={accentColor}
-                        readableAccentColor={readableAccentColor}
-                        isVip={isVip}
-                        onSelect={handleSongRowSelect}
-                        onContextMenu={handleSongContextMenu}
-                      />
-                    ))}
-                    
-                    {/* 加载更多提示 */}
-                    {loadingAllSongs && (
-                      <div className="flex items-center justify-center py-8">
-                        <Loader className={`w-6 h-6 ${textPrimary}/60 animate-spin`} />
-                        <span className={`${textSecondary} ml-2 text-sm`}>加载更多...</span>
-                      </div>
-                    )}
-                    
-                    {/* 没有更多了 */}
-                    {!allSongsHasMore && !loadingAllSongs && (
-                      <div className={`flex items-center justify-center py-8 ${textTertiary} text-sm`}>
-                        已加载全部 {allSongs.length} 首歌曲
-                      </div>
-                    )}
+                    {/* 全部歌曲虚拟化列表：仅渲染可视区行 + overscan，千级列表不再全量挂载 DOM */}
+                    <List<AllSongsRowData>
+                      listRef={allSongsListRef}
+                      className="custom-scrollbar"
+                      style={{ height: '100%', width: '100%' }}
+                      onScroll={handleScroll}
+                      rowCount={allSongs.length + 1}
+                      rowHeight={ALL_SONG_ROW_HEIGHT}
+                      overscanCount={10}
+                      rowComponent={AllSongsRow}
+                      rowProps={{
+                        songs: allSongs,
+                        currentSong,
+                        playerTheme,
+                        accentColor,
+                        readableAccentColor,
+                        isVip,
+                        onSelect: handleSongRowSelect,
+                        onContextMenu: handleSongContextMenu,
+                        loading: loadingAllSongs,
+                        hasMore: allSongsHasMore,
+                        textPrimary,
+                        textSecondary,
+                        textTertiary,
+                      }}
+                    />
                   </>
                 ) : loadingAllSongs ? (
                   <div className="flex flex-col items-center justify-center py-20">

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url'
 import { dirname, join, extname, resolve, sep } from 'path'
 import { readdir, stat, readFile } from 'fs/promises'
 import { existsSync, createReadStream } from 'fs'
+import { Readable } from 'stream'
 import dns from 'node:dns'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -1149,6 +1150,38 @@ function parseTimeToMs(timeStr) {
 const FETCH_TIMEOUT_MS = 8000
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
+// 流式转发图片代理响应：保留 Content-Length 预检（超限时在发送任何字节前返回干净的 502），
+// 转发过程中再统计实际字节数兜底（无 Content-Length 的上游）。不再整读进内存，
+// 降低大图/多请求并发时的内存峰值；客户端中途断连或超限时销毁对端流，避免句柄泄漏。
+function streamProxyImage(response, res, label, tooLargeMessage) {
+  const contentLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+    console.error(`${label} content-length too large:`, contentLength)
+    res.status(502).set('Access-Control-Allow-Origin', '*').send(tooLargeMessage)
+    return false
+  }
+  const contentType = response.headers.get('content-type') || 'image/jpeg'
+  res.set({
+    'Content-Type': contentType,
+    'Access-Control-Allow-Origin': '*',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    'Cache-Control': 'public, max-age=86400',
+  })
+  let streamedBytes = 0
+  const body = Readable.fromWeb(response.body)
+  body.on('data', (chunk) => {
+    streamedBytes += chunk.length
+    if (streamedBytes > MAX_IMAGE_BYTES) {
+      body.destroy()
+      res.destroy()
+    }
+  })
+  body.on('error', () => res.destroy())
+  res.on('close', () => body.destroy())
+  body.pipe(res)
+  return true
+}
+
 // 判断地址是否属于内网/本机/链路本地等不允许代理访问的网段
 function isPrivateNetworkAddress(address) {
   if (address.includes(':')) {
@@ -1301,32 +1334,8 @@ app.get('/api/cover', async (req, res) => {
       return
     }
 
-    // 响应大小限制，防止代理下载超大文件
-    const contentLength = Number(response.headers.get('content-length'))
-    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
-      console.error('Cover content-length too large:', contentLength)
-      res.status(502).set('Access-Control-Allow-Origin', '*').send('Cover too large')
-      return
-    }
-
-    const contentType = response.headers.get('content-type') || 'image/jpeg'
-    const buffer = await response.arrayBuffer()
-    if (buffer.byteLength > MAX_IMAGE_BYTES) {
-      console.error('Cover too large:', buffer.byteLength)
-      res.status(502).set('Access-Control-Allow-Origin', '*').send('Cover too large')
-      return
-    }
-    
-    if (isDev) console.log('Cover fetched successfully, size:', buffer.byteLength)
-    
-    res.set({
-      'Content-Type': contentType,
-      'Access-Control-Allow-Origin': '*',
-      'Cross-Origin-Resource-Policy': 'cross-origin',
-      'Cache-Control': 'public, max-age=86400',
-    })
-    
-    res.send(Buffer.from(buffer))
+    // 流式转发（保留 Content-Length 预检 + 实际字节数兜底，不整读进内存）
+    streamProxyImage(response, res, 'Cover', 'Cover too large')
   } catch (error) {
     console.error('封面代理错误:', error)
     res.status(500).set('Access-Control-Allow-Origin', '*').send('Failed to load cover')
@@ -1404,29 +1413,8 @@ app.get('/api/proxy-image', async (req, res) => {
       return
     }
 
-    // 响应大小限制，防止代理下载超大文件
-    const contentLength = Number(response.headers.get('content-length'))
-    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
-      console.error('Image content-length too large:', contentLength)
-      res.status(502).set('Access-Control-Allow-Origin', '*').send('Image too large')
-      return
-    }
-
-    const contentType = response.headers.get('content-type') || 'image/jpeg'
-    const buffer = await response.arrayBuffer()
-    if (buffer.byteLength > MAX_IMAGE_BYTES) {
-      console.error('Image too large:', buffer.byteLength)
-      res.status(502).set('Access-Control-Allow-Origin', '*').send('Image too large')
-      return
-    }
-    res.set({
-      'Content-Type': contentType,
-      'Access-Control-Allow-Origin': '*',
-      'Cross-Origin-Resource-Policy': 'cross-origin',
-      'Cache-Control': 'public, max-age=86400',
-    })
-    
-    res.send(Buffer.from(buffer))
+    // 流式转发（保留 Content-Length 预检 + 实际字节数兜底，不整读进内存）
+    streamProxyImage(response, res, 'Image', 'Image too large')
   } catch (error) {
     console.error('图片代理错误:', error)
     res.status(500).set('Access-Control-Allow-Origin', '*').send('Failed to load image')
