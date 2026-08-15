@@ -80,6 +80,7 @@ const LazyRemoteControlModal = lazy(loadRemoteControlModal)
 const loadSongDetailModal = () => import('./components/SongDetailModal')
 const LazySongDetailModal = lazy(loadSongDetailModal)
 import RemoteCursor from './components/RemoteCursor'
+import SimilarSongsPanel from './components/SimilarSongsPanel'
 import { detectQQMusicVip } from './utils/musicEntitlements'
 import { getQQUserDisplayName } from './utils/qqUser'
 import {
@@ -406,6 +407,8 @@ function App() {
   const [showRemote, setShowRemote] = useState(false)
   const [showSongDetail, setShowSongDetail] = useState(false)
   const [songDetailSong, setSongDetailSong] = useState<Song | null>(null)
+  const [showSimilarSongs, setShowSimilarSongs] = useState(false)
+  const [similarSongsSource, setSimilarSongsSource] = useState<Song | null>(null)
   // 音效引擎版本（v1 远程原版 / v2 本地增强版），默认 v1；切换见 switchAudioEngine
   const [audioEngineVersion, setAudioEngineVersionState] = useState<AudioEngineVersion>(getAudioEngineVersion)
   // 与 state 同步的 ref：switchAudioEngine 切换中同步读写它，规避闭包陈旧 / 同帧连点竞态
@@ -483,6 +486,8 @@ function App() {
   const [selectedAlbumPlatform, setSelectedAlbumPlatform] = useState<'netease' | 'qq'>('netease')
   const [selectedArtistAlbumId, setSelectedArtistAlbumId] = useState<string | number | undefined>()
   const [selectedArtistTab, setSelectedArtistTab] = useState<PlaybackOrigin['artistTab']>('hotSongs')
+  // 导航栈：支持叠加窗口（搜索→歌手→专辑→详情）反向关闭
+  const navigationStack = useRef<Array<{ type: 'artist' | 'album'; id: string; platform: 'netease' | 'qq'; tab?: string }>>([])
   const [showCommentModal, setShowCommentModal] = useState(false)
   const [selectedCommentSong, setSelectedCommentSong] = useState<Song | null>(null)
   const [currentSongLiked, setCurrentSongLiked] = useState(false)
@@ -2039,12 +2044,43 @@ function App() {
   ])
 
   const closeArtistDetail = () => {
+    // 导航栈：如果有上一级，返回上一级
+    const prev = navigationStack.current.pop()
+    if (prev) {
+      if (prev.type === 'artist') {
+        setSelectedArtistId(prev.id)
+        setSelectedArtistPlatform(prev.platform)
+        setSelectedArtistTab((prev.tab || 'hotSongs') as any)
+        setShowArtistDetail(true)
+        return
+      } else if (prev.type === 'album') {
+        setSelectedAlbumId(prev.id)
+        setSelectedAlbumPlatform(prev.platform)
+        setShowAlbumDetail(true)
+        return
+      }
+    }
     setShowArtistDetail(false)
     setSelectedArtistId(null)
     setSelectedArtistAlbumId(undefined)
   }
 
   const closeAlbumDetail = () => {
+    const prev = navigationStack.current.pop()
+    if (prev) {
+      if (prev.type === 'album') {
+        setSelectedAlbumId(prev.id)
+        setSelectedAlbumPlatform(prev.platform)
+        setShowAlbumDetail(true)
+        return
+      } else if (prev.type === 'artist') {
+        setSelectedArtistId(prev.id)
+        setSelectedArtistPlatform(prev.platform)
+        setSelectedArtistTab((prev.tab || 'hotSongs') as any)
+        setShowArtistDetail(true)
+        return
+      }
+    }
     setShowAlbumDetail(false)
     setSelectedAlbumId(null)
   }
@@ -2121,8 +2157,20 @@ function App() {
 
   // 打开艺人详情
   const handleOpenArtist = (artistId: string, platform: 'netease' | 'qq') => {
+    // 先关闭弹窗（不触发导航栈弹出）
+    const hadAlbum = showAlbumDetail && selectedAlbumId
+    const hadArtist = showArtistDetail && selectedArtistId
+    const prevArtist = hadArtist ? { type: 'artist' as const, id: selectedArtistId, platform: selectedArtistPlatform, tab: selectedArtistTab } : null
+    const prevAlbum = hadAlbum ? { type: 'album' as const, id: selectedAlbumId, platform: selectedAlbumPlatform } : null
+    // 临时阻止 closeAlbumDetail/closeCommentModal 弹出导航栈
+    const savedStack = navigationStack.current
+    navigationStack.current = [] as any
     closeAlbumDetail()
     closeCommentModal()
+    navigationStack.current = savedStack
+    // 压入导航栈
+    if (prevAlbum) navigationStack.current.push(prevAlbum)
+    if (prevArtist) navigationStack.current.push(prevArtist)
     setSelectedArtistId(artistId)
     setSelectedArtistPlatform(platform)
     setSelectedArtistAlbumId(undefined)
@@ -2132,8 +2180,19 @@ function App() {
 
   // 打开专辑详情
   const handleOpenAlbum = (albumId: string, platform: 'netease' | 'qq') => {
+    const hadAlbum = showAlbumDetail && selectedAlbumId
+    const hadArtist = showArtistDetail && selectedArtistId
+    const prevArtist = hadArtist ? { type: 'artist' as const, id: selectedArtistId, platform: selectedArtistPlatform, tab: selectedArtistTab } : null
+    const prevAlbum = hadAlbum ? { type: 'album' as const, id: selectedAlbumId, platform: selectedAlbumPlatform } : null
+    // 临时阻止 closeArtistDetail/closeCommentModal 弹出导航栈
+    const savedStack = navigationStack.current
+    navigationStack.current = [] as any
     closeArtistDetail()
     closeCommentModal()
+    navigationStack.current = savedStack
+    // 压入导航栈
+    if (prevArtist) navigationStack.current.push(prevArtist)
+    if (prevAlbum) navigationStack.current.push(prevAlbum)
     setSelectedAlbumId(albumId)
     setSelectedAlbumPlatform(platform)
     setShowAlbumDetail(true)
@@ -2175,7 +2234,9 @@ function App() {
     setPlaylist(prev => {
       // 如果是当前播放的歌曲
       if (prev.length === 0) {
-        // 添加歌曲但不播放，添加歌曲到播放列表
+        // 添加到播放列表并播放
+        currentIndexRef.current = 0
+        setCurrentIndex(0)
         return [song]
       }
       
@@ -2186,6 +2247,8 @@ function App() {
         return newPlaylist
       } else {
         // 如果是当前播放的歌曲，但不播放
+        currentIndexRef.current = 0
+        setCurrentIndex(0)
         return [song, ...prev]
       }
     })
@@ -2301,7 +2364,29 @@ function App() {
     const artistNames = song.artists?.map((a: any) => a.name).join('、') || '未知艺人'
     const albumName = song.album?.name || '未知专辑'
     const info = `歌曲名：${song.name}，歌手名：${artistNames}，专辑名：${albumName}`
-    navigator.clipboard.writeText(info)
+    try {
+      navigator.clipboard.writeText(info).catch(() => {
+        // Electron 中 clipboard API 可能被 CSP 限制，回退到 textarea 选择复制
+        const textarea = document.createElement('textarea')
+        textarea.value = info
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      })
+    } catch {
+      // 兜底：直接 execCommand
+      const textarea = document.createElement('textarea')
+      textarea.value = info
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
     addToast('歌曲信息已复制到剪贴板', 'success')
   }
 
@@ -3285,6 +3370,19 @@ function App() {
     return () => window.removeEventListener('waveforge:show-song-detail', handler)
   }, [])
 
+  // 右键菜单「相似歌曲」：通过全局事件展示相似歌曲列表
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const song = (e as CustomEvent).detail
+      if (song) {
+        setSimilarSongsSource(song)
+        setShowSimilarSongs(true)
+      }
+    }
+    window.addEventListener('waveforge:show-similar-songs', handler)
+    return () => window.removeEventListener('waveforge:show-similar-songs', handler)
+  }, [])
+
   useEffect(() => {
     window.electron?.desktopPlayer?.pushState({ accentColor: coverPalette[0] || dominantColor })
   }, [coverPalette, dominantColor])
@@ -3791,6 +3889,15 @@ function App() {
               playerTheme={playerTheme}
             />
           </Suspense>
+        )}
+        {showSimilarSongs && similarSongsSource && (
+          <SimilarSongsPanel
+            song={similarSongsSource}
+            onClose={() => setShowSimilarSongs(false)}
+            onPlayNow={(s) => { void handleSongSelect(s) }}
+            onPlayNext={(s) => { handlePlayNext(s) }}
+            playerTheme={playerTheme}
+          />
         )}
       </AnimatePresence>
 
@@ -4936,6 +5043,7 @@ function App() {
         <AnimatePresence>
           {showArtistDetail && selectedArtistId && (
             <LazyArtistDetailModal
+            key={'artist-' + selectedArtistId}
             artistId={selectedArtistId}
             platform={selectedArtistPlatform}
             onClose={closeArtistDetail}
@@ -4969,6 +5077,7 @@ function App() {
         <AnimatePresence>
           {showAlbumDetail && selectedAlbumId && (
             <LazyAlbumDetailModal
+            key={'album-' + selectedAlbumId}
             albumId={selectedAlbumId}
             platform={selectedAlbumPlatform}
             onClose={closeAlbumDetail}

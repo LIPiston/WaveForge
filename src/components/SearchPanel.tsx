@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Search, X, Music, History, Clock, User, Disc, Sparkles } from 'lucide-react'
-import { searchSongs, searchSuggest, searchArtists, searchAlbums, Song, Artist, Album, SearchSuggestion, getProxiedImageUrl, loadAlbumCovers, resolveSongAlbumIdentifier } from '../services/musicApi'
+import { Search, X, Music, History, Clock, User, Disc, Sparkles, TrendingUp } from 'lucide-react'
+import { searchSongs, searchSuggest, searchArtists, searchAlbums, Song, Artist, Album, SearchSuggestion, getProxiedImageUrl, loadAlbumCovers, resolveSongAlbumIdentifier, searchHot } from '../services/musicApi'
 import { mergeFusedSearchResults, type FusedSearchIntent, type MusicPlatform } from '../services/fusedSearch'
 import CachedImage from './CachedImage'
 import ArtistDetailModal from './ArtistDetailModal'
@@ -41,7 +41,7 @@ const SEARCH_HISTORY_KEY_FUSED = 'waveforge_search_history_fused'
 const MAX_HISTORY = 5
 type SearchPlatform = MusicPlatform | 'fused'
 
-const withSearchTimeout = <T,>(promise: Promise<T>, timeoutMs = 8_000): Promise<T> => new Promise((resolve, reject) => {
+const withSearchTimeout = <T,>(promise: Promise<T>, timeoutMs = 5_000): Promise<T> => new Promise((resolve, reject) => {
   const timer = window.setTimeout(() => reject(new Error('融合搜索请求超时')), timeoutMs)
   promise.then(
     value => {
@@ -102,6 +102,7 @@ export default function SearchPanel({
   })
   const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([])
   const [searchHistory, setSearchHistory] = useState<string[]>([]) // 搜索历史
+  const [hotSearch, setHotSearch] = useState<any[]>([]) // 搜索热词
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false) // 加载更多状态
   const [searched, setSearched] = useState(() => {
@@ -117,6 +118,11 @@ export default function SearchPanel({
   const [isInputFocused, setIsInputFocused] = useState(false) // 输入框是否聚焦
   const scrollContainerRef = useRef<HTMLDivElement>(null) // 滚动容器引用
   const searchRequestRef = useRef(0)
+  // 搜索结果缓存 per platform，避免切换平台后重新搜索
+  const searchCacheRef = useRef<Map<string, {
+    allResults: Song[]; artistResults: Artist[]; albumResults: Album[];
+    artists: Artist[]; albums: Album[]; unavailable: MusicPlatform[]; intent: FusedSearchIntent
+  }>>(new Map())
   const [songContextMenu, setSongContextMenu] = useState<{ show: boolean; x: number; y: number; song: Song | null }>({
     show: false,
     x: 0,
@@ -242,8 +248,29 @@ export default function SearchPanel({
     setSelectedAlbum(null)
   }, [restorePlaybackOrigin?.revision])
 
+  // 加载搜索热词
+  useEffect(() => {
+    let cancelled = false
+    const platformForHot = platform === 'fused' ? 'netease' : platform
+    const fetchHot = async () => {
+      const data = await searchHot(platformForHot as 'netease' | 'qq')
+      if (!cancelled && data) {
+        // 网易云: { code:200, result: { hots: [{ first:"热词", second:0 }] } }
+        // QQ: { result:100, data: [{ k:"热词", n:1 }] }
+        const neteaseList = data.result?.hots || data.hots
+        const qqList = Array.isArray(data.data) ? data.data : null
+        const list = neteaseList || qqList || []
+        setHotSearch(list.slice(0, 10))
+      }
+    }
+    fetchHot()
+    return () => { cancelled = true }
+  }, [platform])
+
   // 加载搜索历史
   useEffect(() => {
+    // 平台切换时立即清空，避免残留上一平台的搜索历史
+    setSearchHistory([])
     const key = platform === 'fused'
       ? SEARCH_HISTORY_KEY_FUSED
       : platform === 'qq' ? SEARCH_HISTORY_KEY_QQ : SEARCH_HISTORY_KEY_NETEASE
@@ -402,6 +429,22 @@ export default function SearchPanel({
     setSelectedIndex(-1)
     setDisplayCount(20) // 重置显示数量
     
+    // 检查缓存：同一平台+同一关键词的搜索结果
+    const cacheKey = `${platform}:${finalKeyword}`
+    const cached = searchCacheRef.current.get(cacheKey)
+    if (cached) {
+      setArtistResults(cached.artistResults)
+      setAlbumResults(cached.albumResults)
+      setAllResults(cached.allResults)
+      setDisplayedResults(cached.allResults.slice(0, 20))
+      setFusionUnavailablePlatforms(cached.unavailable)
+      setFusionIntent(cached.intent)
+      setLoading(false)
+      // 保存搜索历史
+      saveSearchHistory(finalKeyword)
+      return
+    }
+    
     // 重置结果
     setArtistResults([])
     setAlbumResults([])
@@ -451,6 +494,11 @@ export default function SearchPanel({
         setAlbumResults(fused.albums)
         setAllResults(fused.songs)
         setDisplayedResults(fused.songs.slice(0, 20))
+        // 缓存结果
+        searchCacheRef.current.set(cacheKey, {
+          allResults: fused.songs, artistResults: fused.artists, albumResults: fused.albums,
+          artists: fused.artists, albums: fused.albums, unavailable, intent: fused.intent
+        })
       } else if (searchType === 'song') {
         const songResult = await searchSongs(finalKeyword, 100, platform)
         if (requestId !== searchRequestRef.current) return
@@ -875,8 +923,8 @@ export default function SearchPanel({
                 </button>
               )}
               
-              {/* 搜索历史 */}
-              {isInputFocused && !searched && keyword.trim() === '' && searchHistory.length > 0 && (
+              {/* 搜索热词 + 搜索历史（合并显示） */}
+              {isInputFocused && !searched && keyword.trim() === '' && (hotSearch.length > 0 || searchHistory.length > 0) && (
                 <motion.div
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -890,31 +938,66 @@ export default function SearchPanel({
                     border: playerTheme === 'dark' ? '1px solid rgba(255,255,255,0.1)' : '1px solid rgba(0,0,0,0.08)',
                   }}
                 >
-                  <div className={`flex items-center justify-between px-4 py-2 border-b ${playerTheme === 'dark' ? 'border-white/5' : 'border-black/5'}`}>
-                    <div className={`flex items-center gap-2 ${textPrimary}/60 text-sm`}>
-                      <Clock className="w-4 h-4" />
-                      <span>搜索历史</span>
-                    </div>
-                    <button
-                      onClick={clearSearchHistory}
-                      className={`${textPrimary}/40 hover:${textPrimary}/60 text-xs transition-colors`}
-                    >
-                      清空
-                    </button>
+                  <div className={`flex ${platform === 'fused' ? '' : ''}`}>
+                    {/* 搜索热词列 */}
+                    {hotSearch.length > 0 && (
+                      <div className={`${platform === 'fused' ? 'w-1/2' : 'w-1/2'} border-r ${playerTheme === 'dark' ? 'border-white/5' : 'border-black/5'}`}>
+                        <div className={`flex items-center gap-2 px-4 py-2 border-b ${playerTheme === 'dark' ? 'border-white/5' : 'border-black/5'}`}>
+                          <TrendingUp className={`w-4 h-4 ${textPrimary}/60`} />
+                          <span className={`${textPrimary}/60 text-sm`}>
+                            {platform === 'fused' ? '热门搜索' : '搜索热词'}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 px-4 py-3">
+                          {hotSearch.map((item: any, i: number) => {
+                            const word = item.first || item.k || item.word || item.keyword || item.hotWord || item.query || item.sKey || ''
+                            return word ? (
+                              <button
+                                key={i}
+                                onClick={() => {
+                                  setKeyword(word)
+                                  handleSearch(word)
+                                }}
+                                className={`px-3 py-1.5 rounded-full text-sm transition-colors ${
+                                  i < 3 ? 'font-semibold' : ''
+                                } ${playerTheme === 'dark' ? 'bg-white/10 hover:bg-white/20 text-white/80' : 'bg-black/8 hover:bg-black/15 text-black/80'}`}
+                                style={i < 3 ? { backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.12)', fontWeight: 600 } : {}}
+                              >
+                                {word}
+                              </button>
+                            ) : null
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {/* 搜索历史列 */}
+                    {searchHistory.length > 0 && (
+                      <div className={`${hotSearch.length > 0 ? 'w-1/2' : 'w-full'}`}>
+                        <div className={`flex items-center justify-between px-4 py-2 border-b ${playerTheme === 'dark' ? 'border-white/5' : 'border-black/5'}`}>
+                          <div className={`flex items-center gap-2 ${textPrimary}/60 text-sm`}>
+                            <Clock className="w-4 h-4" />
+                            <span>搜索历史</span>
+                          </div>
+                          <button onClick={clearSearchHistory} className={`${textPrimary}/40 hover:${textPrimary}/60 text-xs transition-colors`}>
+                            清空
+                          </button>
+                        </div>
+                        {searchHistory.map((item, index) => (
+                          <div
+                            key={index}
+                            onClick={() => {
+                              setKeyword(item)
+                              handleSearch(item)
+                            }}
+                            className={`flex items-center px-4 py-3 cursor-pointer transition-colors border-b ${playerTheme === 'dark' ? 'border-white/5' : 'border-black/5'} last:border-b-0 hover:${bgCard} ${textPrimary}/80 hover:${textPrimary}`}
+                          >
+                            <History className={`w-4 h-4 mr-2 flex-shrink-0 ${textPrimary}/40`} />
+                            <span>{item}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  {searchHistory.map((item, index) => (
-                    <div
-                      key={index}
-                      onClick={() => {
-                        setKeyword(item)
-                        handleSearch(item)
-                      }}
-                      className={`flex items-center px-4 py-3 cursor-pointer transition-colors border-b ${playerTheme === 'dark' ? 'border-white/5' : 'border-black/5'} last:border-b-0 hover:${bgCard} ${textPrimary}/80 hover:${textPrimary}`}
-                    >
-                      <History className={`w-4 h-4 mr-2 flex-shrink-0 ${textPrimary}/40`} />
-                      <span>{item}</span>
-                    </div>
-                  ))}
                 </motion.div>
               )}
               

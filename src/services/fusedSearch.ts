@@ -165,8 +165,8 @@ const rankAndMergeArtists = (
       const exactMatches = entries.filter(candidate => candidate.score >= 0.995)
       if (exactMatches.length > 0) return entry.score >= 0.995
       const topScore = entries[0]?.score || 0
-      const minimumScore = intent === 'artist' ? 0.68 : 0.86
-      return entry.score >= Math.max(minimumScore, topScore - 0.06)
+      const minimumScore = intent === 'artist' ? 0.62 : 0.82
+      return entry.score >= Math.max(minimumScore, topScore - 0.08)
     })
     .slice(0, 6)
     .map(entry => entry.item)
@@ -208,15 +208,15 @@ const rankAndMergeAlbums = (
       rankScore: score * 1000 + (account.vip ? 160 : account.loggedIn ? 30 : 0),
       sourceIndex: Math.min(...group.map(entry => entry.sourceIndex)),
     }
-  }).filter(entry => entry.score >= 0.6)
+  }).filter(entry => entry.score >= 0.55)
     .sort((left, right) => right.rankScore - left.rankScore || left.sourceIndex - right.sourceIndex)
     .filter((entry, _index, entries) => {
-      if (intent === 'artist') return entry.artistScore >= 0.94
-      if (intent === 'song') return entry.titleScore >= 0.9
+      if (intent === 'artist') return entry.artistScore >= 0.92
+      if (intent === 'song') return entry.titleScore >= 0.88
       const exactTitles = entries.filter(candidate => candidate.titleScore >= 0.995)
-      if (exactTitles.length > 0) return entry.titleScore >= 0.94
+      if (exactTitles.length > 0) return entry.titleScore >= 0.92
       const topScore = entries[0]?.score || 0
-      return entry.score >= Math.max(intent === 'album' ? 0.7 : 0.76, topScore - 0.08)
+      return entry.score >= Math.max(intent === 'album' ? 0.65 : 0.72, topScore - 0.10)
     })
     .slice(0, intent === 'artist' ? 3 : intent === 'song' ? 2 : 6)
     .map(entry => entry.item)

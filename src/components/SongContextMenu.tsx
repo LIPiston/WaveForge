@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { Play, ListPlus, Heart, HeartOff, MessageSquare, Disc, User, Copy, ChevronRight, Info } from 'lucide-react'
+import { Play, ListPlus, Heart, HeartOff, MessageSquare, Disc, User, Copy, ChevronRight, Info, ListMusic } from 'lucide-react'
 import { Song, getProxiedImageUrl } from '../services/musicApi'
 import { useEffect, useLayoutEffect, useState, useRef } from 'react'
 import CachedImage from './CachedImage'
@@ -341,6 +341,14 @@ export default function SongContextMenu({
         onClose()
       }
     },
+    ...(song?.platform === 'netease' || song?.platform === 'qq' ? [{
+      label: '相似歌曲',
+      icon: ListMusic,
+      onClick: () => {
+        window.dispatchEvent(new CustomEvent('waveforge:show-similar-songs', { detail: song }))
+        onClose()
+      }
+    }] : []),
     ...(onCopyInfo ? [{
       label: '复制歌曲信息',
       icon: Copy,

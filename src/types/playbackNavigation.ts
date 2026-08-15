@@ -23,7 +23,7 @@ export interface PlaybackOrigin {
   searchMode?: 'netease' | 'qq' | 'fused'
   artistId?: string | number
   albumId?: string | number
-  artistTab?: 'hotSongs' | 'allSongs' | 'albums' | 'videos' | 'info'
+  artistTab?: 'hotSongs' | 'allSongs' | 'albums' | 'videos' | 'similarArtists' | 'info'
   playlist?: unknown
   songs?: Song[]
   detail?: unknown

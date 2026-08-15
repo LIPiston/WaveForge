@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Play, Music, Info, Loader } from 'lucide-react'
-import { getAlbumDetail, getAlbumSongs, Album, Song, getProxiedImageUrl } from '../services/musicApi'
+import { X, Play, Music, Info, Loader, Heart } from 'lucide-react'
+import { getAlbumDetail, getAlbumSongs, Album, Song, getProxiedImageUrl, subscribeAlbum } from '../services/musicApi'
 import CachedImage from './CachedImage'
 import ScrollToTop from './ScrollToTop'
 import ScrollToCurrentSong from './ScrollToCurrentSong'
@@ -61,6 +61,23 @@ export default function AlbumDetailModal({
     y: 0,
     song: null
   })
+  const [subscribed, setSubscribed] = useState(false)
+  const [subscribing, setSubscribing] = useState(false)
+  
+  const handleSubscribe = async () => {
+    if (subscribing || !album) return
+    setSubscribing(true)
+    try {
+      const data = await subscribeAlbum(String(album.id), !subscribed, platform)
+      if (data) {
+        setSubscribed(!subscribed)
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      setSubscribing(false)
+    }
+  }
   
   // 滚动容器引用
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -271,18 +288,35 @@ export default function AlbumDetailModal({
                   </div>
 
                   {/* 播放按钮 */}
-                  <button
-                    onClick={handlePlayAll}
-                    className="px-6 py-2 text-slate-950 rounded-full font-medium transition-all flex items-center gap-2 w-fit text-sm"
-                    style={{
-                      backgroundColor: `${readableAccentColor}e6`, // 90% 不透明度
-                    }}
-                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = readableAccentColor}
-                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = `${readableAccentColor}e6`}
-                  >
-                    <Play className="w-4 h-4" fill="currentColor" />
-                    播放专辑
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handlePlayAll}
+                      className="px-6 py-2 text-slate-950 rounded-full font-medium transition-all flex items-center gap-2 w-fit text-sm"
+                      style={{
+                        backgroundColor: `${readableAccentColor}e6`,
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = readableAccentColor}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = `${readableAccentColor}e6`}
+                    >
+                      <Play className="w-4 h-4" fill="currentColor" />
+                      播放专辑
+                    </button>
+                    <button
+                      onClick={handleSubscribe}
+                      disabled={subscribing}
+                      className={`px-4 py-2 rounded-full font-medium transition-all flex items-center gap-1.5 text-sm ${
+                        subscribed
+                          ? 'text-white'
+                          : 'text-white/80 hover:text-white'
+                      }`}
+                      style={{
+                        backgroundColor: subscribed ? `${readableAccentColor}` : 'rgba(255,255,255,0.12)',
+                      }}
+                    >
+                      <Heart className={`w-4 h-4 ${subscribed ? 'fill-current' : ''}`} />
+                      {subscribed ? '已收藏' : '收藏专辑'}
+                    </button>
+                  </div>
                 </div>
 
                 {/* 关闭按钮 */}

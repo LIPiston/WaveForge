@@ -1174,45 +1174,6 @@ export default function SettingsPanel({
 
               {activeTab === 'personalization' && (
                 <div className="space-y-6">
-                  {/* 外观主题 */}
-                  <div>
-                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>外观主题</h3>
-                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
-                      <div className="flex items-center justify-between gap-6">
-                        <div className="min-w-0">
-                          <div className={`${textPrimary} font-medium mb-1`}>主题色</div>
-                          <div className={`${textSecondary} text-sm`}>切换播放页、简约模式与探索模式的深浅色显示</div>
-                        </div>
-                        <div className="flex gap-2 flex-shrink-0">
-                          {(['dark', 'light'] as const).map((themeOption) => (
-                            <button
-                              key={themeOption}
-                              onClick={() => handlePlayerThemeChange(themeOption)}
-                              className="px-4 py-1.5 rounded-lg text-xs font-medium transition-all"
-                              style={{
-                                backgroundColor:
-                                  playerTheme === themeOption
-                                    ? accentColor
-                                    : playerTheme === 'dark'
-                                    ? 'rgba(255,255,255,0.1)'
-                                    : 'rgba(0,0,0,0.1)',
-                                color:
-                                  playerTheme === themeOption
-                                    ? '#fff'
-                                    : playerTheme === 'dark'
-                                    ? 'rgba(255,255,255,0.6)'
-                                    : 'rgba(0,0,0,0.6)',
-                                boxShadow: playerTheme === themeOption ? `0 0 8px ${accentColor}30` : 'none',
-                              }}
-                            >
-                              {themeOption === 'dark' ? '深色' : '浅色'}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
                   {/* 首页自定义 */}
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>自定义首页</h3>
@@ -1836,6 +1797,41 @@ export default function SettingsPanel({
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>主题色</h3>
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                      {/* 深浅色切换 */}
+                      <div className="flex items-center justify-between mb-4 pb-4" style={{ borderBottom: `1px solid ${playerTheme === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'}` }}>
+                        <div className={`${textPrimary} font-medium`}>外观主题</div>
+                        <div className="flex gap-2">
+                          {(['dark', 'light'] as const).map((themeOption) => (
+                            <button
+                              key={themeOption}
+                              onClick={() => handlePlayerThemeChange(themeOption)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                              style={{
+                                backgroundColor:
+                                  playerTheme === themeOption
+                                    ? accentColor
+                                    : playerTheme === 'dark'
+                                    ? 'rgba(255,255,255,0.1)'
+                                    : 'rgba(0,0,0,0.1)',
+                                color:
+                                  playerTheme === themeOption
+                                    ? '#fff'
+                                    : playerTheme === 'dark'
+                                    ? 'rgba(255,255,255,0.6)'
+                                    : 'rgba(0,0,0,0.6)',
+                                boxShadow: playerTheme === themeOption ? `0 0 8px ${accentColor}30` : 'none',
+                              }}
+                            >
+                              {themeOption === 'dark' ? (
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
+                              ) : (
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
+                              )}
+                              {themeOption === 'dark' ? '深色' : '浅色'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       <div className="mb-4">
                         <div className={`${textPrimary} font-medium mb-1`}>选择主题色</div>
                         <div className={`${textSecondary} text-sm`}>

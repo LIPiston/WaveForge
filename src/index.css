@@ -2,6 +2,10 @@
 @source './';
 @source '../*.html';
 
+/* 深浅色切换过渡动画 - 0.3s 平滑过渡 */
+html, body, html * {
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, backdrop-filter 0.3s ease;
+}
 /* 修复日语注音（Ruby Text）显示位置 */
 ruby {
   ruby-position: over;

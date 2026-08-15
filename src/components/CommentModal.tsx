@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Song } from '../services/musicApi'
+import { getProxiedImageUrl } from '../services/musicApi'
 import { ThumbsUp, MessageCircle, Trash2, Send, ChevronDown, Edit3 } from 'lucide-react'
 import ScrollToTop from './ScrollToTop'
 import DeleteCommentModal from './DeleteCommentModal'
@@ -156,6 +157,21 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     : (song?.artists?.map((artist: any) => artist.name).join('、') || '')
   const playlistDescription = normalizeDescriptionText(playlist?.description || playlist?.desc) || '当前歌单暂无简介'
   const [allComments, setAllComments] = useState<Comment[]>([])
+  const [hotComments, setHotComments] = useState<Comment[]>([])
+
+  // 自动加载更多 refs（在变量声明后同步）
+  const hasMoreCommentsRef = useRef(false)
+  const isLoadingMoreRef = useRef(false)
+  const loadingRef = useRef(false)
+  const loadCommentsRef = useRef<(reset?: boolean) => Promise<void>>(async () => {})
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    if (!hasMoreCommentsRef.current || isLoadingMoreRef.current || loadingRef.current) return
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
+      loadCommentsRef.current(false)
+    }
+  }, [])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -172,6 +188,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
   const [showCommentInput, setShowCommentInput] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const scrollSentinelRef = useRef<HTMLDivElement>(null)
   
   // 分页相关状态
   const [currentPage, setCurrentPage] = useState(0)
@@ -256,6 +273,14 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
       loadComments(true)
     }
   }, [isOpen, resourceId, viewMode, userCookie, commentRefreshKey])
+
+  // 同步加载更多 refs
+  useEffect(() => {
+    hasMoreCommentsRef.current = hasMoreComments
+    isLoadingMoreRef.current = isLoadingMore
+    loadingRef.current = loading
+    loadCommentsRef.current = loadComments
+  })
 
   const loadComments = async (reset = false) => {
     if (!resourceId) return
@@ -402,6 +427,19 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
             }
             
             console.log('[QQ音乐评论] 处理后的评论:', comments)
+          }
+          
+          // QQ 评论：热评模式下 hotComments 是精选热评，comments 是全部评论；最新模式下 hotComments 是附带的热评
+          if (platform === 'qq') {
+            if (data.data?.hotComments && data.data.hotComments.length > 0) {
+              const hotRaw = data.data.hotComments
+              const hotMapped = Array.isArray(hotRaw) ? mapQQComments(hotRaw) : []
+              setHotComments(hotMapped)
+            } else {
+              setHotComments([])
+            }
+          } else {
+            setHotComments([])
           }
           
           // 设置hasMore
@@ -1124,7 +1162,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           </AnimatePresence>
 
           {/* 评论列表 */}
-          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto custom-scrollbar">
+          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto custom-scrollbar">
             {loading ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <div className="w-8 h-8 border-4 border-pink-500 border-t-transparent rounded-full animate-spin mb-3"></div>
@@ -1149,6 +1187,21 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
             ) : (
               <div>
                 {displayComments.map((comment) => renderComment(comment))}
+
+                {/* QQ 评论区：热评展示在顶部，下方是全部评论 */}
+                {resourcePlatform === 'qq' && hotComments.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 px-2 py-3 text-gray-400 text-sm border-b border-white/5">
+                      <span className="text-yellow-500">★</span>
+                      <span>精彩评论</span>
+                    </div>
+                    {hotComments.map((comment) => renderComment(comment))}
+                    <div className="border-t border-white/5 my-3"></div>
+                    <div className="flex items-center gap-2 px-2 py-2 text-gray-400 text-sm">
+                      <span>全部评论</span>
+                    </div>
+                  </div>
+                )}
                 
                 {/* 加载更多按钮 */}
                 {hasMoreComments && !loading && (
@@ -1175,7 +1228,9 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
                 
                 {!hasMoreComments && displayComments.length > 0 && (
                   <div className="flex items-center justify-center py-6 text-gray-500 text-sm">
-                    没有更多评论了
+                    {resourcePlatform === 'qq' && viewMode === 'hot' && hotComments.length > 0 && displayComments.length <= hotComments.length
+                      ? '已显示全部精彩评论，下方为全部评论'
+                      : '没有更多评论了'}
                   </div>
                 )}
               </div>

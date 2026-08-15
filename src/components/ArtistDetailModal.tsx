@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Play, Music, Disc, Video, Info, Loader, ListMusic, Calendar, Eye, Users } from 'lucide-react'
-import { getArtistDetail, getArtistTopSongs, getArtistAllSongs, getArtistAlbums, getArtistMVs, Artist, Song, Album, getProxiedImageUrl, resolveSongAlbumIdentifier } from '../services/musicApi'
+import { X, Play, Music, Disc, Video, Info, Loader, ListMusic, Calendar, Eye, Users, Heart, UserPlus, UserCheck } from 'lucide-react'
+import { getArtistDetail, getArtistTopSongs, getArtistAllSongs, getArtistAlbums, getArtistMVs, Artist, Song, Album, getProxiedImageUrl, resolveSongAlbumIdentifier, subscribeArtist, getSimilarArtists } from '../services/musicApi'
 import CachedImage from './CachedImage'
 import AlbumDetailModal from './AlbumDetailModal'
 import VideoPlayer from './VideoPlayer'
@@ -35,7 +35,7 @@ interface ArtistDetailModalProps {
   onCopyInfo?: (song: Song) => void
 }
 
-type TabType = 'hotSongs' | 'allSongs' | 'albums' | 'videos' | 'info'
+type TabType = 'hotSongs' | 'allSongs' | 'albums' | 'videos' | 'similarArtists' | 'info'
 
 export default function ArtistDetailModal({
   artistId,
@@ -83,6 +83,9 @@ export default function ArtistDetailModal({
     song: Song | null
     sourceSongs: Song[]
   }>({ show: false, x: 0, y: 0, song: null, sourceSongs: [] })
+  const [following, setFollowing] = useState(false)
+  const [followingLoading, setFollowingLoading] = useState(false)
+  const [similarArtists, setSimilarArtists] = useState<any[]>([])
   const allSongsScrollRef = useRef<HTMLDivElement>(null) // 全部歌曲滚动容器的引用
   const hotSongsScrollRef = useRef<HTMLDivElement>(null) // 热门歌曲滚动容器的引用
   
@@ -101,6 +104,36 @@ export default function ArtistDetailModal({
     }
     return fans.toString()
   }
+
+  // 关注/取关歌手
+  const handleFollow = async () => {
+    if (followingLoading || !artist) return
+    setFollowingLoading(true)
+    try {
+      const id = platform === 'qq' ? String(artist.mid || artist.id) : String(artist.id)
+      await subscribeArtist(id, !following, platform)
+      setFollowing(!following)
+    } catch { /* ignore */ }
+    finally { setFollowingLoading(false) }
+  }
+
+  // 拉取相似歌手
+  useEffect(() => {
+    let cancelled = false
+    const fetch = async () => {
+      if (!artist) return
+      try {
+        const id = platform === 'qq' ? String(artist.mid || artist.id) : String(artist.id)
+        const data = await getSimilarArtists(id, platform)
+        if (!cancelled && data) {
+          const list = data.artists || data.data?.list || data.data?.artists || []
+          setSimilarArtists(list.slice(0, 8))
+        }
+      } catch { /* ignore */ }
+    }
+    fetch()
+    return () => { cancelled = true }
+  }, [artist, platform])
 
   // 判断是否是当前播放的歌曲
   const isCurrentSong = (song: Song) => {
@@ -587,20 +620,35 @@ export default function ArtistDetailModal({
                     </div>
                   </div>
 
-                  {/* 播放按钮和粉丝数 */}
+                  {/* 播放按钮和关注 */}
                   <div className="flex items-center justify-between w-full">
-                    <button
-                      onClick={handlePlayAll}
-                      className="px-6 py-2 text-slate-950 rounded-full font-medium transition-all flex items-center gap-2 w-fit text-sm"
-                      style={{
-                        backgroundColor: `${readableAccentColor}e6`,
-                      }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = readableAccentColor}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = `${readableAccentColor}e6`}
-                    >
-                      <Play className="w-4 h-4" fill="currentColor" />
-                      播放全部
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handlePlayAll}
+                        className="px-6 py-2 text-slate-950 rounded-full font-medium transition-all flex items-center gap-2 w-fit text-sm"
+                        style={{
+                          backgroundColor: `${readableAccentColor}e6`,
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = readableAccentColor}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = `${readableAccentColor}e6`}
+                      >
+                        <Play className="w-4 h-4" fill="currentColor" />
+                        播放全部
+                      </button>
+                      <button
+                        onClick={handleFollow}
+                        disabled={followingLoading}
+                        className={`px-3 py-2 rounded-full font-medium transition-all flex items-center gap-1.5 text-sm ${
+                          following ? 'text-white' : 'text-white/80 hover:text-white'
+                        }`}
+                        style={{
+                          backgroundColor: following ? `${readableAccentColor}` : 'rgba(255,255,255,0.12)',
+                        }}
+                      >
+                        {following ? <UserCheck className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
+                        {following ? '已关注' : '关注'}
+                      </button>
+                    </div>
                     
                     {/* 粉丝数徽章 */}
                     {artist.fans !== undefined && artist.fans > 0 && (
@@ -652,7 +700,7 @@ export default function ArtistDetailModal({
               精选
               {activeTab === 'hotSongs' && (
                 <motion.div
-                  layoutId="activeTab"
+                   
                   className="absolute bottom-0 left-0 right-0 h-0.5"
                   style={{ backgroundColor: readableAccentColor }}
                 />
@@ -670,7 +718,7 @@ export default function ArtistDetailModal({
               专辑
               {activeTab === 'albums' && (
                 <motion.div
-                  layoutId="activeTab"
+                   
                   className="absolute bottom-0 left-0 right-0 h-0.5"
                   style={{ backgroundColor: readableAccentColor }}
                 />
@@ -688,7 +736,7 @@ export default function ArtistDetailModal({
               视频
               {activeTab === 'videos' && (
                 <motion.div
-                  layoutId="activeTab"
+                   
                   className="absolute bottom-0 left-0 right-0 h-0.5"
                   style={{ backgroundColor: readableAccentColor }}
                 />
@@ -706,12 +754,33 @@ export default function ArtistDetailModal({
               全部歌曲
               {activeTab === 'allSongs' && (
                 <motion.div
-                  layoutId="activeTab"
+                   
                   className="absolute bottom-0 left-0 right-0 h-0.5"
                   style={{ backgroundColor: readableAccentColor }}
                 />
               )}
             </button>
+            
+            {/* 相似歌手 — 仅在获取到相似歌手后显示 */}
+            {similarArtists.length > 0 && (
+              <button
+                onClick={() => setActiveTab('similarArtists')}
+                className={`pb-3 px-3 font-medium transition-all relative text-sm ${
+                  activeTab === 'similarArtists'
+                    ? `${textPrimary}`
+                    : `${textSecondary} hover:${textPrimary}`
+                }`}
+              >
+                <Users className="w-4 h-4 inline mr-1.5" />
+                相似歌手
+                {activeTab === 'similarArtists' && (
+                  <div
+                    className="absolute bottom-0 left-0 right-0 h-0.5"
+                    style={{ backgroundColor: readableAccentColor }}
+                  />
+                )}
+              </button>
+            )}
             
             {/* 弹性空间，将歌手详情推到右边 */}
             <div className="flex-1"></div>
@@ -728,7 +797,7 @@ export default function ArtistDetailModal({
               歌手详情
               {activeTab === 'info' && (
                 <motion.div
-                  layoutId="activeTab"
+                   
                   className="absolute bottom-0 left-0 right-0 h-0.5"
                   style={{ backgroundColor: readableAccentColor }}
                 />
@@ -775,7 +844,6 @@ export default function ArtistDetailModal({
                       <motion.div
                         key={`hot-song-${index}`}
                         data-song-index={index}
-                        whileHover={{ scale: 1.005 }}
                         onClick={() => {
                           if (onSongSelect) {
                             onSongSelect(song, hotSongs)
@@ -917,7 +985,6 @@ export default function ArtistDetailModal({
                       <motion.div
                         key={`all-song-${index}`}
                         data-song-index={index}
-                        whileHover={{ scale: 1.005 }}
                         onClick={() => {
                           if (onSongSelect) {
                             onSongSelect(song, allSongs)
@@ -1233,6 +1300,49 @@ export default function ArtistDetailModal({
               </div>
             )}
 
+            {/* 相似歌手 */}
+            {activeTab === 'similarArtists' && (
+              <div className={`${textPrimary} space-y-4`}>
+                {similarArtists.length > 0 ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                    {similarArtists.map((sa: any, i: number) => {
+                      const name = sa.name || sa.artistName || ''
+                      // QQ: sa.pic_url || sa.picurl; 网易云: sa.img1v1Url || sa.picUrl
+                      const pic = sa.pic_url || sa.picurl || sa.img1v1Url || sa.picUrl || sa.artistPic || sa.singer_pic || sa.headPic || sa.singerPic || sa.pic || sa.avatarUrl || ''
+                      const saId = sa.id || sa.artistId || sa.singer_id || 0
+                      const saMid = sa.mid || sa.singer_mid || ''
+                      return (
+                        <button
+                          key={saId || i}
+                          onClick={() => {
+                            if (onOpenArtist) {
+                              const id = platform === 'qq' ? String(saMid || saId) : String(saId)
+                              onOpenArtist(id, platform)
+                            }
+                          }}
+                          className="flex flex-col items-center gap-2 p-3 rounded-xl transition-colors hover:bg-white/10 text-left"
+                        >
+                          <div className="w-20 h-20 rounded-full overflow-hidden bg-white/10 shrink-0">
+                            {pic ? (
+                              <img src={getProxiedImageUrl(pic, 150)} alt={name} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center"><Music className="w-6 h-6 text-white/40" /></div>
+                            )}
+                          </div>
+                          <span className={`text-xs text-center truncate w-full ${textSecondary}`}>{name}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className={`flex flex-col items-center justify-center py-20 ${textSecondary}`}>
+                    <Users className="w-16 h-16 mb-4 opacity-20" />
+                    <p>暂无相似歌手</p>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* 详情 */}
             {activeTab === 'info' && artist && (
               <div className={`${textPrimary} space-y-6`}>
@@ -1286,6 +1396,38 @@ export default function ArtistDetailModal({
                         </p>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* 相似歌手 */}
+                {similarArtists.length > 0 && (
+                  <div>
+                    <h3 className="text-xl font-bold mb-3">相似歌手</h3>
+                    <div className="grid grid-cols-4 gap-3">
+                      {similarArtists.map((sa: any, i: number) => {
+                        const name = sa.name || sa.artistName || ''
+                        const pic = sa.picUrl || sa.img1v1Url || sa.artistPic || ''
+                        const saId = sa.id || sa.artistId || 0
+                        const saMid = sa.mid || ''
+                        return (
+                          <button
+                            key={saId || i}
+                            onClick={() => {
+                              if (onOpenArtist) {
+                                const id = platform === 'qq' ? String(saMid || saId) : String(saId)
+                                onOpenArtist(id, platform)
+                              }
+                            }}
+                            className="flex flex-col items-center gap-1.5 p-2 rounded-xl transition-colors hover:bg-white/10"
+                          >
+                            <div className="w-16 h-16 rounded-full overflow-hidden bg-white/10">
+                              {pic ? <img src={getProxiedImageUrl(pic, 150)} alt={name} className="w-full h-full object-cover" /> : <Music className="w-6 h-6 m-auto text-white/40" />}
+                            </div>
+                            <span className={`text-xs truncate w-full text-center ${textSecondary}`}>{name}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
 
