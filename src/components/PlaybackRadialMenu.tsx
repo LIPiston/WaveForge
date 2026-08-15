@@ -11,6 +11,7 @@ interface PlaybackRadialMenuProps {
   accentColor: string
   liked: boolean
   userPlaylists: any[]
+  playerTheme?: 'light' | 'dark'
   onPlayNow: (song: Song) => void
   onPlayNext: (song: Song) => void
   onToggleFavorite: (song: Song, liked: boolean) => void
@@ -32,6 +33,7 @@ export default function PlaybackRadialMenu({
   accentColor,
   liked,
   userPlaylists,
+  playerTheme = 'dark',
   onPlayNow,
   onPlayNext,
   onToggleFavorite,
@@ -203,6 +205,7 @@ export default function PlaybackRadialMenu({
         onCopyInfo={onCopyInfo}
         userPlaylists={userPlaylists}
         platform={(song.platform || 'netease') as 'netease' | 'qq'}
+        playerTheme={playerTheme}
         hideFavoriteAction={liked}
       />
 

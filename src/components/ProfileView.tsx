@@ -1550,6 +1550,7 @@ export default function ProfileView({
           x={recentSongContextMenu.x}
           y={recentSongContextMenu.y}
           song={recentSongContextMenu.song}
+          playerTheme={playerTheme}
           onClose={() => setRecentSongContextMenu(previous => ({ ...previous, show: false }))}
           onPlayNow={(song) => handleSongSelection(
             song,

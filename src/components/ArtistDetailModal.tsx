@@ -1529,6 +1529,7 @@ export default function ArtistDetailModal({
           x={contextMenu.x}
           y={contextMenu.y}
           song={contextMenu.song}
+          playerTheme={playerTheme}
           onClose={() => setContextMenu({ show: false, x: 0, y: 0, song: null, sourceSongs: [] })}
           onPlayNow={(song) => onSongSelect?.(song, contextMenu.sourceSongs)}
           onPlayNext={onPlayNext}

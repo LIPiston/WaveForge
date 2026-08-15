@@ -1572,6 +1572,7 @@ export default function ExploreView({
         platform={platform}
         preferences={preferences}
         accent={accent}
+        playerTheme={playerTheme}
         onClose={() => setSettingsOpen(false)}
         onPlatformChange={setPlatform}
         onChange={setPreferences}
@@ -1630,6 +1631,7 @@ export default function ExploreView({
           x={songContextMenu.x}
           y={songContextMenu.y}
           song={songContextMenu.song}
+          playerTheme={playerTheme}
           onClose={() => setSongContextMenu(previous => ({ ...previous, show: false }))}
           onPlayNow={song => playExploreCollection(
             song,

@@ -2615,6 +2615,7 @@ export default function HomeView({
         x={contextMenuPosition.x}
         y={contextMenuPosition.y}
         song={contextMenuSong}
+        playerTheme={playerTheme}
         onClose={() => setContextMenuVisible(false)}
         onPlayNow={(song) => {
           onSongSelect(song, moduleSongs)

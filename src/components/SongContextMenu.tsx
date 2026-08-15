@@ -29,6 +29,7 @@ interface SongContextMenuProps {
   onCopyInfo?: (song: Song) => void
   userPlaylists: any[]
   platform: 'netease' | 'qq'
+  playerTheme?: 'light' | 'dark'
   hideFavoriteAction?: boolean
   currentPlaylistId?: string
 }
@@ -55,6 +56,7 @@ export default function SongContextMenu({
   onCopyInfo,
   userPlaylists,
   platform,
+  playerTheme = 'dark',
   hideFavoriteAction = false,
   currentPlaylistId
 }: SongContextMenuProps) {
@@ -359,6 +361,20 @@ export default function SongContextMenu({
     }] : [])
   ]
 
+  // 主题配色：菜单本身是液态玻璃风格，浅色模式下换成浅色底
+  const isDark = playerTheme === 'dark'
+  const menuBg = isDark ? 'from-gray-900 to-gray-800' : 'from-gray-50 to-gray-200'
+  const coverOverlay = isDark ? 'bg-black/60' : 'bg-white/50'
+  const borderColor = isDark ? 'border-white/10' : 'border-black/10'
+  const hoverBg = isDark ? 'hover:bg-white/10' : 'hover:bg-black/5'
+  const separatorColor = isDark ? 'bg-white/10' : 'bg-black/10'
+  const textPrimary = isDark ? 'text-white/90' : 'text-black/85'
+  const textMuted = isDark ? 'text-white/50' : 'text-black/50'
+  const textDisabled = isDark ? 'text-white/45' : 'text-black/40'
+  const dangerText = isDark ? 'text-red-400 hover:text-red-300' : 'text-red-600 hover:text-red-500'
+  const scrollbarTrack = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)'
+  const scrollbarThumb = isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.25)'
+
   return (
     <AnimatePresence>
       {show && (
@@ -371,16 +387,17 @@ export default function SongContextMenu({
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.1 }}
-            className="fixed z-[9999] rounded-xl shadow-2xl border border-white/10 py-2 min-w-[200px] overflow-visible"
+            className="fixed z-[9999] rounded-xl shadow-2xl border py-2 min-w-[200px] overflow-visible"
             style={{
               left: `${adjustedPosition.x}px`,
-              top: `${adjustedPosition.y}px`
+              top: `${adjustedPosition.y}px`,
+              borderColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.12)'
             }}
           >
             {/* 背景封面 + 液态玻璃效果 */}
             <div className="absolute inset-0 z-0 overflow-hidden rounded-xl">
               {/* 液态玻璃效果底层（始终显示） */}
-              <div className="absolute inset-0 bg-gradient-to-br from-gray-900 to-gray-800 backdrop-blur-2xl" />
+              <div className={`absolute inset-0 bg-gradient-to-br backdrop-blur-2xl ${menuBg}`} />
               
               {/* 封面图片层（加载完成后淡入） */}
               {getCoverUrl() && (
@@ -395,7 +412,7 @@ export default function SongContextMenu({
                     onLoad={() => setImageLoaded(true)}
                   />
                   {/* 封面的液态玻璃效果遮罩 */}
-                  <div className="absolute inset-0 bg-black/60 backdrop-blur-2xl" />
+                  <div className={`absolute inset-0 backdrop-blur-2xl ${coverOverlay}`} />
                 </div>
               )}
             </div>
@@ -407,7 +424,7 @@ export default function SongContextMenu({
                   return (
                     <div 
                       key={`separator-${index}`} 
-                      className="h-px bg-white/10 my-1 mx-2"
+                      className={`h-px my-1 mx-2 ${separatorColor}`}
                     />
                   )
                 }
@@ -425,16 +442,16 @@ export default function SongContextMenu({
                     <button
                       onClick={item.onClick}
                       disabled={'disabled' in item && Boolean(item.disabled)}
-                      className={`w-full px-4 py-2 text-left text-sm hover:bg-white/10 transition-colors flex items-center gap-3 ${
+                      className={`w-full px-4 py-2 text-left text-sm transition-colors flex items-center gap-3 ${hoverBg} ${
                         'disabled' in item && item.disabled
-                          ? 'cursor-wait text-white/45 hover:bg-transparent'
-                          : 'danger' in item && item.danger ? 'text-red-400 hover:text-red-300' : 'text-white/90'
+                          ? `cursor-wait ${textDisabled} hover:bg-transparent`
+                          : 'danger' in item && item.danger ? dangerText : textPrimary
                       }`}
                     >
                       {Icon && <Icon className="w-4 h-4" />}
                       <span className="flex-1">{item.label}</span>
                       {item.hasSubmenu && (
-                        <ChevronRight className="w-4 h-4 text-white/50" />
+                        <ChevronRight className={`w-4 h-4 ${textMuted}`} />
                       )}
                     </button>
                     
@@ -446,10 +463,11 @@ export default function SongContextMenu({
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: submenuPosition === 'right' ? -10 : 10 }}
                         transition={{ duration: 0.1 }}
-                        className="absolute z-30 rounded-xl shadow-2xl border border-white/10 py-2 min-w-[220px] overflow-hidden"
+                        className="absolute z-30 rounded-xl shadow-2xl border py-2 min-w-[220px] overflow-hidden"
                         style={{
                           top: submenuTop,
                           maxHeight: submenuMaxHeight,
+                          borderColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.12)',
                           [submenuPosition === 'right' ? 'left' : 'right']: '100%',
                           [submenuPosition === 'right' ? 'marginLeft' : 'marginRight']: '0px',
                         }}
@@ -457,7 +475,7 @@ export default function SongContextMenu({
                         {/* 子菜单背景 */}
                         <div className="absolute inset-0 z-0">
                           {/* 液态玻璃效果底层（始终显示） */}
-                          <div className="absolute inset-0 bg-gradient-to-br from-gray-900 to-gray-800 backdrop-blur-2xl" />
+                          <div className={`absolute inset-0 bg-gradient-to-br backdrop-blur-2xl ${menuBg}`} />
                           
                           {/* 封面图片层（加载完成后淡入） */}
                           {getCoverUrl() && (
@@ -470,7 +488,7 @@ export default function SongContextMenu({
                                 alt="cover"
                                 className="w-full h-full object-cover"
                               />
-                              <div className="absolute inset-0 bg-black/60 backdrop-blur-2xl" />
+                              <div className={`absolute inset-0 backdrop-blur-2xl ${coverOverlay}`} />
                             </div>
                           )}
                         </div>
@@ -481,12 +499,12 @@ export default function SongContextMenu({
                           style={{
                             maxHeight: Math.max(48, submenuMaxHeight - 16),
                             scrollbarWidth: 'thin',
-                            scrollbarColor: 'rgba(255, 255, 255, 0.3) rgba(255, 255, 255, 0.1)',
+                            scrollbarColor: `${scrollbarThumb} ${scrollbarTrack}`,
                             overscrollBehavior: 'contain'
                           }}
                         >
                           {ownedPlaylists.length === 0 ? (
-                            <div className="px-4 py-2 text-sm text-white/50">
+                            <div className={`px-4 py-2 text-sm ${textMuted}`}>
                               暂无可添加的自建歌单
                             </div>
                           ) : (
@@ -497,7 +515,7 @@ export default function SongContextMenu({
                                   onAddToPlaylist?.(song, String(playlist.dirId || playlist.id))
                                   onClose()
                                 }}
-                                className="w-full px-4 py-2 text-left text-sm text-white/90 hover:bg-white/10 transition-colors truncate"
+                                className={`w-full px-4 py-2 text-left text-sm truncate transition-colors ${textPrimary} ${hoverBg}`}
                               >
                                 {playlist.name}
                               </button>

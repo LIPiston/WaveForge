@@ -4338,6 +4338,7 @@ function App() {
                 accentColor={dominantColor || '#3B82F6'}
                 liked={currentSongLiked}
                 userPlaylists={playbackContextPlaylists}
+                playerTheme={playerTheme}
                 onPlayNow={(song) => { void handleSongSelect(song, playlist) }}
                 onPlayNext={handlePlayNext}
                 onToggleFavorite={handlePlaybackToggleFavorite}

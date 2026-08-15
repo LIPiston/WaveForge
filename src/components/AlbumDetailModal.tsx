@@ -600,6 +600,7 @@ export default function AlbumDetailModal({
         x={contextMenu.x}
         y={contextMenu.y}
         song={contextMenu.song}
+        playerTheme={playerTheme}
         onClose={() => setContextMenu({ show: false, x: 0, y: 0, song: null })}
         onPlayNow={(song) => onSongSelect?.(song, songs)}
         onPlayNext={onPlayNext}
