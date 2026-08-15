@@ -1,4 +1,4 @@
-﻿import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudioPulse'
 import { useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { reconcileBoundaryParentheses } from '../utils/lyricBoundaryParentheses'
@@ -1206,9 +1206,9 @@ export default function LyricsDisplay({
                   minWidth: 0,
                   filter: isSustainGlowActive
                     ? `brightness(${1.04 + sustainGlowIntensity * 0.12}) saturate(${1.05 + sustainGlowIntensity * 0.2})`
-                    : isRecentlyCompleted && releaseProgress < 1
-                    ? `blur(${0.5 * (1 - releaseProgress)}px)`
                     : fullyFilled ? 'none' : effectConfig.inactiveFilter,
+                  // 词唱完瞬间辉光平滑衰减，不突变发暗（避免 30fps 流畅动画下“闪一下”）。
+                  transition: 'text-shadow 180ms ease-out, filter 180ms ease-out',
                   ...softLiftStyle,
                 }}
               >
@@ -1224,12 +1224,15 @@ export default function LyricsDisplay({
                      )
                    ) : wordText}
                   </span>
-                  {shouldShowFill && displayFillWidth > 0 && !fullyFilled && (
+                  {shouldShowFill && displayFillWidth > 0 && (
                     <span
                      aria-hidden="true"
                      className="absolute left-0 top-0 z-10 overflow-hidden whitespace-nowrap pointer-events-none"
                      style={{
                        ...getFillOverlayStyle(displayFillWidth),
+                       // 唱完后填充层保留为完整白色（不再卸载切换），
+                       // 避免“填充层消失→基础层变色”瞬间露出灰色基底（敲下去+灰闪）。
+                       ...(fullyFilled ? { WebkitMaskImage: 'none', maskImage: 'none' } : {}),
                        color: activeLyricColor,
                        textShadow: 'none',
                        transition: 'none',
@@ -1310,9 +1313,9 @@ export default function LyricsDisplay({
                         minWidth: 0,
                         filter: isSustainGlowActive
                           ? `brightness(${1.04 + sustainGlowIntensity * 0.12}) saturate(${1.05 + sustainGlowIntensity * 0.2})`
-                          : isRecentlyCompleted && releaseProgress < 1
-                          ? `blur(${0.5 * (1 - releaseProgress)}px)`
                           : fullyFilled ? 'none' : effectConfig.inactiveFilter,
+                        // 词唱完瞬间辉光平滑衰减，不突变发暗（避免 30fps 流畅动画下“闪一下”）。
+                        transition: 'text-shadow 180ms ease-out, filter 180ms ease-out',
                       }}
                     >
                       <span className="relative z-0">
@@ -1325,12 +1328,15 @@ export default function LyricsDisplay({
                           unit.base
                         )}
                        </span>
-                       {shouldShowFill && displayFillWidth > 0 && !fullyFilled && (
+                       {shouldShowFill && displayFillWidth > 0 && (
                          <span
                           aria-hidden="true"
                           className="absolute left-0 top-0 z-10 overflow-hidden whitespace-nowrap pointer-events-none"
                           style={{
                             ...getFillOverlayStyle(displayFillWidth),
+                            // 唱完后填充层保留为完整白色（不再卸载切换），
+                            // 避免“填充层消失→基础层变色”瞬间露出灰色基底（敲下去+灰闪）。
+                            ...(fullyFilled ? { WebkitMaskImage: 'none', maskImage: 'none' } : {}),
                             color: activeLyricColor,
                             textShadow: 'none',
                             transition: 'none',
