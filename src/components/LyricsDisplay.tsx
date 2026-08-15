@@ -23,7 +23,7 @@ interface LyricLine {
   interludeEndTime?: number
 }
 
-type WordByWordEffectMode = 'clear' | 'soft'
+type WordByWordEffectMode = 'clear' | 'soft' | 'apple'
 type ImmersiveLyricEffect = 'soft-focus' | 'float' | 'breathe' | 'cinematic' | 'minimal'
 type BackgroundEffect = 'transparent' | 'blur' | 'immersive'
 
@@ -33,6 +33,25 @@ const INTERLUDE_HIDE_BEFORE_NEXT_SECONDS = 1
 const INTERLUDE_MIN_GAP_SECONDS = 5
 
 const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, value))
+
+// 在两种 CSS 颜色之间插值（仅 Apple 逐字模式“词整体渐亮”使用，不影响 clear/soft）。
+const interpolateColor = (from: string, to: string, t: number) => {
+  const parse = (color: string) => {
+    const match = color.trim().match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/i)
+    if (!match) return null
+    return {
+      r: Number(match[1]),
+      g: Number(match[2]),
+      b: Number(match[3]),
+      a: match[4] !== undefined ? Number(match[4]) : 1,
+    }
+  }
+  const start = parse(from)
+  const end = parse(to)
+  if (!start || !end) return to
+  const k = clamp(t)
+  return `rgba(${Math.round(start.r + (end.r - start.r) * k)}, ${Math.round(start.g + (end.g - start.g) * k)}, ${Math.round(start.b + (end.b - start.b) * k)}, ${(start.a + (end.a - start.a) * k).toFixed(3)})`
+}
 
 interface SmoothPlaybackTimeStore {
   getSnapshot: () => number
@@ -159,11 +178,12 @@ const buildSustainGlowProfiles = (words: LyricWord[], lineText: string) => {
   const candidates = metrics.flatMap(metric => {
     const expectedDuration = baselineNormalizedDuration * metric.complexity
     const isFinalVocalWord = metric.index === metrics[metrics.length - 1].index
-    const relativeMultiplier = isFinalVocalWord ? 1.5 : 1.7
-    const minimumExcess = isFinalVocalWord ? 480 : 430
+    // 延音触发门槛（比默认更严格：需要明显超出正常发音时长的词才会触发）
+    const relativeMultiplier = isFinalVocalWord ? 1.7 : 2.0
+    const minimumExcess = isFinalVocalWord ? 650 : 600
     const absoluteMinimum = metric.isLatinWord
-      ? 1100 + Math.min(440, Math.max(0, metric.characterCount - 1) * 55)
-      : 1050 + Math.min(360, Math.max(0, metric.characterCount - 1) * 110)
+      ? 1400 + Math.min(500, Math.max(0, metric.characterCount - 1) * 60)
+      : 1300 + Math.min(400, Math.max(0, metric.characterCount - 1) * 120)
     const requiredDuration = Math.max(
       absoluteMinimum,
       expectedDuration * relativeMultiplier,
@@ -188,8 +208,8 @@ const buildSustainGlowProfiles = (words: LyricWord[], lineText: string) => {
       } satisfies SustainGlowProfile,
     }]
   })
-  // Limit sustain highlights to the strongest quarter of the line.
-  const maximumProfiles = Math.max(1, Math.round(metrics.length * 0.25))
+  // Limit sustain highlights to the strongest sixth of the line.
+  const maximumProfiles = Math.max(1, Math.round(metrics.length * 0.15))
   return new Map(
     candidates
       .sort((left, right) => right.score - left.score)
@@ -249,9 +269,9 @@ const resolveReadableSustainColor = (accentColor: string) => {
 const getSustainTextShadow = (color: RgbColor, intensity: number) => {
   const alpha = clamp(intensity)
   return [
-    `0 0 ${5 + alpha * 5}px rgba(255,255,255,${0.3 + alpha * 0.45})`,
-    `0 0 ${13 + alpha * 11}px rgba(${color.red},${color.green},${color.blue},${0.42 + alpha * 0.38})`,
-    `0 0 ${30 + alpha * 26}px rgba(${color.red},${color.green},${color.blue},${0.18 + alpha * 0.3})`,
+    `0 0 ${4 + alpha * 4}px rgba(255,255,255,${0.22 + alpha * 0.32})`,
+    `0 0 ${11 + alpha * 9}px rgba(${color.red},${color.green},${color.blue},${0.34 + alpha * 0.28})`,
+    `0 0 ${24 + alpha * 20}px rgba(${color.red},${color.green},${color.blue},${0.14 + alpha * 0.22})`,
     '0 4px 16px rgba(0,0,0,0.68)',
   ].join(', ')
 }
@@ -465,7 +485,8 @@ export default function LyricsDisplay({
   })
   const [wordByWordEffectMode, setWordByWordEffectMode] = useState<WordByWordEffectMode>(() => {
     const saved = localStorage.getItem('wordByWordEffectMode')
-    return saved === 'soft' ? 'soft' : 'clear'
+    if (saved === 'soft' || saved === 'apple') return saved
+    return 'clear'
   })
   const [lyricSize, setLyricSize] = useState(() => {
     const saved = localStorage.getItem('lyricSize')
@@ -764,7 +785,8 @@ export default function LyricsDisplay({
 
     const handleWordByWordEffectModeChange = (e: Event) => {
       const customEvent = e as CustomEvent<WordByWordEffectMode>
-      setWordByWordEffectMode(customEvent.detail === 'soft' ? 'soft' : 'clear')
+      const next = customEvent.detail
+      setWordByWordEffectMode(next === 'soft' || next === 'apple' ? next : 'clear')
     }
     
     const handleLyricOffsetChange = (e: Event) => {
@@ -965,9 +987,27 @@ export default function LyricsDisplay({
 
   const getWordEffectConfig = (mode: WordByWordEffectMode) => {
     switch (mode) {
+      case 'apple':
+        // Apple Music 风格：词/字整体渐亮（不走 clear/soft 的 mask 填充路径）。
+        // 独立配置，不影响 clear/soft。
+        return {
+          isSoft: true,
+          isApple: true,
+          wordRowGap: '0.12em',
+          wordPaddingX: '0',
+          linePaddingX: '0.14em',
+          wordLineHeight: 1.26,
+          inactiveColor: isLightTheme ? 'rgba(0, 0, 0, 0.36)' : 'rgba(255, 255, 255, 0.36)',
+          inactiveFilter: 'none',
+          fillExtension: 0,
+          baseTextShadow: isLightTheme ? '0 2px 9px rgba(255,255,255,0.24)' : '0 2px 9px rgba(0,0,0,0.24)',
+          activeTextShadow: isLightTheme ? '0 2px 10px rgba(255,255,255,0.32)' : '0 0 16px rgba(255,255,255,0.28), 0 2px 10px rgba(0,0,0,0.34)',
+          completedTextShadow: isLightTheme ? '0 2px 9px rgba(255,255,255,0.3)' : '0 2px 9px rgba(0,0,0,0.3)',
+        }
       case 'soft':
         return {
           isSoft: true,
+          isApple: false,
           wordRowGap: '0.12em',
           wordPaddingX: '0',
           linePaddingX: '0.12em',
@@ -983,6 +1023,7 @@ export default function LyricsDisplay({
       default:
         return {
           isSoft: false,
+          isApple: false,
           wordRowGap: '0.14em',
           wordPaddingX: '0',
           linePaddingX: '0.1em',
@@ -1143,9 +1184,13 @@ export default function LyricsDisplay({
           const isEnglishWord = /^[a-zA-Z]+$/.test(wordText)
           
           // Split annotated text by ruby units, otherwise by visible characters.
-          
+          // Apple 模式：纯中文词逐字推进，英文/其他词整词推进。
           const renderUnits: Array<{ base: string; ruby?: string }> = hasRuby
             ? parsedParts
+            : effectConfig.isApple
+            ? /^[\u4e00-\u9fff]+$/.test(wordText)
+              ? Array.from(wordText).map(char => ({ base: char }))
+              : [{ base: wordText }]
             : effectConfig.isSoft
             ? [{ base: wordText }]
             : Array.from(wordText).map(char => ({ base: char }))
@@ -1156,7 +1201,7 @@ export default function LyricsDisplay({
           const softLiftProgress = 1 - Math.pow(1 - softLiftRaw, 3)
           const softLiftStyle = effectConfig.isSoft
             ? {
-                transform: `translateY(${-0.075 * softLiftProgress}em)`,
+                transform: `translateY(${(effectConfig.isApple ? -0.045 : -0.075) * softLiftProgress}em)`,
                 transformOrigin: 'center bottom',
                 willChange: 'transform' as const,
               }
@@ -1166,6 +1211,90 @@ export default function LyricsDisplay({
           
           const shouldSplitTime = wordText.length > 1
           const charDuration = shouldSplitTime ? safeDuration / charCount : safeDuration
+
+          // ── Apple 模式独立渲染：词/字整体渐亮（未唱灰 → 正在唱 ease-out 渐亮 → 已唱纯白）。
+          // ── Apple 模式独立渲染：词内从左到右填充推进（对齐逆向“整行高亮重绘”）。
+          // 未唱词 → 灰；当前词 → 灰底 + 白色填充从左到右推进；已唱词 → 纯白（填充层常驻，无切换灰闪）。
+          if (effectConfig.isApple) {
+            let unitCharIndex = 0
+            const unitCount = Math.max(1, renderUnits.reduce((sum, unit) => sum + unit.base.length, 0))
+            const unitDuration = safeDuration / unitCount
+            const wordShadow = isSustainGlowActive
+              ? sustainTextShadow
+              : effectConfig.baseTextShadow
+            return (
+              <span
+                key={`word-${lineIndex}-${originalIndex}`}
+                className="inline-flex"
+                style={{ marginRight: 0, ...softLiftStyle }}
+              >
+                {renderUnits.map((unit, unitIndex) => {
+                  const unitChars = Array.from(unit.base)
+                  const unitStart = startTime + unitCharIndex * unitDuration
+                  unitCharIndex += unitChars.length
+                  const unitEnd = unitStart + unitChars.length * unitDuration
+                  const unitFullyFilled = currentMs >= unitEnd
+                  const unitActive = !minimalWordEffect && currentMs >= unitStart && currentMs < unitEnd
+                  const fillProgress = unitActive
+                    ? clamp((currentMs - unitStart) / Math.max(1, unitEnd - unitStart))
+                    : unitFullyFilled ? 1 : 0
+                  const fillWidth = fillProgress * 100
+                  const shouldShowFill = fillWidth > 0
+                  const unitShadow = unitActive && effectiveLyricGlow
+                    ? effectConfig.activeTextShadow
+                    : unitFullyFilled
+                    ? effectConfig.completedTextShadow
+                    : wordShadow
+                  return (
+                    <span
+                      key={`${unitIndex}-${unit.base}`}
+                      className="inline-block relative py-[0.02em]"
+                      style={{
+                        color: unitFullyFilled ? 'transparent' : effectConfig.inactiveColor,
+                        textShadow: unitShadow,
+                        filter: isSustainGlowActive
+                          ? `brightness(${1.03 + sustainGlowIntensity * 0.09}) saturate(${1.04 + sustainGlowIntensity * 0.14})`
+                          : undefined,
+                      }}
+                    >
+                      <span className="relative z-0">
+                        {unit.ruby ? (
+                          <ruby>
+                            {unit.base}
+                            <rt>{unit.ruby}</rt>
+                          </ruby>
+                        ) : (
+                          unit.base
+                        )}
+                      </span>
+                      {shouldShowFill && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute left-0 top-0 z-10 overflow-hidden whitespace-nowrap pointer-events-none"
+                          style={{
+                            width: `${fillWidth}%`,
+                            color: activeLyricColor,
+                            textShadow: 'none',
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                          }}
+                        >
+                          {unit.ruby ? (
+                            <ruby>
+                              {unit.base}
+                              <rt>{unit.ruby}</rt>
+                            </ruby>
+                          ) : (
+                            unit.base
+                          )}
+                        </span>
+                      )}
+                    </span>
+                  )
+                })}
+              </span>
+            )
+          }
           
           // Preserve the original animation for a single character
           if (charCount === 1) {
@@ -1207,7 +1336,7 @@ export default function LyricsDisplay({
                   marginRight: isSpace ? '0.24em' : 0,
                   minWidth: 0,
                   filter: isSustainGlowActive
-                    ? `brightness(${1.04 + sustainGlowIntensity * 0.12}) saturate(${1.05 + sustainGlowIntensity * 0.2})`
+                    ? `brightness(${1.03 + sustainGlowIntensity * 0.09}) saturate(${1.04 + sustainGlowIntensity * 0.14})`
                     : fullyFilled ? 'none' : effectConfig.inactiveFilter,
                   // 词唱完瞬间辉光平滑衰减，不突变发暗（避免 30fps 流畅动画下“闪一下”）。
                   transition: 'text-shadow 180ms ease-out, filter 180ms ease-out',
@@ -1320,7 +1449,7 @@ export default function LyricsDisplay({
                         paddingRight: effectConfig.wordPaddingX,
                         minWidth: 0,
                         filter: isSustainGlowActive
-                          ? `brightness(${1.04 + sustainGlowIntensity * 0.12}) saturate(${1.05 + sustainGlowIntensity * 0.2})`
+                          ? `brightness(${1.03 + sustainGlowIntensity * 0.09}) saturate(${1.04 + sustainGlowIntensity * 0.14})`
                           : fullyFilled ? 'none' : effectConfig.inactiveFilter,
                         // 词唱完瞬间辉光平滑衰减，不突变发暗（避免 30fps 流畅动画下“闪一下”）。
                         transition: 'text-shadow 180ms ease-out, filter 180ms ease-out',
@@ -1786,9 +1915,16 @@ export default function LyricsDisplay({
             ? Math.max(0, 1.05 - lineTiming.upcomingProgress * 1.05)
             : 0
           const immersiveDistanceBlur = 0
-          const lineFilter = `blur(${Math.max(timingBlur, immersiveDistanceBlur)}px)`
-          const lineFontSize = isCurrent ? `${effectiveLyricSize}rem` : `${effectiveLyricSize * 0.63}rem`
-          const lineFontWeight = isCurrent ? 700 : 400
+          // Apple 模式（逆向 LyricsBlossom）：非当前行**常驻**模糊（当前行清晰），
+          // 手动滚动时**暂时取消**模糊（看清内容），滚动结束弹簧过渡恢复。
+          const isAppleLineMode = effectiveWordByWordEffectMode === 'apple'
+          const lineFilter = isAppleLineMode
+            ? `blur(${isManualScrolling ? 0 : (isCurrent ? 0 : 2.2)}px)`
+            : `blur(${Math.max(timingBlur, immersiveDistanceBlur)}px)`
+          const lineFontSize = isAppleLineMode
+            ? `${effectiveLyricSize}rem`
+            : isCurrent ? `${effectiveLyricSize}rem` : `${effectiveLyricSize * 0.63}rem`
+          const lineFontWeight = isAppleLineMode ? 500 : (isCurrent ? 700 : 400)
           
           return (
             <motion.div
@@ -1811,7 +1947,8 @@ export default function LyricsDisplay({
               }}
               style={{
                 transformOrigin: scrollAlignment === 'center' ? 'center center' : 'left center',
-                scale: isCurrent ? 'var(--restless-lyric-scale, 1.008)' : 1,
+                // Apple 模式不缩放（已播/正在播/未播一样大）
+                scale: isAppleLineMode ? 1 : (isCurrent ? 'var(--restless-lyric-scale, 1.008)' : 1),
                 transition: 'scale 140ms cubic-bezier(0.22, 1, 0.36, 1)',
                 zIndex: isCurrent ? 2 : lineTiming.upcomingProgress > 0 ? 1 : 0,
               }}
@@ -1820,7 +1957,9 @@ export default function LyricsDisplay({
                   ? { duration: 2.0, repeat: Infinity, ease: [0.4, 0, 0.6, 1] }
                   : transitionConfig.opacity,
                 y: { duration: 0.04, ease: 'linear' },
-                filter: { duration: 0.5, ease: [0.22, 1, 0.36, 1] },
+                // filter 不能用 spring（framer-motion 的 spring 只支持数值属性），
+                // 用 tween 过渡让滚动时虚化取消/恢复有动画。
+                filter: { duration: 0.45, ease: [0.22, 1, 0.36, 1] },
               }}
             >
               {/* 娑叉€佺幓鐠冩 */}
@@ -1895,7 +2034,7 @@ export default function LyricsDisplay({
                 className={`${scrollAlignment === 'center' ? 'text-center' : 'text-left'} font-medium leading-relaxed whitespace-normal break-words [overflow-wrap:anywhere] relative z-10 lyric-skia-text`}
                 initial={false}
                 animate={{
-                  scale: isCurrent ? 1.006 : 1,
+                  scale: isAppleLineMode ? 1 : (isCurrent ? 1.006 : 1),
                   y: isCurrent ? 0 : lineTiming.releaseProgress > 0 ? -3 * lineTiming.releaseProgress : 0,
                 }}
                 transition={{
@@ -1923,6 +2062,9 @@ export default function LyricsDisplay({
                   maxWidth: '100%',
                   fontSize: lineFontSize,
                   fontWeight: lineFontWeight,
+                  fontFamily: isAppleLineMode
+                    ? "'SF Pro Display', 'PingFang SC', 'Helvetica Neue', 'Segoe UI', 'Roboto', 'Arial', sans-serif"
+                    : undefined,
                   wordBreak: 'break-word',
                   overflowWrap: 'anywhere',
                   WebkitTextStroke: 'none',

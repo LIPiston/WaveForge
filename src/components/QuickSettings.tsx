@@ -9,7 +9,7 @@ interface QuickSettingsProps {
 }
 
 type CoverPulseMode = 'dynamic' | 'soft' | 'restless'
-type WordByWordEffectMode = 'clear' | 'soft'
+type WordByWordEffectMode = 'clear' | 'soft' | 'apple'
 type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious'
 
 export default function QuickSettings({
@@ -74,7 +74,8 @@ export default function QuickSettings({
 
   const [wordByWordEffectMode, setWordByWordEffectMode] = useState<WordByWordEffectMode>(() => {
     const saved = localStorage.getItem('wordByWordEffectMode')
-    return saved === 'soft' ? 'soft' : 'clear'
+    if (saved === 'soft' || saved === 'apple') return saved
+    return 'clear'
   })
 
   const [lyricGlow, setLyricGlow] = useState(() => {
@@ -810,10 +811,11 @@ export default function QuickSettings({
                             <span className={`text-xs ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/60'}`}>
                               逐字效果
                             </span>
-                            <div className="grid grid-cols-2 gap-2">
+                            <div className="grid grid-cols-3 gap-2">
                               {([
                                 ['clear', '清晰', '精准填充'],
                                 ['soft', '柔和', '柔光扩散'],
+                                ['apple', 'Apple', '逐词点亮'],
                               ] as const).map(([mode, label, hint]) => (
                                 <button
                                   key={mode}
