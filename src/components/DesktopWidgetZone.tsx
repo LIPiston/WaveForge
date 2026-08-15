@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
@@ -26,7 +26,9 @@ import {
   getWeatherLocationCompactName,
   WeatherSnapshot,
 } from '../services/weatherService'
-import WeatherDetailsModal, { getWeatherVisualTheme, WeatherAtmosphere, WeatherGlyph, type WeatherDetailsTab } from './WeatherDetailsModal'
+// 天气主题纯函数/类型/纯视觉组件走轻量模块（无 leaflet）；模态框本体（含 leaflet 地图）懒加载。
+import { getWeatherVisualTheme, WeatherAtmosphere, WeatherGlyph, type WeatherDetailsTab } from './weatherVisualTheme'
+const WeatherDetailsModal = lazy(() => import('./WeatherDetailsModal'))
 import DesktopTimeCenter, { formatRemaining } from './DesktopTimeCenter'
 import { useDesktopFocusTimer } from '../hooks/useDesktopFocusTimer'
 import { getCalendarFestivals } from '../utils/calendarFestivals'
@@ -517,18 +519,20 @@ function WeatherWidget({ settings, cardBlurAmount, accentColor, onOverlayOpenCha
         </div>
       )}
 
-      <WeatherDetailsModal
-        open={showDetails}
-        weather={weather}
-        onClose={() => { setShowDetails(false); onOverlayOpenChange?.(false) }}
-        onRefresh={() => void refreshWeather(true)}
-        loading={loading}
-        hazards={hazards}
-        hazardLoading={hazardLoading}
-        hazardError={hazardError}
-        initialTab={detailsTab}
-        onHazardRefresh={() => void refreshHazards(true)}
-      />
+      <Suspense fallback={null}>
+        <WeatherDetailsModal
+          open={showDetails}
+          weather={weather}
+          onClose={() => { setShowDetails(false); onOverlayOpenChange?.(false) }}
+          onRefresh={() => void refreshWeather(true)}
+          loading={loading}
+          hazards={hazards}
+          hazardLoading={hazardLoading}
+          hazardError={hazardError}
+          initialTab={detailsTab}
+          onHazardRefresh={() => void refreshHazards(true)}
+        />
+      </Suspense>
     </>
   )
 }

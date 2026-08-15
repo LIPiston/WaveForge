@@ -7,6 +7,9 @@ import { Readable } from 'stream'
 import dns from 'node:dns'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { Agent as HttpAgent } from 'http'
+import { Agent as HttpsAgent } from 'https'
+import compression from 'compression'
 import qqMusicApi from 'qq-music-api'
 import { decodeAG1Response, encodeAG1Request, zzcSign } from '@jixun/qmweb-sign'
 import axios from 'axios'
@@ -38,6 +41,12 @@ process.on('uncaughtException', (error) => {
   qqMusicApi.api = (path, query) =>
     withTimeout(qqApiOriginal(path, query), 15000, `QQ 音乐 API ${path} 请求超时`)
 }
+
+// 上游 HTTP 客户端 keep-alive：本地服务高频转发播放 URL / 封面 / 评论等请求，
+// 复用 TCP 连接能省掉每次握手。qq-music-api 与下方直接 axios 调用都走 axios 默认
+// 实例，统一设默认 agent 即可覆盖；网易云增强 API 自建 per-request agent，不受影响。
+axios.defaults.httpAgent = new HttpAgent({ keepAlive: true, maxSockets: 64 })
+axios.defaults.httpsAgent = new HttpsAgent({ keepAlive: true, maxSockets: 64 })
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -887,6 +896,24 @@ function normalizeQQPlaylistDetail(detail, fallbackId) {
     platform: 'qq'
   }
 }
+
+// gzip 压缩（放在所有路由与 body 解析之前）：/api/explore/* 等聚合响应可达数百 KB，
+// 本地回环下压缩能显著减小序列化/传输开销。图片/视频/音频等媒体流一律跳过——
+// 它们已接近不可压缩且需要保留 Content-Length / Range 语义，压缩缓冲会破坏流式播放。
+// 过滤逻辑：按响应 Content-Type 排除媒体类型；SSE（text/event-stream）由
+// compression 内置的 Cache-Control: no-transform 规则自动跳过。
+app.use(compression({
+  threshold: 1024,
+  filter: (_req, res) => {
+    const contentType = res.getHeader('Content-Type')
+    const type = Array.isArray(contentType) ? contentType[0] : contentType
+    if (typeof type === 'string') {
+      // 排除媒体流与未知二进制类型，避免 gzip 缓冲大文件或破坏 Range 请求
+      if (/^(image|video|audio)\//.test(type) || type === 'application/octet-stream') return false
+    }
+    return true
+  }
+}))
 
 // CORS 支持
 app.use((req, res, next) => {
