@@ -75,6 +75,8 @@ const LazyTranslationDisplay = lazy(loadTranslationDisplay)
 const LazyWallpaperLyrics: any = lazy(loadWallpaperLyrics)
 const LazyGloriousLyrics: any = lazy(loadGloriousLyrics)
 const LazyMultidimensionalLyrics = lazy(loadMultidimensionalLyrics)
+const loadModengPlayer = () => import('./components/ModengPlayerPage')
+const LazyModengPlayer: any = lazy(loadModengPlayer)
 const loadRemoteControlModal = () => import('./components/RemoteControlModal')
 const LazyRemoteControlModal = lazy(loadRemoteControlModal)
 const loadSongDetailModal = () => import('./components/SongDetailModal')
@@ -205,16 +207,17 @@ const buildDesktopLyricsWithInterludes = (lyrics: LyricLine[]): DesktopLyricLine
 }
 
 type CoverPulseMode = 'dynamic' | 'soft' | 'restless'
-type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'multidimensional'
+type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'multidimensional' | 'modeng'
 
 const LYRIC_MODE_VISIBILITY_KEY = 'waveforge_visible_lyric_modes'
-const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional']
+const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional', 'modeng']
 const LYRIC_MODE_NAMES: Record<LyricDisplayMode, string> = {
   modern: '现代',
   immersive: '沉浸式',
   wallpaper: '墙纸',
   glorious: '辉煌',
   multidimensional: '多维',
+  modeng: '摩登',
 }
 
 function loadVisibleLyricModes(): LyricDisplayMode[] {
@@ -4085,6 +4088,7 @@ function App() {
               song={songDetailSong}
               onClose={() => setShowSongDetail(false)}
               playerTheme={playerTheme}
+              onPlayNow={(s) => { void handleSongSelect(s) }}
             />
           </Suspense>
         )}
@@ -4584,6 +4588,7 @@ function App() {
                                   ['wallpaper', '墙纸', `repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 18px), linear-gradient(135deg, ${dominantColor || '#6c5cff'} 0%, #18171c 58%, #09090b 100%)`],
                                   ['glorious', '辉煌', `linear-gradient(118deg, #080713 0%, ${dominantColor || '#6f5cff'} 50%, #090911 78%, #101522 100%)`],
                                   ['multidimensional', '多维', `linear-gradient(145deg, #05060c 0%, ${dominantColor || '#6657ff'} 48%, #0b1b2a 72%, #030409 100%)`],
+                                  ['modeng', '摩登', `radial-gradient(120% 90% at 50% 0%, #14141c 0%, #0a0a10 55%, #05050a 100%), linear-gradient(135deg, ${dominantColor || '#6f5cff'}33 0%, transparent 60%)`],
                                 ] as const)
                                   .filter(([mode]) => effectiveVisibleLyricModes.includes(mode))
                                   .map(([mode, label, background]) => (
@@ -4919,6 +4924,37 @@ function App() {
                     onSeek={audioPlayer.seek}
                   />
                 </motion.div>
+              ) : lyricDisplayMode === 'modeng' ? (
+                <motion.div
+                  key="modeng-player"
+                  initial={{ opacity: 0, filter: 'blur(10px)', scale: 1.02 }}
+                  animate={{ opacity: isLyricsTransitioning ? 0 : 1, filter: 'blur(0px)', scale: 1 }}
+                  exit={{ opacity: 0, filter: 'blur(10px)', scale: 0.99 }}
+                  transition={{ duration: 0.5, ease: [0.42, 0, 0.58, 1] }}
+                  className="absolute inset-0 h-full w-full"
+                >
+                  <LazyModengPlayer
+                    lyrics={lyrics}
+                    currentIndex={currentLyricIndex}
+                    playbackTimeStore={audioPlayer.playbackTimeStore}
+                    timeOffset={lyricOffset}
+                    isPlaying={isPlaying}
+                    accentColor={dominantColor || '#fff'}
+                    playerTheme={playerTheme}
+                    songTitle={currentSong.name}
+                    songArtist={currentSong.artists.map((artist: any) => artist.name).join(', ')}
+                    songAlbum={currentSong.album?.name}
+                    coverUrl={currentTrack.coverUrl}
+                    trackId={currentSong.id || currentSong.mid}
+                    translationEnabled={translationEnabled}
+                    romanEnabled={romanEnabled}
+                    isTransitioning={isVisualTransitioning}
+                    onSeek={audioPlayer.seek}
+                    onPlayPause={handlePlayPause}
+                    onPrevious={handlePrevious}
+                    onNext={handleNext}
+                  />
+                </motion.div>
               ) : (
                 /* 有歌词时左右布局 */
                 <motion.div
@@ -5033,8 +5069,8 @@ function App() {
             )}
           </AnimatePresence>
 
-          {/* 全局播放器 - 固定在底部 */}
-          {currentSong && !showHome && (
+          {/* 全局播放器 - 固定在底部（摩登模式自带控制条，不重复渲染） */}
+          {currentSong && !showHome && lyricDisplayMode !== 'modeng' && (
             <LivePlayerControls
                       playbackTimeStore={audioPlayer.playbackTimeStore}
               isPlaying={isPlaying}

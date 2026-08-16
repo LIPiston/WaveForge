@@ -607,6 +607,24 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           // 新版API返回的数据在 data.comments 中
           const sourceComments = data.data?.comments || []
           
+          // 网易云热评（精彩评论）单独展示
+          if (data.data?.hotComments && Array.isArray(data.data.hotComments)) {
+            setHotComments(data.data.hotComments.map((c: any) => ({
+              commentId: c.commentId,
+              content: c.content,
+              user: {
+                nickname: c.user?.nickname || '匿名用户',
+                avatarUrl: c.user?.avatarUrl || '',
+                userId: c.user?.userId?.toString()
+              },
+              time: c.time,
+              likedCount: c.likedCount || 0,
+              rootCommentId: c.beReplied?.[0]?.beRepliedCommentId,
+              replyCount: 0,
+              replies: []
+            })).filter(Boolean))
+          }
+          
           // 保存cursor用于下次加载（仅最新评论需要）
           if (viewMode === 'latest' && data.data?.cursor) {
             setCursor(String(data.data.cursor))
@@ -765,7 +783,8 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
   // ===== 评论虚拟化：扁平行数组 + 动态行高 =====
   const commentRows = useMemo<CommentRow[]>(() => {
     const rows: CommentRow[] = []
-    if (resourcePlatform === 'qq' && hotComments.length > 0) {
+    // 热评区网易云/QQ 共用：热评展示在顶部，下方是全部评论
+    if (hotComments.length > 0) {
       rows.push({ kind: 'hot-header' })
       hotComments.forEach((comment, index) => rows.push({ kind: 'hot-comment', comment, index }))
       rows.push({ kind: 'divider' }, { kind: 'all-header' })
@@ -774,7 +793,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     if (hasMoreComments && !loading) rows.push({ kind: 'load-more' })
     else if (!hasMoreComments && displayComments.length > 0) rows.push({ kind: 'no-more' })
     return rows
-  }, [resourcePlatform, hotComments, displayComments, hasMoreComments, loading])
+  }, [hotComments, displayComments, hasMoreComments, loading])
 
   // 变高行：ResizeObserver 实测每行高度；估算值用于首帧定位
   const dynamicRowHeight = useDynamicRowHeight({ defaultRowHeight: 96 })

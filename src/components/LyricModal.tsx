@@ -1,0 +1,134 @@
+import { useState } from 'react'
+import { motion } from 'framer-motion'
+import { X, Music, Copy, ScrollText, Languages, Mic2 } from 'lucide-react'
+import { getProxiedImageUrl } from '../services/musicApi'
+
+interface LyricModalProps {
+  songName: string
+  artistName: string
+  coverUrl: string
+  lyrics: { time: number; text: string; translation?: string; roman?: string }[]
+  onClose: () => void
+}
+
+const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
+  window.dispatchEvent(new CustomEvent('showToast', { detail: { message, type } }))
+}
+
+export default function LyricModal({ songName, artistName, coverUrl, lyrics, onClose }: LyricModalProps) {
+  const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
+  const [showTrans, setShowTrans] = useState(false)
+  const [showRoman, setShowRoman] = useState(false)
+
+  const copyLine = (text: string) => {
+    void navigator.clipboard.writeText(text).then(() => showToast(`已复制：${text.slice(0, 20)}${text.length > 20 ? '…' : ''}`)).catch(() => {})
+  }
+
+  const copyAll = () => {
+    const full = lyrics.map(l => l.text).filter(Boolean).join('\n')
+    void navigator.clipboard.writeText(full).then(() => showToast(`已复制全部歌词（${lyrics.length} 行）`)).catch(() => {})
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[90] flex items-center justify-center p-4"
+      style={{ backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(10px)' }}
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.94, opacity: 0, y: 12 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.94, opacity: 0, y: 12 }}
+        transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden rounded-3xl shadow-2xl relative"
+      >
+        {/* 液态玻璃背景 */}
+        <div className="absolute inset-0 rounded-3xl overflow-hidden">
+          {coverUrl && (
+            <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${getProxiedImageUrl(coverUrl)})`, filter: 'blur(40px) brightness(0.6)' }} />
+          )}
+          <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg, rgba(0,0,0,0.3) 0%, rgba(20,20,30,0.5) 50%, rgba(0,0,0,0.4) 100%)', backdropFilter: 'blur(80px) saturate(200%)', WebkitBackdropFilter: 'blur(80px) saturate(200%)' }} />
+          <div className="absolute inset-0 rounded-3xl" style={{ border: '1px solid rgba(255,255,255,0.2)', boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.15)', pointerEvents: 'none' }} />
+        </div>
+
+        <div className="relative z-10 flex flex-col h-full min-h-0">
+          {/* 头部 */}
+          <div className="p-5 border-b flex-shrink-0" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${accentColor}26`, color: accentColor }}>
+                  <ScrollText className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-white">歌词</h2>
+                  <div className="text-white/50 text-[11px] -mt-0.5 truncate max-w-64">{songName} - {artistName}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={copyAll}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+                >
+                  <Copy className="w-3.5 h-3.5" /> 复制全部
+                </button>
+                <button type="button" onClick={onClose} className="p-2 rounded-full transition-colors hover:bg-white/15">
+                  <X className="w-5 h-5 text-white/60" />
+                </button>
+              </div>
+            </div>
+
+            {/* 开关：翻译 / 罗马音 */}
+            <div className="flex items-center gap-4 mt-3">
+              <button
+                type="button"
+                onClick={() => setShowTrans(v => !v)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-colors ${showTrans ? 'text-white' : 'text-white/50 hover:text-white/80'}`}
+                style={showTrans ? { background: `${accentColor}55`, border: `1px solid ${accentColor}88` } : { background: 'rgba(255,255,255,0.08)' }}
+              >
+                <Languages className="w-3.5 h-3.5" /> 翻译
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowRoman(v => !v)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-colors ${showRoman ? 'text-white' : 'text-white/50 hover:text-white/80'}`}
+                style={showRoman ? { background: `${accentColor}55`, border: `1px solid ${accentColor}88` } : { background: 'rgba(255,255,255,0.08)' }}
+              >
+                <Mic2 className="w-3.5 h-3.5" /> 罗马音
+              </button>
+              <span className="text-white/35 text-xs">点击任意歌词可复制该行</span>
+            </div>
+          </div>
+
+          {/* 歌词列表 */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-1">
+            {lyrics.length === 0 ? (
+              <div className="py-14 text-center text-white/50 text-sm">暂无歌词</div>
+            ) : lyrics.map((l, i) => (
+              l.text || l.translation || l.roman ? (
+                <div
+                  key={`${l.time}-${i}`}
+                  className="rounded-lg px-3 py-1.5 hover:bg-white/5 transition-colors cursor-pointer group"
+                  onClick={() => { if (l.text) copyLine(l.text) }}
+                  title="点击复制该行"
+                >
+                  {l.text && <p className="text-white text-sm leading-6">{l.text}</p>}
+                  {showRoman && l.roman && (
+                    <p className="text-white/45 text-xs leading-5">{l.roman}</p>
+                  )}
+                  {showTrans && l.translation && (
+                    <p className="text-white/55 text-xs leading-5">{l.translation}</p>
+                  )}
+                </div>
+              ) : <div key={`${l.time}-${i}`} className="py-0.5" />
+            ))}
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}

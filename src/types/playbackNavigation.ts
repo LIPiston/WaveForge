@@ -14,6 +14,7 @@ export type PlaybackSurface =
   | 'artist-album'
   | 'album'
   | 'explore-detail'
+  | 'explore-fm'
   | 'desktop-playlist'
 
 export interface PlaybackOrigin {
