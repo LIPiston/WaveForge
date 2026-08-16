@@ -19,6 +19,11 @@ html.tv-mode [data-tv-focus]:focus {
   outline: none;
 }
 
+/* 焦点环空闲自动渐隐：tvCore 3 秒无按键操作后加 tv-ring-idle 类 */
+#tv-focus-ring.tv-ring-idle {
+  opacity: 0;
+}
+
 /* 通用 hover→focus 模拟：
    把"鼠标悬浮到列表项才显示的操作按钮"（Tailwind group-hover:opacity-100 等）
    改为"该项内部获得焦点时显示"。 */

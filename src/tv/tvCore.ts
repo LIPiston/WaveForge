@@ -123,7 +123,7 @@ function ensureRing(): HTMLDivElement {
   ringEl.style.cssText =
     'position:fixed;pointer-events:none;z-index:2147483000;box-sizing:border-box;' +
     'border-radius:8px;border:3px solid #4fc3f7;box-shadow:0 0 0 1px rgba(0,0,0,.45),0 0 20px rgba(79,195,247,.5);' +
-    'transition:left .12s ease,top .12s ease,width .12s ease,height .12s ease;display:none;'
+    'transition:left .12s ease,top .12s ease,width .12s ease,height .12s ease,opacity .3s ease;display:none;'
   document.body.appendChild(ringEl)
   return ringEl
 }
@@ -140,6 +140,20 @@ function updateRing(): void {
   ring.style.top = `${r.top - 5}px`
   ring.style.width = `${r.width + 10}px`
   ring.style.height = `${r.height + 10}px`
+}
+
+// 焦点环空闲自动渐隐：任意按键/焦点移动视为活动，3 秒无操作后加 tv-ring-idle 类淡出
+let ringIdleTimer: number | null = null
+
+function markRingActive(): void {
+  const ring = ensureRing()
+  ring.classList.remove('tv-ring-idle')
+  if (ringIdleTimer !== null) {
+    window.clearTimeout(ringIdleTimer)
+  }
+  ringIdleTimer = window.setTimeout(() => {
+    ensureRing().classList.add('tv-ring-idle')
+  }, 3000)
 }
 
 // ---------------- 设置焦点 ----------------
@@ -175,6 +189,7 @@ export function setTvFocus(el: HTMLElement | null): void {
   }
   focusListeners.forEach((fn) => fn())
   updateRing()
+  markRingActive()
 }
 
 // ---------------- 空间导航 ----------------
@@ -305,6 +320,8 @@ function dirOf(code: number): Direction {
 function handleKeyDown(e: KeyboardEvent): void {
   if (!tvMode) return
   const code = e.keyCode
+  // 任何按键都视为活动：焦点环重新显示，3 秒无操作后渐隐
+  markRingActive()
 
   // 软键盘激活：方向键在键盘网格内做空间导航，Enter 激活键位，BACK 关闭键盘
   if (keyboardActive) {
