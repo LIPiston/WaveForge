@@ -18,6 +18,8 @@
     "build:full": "npm run bundle-python && npm run build:electron",
     "start": "electron .",
     "preview": "vite preview",
+    "fetch:nodejs-mobile": "node scripts/fetch-nodejs-mobile.mjs",
+    "build:android": "node scripts/build-android-assets.mjs",
     "test": "vitest run",
     "lint": "tsc --noEmit",
     "sync:sponsors": "node scripts/sync-afdian-sponsors.mjs",

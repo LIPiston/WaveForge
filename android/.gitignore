@@ -1,0 +1,9 @@
+# 运行时生成，不入库（由 scripts/fetch-nodejs-mobile.mjs 拉取）
+/app/libnode/
+/app/src/main/assets/nodejs-project/
+
+# 构建产物
+/app/build/
+/.gradle/
+/local.properties
+*.apk

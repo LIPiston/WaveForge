@@ -4,6 +4,7 @@ import { X, Image as ImageIcon, ChevronRight, Blend, Grid3x3 } from 'lucide-reac
 import WallpaperCustomizeModal from './WallpaperCustomizeModal'
 import ModuleCustomizeModal from './ModuleCustomizeModal'
 import BlurAdjustModal from './BlurAdjustModal'
+import { useTvBack } from '../tv/tvCore'
 
 interface HomeCustomizeModalProps {
   show: boolean
@@ -20,6 +21,11 @@ export default function HomeCustomizeModal({ show, onClose, playerTheme = 'dark'
   const bgCard = playerTheme === 'dark' ? 'bg-white/5' : 'bg-black/5'
   const borderColor = playerTheme === 'dark' ? 'border-white/10' : 'border-black/10'
   
+  // TV 遥控器 BACK 关闭弹窗
+  useTvBack(() => {
+    onClose()
+    return true
+  })
   const [accentColor, setAccentColor] = useState(() => {
     const saved = localStorage.getItem('accentColor')
     return saved || '#3B82F6'
@@ -72,6 +78,7 @@ export default function HomeCustomizeModal({ show, onClose, playerTheme = 'dark'
               exit={{ x: '100%', opacity: 0 }}
               transition={{ type: 'spring', damping: 25, stiffness: 300 }}
               className="fixed right-0 top-0 h-full w-full max-w-lg z-[70] shadow-2xl overflow-hidden flex flex-col"
+              data-tv-scope
               style={{
                 background: playerTheme === 'dark' 
                   ? 'rgba(0, 0, 0, 0.3)'

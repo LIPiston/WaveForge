@@ -5,6 +5,7 @@ import { Song } from '../services/musicApi'
 import CachedImage from './CachedImage'
 import ScrollToTop from './ScrollToTop'
 import ScrollToCurrentSong from './ScrollToCurrentSong'
+import { useTvBack } from '../tv/tvCore'
 
 interface PlaylistPanelProps {
   show: boolean
@@ -45,6 +46,11 @@ export default function PlaylistPanel({
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const scrollFrameRef = useRef<number | null>(null)
   const pendingViewportRef = useRef({ scrollTop: 0, height: 0 })
+  // TV 遥控器 BACK 关闭面板
+  useTvBack(() => {
+    onClose()
+    return true
+  })
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 })
 
   const commitViewport = useCallback((scrollTop: number, height: number) => {
@@ -121,6 +127,7 @@ export default function PlaylistPanel({
             exit={{ x: '100%' }}
             transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
             className="fixed right-0 top-0 z-50 h-full w-full max-w-md shadow-2xl"
+            data-tv-scope
             style={{
               background: isDark
                 ? 'linear-gradient(180deg, rgba(10, 10, 16, 0.82) 0%, rgba(4, 5, 10, 0.74) 100%)'

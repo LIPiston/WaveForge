@@ -1,12 +1,17 @@
 import { useState, useEffect, useRef } from 'react'
 import { Minus, Square, X, Minimize2, Maximize2 } from 'lucide-react'
+import { useTvMode } from '../tv/tvCore'
 
 export default function TitleBar() {
+  const tvMode = useTvMode()
   const [isMaximized, setIsMaximized] = useState(false)
   const [isHovered, setIsHovered] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isKiosk, setIsKiosk] = useState(false)
   const hideTimeoutRef = useRef<number | null>(null)
+
+  // TV 遥控器模式没有窗口化概念，整个标题栏无意义，直接隐藏。
+  if (tvMode) return null
 
   useEffect(() => {
     const unsubscribers: Array<() => void> = []

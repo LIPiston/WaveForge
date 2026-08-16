@@ -2,6 +2,7 @@ import { motion } from 'framer-motion'
 import { AudioLines, Captions, Home, Languages } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import QuickSettings from './QuickSettings'
+import { useTvMode } from '../tv/tvCore'
 
 interface ImmersiveControlsProps {
   onHomeClick: () => void
@@ -30,6 +31,9 @@ export default function ImmersiveControls({
 }: ImmersiveControlsProps) {
   const [isVisible, setIsVisible] = useState(true)
   const [isHovered, setIsHovered] = useState(false)
+  // TV 遥控器模式没有鼠标 hover，控件常驻显示（方向键可聚焦到其中的按钮）。
+  const tvMode = useTvMode()
+  const effectiveHovered = tvMode || isHovered
 
   const [accentColor, setAccentColor] = useState(() => {
     const saved = localStorage.getItem('accentColor')
@@ -50,15 +54,15 @@ export default function ImmersiveControls({
   }, [])
 
   useEffect(() => {
-    // 当鼠标离开后3秒自动隐藏
-    if (!isHovered) {
+    // 当鼠标离开后3秒自动隐藏（TV 模式常驻，不自动隐藏）
+    if (!effectiveHovered) {
       const hideTimer = setTimeout(() => {
         setIsVisible(false)
       }, 3000)
 
       return () => clearTimeout(hideTimer)
     }
-  }, [isHovered])
+  }, [effectiveHovered])
 
   const handleMouseEnter = () => {
     setIsHovered(true)

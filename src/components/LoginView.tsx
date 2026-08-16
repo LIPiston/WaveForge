@@ -235,7 +235,7 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
 
   return (
     <>
-      <div className="fixed inset-0 w-full h-full overflow-hidden z-50">
+      <div className="fixed inset-0 w-full h-full overflow-hidden z-50" data-tv-scope>
         {/* 动态背景 */}
       <motion.div 
         className="absolute inset-0"

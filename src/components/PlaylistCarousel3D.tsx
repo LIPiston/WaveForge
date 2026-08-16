@@ -216,6 +216,7 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
     <div 
       ref={containerRef}
       className="group relative flex items-center justify-center overflow-hidden pb-12"
+      data-tv-arrows="horizontal"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={finishPointerDrag}
