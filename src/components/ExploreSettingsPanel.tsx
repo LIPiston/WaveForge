@@ -27,6 +27,7 @@ export interface ExplorePlatformPreferences {
 export interface ExplorePreferences {
   netease: ExplorePlatformPreferences
   qq: ExplorePlatformPreferences
+  apple: ExplorePlatformPreferences
 }
 
 export const EXPLORE_SECTION_LABELS: Record<ExploreSectionId, string> = {
@@ -43,6 +44,8 @@ const BASE_ORDER: ExploreSectionId[] = ['discover', 'journey', 'playlists', 'cha
 const PLATFORM_ORDER: Record<ExplorePlatform, ExploreSectionId[]> = {
   netease: BASE_ORDER,
   qq: BASE_ORDER,
+  // Apple 探索为独立页面（榜单/专辑/搜索），不参与板块排序
+  apple: [],
 }
 
 export const createDefaultExplorePreferences = (): ExplorePreferences => ({
@@ -56,6 +59,14 @@ export const createDefaultExplorePreferences = (): ExplorePreferences => ({
   },
   qq: {
     order: [...PLATFORM_ORDER.qq],
+    hidden: [],
+    density: 'comfortable',
+    contentAmount: 'curated',
+    showDescriptions: true,
+    backgroundIntensity: 'vivid',
+  },
+  apple: {
+    order: [],
     hidden: [],
     density: 'comfortable',
     contentAmount: 'curated',
