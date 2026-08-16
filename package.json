@@ -19,6 +19,7 @@
     "start": "electron .",
     "preview": "vite preview",
     "fetch:nodejs-mobile": "node scripts/fetch-nodejs-mobile.mjs",
+    "prebuild:android": "node scripts/sync-afdian-sponsors.mjs --optional",
     "build:android": "node scripts/build-android-assets.mjs",
     "publish:release": "node scripts/publish-release.mjs",
     "test": "vitest run",
