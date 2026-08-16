@@ -7,7 +7,7 @@ const EXPLORE_MEMORY_CACHE_TTL = 9 * 60 * 1000
 const exploreHomeMemoryCache = new Map<string, { payload: ExplorePayload; expiresAt: number }>()
 const exploreHomePending = new Map<string, Promise<ExplorePayload>>()
 
-export type ExplorePlatform = 'netease' | 'qq'
+export type ExplorePlatform = 'netease' | 'qq' | 'apple'
 
 function fingerprintExploreValue(value: string): string {
   let hash = 2166136261
@@ -43,7 +43,8 @@ export interface ExplorePlaylist {
   playCount?: number
   trackCount?: number
   creator?: string
-  platform: ExplorePlatform
+  /** 歌单仅来自网易云/QQ（Apple 探索不产出歌单） */
+  platform: 'netease' | 'qq'
   source?: 'personalized' | 'community' | 'qqmusic-skills' | string
 }
 
@@ -115,7 +116,7 @@ export interface ExploreDetail {
     coverImgUrl: string
     trackCount: number
     description?: string
-    platform: ExplorePlatform
+    platform: 'netease' | 'qq'
   }
   songs: Song[]
 }

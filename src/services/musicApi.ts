@@ -5,6 +5,7 @@ import {
   AUDIO_QUALITY_SETTINGS_EVENT,
   getAudioQualityRequest,
 } from './audioQualitySettings'
+import { getAppleMusicLyrics } from './appleMusic'
 
 const isYrcTimestampFragment = (value: string) => {
   const trimmed = value.trim()
@@ -223,6 +224,10 @@ export interface LyricLine {
   translation?: string // 翻译
   roman?: string // 罗马音（纯文本）
   romanWords?: LyricWord[] // 逐字罗马音
+  /** Apple Music 对唱/多声部：ttm:agent id（如 v1/v2） */
+  agent?: string
+  /** 该行演唱者名（由 Apple 曲目艺人列表按 agent 顺序映射） */
+  agentName?: string
 }
 
 export interface LyricWord {
@@ -928,8 +933,38 @@ function parseQQKanaLyric(lrcText: string, qrcText: string): LyricLine[] {
 }
 
 // 解析普通歌词
+/**
+ * 网易云新版歌词接口可能返回 JSON 行格式：{"t":16000,"c":[{"tx":"文本"}]}
+ * （t = 毫秒；无 t 的行是未同步纯文本，跳过）。旧接口返回标准 LRC。
+ */
+function parseNeteaseJsonLyric(lyricText: string): LyricLine[] {
+  const result: LyricLine[] = []
+  for (const line of lyricText.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('{')) continue
+    try {
+      const obj = JSON.parse(trimmed)
+      const timeMs = obj?.t
+      if (typeof timeMs !== 'number' || !Number.isFinite(timeMs)) continue
+      const text = Array.isArray(obj?.c)
+        ? obj.c.map((chunk: any) => (chunk && typeof chunk.tx === 'string' ? chunk.tx : '')).join('')
+        : ''
+      if (text.trim()) result.push({ time: timeMs / 1000, text: text.trim() })
+    } catch {
+      // 非 JSON 行忽略
+    }
+  }
+  return result.sort((a, b) => a.time - b.time)
+}
+
 function parseLyric(lyricText: string): LyricLine[] {
   if (!lyricText) return []
+  
+  // 网易云新版接口返回 JSON 行歌词时优先解析（标准 LRC 无法解析出内容）
+  if (lyricText.trimStart().startsWith('{')) {
+    const jsonLyrics = parseNeteaseJsonLyric(lyricText)
+    if (jsonLyrics.length > 0) return jsonLyrics
+  }
   
   const lines = lyricText.split('\n')
   const result: LyricLine[] = []
@@ -1023,6 +1058,8 @@ export async function getLyrics(
       // 平台官方源只请求当前歌曲所属平台
       { name: platformSourceName, promise: getPlatformLyrics(id, platform) },
       { name: 'AMLL TTML DB', promise: getAMLLTTMLLyrics(id, platform) },
+      // Apple Music：iTunes 匹配 → AMP 直连（有 token）或 AMLL am-lyrics 社区库
+      { name: 'Apple Music', promise: songName && artistName ? getAppleMusicLyrics(songName, artistName, duration) : Promise.resolve([]) },
       { name: 'Lrclib', promise: songName && artistName ? getLrclibLyrics(songName, artistName, duration) : Promise.resolve([]) }
     ]
     
@@ -1133,18 +1170,72 @@ export async function getLyrics(
 
       const preferredSource = primarySource === 'AMLL'
         ? 'AMLL TTML DB'
-        : requestedOfficialPlatform === platform
-          ? platformSourceName
-          : platformSourceName
+        : primarySource === 'Apple Music'
+          ? 'Apple Music'
+          : requestedOfficialPlatform === platform
+            ? platformSourceName
+            : platformSourceName
 
       // 先选逐字质量最高的骨架，再按时间把其他来源的翻译/罗马音补进来。
-      const sourceScore = (result: LyricsSourceResult) =>
-        (result.hasWW ? 100 : 0)
-        + (result.hasTrans ? 20 : 0)
-        + (result.hasRom ? 20 : 0)
-        + (result.source === preferredSource ? 35 : 0)
-        + (result.source === platformSourceName ? 5 : 0)
-        + Math.min(10, result.lyrics.length / 20)
+      // 第三方/Apple 歌词源必须通过「同步性达标」检查，否则降权甚至不被采纳：
+      // 1) 时长一致性：歌词时间轴须落在歌曲时长范围内（过短/超长视为不同步）
+      // 2) 平台歌词时间轴交叉验证：与当前平台官方歌词做文本对齐，时间偏差中位数小才加分
+      const platformResult = successfulResults.find(result => result.source === platformSourceName)
+
+      const normalizeLyricText = (text: string) => (text || '')
+        .toLowerCase()
+        .replace(/[\s·•\-–—()（）[\]【】「」『』〈〉《》"'`、，。！？!?,.&/|:：]+/g, '')
+
+      /** 候选歌词 vs 平台官方歌词：文本对齐后的时间偏差中位数 → 同步分 */
+      const lyricTimingSyncScore = (candidate: LyricLine[], reference: LyricLine[]): number => {
+        const referenceTimes = new Map<string, number[]>()
+        reference.forEach(line => {
+          const key = normalizeLyricText(line.text)
+          if (!key) return
+          const list = referenceTimes.get(key) ?? []
+          list.push(line.time)
+          referenceTimes.set(key, list)
+        })
+        const diffs: number[] = []
+        candidate.forEach(line => {
+          const key = normalizeLyricText(line.text)
+          if (!key) return
+          const times = referenceTimes.get(key)
+          if (times && times.length > 0) diffs.push(line.time - times[0])
+        })
+        // 匹配对数不足（平台歌词过劣/过少）视为无法验证：不加分也不降权
+        if (diffs.length < Math.max(3, Math.floor(candidate.length * 0.3))) return 0
+        diffs.sort((a, b) => a - b)
+        const medianDiff = Math.abs(diffs[Math.floor(diffs.length / 2)])
+        if (medianDiff < 1.0) return 30   // 同步良好
+        if (medianDiff < 2.5) return 10   // 轻微偏差可接受
+        return -150                       // 明显不同步 → 直接排除（超过逐字分 100，任何第三方源必败）
+      }
+
+      const sourceScore = (result: LyricsSourceResult) => {
+        let score = (result.hasWW ? 100 : 0)
+          + (result.hasTrans ? 20 : 0)
+          + (result.hasRom ? 20 : 0)
+          + (result.source === preferredSource ? 35 : 0)
+          + (result.source === platformSourceName ? 5 : 0)
+          + Math.min(10, result.lyrics.length / 20)
+        // 时长一致性：歌词时间轴必须落在歌曲时长内（duration 为毫秒）
+        if (duration && result.lyrics.length > 0) {
+          const lastTime = result.lyrics[result.lyrics.length - 1].time
+          const durationSeconds = duration / 1000
+          if (lastTime >= durationSeconds * 0.5 && lastTime <= durationSeconds * 1.05) {
+            score += 10
+          } else {
+            score -= 40
+          }
+        }
+        // 平台歌词交叉验证：第三方/Apple 源需与当前平台官方歌词时间轴对齐
+        if (platformResult && result.source !== platformSourceName
+          && result.lyrics.length > 0 && platformResult.lyrics.length > 0) {
+          score += lyricTimingSyncScore(result.lyrics, platformResult.lyrics)
+        }
+        return score
+      }
 
       const baseResult = [...successfulResults].sort((a, b) => sourceScore(b) - sourceScore(a))[0]
       currentLyrics = baseResult.lyrics
@@ -1327,7 +1418,11 @@ async function getPlatformLyrics(id: number | string, platform: 'netease' | 'qq'
       // 优先逐字歌词
       if (data.yrc?.lyric) {
         const lyrics = parseYrc(data.yrc.lyric)
-        return mergeLyricsWithTranslationAndRoman(lyrics, translations)
+        if (lyrics.length > 0) {
+          return mergeLyricsWithTranslationAndRoman(lyrics, translations)
+        }
+        // 网易云新版 yrc 可能是 JSON 且仅含元数据（作词/作曲…），
+        // 此时解析为空 → 退回普通 lrc，避免平台歌词整体丢失。
       }
       
       // 否则普通歌词

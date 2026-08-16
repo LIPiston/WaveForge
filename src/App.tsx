@@ -15,6 +15,9 @@ import { useAudioPlayer, type AudioGraphHandle } from './hooks/useAudioPlayer'
 import { useAudioAnalyzer } from './hooks/useAudioAnalyzer'
 import { useAudioPulseStore, type AudioPulseStore } from './hooks/useAudioPulse'
 import { Song, getSongUrl, invalidateSongUrl, getLyrics, getProxiedImageUrl, getLocalAlbumIdentifier, resolveSongAlbumIdentifier, LyricLine } from './services/musicApi'
+import { getAppleMusicSettings, resolveAppleTrack } from './services/appleMusic'
+import { getAppleAuthState, type AppleUserInfo } from './services/appleAuth'
+import AppleLoginPanel from './components/AppleLoginPanel'
 import { cacheManager } from './services/cacheManager'
 import { indexedDBCache } from './services/indexedDBCache'
 import { autoMixAnalysisService } from './services/autoMixAnalysisService'
@@ -70,6 +73,7 @@ const loadTranslationDisplay = () => import('./components/TranslationDisplay')
 const loadWallpaperLyrics = () => import('./components/WallpaperLyrics')
 const loadGloriousLyrics = () => import('./components/GloriousLyrics')
 const loadMultidimensionalLyrics = () => import('./components/MultidimensionalLyrics')
+const loadModengPlayer = () => import('./components/ModengPlayerPage')
 const LazyModernAudioVisualizer = lazy(loadModernAudioVisualizer)
 const LazyPlaybackRadialMenu = lazy(loadPlaybackRadialMenu)
 const LazyImmersiveControls = lazy(loadImmersiveControls)
@@ -77,6 +81,7 @@ const LazyTranslationDisplay = lazy(loadTranslationDisplay)
 const LazyWallpaperLyrics: any = lazy(loadWallpaperLyrics)
 const LazyGloriousLyrics: any = lazy(loadGloriousLyrics)
 const LazyMultidimensionalLyrics = lazy(loadMultidimensionalLyrics)
+const LazyModengPlayer: any = lazy(loadModengPlayer)
 const loadRemoteControlModal = () => import('./components/RemoteControlModal')
 const LazyRemoteControlModal = lazy(loadRemoteControlModal)
 const loadSongDetailModal = () => import('./components/SongDetailModal')
@@ -207,16 +212,18 @@ const buildDesktopLyricsWithInterludes = (lyrics: LyricLine[]): DesktopLyricLine
 }
 
 type CoverPulseMode = 'dynamic' | 'soft' | 'restless'
-type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'multidimensional'
+type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'multidimensional' | 'modeng'
 
 const LYRIC_MODE_VISIBILITY_KEY = 'waveforge_visible_lyric_modes'
-const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional']
+const LYRIC_MODE_MODENG_MIGRATED_KEY = 'waveforge_modeng_mode_migrated'
+const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional', 'modeng']
 const LYRIC_MODE_NAMES: Record<LyricDisplayMode, string> = {
   modern: '现代',
   immersive: '沉浸式',
   wallpaper: '墙纸',
   glorious: '辉煌',
   multidimensional: '多维',
+  modeng: '摩登',
 }
 
 function loadVisibleLyricModes(): LyricDisplayMode[] {
@@ -229,7 +236,16 @@ function loadVisibleLyricModes(): LyricDisplayMode[] {
           ALL_LYRIC_MODES.includes(mode as LyricDisplayMode))
         // 现代模式始终显示，历史设置里即使缺失也要补回
         const withModern = valid.includes('modern') ? valid : ['modern' as LyricDisplayMode, ...valid]
-        if (withModern.length > 0) return withModern
+        if (withModern.length > 0) {
+          // 摩登为新增模式：不含它的历史设置一次性补回可见列表（迁移标记防重复），之后用户可自由隐藏
+          if (!withModern.includes('modeng') && !localStorage.getItem(LYRIC_MODE_MODENG_MIGRATED_KEY)) {
+            const withModeng = [...withModern, 'modeng' as LyricDisplayMode]
+            localStorage.setItem(LYRIC_MODE_MODENG_MIGRATED_KEY, '1')
+            localStorage.setItem(LYRIC_MODE_VISIBILITY_KEY, JSON.stringify(withModeng))
+            return withModeng
+          }
+          return withModern
+        }
       }
     }
   } catch (error) {
@@ -464,6 +480,24 @@ function App() {
   const [showPlaylist, setShowPlaylist] = useState(false)
   const [showLogin, setShowLogin] = useState(false)
   const [loginPlatform, setLoginPlatform] = useState<'netease' | 'qq'>('netease')
+  // Apple Music 登录态（token 登录，见 AppleLoginPanel / appleAuth.ts）
+  const [showAppleLogin, setShowAppleLogin] = useState(false)
+  const [appleLoggedIn, setAppleLoggedIn] = useState(() => getAppleAuthState().loggedIn)
+  const [appleUsername, setAppleUsername] = useState(() => getAppleAuthState().name)
+  const [appleAvatar, setAppleAvatar] = useState<string | undefined>(() => getAppleAuthState().avatarUrl)
+  const [appleStorefront, setAppleStorefront] = useState(() => getAppleAuthState().storefront)
+  const refreshAppleAuth = (user: AppleUserInfo | null) => {
+    if (user) {
+      setAppleLoggedIn(true)
+      setAppleUsername(user.name)
+      setAppleAvatar(user.avatarUrl)
+      setAppleStorefront(user.storefront)
+    } else {
+      setAppleLoggedIn(false)
+      setAppleUsername('')
+      setAppleAvatar(undefined)
+    }
+  }
   const [showProfile, setShowProfile] = useState(false)
   const [profileInitialPlatform, setProfileInitialPlatform] = useState<'netease' | 'qq'>('netease')
   const [profileInitialTab, setProfileInitialTab] = useState<'created' | 'subscribed' | 'detail' | 'recent'>('created')
@@ -499,6 +533,7 @@ function App() {
   const [playbackContextPlaylists, setPlaybackContextPlaylists] = useState<any[]>([])
   
   const [lyrics, setLyrics] = useState<LyricLine[]>([])
+  const [appleCoverUrl, setAppleCoverUrl] = useState<string | null>(null)
   const [lyricOffset, setLyricOffset] = useState(() => Number(localStorage.getItem('lyricOffset')) || 0)
   const [playlist, setPlaylist] = useState<Song[]>([])
   const playlistRef = useRef<Song[]>([])
@@ -878,7 +913,9 @@ function App() {
     const songId = platform === 'qq' ? (song.mid || song.id) : song.id
     const lyricsCacheGeneration = lyricsCacheGenerationRef.current
     let lyricsLoadedFromPersistentCache = false
-    const request = indexedDBCache.getCachedLyrics<LyricLine[]>(cacheKey, platform)
+    // 歌词缓存版本：评分/数据源逻辑变更时递增，使旧缓存（旧评分选中的劣质源）失效
+    const lyricsCacheKey = `v2:${cacheKey}`
+    const request = indexedDBCache.getCachedLyrics<LyricLine[]>(lyricsCacheKey, platform)
       .catch(() => null)
       .then(persistedLyrics => {
         if (Array.isArray(persistedLyrics)) {
@@ -913,7 +950,7 @@ function App() {
       }).then(finalLyrics => {
       if (lyricsCacheGeneration !== lyricsCacheGenerationRef.current) return finalLyrics
       if (!lyricsLoadedFromPersistentCache && finalLyrics.length > 0) {
-        void indexedDBCache.cacheLyrics(cacheKey, platform, finalLyrics)
+        void indexedDBCache.cacheLyrics(lyricsCacheKey, platform, finalLyrics)
           .catch(error => console.warn('写入歌词缓存失败:', error))
       }
       const latest = preloadCacheRef.current.get(cacheKey)
@@ -954,6 +991,31 @@ function App() {
       lyricsPromise: request,
     })
     return request
+  }, [])
+
+  // Apple Music：非阻塞解析曲目匹配，命中后提供高清封面（摩登模式粒子动效数据源）
+  const resolveAppleCover = useCallback((song: Song) => {
+    const settings = getAppleMusicSettings()
+    const latestKey = getSongKey(song)
+    if (!settings.enabled || !settings.preferAppleCover) {
+      setAppleCoverUrl(null)
+      return
+    }
+    const title = song.name
+    const artist = song.artists.map(a => a.name).join(', ')
+    if (!title || !artist) {
+      setAppleCoverUrl(null)
+      return
+    }
+    void resolveAppleTrack(title, artist, song.duration)
+      .then(match => {
+        // 切歌后丢弃过期结果
+        if (activeTrackKeyRef.current !== latestKey) return
+        setAppleCoverUrl(match?.artworkUrl || null)
+      })
+      .catch(() => {
+        if (activeTrackKeyRef.current === latestKey) setAppleCoverUrl(null)
+      })
   }, [])
 
   useEffect(() => {
@@ -1988,8 +2050,11 @@ function App() {
     window.dispatchEvent(new Event('waveforge-lyric-modes-visibility-changed'))
   }
 
+  // Apple Music 命中时全局替换封面（异步解析、不阻塞：先显示平台封面，命中后无缝替换）
+  const displayCoverUrl = appleCoverUrl || currentTrack.coverUrl
+
   // 提取封面主色调
-  const { dominantColor: extractedColor, palette: coverPalette } = useColorThief(currentTrack.coverUrl)
+  const { dominantColor: extractedColor, palette: coverPalette } = useColorThief(displayCoverUrl)
   // 提取失败时使用默认强调色，过渡期间保留来源颜色以避免闪烁。
   const dominantColor = extractedColor || '#3B82F6'
   dominantColorRef.current = dominantColor
@@ -2142,13 +2207,15 @@ function App() {
       loadImmersiveControls(),
       loadTranslationDisplay(),
       loadModernAudioVisualizer(),
-      lyricDisplayMode === 'wallpaper'
-        ? loadWallpaperLyrics()
-        : lyricDisplayMode === 'glorious'
-          ? loadGloriousLyrics()
-          : lyricDisplayMode === 'multidimensional'
-            ? loadMultidimensionalLyrics()
-            : Promise.resolve(),
+        lyricDisplayMode === 'wallpaper'
+          ? loadWallpaperLyrics()
+          : lyricDisplayMode === 'glorious'
+            ? loadGloriousLyrics()
+            : lyricDisplayMode === 'multidimensional'
+              ? loadMultidimensionalLyrics()
+              : lyricDisplayMode === 'modeng'
+                ? loadModengPlayer()
+                : Promise.resolve(),
     ])
     const inferredOrigin: PlaybackOrigin = origin
       ? { ...origin, mode: origin.mode || viewMode }
@@ -2199,7 +2266,9 @@ function App() {
   }
 
   // 打开艺人详情
-  const handleOpenArtist = (artistId: string, platform: 'netease' | 'qq') => {
+  const handleOpenArtist = (artistId: string, platform: 'netease' | 'qq' | 'apple') => {
+    // Apple 艺人详情暂未接入（Apple 探索页不触发此回调）
+    if (platform === 'apple') return
     // 先关闭弹窗（不触发导航栈弹出）
     const hadAlbum = showAlbumDetail && selectedAlbumId
     const hadArtist = showArtistDetail && selectedArtistId
@@ -2222,7 +2291,9 @@ function App() {
   }
 
   // 打开专辑详情
-  const handleOpenAlbum = (albumId: string, platform: 'netease' | 'qq') => {
+  const handleOpenAlbum = (albumId: string, platform: 'netease' | 'qq' | 'apple') => {
+    // Apple 专辑详情暂未接入（Apple 探索页不触发此回调）
+    if (platform === 'apple') return
     const hadAlbum = showAlbumDetail && selectedAlbumId
     const hadArtist = showArtistDetail && selectedArtistId
     const prevArtist = hadArtist ? { type: 'artist' as const, id: selectedArtistId, platform: selectedArtistPlatform, tab: selectedArtistTab } : null
@@ -2256,13 +2327,13 @@ function App() {
     // 回到来源页：弹窗全部关闭，导航栈一并清空，避免残留脏条目
     navigationStack.current = []
 
-    if ((origin.surface === 'artist' || origin.surface === 'artist-album') && origin.artistId && origin.platform) {
+    if ((origin.surface === 'artist' || origin.surface === 'artist-album') && origin.artistId && origin.platform && origin.platform !== 'apple') {
       setSelectedArtistId(String(origin.artistId))
       setSelectedArtistPlatform(origin.platform)
       setSelectedArtistAlbumId(origin.albumId)
       setSelectedArtistTab(origin.artistTab || (origin.albumId ? 'albums' : 'hotSongs'))
       setShowArtistDetail(true)
-    } else if (origin.surface === 'album' && origin.albumId && origin.platform) {
+    } else if (origin.surface === 'album' && origin.albumId && origin.platform && origin.platform !== 'apple') {
       setSelectedAlbumId(String(origin.albumId))
       setSelectedAlbumPlatform(origin.platform)
       setShowAlbumDetail(true)
@@ -2842,6 +2913,9 @@ function App() {
       const coverUrl = normalizedSong.album?.picUrl || ''
       setCurrentTrack(createTrackFromSong(normalizedSong))
       setCurrentTime(0)
+      // Apple Music：切歌即清封面，后台匹配命中后替换为高清封面
+      setAppleCoverUrl(null)
+      resolveAppleCover(normalizedSong)
       
       // 如果有艺人ID，获取艺人详情
       const cacheKey = getSongKey(normalizedSong)
@@ -4035,11 +4109,22 @@ function App() {
               qqAvatar={qqAvatar}
               qqUserId={qqUserId}
               qqVip={qqVip}
+              appleLoggedIn={appleLoggedIn}
+              appleUsername={appleUsername}
+              appleAvatar={appleAvatar}
+              appleStorefront={appleStorefront}
               onLoginClick={(platform) => {
+                // Apple 走独立 token 登录面板；网易云/QQ 走原有扫码/密钥登录
+                if (platform === 'apple') {
+                  setShowAppleLogin(true)
+                  return
+                }
                 setLoginPlatform(platform)
                 setShowLogin(true)
               }}
               onProfileClick={(platform) => {
+                // Apple 账号入口在 Apple 登录面板内
+                if (platform === 'apple') return
                 setProfileInitialPlatform(platform)
                 setProfileInitialTab('created')
                 setShowProfile(true)
@@ -4166,7 +4251,7 @@ function App() {
       {/* The outgoing cover remains mounted until the decoded incoming cover overlays it. */}
       <div className="absolute inset-0">
             <PulsingCrossfadeBackground
-              coverUrl={currentTrack.coverUrl}
+              coverUrl={displayCoverUrl}
               transitionFromUrl={transitionFromTrack?.coverUrl}
               transitionToUrl={transitionToTrack?.coverUrl}
               isTransitioning={isVisualTransitioning}
@@ -4491,6 +4576,7 @@ function App() {
                                   ['wallpaper', '墙纸', `repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 18px), linear-gradient(135deg, ${dominantColor || '#6c5cff'} 0%, #18171c 58%, #09090b 100%)`],
                                   ['glorious', '辉煌', `linear-gradient(118deg, #080713 0%, ${dominantColor || '#6f5cff'} 50%, #090911 78%, #101522 100%)`],
                                   ['multidimensional', '多维', `linear-gradient(145deg, #05060c 0%, ${dominantColor || '#6657ff'} 48%, #0b1b2a 72%, #030409 100%)`],
+                                  ['modeng', '摩登', `linear-gradient(120deg, #3a3a3c 0%, #232325 45%, #101012 100%)`],
                                 ] as const)
                                   .filter(([mode]) => effectiveVisibleLyricModes.includes(mode))
                                   .map(([mode, label, background]) => (
@@ -4655,7 +4741,7 @@ function App() {
                     className="flex w-full flex-col items-center gap-5 px-6"
                   >
                     <AlbumCoverPlayer
-                      coverUrl={currentTrack.coverUrl}
+                      coverUrl={displayCoverUrl}
                       isPlaying={isPlaying}
                       dominantColor={dominantColor}
                       trackId={currentSong.id || currentSong.mid}
@@ -4764,7 +4850,7 @@ function App() {
                     songTitle={currentSong.name}
                     songArtist={currentSong.artists.map((artist: any) => artist.name).join(', ')}
                     songAlbum={currentSong.album?.name}
-                    coverUrl={currentTrack.coverUrl}
+                    coverUrl={displayCoverUrl}
                     trackId={currentSong.id || currentSong.mid}
                     translationEnabled={translationEnabled}
                     romanEnabled={romanEnabled}
@@ -4791,7 +4877,7 @@ function App() {
                     songTitle={currentSong.name}
                     songArtist={currentSong.artists.map((artist: any) => artist.name).join(', ')}
                     songAlbum={currentSong.album?.name}
-                    coverUrl={currentTrack.coverUrl}
+                    coverUrl={displayCoverUrl}
                     trackId={currentSong.id || currentSong.mid}
                     translationEnabled={translationEnabled}
                     romanEnabled={romanEnabled}
@@ -4818,12 +4904,49 @@ function App() {
                     songTitle={currentSong.name}
                     songArtist={currentSong.artists.map((artist: any) => artist.name).join(', ')}
                     songAlbum={currentSong.album?.name}
-                    coverUrl={currentTrack.coverUrl}
+                    coverUrl={displayCoverUrl}
                     trackId={currentSong.id || currentSong.mid}
                     translationEnabled={translationEnabled}
                     romanEnabled={romanEnabled}
                     isTransitioning={isVisualTransitioning}
                     onSeek={audioPlayer.seek}
+                  />
+                </motion.div>
+              ) : lyricDisplayMode === 'modeng' ? (
+                <motion.div
+                  key="modeng-lyrics-player"
+                  initial={{ opacity: 0, scale: 1.02 }}
+                  animate={{ opacity: isLyricsTransitioning ? 0 : 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.99 }}
+                  transition={{ duration: 0.45, ease: [0.42, 0, 0.58, 1] }}
+                  className="flex-1 w-full min-h-0 relative"
+                >
+                  <LazyModengPlayer
+                    lyrics={lyrics}
+                    currentIndex={currentLyricIndex}
+                    playbackTimeStore={audioPlayer.playbackTimeStore}
+                    timeOffset={lyricOffset - 0.2}
+                    isPlaying={isPlaying}
+                    accentColor={dominantColor || '#fff'}
+                    playerTheme={playerTheme}
+                    songTitle={currentSong.name}
+                    songArtist={currentSong.artists.map((artist: any) => artist.name).join(', ')}
+                    songAlbum={currentSong.album?.name}
+                    coverUrl={displayCoverUrl}
+                    appleCoverUrl={appleCoverUrl || undefined}
+                    trackId={currentSong.id || currentSong.mid}
+                    translationEnabled={translationEnabled}
+                    romanEnabled={romanEnabled}
+                    isTransitioning={isVisualTransitioning}
+                    onSeek={audioPlayer.seek}
+                    onPlayPause={handlePlayPause}
+                    onPrevious={handlePrevious}
+                    onNext={handleNext}
+                    volume={volume}
+                    onVolumeChange={handleVolumeChange}
+                    playMode={playMode}
+                    onPlayModeChange={handlePlayModeChange}
+                    duration={duration}
                   />
                 </motion.div>
               ) : (
@@ -4840,7 +4963,7 @@ function App() {
                   {/* 宸︿晶锛氅皝闈㈠睍绀哄尯 */}
                   <div className="flex-1 flex flex-col items-center justify-center gap-6">
                     <AlbumCoverPlayer
-                      coverUrl={currentTrack.coverUrl}
+                      coverUrl={displayCoverUrl}
                       isPlaying={isPlaying}
                       dominantColor={dominantColor}
                       trackId={currentSong.id || currentSong.mid}
@@ -4940,8 +5063,8 @@ function App() {
             )}
           </AnimatePresence>
 
-          {/* 全局播放器 - 固定在底部 */}
-          {currentSong && !showHome && (
+          {/* 全局播放器 - 固定在底部（摩登模式自带控制条，不渲染全局控制条） */}
+          {currentSong && !showHome && lyricDisplayMode !== 'modeng' && (
             <LivePlayerControls
                       playbackTimeStore={audioPlayer.playbackTimeStore}
               isPlaying={isPlaying}
@@ -4979,7 +5102,7 @@ function App() {
         {showHome && currentSong && <LiveMiniPlayer
                       playbackTimeStore={audioPlayer.playbackTimeStore}
           show={true}
-          coverUrl={currentTrack.coverUrl}
+          coverUrl={displayCoverUrl}
           isPlaying={isPlaying}
           duration={duration}
           volume={volume}
@@ -5103,6 +5226,16 @@ function App() {
               else handleQQLogin(cookie)
               setShowLogin(false)
             }}
+            />
+          )}
+          {showAppleLogin && (
+            <AppleLoginPanel
+              accentColor="#fa2d48"
+              onClose={() => setShowAppleLogin(false)}
+              onLoginSuccess={(user) => {
+                refreshAppleAuth(user)
+                setShowAppleLogin(false)
+              }}
             />
           )}
         </AnimatePresence>
