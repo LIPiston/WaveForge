@@ -967,34 +967,50 @@ function parseNeteaseJsonLyric(lyricText: string): LyricLine[] {
 
 function parseLyric(lyricText: string): LyricLine[] {
   if (!lyricText) return []
-  
-  // 网易云新版接口返回 JSON 行歌词时优先解析（标准 LRC 无法解析出内容）
-  if (lyricText.trimStart().startsWith('{')) {
-    const jsonLyrics = parseNeteaseJsonLyric(lyricText)
-    if (jsonLyrics.length > 0) return jsonLyrics
-  }
-  
+
   const lines = lyricText.split('\n')
   const result: LyricLine[] = []
-  
+
   const timeRegex = /\[(\d{2}):(\d{2})\.(\d{2,3})\]/
-  
+
   for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    // 网易云新版歌词可能是"JSON 行 + 普通 LRC"混合格式：
+    // 开头是 JSON 元数据行（作词/作曲…），后面是普通 LRC 正文。
+    // 逐行判断，JSON 行按 JSON 解析，其余按 LRC 解析，两者都要保留。
+    if (trimmed.startsWith('{')) {
+      try {
+        const obj = JSON.parse(trimmed)
+        const timeMs = obj?.t
+        if (typeof timeMs === 'number' && Number.isFinite(timeMs)) {
+          const text = Array.isArray(obj?.c)
+            ? obj.c.map((chunk: any) => (chunk && typeof chunk.tx === 'string' ? chunk.tx : '')).join('')
+            : ''
+          if (text.trim()) result.push({ time: timeMs / 1000, text: text.trim() })
+        }
+      } catch {
+        // 非 JSON 行忽略
+      }
+      continue
+    }
+
     const match = timeRegex.exec(line)
     if (match) {
       const minutes = parseInt(match[1])
       const seconds = parseInt(match[2])
       const milliseconds = parseInt(match[3].padEnd(3, '0'))
-      
+
       const time = minutes * 60 + seconds + milliseconds / 1000
       const text = line.replace(timeRegex, '').trim()
-      
+
       if (text) {
         result.push({ time, text })
       }
     }
   }
-  
+
   return result.sort((a, b) => a.time - b.time)
 }
 

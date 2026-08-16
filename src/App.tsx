@@ -1014,8 +1014,8 @@ function App() {
   }, [])
 
   // Apple Music：非阻塞解析曲目匹配，提供高清/特殊封面（摩登模式粒子动效数据源）。
-  // 规则：平台封面优先 —— 仅当平台无封面（补位）或 AM 封面与平台封面差异显著（特殊封面）时才替换；
-  // 普通 AM 封面一律不用，避免顶替平台封面 / 封面闪烁。
+  // 规则：平台封面优先 —— 仅当"高置信匹配 + 封面差异显著（特殊封面）"或平台无封面时才替换。
+  // 高置信匹配：标题命中且（歌手或时长验证通过），避免 iTunes 同名不同曲的错误封面被当成特殊封面。
   const resolveAppleCover = useCallback((song: Song) => {
     const settings = getAppleMusicSettings()
     const latestKey = getSongKey(song)
@@ -1034,11 +1034,24 @@ function App() {
       .then(async match => {
         // 切歌后丢弃过期结果
         if (activeTrackKeyRef.current !== latestKey) return
-        const amUrl = match?.artworkUrl ? getProxiedImageUrl(match.artworkUrl) : ''
-        if (!amUrl) {
+        if (!match?.artworkUrl) {
           setAppleCoverUrl(null)
           return
         }
+        // 高置信匹配校验：标题命中 +（歌手或时长）验证通过，才认为 AM 曲目正确
+        const norm = (s: string) => String(s || '').toLowerCase().replace(/[\s·•\-–—()（）[\]【】「」『』<>《》"'`,.，。！？!?&/|:：]+/g, '')
+        const t = norm(match.trackName)
+        const a = norm(match.artistName)
+        const songT = norm(song.name)
+        const songA = norm(song.artists.map(x => x.name).join(' '))
+        const titleOk = songT && (t === songT || t.includes(songT) || songT.includes(t))
+        const artistOk = songA && (a === songA || a.includes(songA) || songA.includes(a))
+        const durationOk = song.duration ? Math.abs((match.durationMs || 0) - song.duration) < 3000 : true
+        if (!titleOk || !(artistOk || durationOk)) {
+          setAppleCoverUrl(null)
+          return
+        }
+        const amUrl = getProxiedImageUrl(match.artworkUrl)
         // 平台无封面 → AM 直接补位（避免"无封面"）
         if (!platformCover) {
           setAppleCoverUrl(amUrl)
