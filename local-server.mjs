@@ -9161,28 +9161,38 @@ app.get('/api/qq/song/playlist', async (req, res) => {
   }
 })
 
-// QQ「听 [歌曲] 的也在听」——相似歌曲 + 同歌手热门歌合并 15 首
+// QQ「听 [歌曲] 的也在听」——基于当前歌曲的跨歌手推荐（相似歌曲 + 相似歌的相似扩展，15 首）
 app.get('/api/qq/song/listen-also', async (req, res) => {
   try {
-    const { songid, singermid } = req.query
+    const { songid } = req.query
     if (!songid) return res.status(400).json({ error: '请提供歌曲ID' })
     useQQMusicCookie(req.query.cookie)
+    const seen = new Set()
+    const merged = []
+    // 第一层：当前歌曲的相似歌曲
     const sims = await qqMusicApi.api('song/similar', { id: String(songid) })
     const simList = Array.isArray(sims) ? sims : (Array.isArray(sims?.songInfoList) ? sims.songInfoList : [])
-    const merged = [...simList]
-    // 同歌手热门歌补充
-    if (singermid) {
+    for (const s of simList) {
+      const mid = s?.mid || s?.songmid || s?.songMid
+      if (mid && !seen.has(mid)) { seen.add(mid); merged.push(s) }
+    }
+    // 第二层：对前几首相似歌再拉相似（跨歌手扩展，避免全是同歌手）
+    for (const s of simList.slice(0, 4)) {
+      if (merged.length >= 15) break
+      const sid = s?.id || s?.songid
+      if (!sid) continue
       try {
-        const artistSongs = await qqMusicApi.api('singer/songs', { singermid: String(singermid), num: 20, page: 1 })
-        const list = artistSongs?.list || artistSongs?.songlist || []
-        if (Array.isArray(list)) {
-          for (const s of list) {
-            const mid = s?.mid || s?.songmid || s?.songMid
-            if (mid && !merged.some(m => (m?.mid || m?.songmid || m?.songMid) === mid)) merged.push(s)
+        const more = await qqMusicApi.api('song/similar', { id: String(sid) })
+        const moreList = Array.isArray(more) ? more : (Array.isArray(more?.songInfoList) ? more.songInfoList : [])
+        for (const m of moreList) {
+          const mid = m?.mid || m?.songmid || m?.songMid
+          if (mid && !seen.has(mid)) {
+            seen.add(mid)
+            merged.push(m)
             if (merged.length >= 15) break
           }
         }
-      } catch { /* 歌手热门补充分支失败忽略 */ }
+      } catch { /* 单首扩展失败忽略 */ }
     }
     const songs = merged.slice(0, 15).map((s) => {
       const track = s?.songInfo || s

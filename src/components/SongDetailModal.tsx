@@ -10,6 +10,7 @@ interface SongDetailModalProps {
   onClose: () => void
   playerTheme: 'dark' | 'light'
   onPlayNow?: (song: Song) => void
+  onOpenPlaylist?: (playlistId: string, platform: 'netease' | 'qq') => void
 }
 
 function formatDuration(ms: number): string {
@@ -35,7 +36,7 @@ const NETBASE_FEE_LABELS: Record<number, string> = {
   8: '免费（低音质）',
 }
 
-export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetailModalProps) {
+export default function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist }: SongDetailModalProps) {
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
   const [extra, setExtra] = useState<{ publishTime?: number; mvId?: number; fee?: number; quality?: string } | null>(null)
   // QQ 歌曲详情的板块数据
@@ -479,7 +480,7 @@ export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetail
                   ) : (
                     <div className="grid grid-cols-3 gap-2.5">
                       {likeAlso.map((p, i) => (
-                        <div key={`${p.id}-${i}`} className="group cursor-pointer" onClick={() => { const w = (window as any).waveforge; const url = `https://y.qq.com/n/ryqq_v2/playlist/${p.id}`; if (w?.openExternal) void w.openExternal(url); else window.open(url, '_blank') }}>
+                        <div key={`${p.id}-${i}`} className="group cursor-pointer" onClick={() => { if (onOpenPlaylist && p.id) onOpenPlaylist(p.id, 'qq') }}>
                           <div className="relative aspect-square rounded-lg overflow-hidden mb-1.5" style={{ background: 'rgba(255,255,255,0.08)' }}>
                             {p.coverImgUrl ? <img src={getProxiedImageUrl(p.coverImgUrl, 150)} alt={p.name} className="w-full h-full object-cover group-hover:scale-105 transition duration-300" /> : <Music className="w-6 h-6 m-auto text-white/30" />}
                           </div>
@@ -537,7 +538,7 @@ export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetail
                   ) : (
                     <div className="space-y-2">
                       {neteaseRelated.map((p, i) => (
-                        <div key={`${p.id}-${i}`} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/5 transition-colors cursor-pointer" onClick={() => { const w = (window as any).waveforge; const url = `https://music.163.com/#/playlist?id=${p.id}`; if (w?.openExternal) void w.openExternal(url); else window.open(url, '_blank') }}>
+                        <div key={`${p.id}-${i}`} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/5 transition-colors cursor-pointer" onClick={() => { if (onOpenPlaylist && p.id) onOpenPlaylist(p.id, 'netease') }}>
                           <div className="w-10 h-10 rounded-md overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.08)' }}>
                             {p.coverImgUrl ? <img src={getProxiedImageUrl(p.coverImgUrl, 100)} alt={p.name} className="w-full h-full object-cover" /> : <Music className="w-5 h-5 m-auto mt-2.5 text-white/30" />}
                           </div>

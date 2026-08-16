@@ -23,7 +23,7 @@ import { AudioEffectsEngine as AudioEffectsEngineV2, LOUDNESS_COMPENSATION_THRES
 import { loudnessNormalizationService } from './services/audio-effects-v2/loudnessNormalization'
 import { getAudioEngineVersion, setAudioEngineVersion, type AudioEngineVersion } from './services/audioEngineVersion'
 import { sequenceTracksHam2, type SequencingEntry } from './services/playlistSequencing'
-import { likeSong, addSongToPlaylist, getUserPlaylists, updateCachedUserPlaylists } from './services/playlistService'
+import { likeSong, addSongToPlaylist, getUserPlaylists, updateCachedUserPlaylists, getPlaylistDetail } from './services/playlistService'
 import { fetchExploreRecommendationBatch } from './services/exploreApi'
 import { scheduleBackgroundPrefetch } from './services/backgroundPrefetch'
 import { getDesktopSpectrumConsumerCount, subscribeDesktopSpectrumConsumers } from './services/desktopSpectrum'
@@ -56,6 +56,8 @@ const loadArtistDetailModal = () => import('./components/ArtistDetailModal')
 const loadAlbumDetailModal = () => import('./components/AlbumDetailModal')
 const loadCommentModal = () => import('./components/CommentModal')
 const LazyPlaylistPanel = lazy(loadPlaylistPanel)
+const loadPlaylistDetailPanel = () => import('./components/PlaylistDetailPanel')
+const LazyPlaylistDetailPanel = lazy(loadPlaylistDetailPanel)
 const LazyLoginView = lazy(loadLoginView)
 const LazyProfileView = lazy(loadProfileView)
 const LazyArtistDetailModal = lazy(loadArtistDetailModal)
@@ -412,6 +414,9 @@ function App() {
   const [songDetailSong, setSongDetailSong] = useState<Song | null>(null)
   const [showSimilarSongs, setShowSimilarSongs] = useState(false)
   const [similarSongsSource, setSimilarSongsSource] = useState<Song | null>(null)
+  // 歌曲详情「也爱歌单」应用内打开
+  const [detailPlaylist, setDetailPlaylist] = useState<{ playlist: any; songs: Song[] } | null>(null)
+  const [detailPlaylistLoading, setDetailPlaylistLoading] = useState(false)
   // 音效引擎版本（v1 远程原版 / v2 本地增强版），默认 v1；切换见 switchAudioEngine
   const [audioEngineVersion, setAudioEngineVersionState] = useState<AudioEngineVersion>(getAudioEngineVersion)
   // 与 state 同步的 ref：switchAudioEngine 切换中同步读写它，规避闭包陈旧 / 同帧连点竞态
@@ -2116,6 +2121,19 @@ function App() {
     if (top && top.type === entry.type && top.id === entry.id && top.platform === entry.platform) return
     if (stack.length >= 20) stack.shift()
     stack.push(entry)
+  }
+
+  // 歌曲详情「也爱歌单」→ 应用内打开歌单详情
+  const handleOpenPlaylistFromDetail = async (playlistId: string, platform: 'netease' | 'qq') => {
+    setDetailPlaylistLoading(true)
+    try {
+      const data = await getPlaylistDetail(playlistId, platform)
+      setDetailPlaylist({ playlist: data?.playlist || { id: playlistId, platform, name: '歌单' }, songs: data?.songs || [] })
+    } catch {
+      setDetailPlaylist(null)
+    } finally {
+      setDetailPlaylistLoading(false)
+    }
   }
 
   // 处理歌曲选择
@@ -3918,6 +3936,7 @@ function App() {
               onClose={() => setShowSongDetail(false)}
               playerTheme={playerTheme}
               onPlayNow={(s) => { void handleSongSelect(s) }}
+              onOpenPlaylist={(id, platform) => { void handleOpenPlaylistFromDetail(id, platform) }}
             />
           </Suspense>
         )}
@@ -3928,6 +3947,29 @@ function App() {
             onPlayNow={(s) => { void handleSongSelect(s) }}
             onPlayNext={(s) => { handlePlayNext(s) }}
             playerTheme={playerTheme}
+          />
+        )}
+        {detailPlaylist && (
+          <LazyPlaylistDetailPanel
+            show
+            playerTheme={playerTheme}
+            playlist={detailPlaylist.playlist}
+            songs={detailPlaylist.songs}
+            loading={detailPlaylistLoading}
+            onClose={() => setDetailPlaylist(null)}
+            onSongSelect={(song, songs) => { void handleSongSelect(song, songs) }}
+            currentPlatform={detailPlaylist.playlist.platform || 'netease'}
+            neteaseVip={neteaseVip}
+            qqVip={qqVip}
+            onOpenArtist={handleOpenArtist}
+            onOpenAlbum={handleOpenAlbum}
+            onPlayNext={handlePlayNext}
+            onAddToFavorites={handleAddToFavorites}
+            onRemoveFromFavorites={handleRemoveFromFavorites}
+            onAddToPlaylist={handleAddToPlaylist}
+            onViewComments={handleViewComments}
+            onCopyInfo={handleCopyInfo}
+            userPlaylists={playbackContextPlaylists}
           />
         )}
       </AnimatePresence>

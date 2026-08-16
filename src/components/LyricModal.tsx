@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { X, Music, Copy, ScrollText, Languages, Mic2 } from 'lucide-react'
 import { getProxiedImageUrl } from '../services/musicApi'
@@ -19,15 +19,18 @@ export default function LyricModal({ songName, artistName, coverUrl, lyrics, onC
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
   const [showTrans, setShowTrans] = useState(false)
   const [showRoman, setShowRoman] = useState(false)
+  // 歌词弹窗内的复制提示（避免被全局 toast 层级遮挡）
+  const [toastMsg, setToastMsg] = useState('')
+  const toastTimer = useRef<number | null>(null)
 
-  // Electron 渲染进程 navigator.clipboard 可能被拒，回退 execCommand
+  const localToast = (msg: string) => {
+    setToastMsg(msg)
+    if (toastTimer.current) window.clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => setToastMsg(''), 2000)
+  }
+
+  // 纯 execCommand 复制（App 复制歌曲信息同款，Electron 可靠）
   const copyText = (text: string): boolean => {
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(text).catch(() => {})
-        return true
-      }
-    } catch { /* 回退 */ }
     try {
       const ta = document.createElement('textarea')
       ta.value = text
@@ -42,14 +45,14 @@ export default function LyricModal({ songName, artistName, coverUrl, lyrics, onC
   }
 
   const copyLine = (text: string) => {
-    if (copyText(text)) showToast(`已复制：${text.slice(0, 20)}${text.length > 20 ? '…' : ''}`)
-    else showToast('复制失败，请手动选择复制', 'error')
+    if (copyText(text)) localToast(`已复制：${text.slice(0, 20)}${text.length > 20 ? '…' : ''}`)
+    else localToast('复制失败')
   }
 
   const copyAll = () => {
     const full = lyrics.map(l => l.text).filter(Boolean).join('\n')
-    if (copyText(full)) showToast(`已复制全部歌词（${lyrics.length} 行）`)
-    else showToast('复制失败，请手动选择复制', 'error')
+    if (copyText(full)) localToast(`已复制全部歌词（${lyrics.length} 行）`)
+    else localToast('复制失败')
   }
 
   // 是否有翻译 / 罗马音（无则不显示对应开关）
@@ -159,6 +162,13 @@ export default function LyricModal({ songName, artistName, coverUrl, lyrics, onC
             ))}
           </div>
         </div>
+
+        {/* 歌词弹窗内复制提示（最上层，避免被全局 toast 层级遮挡） */}
+        {toastMsg && (
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-10 px-4 py-2 rounded-full text-xs text-white shadow-lg" style={{ background: `${accentColor}e6`, backdropFilter: 'blur(8px)' }}>
+            {toastMsg}
+          </div>
+        )}
       </motion.div>
     </motion.div>
   )
