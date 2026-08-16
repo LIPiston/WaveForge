@@ -719,6 +719,9 @@ function App() {
     const saved = localStorage.getItem('lyricDisplayMode')
     return saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' || saved === 'multidimensional' ? saved : 'modern'
   })
+  // 摩登模式状态 ref：resolveAppleCover 等回调读取最新值（AM 封面仅摩登使用）
+  const lyricDisplayModeRef = useRef(lyricDisplayMode)
+  lyricDisplayModeRef.current = lyricDisplayMode
   const [modernAudioVisualizerEnabled, setModernAudioVisualizerEnabled] = useState(() => {
     const saved = localStorage.getItem('modernAudioVisualizerEnabled')
     return parseStoredBoolean(saved, true)
@@ -1017,6 +1020,11 @@ function App() {
   // 规则：显示封面永远用平台（AM 不替换、不补位）；AM 封面仅在高置信匹配时供
   // 摩登动态效果使用（避免 iTunes 同名不同曲/地区版本误判）。
   const resolveAppleCover = useCallback((song: Song) => {
+    // 隔离：AM 封面仅摩登模式使用，非摩登一律不解析（连 iTunes 请求都省）
+    if (lyricDisplayModeRef.current !== 'modeng') {
+      setAppleCoverUrl(null)
+      return
+    }
     const settings = getAppleMusicSettings()
     const latestKey = getSongKey(song)
     if (!settings.enabled || !settings.preferAppleCover) {
