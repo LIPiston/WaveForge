@@ -1028,6 +1028,17 @@ export async function getLyrics(
   duration?: number,
   onProgress?: (lyrics: LyricLine[], source: string, hasWordByWord: boolean, apiLogs?: LyricsFinalInfo) => void
 ): Promise<LyricLine[]> {
+  // 只有元数据（作词/作曲…）没有正文的"空壳歌词"：视为无效结果，
+  // 避免 Lrclib/AMLL 等第三方源用空壳抢跑，导致界面只剩"作词 作曲"没有正文。
+  const LYRIC_METADATA_ONLY = /^(词|曲|编曲|作词|作曲|演唱|歌手|制作人|录音|混音|母带)[：:\s]/u
+  const isMetadataOnlyLyrics = (lyrics: LyricLine[]): boolean => {
+    if (!Array.isArray(lyrics) || lyrics.length === 0) return false
+    return !lyrics.some(line => {
+      const text = (line.text || '').trim()
+      if (!text) return false
+      return !LYRIC_METADATA_ONLY.test(text)
+    })
+  }
   try {
     // 检查用户设置
     const thirdPartyEnabled = localStorage.getItem('thirdPartyLyricsEnabled')
@@ -1102,7 +1113,7 @@ export async function getLyrics(
             lineCount: lyrics.length
           })
           
-          if (lyrics.length === 0) return null
+          if (lyrics.length === 0 || isMetadataOnlyLyrics(lyrics)) return null
           
           return { source: source.name, lyrics, hasWW, hasTrans, hasRom }
         })

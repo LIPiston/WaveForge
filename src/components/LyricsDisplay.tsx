@@ -292,7 +292,8 @@ const getSustainTextShadow = (color: RgbColor, intensity: number) => {
 
 const isStandaloneInterludeMarker = (text: string) => {
   const compactText = text.trim().replace(/\s+/g, '')
-  return compactText === '' || /^(?:\.{3,}|鈥?|[路鈥兓]{3,})$/.test(compactText)
+  // 独立间奏/分隔标记行：空行、连续点号、省略号、句号、波浪线、短横线等
+  return compactText === '' || /^(?:\.{3,}|…{3,}|·{3,}|。{3,}|~{2,}|-{2,}|—{2,})$/u.test(compactText)
 }
 
 const estimateLyricEndTime = (lyric: LyricLine, nextLyricTime: number) => {
