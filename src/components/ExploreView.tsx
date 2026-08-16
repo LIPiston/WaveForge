@@ -1693,6 +1693,7 @@ export default function ExploreView({
             </div>
           )}
         </main>
+        )}
       </div>
 
       <AnimatePresence>
