@@ -36,14 +36,14 @@ async function download(url, dest, expectedBytes) {
   process.stdout.write('\n')
 }
 
-function ensureDownloaded() {
+async function ensureDownloaded() {
   mkdirSync(dirname(ZIP_TMP), { recursive: true })
   if (existsSync(ZIP_TMP) && statSync(ZIP_TMP).size > 10 * 1024 * 1024) {
     console.log(`已存在缓存: ${ZIP_TMP}`)
     return
   }
   console.log(`下载 ${DOWNLOAD_URL} ...`)
-  download(DOWNLOAD_URL, ZIP_TMP)
+  await download(DOWNLOAD_URL, ZIP_TMP)
 }
 
 function extractLibnode() {
@@ -68,5 +68,5 @@ function extractLibnode() {
   }
 }
 
-ensureDownloaded()
+await ensureDownloaded()
 extractLibnode()
