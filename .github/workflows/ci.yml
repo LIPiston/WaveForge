@@ -114,6 +114,9 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 下载 Electron 运行时（npm ci 的 allow-scripts 会跳过其安装脚本）
+        run: node node_modules/electron/install.js
+
       - name: 构建 Windows 安装包（electron-builder nsis）
         run: npm run build:electron
 
