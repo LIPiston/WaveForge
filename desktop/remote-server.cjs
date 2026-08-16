@@ -152,10 +152,17 @@ function createRemoteServer(options) {
   }
 
   function dispatchControl(type, action, value) {
-    if (type === 'control') options.sendControl && options.sendControl(action, value)
-    else if (type === 'volume') options.sendControl && options.sendControl('volume', Number(value))
-    else if (type === 'mute') options.sendControl && options.sendControl('mute')
-    else if (type === 'seek') options.sendControl && options.sendControl('seek', Number(value))
+    let resolvedAction = null
+    let resolvedValue
+    if (type === 'control') { resolvedAction = action; resolvedValue = value }
+    else if (type === 'volume') { resolvedAction = 'volume'; resolvedValue = Number(value) }
+    else if (type === 'mute') { resolvedAction = 'mute' }
+    else if (type === 'seek') { resolvedAction = 'seek'; resolvedValue = Number(value) }
+    if (!resolvedAction) return
+    options.sendControl && options.sendControl(resolvedAction, resolvedValue)
+    // 广播给所有客户端：TV 端 WebView 内的 SPA 控制器也作为 WS 客户端接入，
+    // 靠这条广播接收命令（桌面端手机页会忽略这条回声，行为不变）。
+    broadcast({ type: 'control', action: resolvedAction, value: resolvedValue })
   }
 
   function handleMessage(client, msg) {
@@ -213,6 +220,9 @@ function createRemoteServer(options) {
       })
 
       wss = new WebSocketServer({ server, path: '/ws' })
+      // ws 会把底层 http server 的 error（如端口被占 EADDRINUSE）转发到自身；
+      // 不监听会导致 EventEmitter 抛 uncaughtException，这里静默吞掉（listen 失败由下方 reject 处理）
+      wss.on('error', () => {})
 
       wss.on('connection', (ws, req) => {
         let url

@@ -8,6 +8,7 @@ import { initPlatformUI, setTvModeForced } from './platform'
 import { installElectronShim } from './electronShim'
 import { startTv } from './tv/tvCore'
 import { installMediaKeyBridge } from './tv/mediaKeyBridge'
+import { installRemoteBridge } from './tv/remoteBridge'
 import TvKeyboard from './tv/TvKeyboard'
 
 // 平台初始化：标记 html[data-platform]/tv-mode（供 CSS 焦点适配），
@@ -21,6 +22,9 @@ startTv()
 
 // 遥控器媒体键 → 应用播放控制桥接（仅 tv-mode 生效）。
 installMediaKeyBridge()
+
+// TV 端远程遥控器（手机控制电视）：仅 Android 启动（桌面走 Electron remote 桥）。
+installRemoteBridge()
 
 // PC 模拟测试：Ctrl+Alt+T 在「TV 遥控器模式 / 鼠标模式」间切换（刷新生效）。
 window.addEventListener('keydown', (e) => {

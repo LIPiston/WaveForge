@@ -3383,6 +3383,17 @@ function App() {
     return unsubscribe
   }, [])
 
+  // TV 端远程遥控：remoteBridge 收到手机命令后经 DOM 事件注入，
+  // 与桌面遥控共用 desktopControlHandlerRef 的同一套动作映射
+  useEffect(() => {
+    const onRemote = (e: Event) => {
+      const detail = (e as CustomEvent<{ action?: string; payload?: unknown }>).detail
+      if (detail?.action) desktopControlHandlerRef.current(detail.action, detail.payload)
+    }
+    window.addEventListener('waveforge:remote-control', onRemote)
+    return () => window.removeEventListener('waveforge:remote-control', onRemote)
+  }, [])
+
   useEffect(() => {
     const mediaKeys = window.electron?.mediaKeys
     const mediaSession = 'mediaSession' in navigator ? navigator.mediaSession : null
