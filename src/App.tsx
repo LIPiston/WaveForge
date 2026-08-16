@@ -6,6 +6,7 @@ import AlbumCoverPlayer from './components/AlbumCoverPlayer'
 import LyricsDisplay from './components/LyricsDisplay'
 import PlayerControls from './components/PlayerControls'
 import TitleBar from './components/TitleBar'
+import UpdatePrompt from './components/UpdatePrompt'
 import CrossfadeBackground from './components/CrossfadeBackground'
 
 import MiniPlayer from './components/MiniPlayer'
@@ -4346,6 +4347,9 @@ function App() {
       
       {/* 固定背景层 - 防止切换时白屏 */}
       <div className="fixed inset-0 bg-black" />
+      
+      {/* 全局更新提示（任何视图模式可见；分客户端显示） */}
+      <UpdatePrompt playerTheme={playerTheme} />
       
       <Suspense fallback={null}><AnimatePresence initial={false} mode="sync" presenceAffectsLayout={false}>
         {/* 桌面模式 */}

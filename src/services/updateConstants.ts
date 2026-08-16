@@ -26,3 +26,39 @@ export function withDownloadProxies(url: string): string[] {
   const proxied = GITHUB_DOWNLOAD_PROXIES.map((p) => p + url)
   return [...proxied, url]
 }
+
+/** 更新清单结构（publish-release.mjs 生成） */
+export interface UpdateManifest {
+  version?: string
+  androidVersionCode?: number
+  notes?: string
+  artifacts?: Record<string, { urls?: string[]; sha256?: string }>
+}
+
+export const GITEE_RELEASES_URL = 'https://gitee.com/kirito666233/wave-forge/releases'
+
+/** 逐个源拉取更新清单，任一成功即返回；全部失败返回 null。 */
+export async function fetchUpdateManifest(): Promise<UpdateManifest | null> {
+  for (const url of UPDATE_MANIFEST_URLS) {
+    try {
+      const res = await fetch(url, { cache: 'no-store' })
+      if (res.ok) return (await res.json()) as UpdateManifest
+    } catch {
+      // 尝试下一个源
+    }
+  }
+  return null
+}
+
+/** 语义化版本比较：a > b 返回正数，相等 0，a < b 负数（支持 0.2.0 / v0.2.0 前缀）。 */
+export function compareVersions(a: string, b: string): number {
+  const pa = String(a || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const pb = String(b || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const da = pa[i] || 0
+    const db = pb[i] || 0
+    if (da !== db) return da - db
+  }
+  return 0
+}

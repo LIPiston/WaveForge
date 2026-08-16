@@ -133,6 +133,15 @@ class MainActivity : Activity() {
             }.start()
         }
 
+        // 更新生效标记：安装前写入 Web 端 localStorage，供前端"版本更新成功"弹窗使用
+        UpdateChecker.beforeInstallHook = { version, notes ->
+            webView.post {
+                val payload = org.json.JSONObject().put("version", version).put("notes", notes).toString()
+                webView.evaluateJavascript(
+                    "localStorage.setItem('waveforge:update-applied', JSON.stringify($payload))", null)
+            }
+        }
+
         waitForServerAndLoad()
     }
 

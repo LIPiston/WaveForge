@@ -27,6 +27,12 @@ object UpdateChecker {
 
     private const val TAG = "WaveForgeUpdater"
 
+    /**
+     * 安装前的钩子：由 MainActivity 设置，把"更新已生效"标记写入 Web 端 localStorage，
+     * 应用更新后首次启动时前端 UpdatePrompt 据此显示「版本更新成功」弹窗。
+     */
+    var beforeInstallHook: ((versionName: String, notes: String) -> Unit)? = null
+
     // 版本无关的固定地址（发布脚本维护仓库根目录的 update.json）。
     // 网络现实：国内无法裸连 GitHub → Gitee 主源、ghproxy 加速的 GitHub 备源、GitHub 直连兜底。
     private val MANIFEST_URLS = listOf(
@@ -127,11 +133,11 @@ object UpdateChecker {
         builder.setMessage(if (notes.isBlank()) "是否下载并安装更新？" else "$notes\n\n是否下载并安装更新？")
         builder.setCancelable(true)
         builder.setNegativeButton("稍后", null)
-        builder.setPositiveButton("更新") { _, _ -> downloadAndInstall(context, apkUrl, expectedSha) }
+        builder.setPositiveButton("更新") { _, _ -> downloadAndInstall(context, apkUrl, expectedSha, versionName, notes) }
         builder.show()
     }
 
-    private fun downloadAndInstall(context: Context, apkUrl: String, expectedSha: String) {
+    private fun downloadAndInstall(context: Context, apkUrl: String, expectedSha: String, versionName: String, notes: String) {
         val dialog = AlertDialog.Builder(context)
             .setTitle("正在下载更新")
             .setMessage("请稍候…")
@@ -145,8 +151,10 @@ object UpdateChecker {
                 if (expectedSha.isNotBlank() && !sha256(file).equals(expectedSha, ignoreCase = true)) {
                     throw IllegalStateException("下载文件校验失败")
                 }
-                Handler(Looper.getMainLooper()).post {
+                android.os.Handler(Looper.getMainLooper()).post {
                     dialog.dismiss()
+                    // 安装前写入"更新已生效"标记：更新后首次启动前端显示成功弹窗
+                    beforeInstallHook?.invoke(versionName, notes)
                     installApk(context, file)
                 }
             } catch (t: Throwable) {
