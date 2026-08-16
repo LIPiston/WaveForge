@@ -62,7 +62,7 @@ npm run dev:electron    # 完整开发（前端+后端+Electron）
 npm run dev             # 仅 Vite（3000）
 npm run dev:api         # 仅 API（3001）
 npm run lint            # TypeScript 类型检查（tsc --noEmit）
-npm run test            # vitest 单测（12 文件 152 用例）
+npm run test            # vitest 单测（41 文件 474 用例，含 v3 引擎 322）
 npm run build           # 生产构建 -> dist/
 npm run build:electron  # 打包 NSIS 安装版 -> release/（发布用）
 npm run build:full      # 完整发布：bundle-python + build:electron
@@ -97,9 +97,9 @@ gh release create v<version> release/WaveForge-<version>-Setup.exe --title "v<ve
 | 3003 | Python 响度测量服务 | Flask（响度归一化 `/lufs`，ITU-R BS.1770） |
 | 3004 | Python 频响补偿设计服务 | Flask（`/compensation`，ISO 226 简化等响度模型/预设/自定义 → 多段 Biquad 参数） |
 
-## 音效引擎 v1 / v2
+## 音效引擎 v1 / v2 / v3
 
-调音室头部可切换音效引擎版本（默认 **v1 原版**；v2 为增强版：场景方案 / 可叠加效果 / 混响类型 / 压缩 / 夜间模式（动态压缩 + 高频衰减）/ 频响补偿 / 响度归一化）。v2 频响补偿为**等响度动态补偿**：多段 Biquad 链，auto 按系统音量线性提升低频（0-12dB）/高频（0-6dB，shelf 结构防中频污染）+ 场景预设（flat/bass/vocal/warm/bright/night）+ 自定义频段，设计结果由独立服务 3004 `/compensation` 下发。v2 调音室支持：场景一键应用（自定义状态弹覆盖/保存确认）、恢复默认/清空均衡器按钮、3D 环绕开启展开子设置横条、效果卡片「使用/已启用」、切歌时右上角弹衔接方案提示（直接拼接/60ms 淡入淡出/albumGapless 交叉淡化）。切换为热切换（暂停音乐换链后恢复），音频图未就绪时退化为冷切换（下次启动生效），右上角弹 2s 提示。详见 `AGENTS.md` 与 `CONTEXT.md`。
+调音室头部可切换音效引擎版本（默认 **v1 原版**；v2 为增强版：场景方案 / 可叠加效果 / 混响类型 / 压缩 / 夜间模式（动态压缩 + 高频衰减）/ 频响补偿 / 响度归一化；**v3 为纯 TS DSP 内核引擎**：`src/services/waveforge-engine-v3/`，14 级处理链（响度归一化→3D 环绕→M/S→EQ→齿音→压缩→夜间→卷积/算法混响→虚拟低音→等响度补偿→智能 EQ→限幅）、11 组合场景、10/20 段 EQ + 级联 Q 补偿、分享串（版本+校验+白名单防注入）、LUFS/频谱分析 + 听力测试、WAV 离线导出（与实时链逐样本一致）、AudioWorklet 渲染线程 + script 兜底）。v3 响度归一化（实时 BS.1770）与频响补偿（等响度 auto 按系统音量）均在引擎内实现，不依赖 3003/3004 服务；与 v1/v2 完全独立（不做参数迁移），参数快照持久化于 localStorage。v2 频响补偿为**等响度动态补偿**：多段 Biquad 链，auto 按系统音量线性提升低频（0-12dB）/高频（0-6dB，shelf 结构防中频污染）+ 场景预设（flat/bass/vocal/warm/bright/night）+ 自定义频段，设计结果由独立服务 3004 `/compensation` 下发。v2 调音室支持：场景一键应用（自定义状态弹覆盖/保存确认）、恢复默认/清空均衡器按钮、3D 环绕开启展开子设置横条、效果卡片「使用/已启用」、切歌时右上角弹衔接方案提示（直接拼接/60ms 淡入淡出/albumGapless 交叉淡化）。切换为热切换（暂停音乐换链后恢复），音频图未就绪时退化为冷切换（下次启动生效），右上角弹 2s 提示。详见 `AGENTS.md` 与 `CONTEXT.md`。
 
 ## 已知限制
 
