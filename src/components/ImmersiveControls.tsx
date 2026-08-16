@@ -135,7 +135,7 @@ export default function ImmersiveControls({
           whileHover={{ scale: 1.06, x: -3, transition: { duration: 0.24, ease: [0.22, 1, 0.36, 1] } }}
           whileTap={{ scale: 0.96 }}
           onClick={onTranslationToggle}
-          className="absolute top-16 right-6 ${btnPad} rounded-full backdrop-blur-md border transition-colors overflow-hidden"
+          className={`absolute top-16 right-6 ${btnPad} rounded-full backdrop-blur-md border transition-colors overflow-hidden`}
           style={{
             backgroundColor: translationEnabled
               ? accentColor
@@ -162,7 +162,7 @@ export default function ImmersiveControls({
             />
           )}
           <Languages 
-            className="${iconCls} relative z-10" 
+            className={`${iconCls} relative z-10`} 
             style={{
               color: translationEnabled ? '#fff' : playerTheme === 'dark' ? '#fff' : '#000'
             }}
@@ -185,7 +185,7 @@ export default function ImmersiveControls({
           whileHover={{ scale: 1.06, x: -3, transition: { duration: 0.24, ease: [0.22, 1, 0.36, 1] } }}
           whileTap={{ scale: 0.96 }}
           onClick={onRomanToggle}
-          className="absolute right-6 ${btnPad} rounded-full backdrop-blur-md border transition-colors overflow-hidden"
+          className={`absolute right-6 ${btnPad} rounded-full backdrop-blur-md border transition-colors overflow-hidden`}
           style={{
             top: romanButtonTop,
             backgroundColor: romanEnabled
@@ -212,7 +212,7 @@ export default function ImmersiveControls({
             />
           )}
           <Captions
-            className="${iconCls} relative z-10"
+            className={`${iconCls} relative z-10`}
             style={{
               color: romanEnabled ? '#fff' : playerTheme === 'dark' ? '#fff' : '#000'
             }}
