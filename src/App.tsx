@@ -788,6 +788,15 @@ function App() {
   const [transitionFromAccentColor, setTransitionFromAccentColor] = useState<string | null>(null)
   const [transitionToAccentColor, setTransitionToAccentColor] = useState<string | null>(null)
   const wasAudioTransitioningRef = useRef(false)
+  // 过渡状态 1.5s 复位定时器：统一跟踪，避免快速连切时定时器叠加、卸载后迟到 setState
+  const transitionResetTimerRef = useRef<number | null>(null)
+  const clearTransitionResetTimer = () => {
+    if (transitionResetTimerRef.current !== null) {
+      window.clearTimeout(transitionResetTimerRef.current)
+      transitionResetTimerRef.current = null
+    }
+  }
+  useEffect(() => () => clearTransitionResetTimer(), [])
   
   // 当前播放进度
   const currentSong = currentIndex >= 0 && currentIndex < playlist.length ? playlist[currentIndex] : null
@@ -2577,14 +2586,25 @@ function App() {
 
         const shouldAdvance = continuation.advancePending && currentIndexRef.current >= currentQueue.length - 1
         continuation.advancePending = false
-        const nextQueue = [...currentQueue, ...additions]
+        // 无限推荐队列裁剪：只保留当前曲之前 100 首 + 当前曲 + 新增曲目，
+        // 防止长时间连续收听时队列与 playlistKeys 字符串无限膨胀（内存 + O(n) 叠加）。
+        const keepBefore = 100
+        const trimmedPrefix = Math.max(0, currentIndexRef.current - keepBefore)
+        const trimmedQueue = trimmedPrefix > 0 ? currentQueue.slice(trimmedPrefix) : currentQueue
+        const nextQueue = [...trimmedQueue, ...additions]
         playlistRef.current = nextQueue
         const nextRevision = bumpQueueRevision()
+        const currentIndexInNewQueue = currentIndexRef.current - trimmedPrefix
+        // 队列裁剪后旧索引越界：若只 setPlaylist 而把 currentIndex 推迟到 setTimeout，
+        // 中间帧 currentIndex >= playlist.length → currentSong=null → 播放页闪回首页。
+        // 必须与 setPlaylist 同步提交 currentIndex（同一批次），避免越界空白帧。
+        currentIndexRef.current = currentIndexInNewQueue
         setPlaylist(nextQueue)
+        setCurrentIndex(currentIndexInNewQueue)
         window.setTimeout(() => {
-          preloadUpcomingSongs(currentIndexRef.current, nextRevision, playMode, nextQueue)
+          preloadUpcomingSongs(currentIndexInNewQueue, nextRevision, playMode, nextQueue)
           if (shouldAdvance) {
-            const nextIndex = currentQueue.length
+            const nextIndex = trimmedQueue.length
             currentIndexRef.current = nextIndex
             setCurrentIndex(nextIndex)
             void loadAndPlaySong(nextQueue[nextIndex], nextIndex, nextQueue)
@@ -2882,7 +2902,10 @@ function App() {
       if (url === 'SONG_UNAVAILABLE') {
         console.error('获取歌曲URL失败，重试3次')
         addToast('获取歌曲信息失败，请稍后重试', 'error')
+        // 捕获本次加载的 revision：3 秒后重试前校验用户是否已手动切歌，避免迟到跳歌
+        const failedLoadRevision = loadRevision
         setTimeout(() => {
+          if (failedLoadRevision !== songLoadRevisionRef.current) return
           handleNext()
         }, 3000)
         return
@@ -2999,8 +3022,10 @@ function App() {
     if (gaplessEnabled && playlist[newIndex]) {
       setIsTransitioning(true)
       
-      // 1.5秒后重置过渡状态
-      setTimeout(() => {
+      // 1.5秒后重置过渡状态（统一跟踪定时器，快速连切时旧定时器先取消）
+      clearTransitionResetTimer()
+      transitionResetTimerRef.current = window.setTimeout(() => {
+        transitionResetTimerRef.current = null
         setIsTransitioning(false)
       }, 1500)
     }
@@ -3038,8 +3063,10 @@ function App() {
     if (gaplessEnabled && playlist[newIndex]) {
       setIsTransitioning(true)
       
-      // 1.5秒后重置过渡状态
-      setTimeout(() => {
+      // 1.5秒后重置过渡状态（统一跟踪定时器，快速连切时旧定时器先取消）
+      clearTransitionResetTimer()
+      transitionResetTimerRef.current = window.setTimeout(() => {
+        transitionResetTimerRef.current = null
         setIsTransitioning(false)
       }, 1500)
     }
@@ -3909,6 +3936,195 @@ function App() {
     return () => window.clearInterval(timer)
   }, [pendingGpuChange, revertGpuChange])
 
+  // ===== 三视图稳定回调（latest-ref 模式）=====
+  // HomeView/ExploreView/DesktopView 已包 React.memo；播放中 App 约 1Hz 重渲染时，
+  // 若这些函数 props 每次新建会击穿 memo 导致整棵视图子树反复重渲染。
+  // 这里只暴露一次性创建的稳定引用，实现始终经 ref 取最新，行为与原内联等价。
+  type ViewCallbacks = {
+    onSongSelect: typeof handleSongSelect
+    onOpenArtist: typeof handleOpenArtist
+    onOpenAlbum: typeof handleOpenAlbum
+    onPlayNext: typeof handlePlayNext
+    onAddToFavorites: typeof handleAddToFavorites
+    onRemoveFromFavorites: typeof handleRemoveFromFavorites
+    onAddToPlaylist: typeof handleAddToPlaylist
+    onViewComments: typeof handleViewComments
+    onCopyInfo: typeof handleCopyInfo
+    onPrevious: typeof handlePrevious
+    onNext: typeof handleNext
+    onPlayPause: typeof handlePlayPause
+    onSeek: typeof handleSeek
+    onVolumeChange: typeof handleVolumeChange
+    onNeteaseLogin: typeof handleNeteaseLogin
+    onNeteaseLogout: typeof handleNeteaseLogout
+    onQQLogin: typeof handleQQLogin
+    onQQLogout: typeof handleQQLogout
+    onRemoveQueueItem: typeof handleDesktopQueueRemove
+    onMoveQueueItem: typeof handleDesktopQueueMove
+    onLoginClick: (platform: 'netease' | 'qq') => void
+    onNeteaseLoginClick: () => void
+    onQQLoginClick: () => void
+    onSearchClick: () => void
+    onRemoteClick: () => void
+    onSettingsClick: () => void
+    onProfileClick: (platform: 'netease' | 'qq', initialTab?: 'created' | 'subscribed' | 'detail' | 'recent') => void
+    onOpenPlayer: () => void
+    onExitDesktopMode: () => void
+  }
+  const viewCallbacksRef = useRef<ViewCallbacks>(null as unknown as ViewCallbacks)
+  viewCallbacksRef.current = {
+    onSongSelect: handleSongSelect,
+    onOpenArtist: handleOpenArtist,
+    onOpenAlbum: handleOpenAlbum,
+    onPlayNext: handlePlayNext,
+    onAddToFavorites: handleAddToFavorites,
+    onRemoveFromFavorites: handleRemoveFromFavorites,
+    onAddToPlaylist: handleAddToPlaylist,
+    onViewComments: handleViewComments,
+    onCopyInfo: handleCopyInfo,
+    onPrevious: handlePrevious,
+    onNext: handleNext,
+    onPlayPause: handlePlayPause,
+    onSeek: handleSeek,
+    onVolumeChange: handleVolumeChange,
+    onNeteaseLogin: handleNeteaseLogin,
+    onNeteaseLogout: handleNeteaseLogout,
+    onQQLogin: handleQQLogin,
+    onQQLogout: handleQQLogout,
+    onRemoveQueueItem: handleDesktopQueueRemove,
+    onMoveQueueItem: handleDesktopQueueMove,
+    onLoginClick: (platform) => {
+      setLoginPlatform(platform)
+      setShowLogin(true)
+    },
+    onNeteaseLoginClick: () => {
+      setLoginPlatform('netease')
+      setShowLogin(true)
+    },
+    onQQLoginClick: () => {
+      setLoginPlatform('qq')
+      setShowLogin(true)
+    },
+    onSearchClick: () => setShowSearch(true),
+    onRemoteClick: () => setShowRemote(true),
+    onSettingsClick: () => setShowSettings(true),
+    onProfileClick: (platform, initialTab = 'created') => {
+      setProfileInitialPlatform(platform)
+      setProfileInitialTab(initialTab)
+      setShowProfile(true)
+    },
+    onOpenPlayer: () => {
+      setShowLogin(false)
+      setShowSearch(false)
+      playbackOriginRef.current = { mode: 'explore', surface: 'mode-root' }
+      setRestorePlaybackOrigin(null)
+      setEnteredFromMode('explore')
+      setViewMode('minimal')
+      localStorage.setItem('viewMode', 'minimal')
+      setShowHome(false)
+    },
+    onExitDesktopMode: () => {
+      playbackOriginRef.current = { mode: 'desktop', surface: 'mode-root' }
+      setRestorePlaybackOrigin(null)
+      setViewMode('minimal')
+      localStorage.setItem('viewMode', 'minimal')
+      setShowHome(false)
+      setEnteredFromMode('desktop')
+    },
+  }
+  const viewCallbacks = useMemo<ViewCallbacks>(() => {
+    const latest = viewCallbacksRef
+    return {
+      onSongSelect: (song, playlistFromSource, origin) => latest.current.onSongSelect(song, playlistFromSource, origin),
+      onOpenArtist: (artistId, platform) => latest.current.onOpenArtist(artistId, platform),
+      onOpenAlbum: (albumId, platform) => latest.current.onOpenAlbum(albumId, platform),
+      onPlayNext: (song) => latest.current.onPlayNext(song),
+      onAddToFavorites: (song) => latest.current.onAddToFavorites(song),
+      onRemoveFromFavorites: (song) => latest.current.onRemoveFromFavorites(song),
+      onAddToPlaylist: (song, playlistId) => latest.current.onAddToPlaylist(song, playlistId),
+      onViewComments: (song) => latest.current.onViewComments(song),
+      onCopyInfo: (song) => latest.current.onCopyInfo(song),
+      onPrevious: () => latest.current.onPrevious(),
+      onNext: () => latest.current.onNext(),
+      onPlayPause: () => latest.current.onPlayPause(),
+      onSeek: (time) => latest.current.onSeek(time),
+      onVolumeChange: (newVolume) => latest.current.onVolumeChange(newVolume),
+      onNeteaseLogin: (cookie, showToastMessage) => latest.current.onNeteaseLogin(cookie, showToastMessage),
+      onNeteaseLogout: () => latest.current.onNeteaseLogout(),
+      onQQLogin: (cookie, showToastMessage) => latest.current.onQQLogin(cookie, showToastMessage),
+      onQQLogout: () => latest.current.onQQLogout(),
+      onRemoveQueueItem: (index) => latest.current.onRemoveQueueItem(index),
+      onMoveQueueItem: (from, to) => latest.current.onMoveQueueItem(from, to),
+      onLoginClick: (platform) => latest.current.onLoginClick(platform),
+      onNeteaseLoginClick: () => latest.current.onNeteaseLoginClick(),
+      onQQLoginClick: () => latest.current.onQQLoginClick(),
+      onSearchClick: () => latest.current.onSearchClick(),
+      onRemoteClick: () => latest.current.onRemoteClick(),
+      onSettingsClick: () => latest.current.onSettingsClick(),
+      onProfileClick: (platform, initialTab) => latest.current.onProfileClick(platform, initialTab),
+      onOpenPlayer: () => latest.current.onOpenPlayer(),
+      onExitDesktopMode: () => latest.current.onExitDesktopMode(),
+    }
+  }, [])
+
+  // 设置面板常驻挂载，关闭回调需稳定引用以配合 memo 跳过播放中的重渲染
+  const closeSettings = useCallback(() => setShowSettings(false), [])
+
+  // 歌曲详情 / 相似歌曲弹窗关闭回调需稳定引用以配合 memo 跳过播放中的重渲染
+  const closeSongDetail = useCallback(() => setShowSongDetail(false), [])
+  const closeSimilarSongs = useCallback(() => setShowSimilarSongs(false), [])
+
+  // 歌手/专辑弹窗选中歌曲需先清空导航栈（dismiss*），与 handleSongSelect 内部
+  // 仅 setShow*Detail(false) 不同，不能直接复用 viewCallbacks.onSongSelect。
+  // 经 handleSongSelectRef 取最新实现，避免 [] 依赖闭包捕获过期函数。
+  const handleArtistDetailSongSelect = useCallback((song: Song, playlist?: Song[]) => {
+    dismissArtistDetail()
+    void handleSongSelectRef.current(song, playlist)
+  }, [])
+  const handleAlbumDetailSongSelect = useCallback((song: Song, playlist?: Song[]) => {
+    dismissAlbumDetail()
+    void handleSongSelectRef.current(song, playlist)
+  }, [])
+
+  // ===== 弹窗稳定回调（latest-ref 模式）=====
+  // ProfileView/AlbumDetailModal/PlaylistPanel 已包 memo；这些回调若每次渲染新建会击穿
+  // memo 导致 1Hz 无关重渲染。这里用 latest-ref 暴露一次性创建的稳定引用，行为与内联等价。
+  const closeProfileRef = useRef<() => void>(() => undefined)
+  const closeAlbumDetailRef = useRef<() => void>(() => undefined)
+  const closePlaylistRef = useRef<() => void>(() => undefined)
+  const profileSwitchPlatformRef = useRef<() => void>(() => undefined)
+  const profileLogoutRef = useRef<(platform: 'netease' | 'qq') => void>(() => undefined)
+  const smartReorderRef = useRef<() => void>(() => undefined)
+  const playlistSongSelectRef = useRef<(index: number) => void>(() => undefined)
+  closeProfileRef.current = () => setShowProfile(false)
+  closeAlbumDetailRef.current = () => closeAlbumDetail()
+  closePlaylistRef.current = () => setShowPlaylist(false)
+  profileSwitchPlatformRef.current = () => setProfileInitialPlatform(prev => prev === 'netease' ? 'qq' : 'netease')
+  profileLogoutRef.current = (platform) => {
+    if (platform === 'netease') handleNeteaseLogout()
+    else handleQQLogout()
+  }
+  smartReorderRef.current = () => { void handleSmartReorder() }
+  playlistSongSelectRef.current = (index) => {
+    const song = playlistRef.current[index]
+    if (!song) return
+    audioPlayer.cancelTransition('playlist song selected', false)
+    bumpQueueRevision()
+    currentIndexRef.current = index
+    setCurrentIndex(index)
+    void loadAndPlaySong(song, index, playlistRef.current)
+    setShowPlaylist(false)
+  }
+  const stableDialogCallbacks = useMemo(() => ({
+    closeProfile: () => closeProfileRef.current(),
+    closeAlbumDetail: () => closeAlbumDetailRef.current(),
+    closePlaylist: () => closePlaylistRef.current(),
+    switchProfilePlatform: () => profileSwitchPlatformRef.current(),
+    logout: (platform: 'netease' | 'qq') => profileLogoutRef.current(platform),
+    smartReorder: () => smartReorderRef.current(),
+    playlistSongSelect: (index: number) => playlistSongSelectRef.current(index),
+  }), [])
+
   return (
     <>
       {/* 自定义窗口标题栏 */}
@@ -3931,9 +4147,9 @@ function App() {
           <Suspense fallback={null}>
             <LazySongDetailModal
               song={songDetailSong}
-              onClose={() => setShowSongDetail(false)}
+              onClose={closeSongDetail}
               playerTheme={playerTheme}
-              onPlayNow={(s) => { void handleSongSelect(s) }}
+              onPlayNow={viewCallbacks.onSongSelect}
               onOpenPlaylist={(id, platform) => { void handleOpenPlaylistFromDetail(id, platform) }}
             />
           </Suspense>
@@ -3941,9 +4157,9 @@ function App() {
         {showSimilarSongs && similarSongsSource && (
           <SimilarSongsPanel
             song={similarSongsSource}
-            onClose={() => setShowSimilarSongs(false)}
-            onPlayNow={(s) => { void handleSongSelect(s) }}
-            onPlayNext={(s) => { handlePlayNext(s) }}
+            onClose={closeSimilarSongs}
+            onPlayNow={viewCallbacks.onSongSelect}
+            onPlayNext={viewCallbacks.onPlayNext}
             playerTheme={playerTheme}
           />
         )}
@@ -4016,7 +4232,7 @@ function App() {
             style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: 2 }}
           >
             <LazyExploreView
-              onSongSelect={handleSongSelect}
+              onSongSelect={viewCallbacks.onSongSelect}
               restorePlaybackOrigin={restorePlaybackOrigin}
               currentSong={currentSong}
               isPlaying={isPlaying}
@@ -4037,40 +4253,24 @@ function App() {
               qqAvatar={qqAvatar}
               qqUserId={qqUserId}
               qqVip={qqVip}
-              onLoginClick={(platform) => {
-                setLoginPlatform(platform)
-                setShowLogin(true)
-              }}
-              onProfileClick={(platform) => {
-                setProfileInitialPlatform(platform)
-                setProfileInitialTab('created')
-                setShowProfile(true)
-              }}
-              onSearchClick={() => setShowSearch(true)}
-              onRemoteClick={() => setShowRemote(true)}
-              onPlayPause={handlePlayPause}
-              onNext={handleNext}
-              onPrevious={handlePrevious}
-              onSeek={handleSeek}
-              onVolumeChange={handleVolumeChange}
-              onOpenPlayer={() => {
-                setShowLogin(false)
-                setShowSearch(false)
-                playbackOriginRef.current = { mode: 'explore', surface: 'mode-root' }
-                setRestorePlaybackOrigin(null)
-                setEnteredFromMode('explore')
-                setViewMode('minimal')
-                localStorage.setItem('viewMode', 'minimal')
-                setShowHome(false)
-              }}
-              onOpenArtist={handleOpenArtist}
-              onOpenAlbum={handleOpenAlbum}
-              onPlayNext={handlePlayNext}
-              onAddToFavorites={handleAddToFavorites}
-              onRemoveFromFavorites={handleRemoveFromFavorites}
-              onAddToPlaylist={handleAddToPlaylist}
-              onViewComments={handleViewComments}
-              onCopyInfo={handleCopyInfo}
+              onLoginClick={viewCallbacks.onLoginClick}
+              onProfileClick={viewCallbacks.onProfileClick}
+              onSearchClick={viewCallbacks.onSearchClick}
+              onRemoteClick={viewCallbacks.onRemoteClick}
+              onPlayPause={viewCallbacks.onPlayPause}
+              onNext={viewCallbacks.onNext}
+              onPrevious={viewCallbacks.onPrevious}
+              onSeek={viewCallbacks.onSeek}
+              onVolumeChange={viewCallbacks.onVolumeChange}
+              onOpenPlayer={viewCallbacks.onOpenPlayer}
+              onOpenArtist={viewCallbacks.onOpenArtist}
+              onOpenAlbum={viewCallbacks.onOpenAlbum}
+              onPlayNext={viewCallbacks.onPlayNext}
+              onAddToFavorites={viewCallbacks.onAddToFavorites}
+              onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+              onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+              onViewComments={viewCallbacks.onViewComments}
+              onCopyInfo={viewCallbacks.onCopyInfo}
             />
 
           </motion.div>
@@ -4085,7 +4285,7 @@ function App() {
             style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: 2 }}
           >
             <LazyDesktopView
-              onSongSelect={handleSongSelect}
+              onSongSelect={viewCallbacks.onSongSelect}
               restorePlaybackOrigin={restorePlaybackOrigin}
               currentSong={currentSong}
               isPlaying={isPlaying}
@@ -4095,43 +4295,34 @@ function App() {
               playbackQueue={playlist}
               currentIndex={currentIndex}
               volume={volume}
-              onVolumeChange={handleVolumeChange}
-              onRemoveQueueItem={handleDesktopQueueRemove}
-              onMoveQueueItem={handleDesktopQueueMove}
-              onPlayPause={handlePlayPause}
-              onNext={handleNext}
-              onPrevious={handlePrevious}
+              onVolumeChange={viewCallbacks.onVolumeChange}
+              onRemoveQueueItem={viewCallbacks.onRemoveQueueItem}
+              onMoveQueueItem={viewCallbacks.onMoveQueueItem}
+              onPlayPause={viewCallbacks.onPlayPause}
+              onNext={viewCallbacks.onNext}
+              onPrevious={viewCallbacks.onPrevious}
               neteaseLoggedIn={neteaseLoggedIn}
               neteaseUserId={neteaseUserId}
               qqLoggedIn={qqLoggedIn}
               qqUserId={qqUserId}
               neteaseVip={neteaseVip}
               qqVip={qqVip}
-              onNeteaseLogin={handleNeteaseLogin}
-              onQQLogin={handleQQLogin}
-            onPlayNext={handlePlayNext}
-            onAddToFavorites={handleAddToFavorites}
-            onRemoveFromFavorites={handleRemoveFromFavorites}
-            onAddToPlaylist={handleAddToPlaylist}
-              onViewComments={handleViewComments}
-              onOpenArtist={handleOpenArtist}
-              onOpenAlbum={handleOpenAlbum}
-              onCopyInfo={handleCopyInfo}
-              onExitDesktopMode={() => {
-                playbackOriginRef.current = { mode: 'desktop', surface: 'mode-root' }
-                setRestorePlaybackOrigin(null)
-                setViewMode('minimal')
-                localStorage.setItem('viewMode', 'minimal')
-                // 鍒囨崲鍥炵畝绾︽ā寮忔椂锛屾樉绀烘挱鏀鹃〉闈?
-                setShowHome(false)
-                // 记录来源，用于返回
-                setEnteredFromMode('desktop')
-              }}
-              onRemoteClick={() => setShowRemote(true)}
+              onNeteaseLogin={viewCallbacks.onNeteaseLogin}
+              onQQLogin={viewCallbacks.onQQLogin}
+              onPlayNext={viewCallbacks.onPlayNext}
+              onAddToFavorites={viewCallbacks.onAddToFavorites}
+              onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+              onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+              onViewComments={viewCallbacks.onViewComments}
+              onOpenArtist={viewCallbacks.onOpenArtist}
+              onOpenAlbum={viewCallbacks.onOpenAlbum}
+              onCopyInfo={viewCallbacks.onCopyInfo}
+              onExitDesktopMode={viewCallbacks.onExitDesktopMode}
+              onRemoteClick={viewCallbacks.onRemoteClick}
             />
           </motion.div>
         ) : (
-          /* 绠€绾︽ā寮?*/
+          /* 简约模式 */
           <motion.div
             key="minimal-mode"
             initial={{ opacity: 0, y: 26, scale: 0.985 }}
@@ -4151,7 +4342,7 @@ function App() {
             type={toast.type}
             accentColor={toast.accentColor}
             style={{ 
-              animationDelay: `${index * 50}ms` // 姣忎釜Toast寤惰繜50ms鍑虹幇锛屼骇鐢熷眰鍙犳晥鏋?
+              animationDelay: `${index * 50}ms` // 每个Toast延迟50ms出现，产生层叠效果
             }}
           />
         ))}
@@ -4185,13 +4376,13 @@ function App() {
                   ? backgroundEffect === 'transparent'
                     ? 'linear-gradient(to bottom, rgba(0,0,0,0.05), rgba(0,0,0,0.05), rgba(0,0,0,0.05))'  // 深色透明模式增加5%白色叠加
                     : backgroundEffect === 'blur'
-                    ? 'linear-gradient(to bottom, rgba(0,0,0,0.65), rgba(0,0,0,0.55), rgba(0,0,0,0.7))'  // 娣辫壊妯＄硦锛氫腑绛夊帇鏆?
-                    : 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.75) 50%, rgba(0,0,0,0.6) 100%)'  // 娣辫壊娌夋蹈锛氬己鍘嬫殫+娓愬彉
+                    ? 'linear-gradient(to bottom, rgba(0,0,0,0.65), rgba(0,0,0,0.55), rgba(0,0,0,0.7))'  // 深色模糊：中等压暗
+                    : 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.75) 50%, rgba(0,0,0,0.6) 100%)'  // 深色沉浸：强压暗+渐变
                   : backgroundEffect === 'transparent'
                     ? 'linear-gradient(to bottom, rgba(255,255,255,0.05), rgba(255,255,255,0.05), rgba(255,255,255,0.05))'  // 浅色透明模式增加5%黑色叠加
                     : backgroundEffect === 'blur'
-                    ? 'linear-gradient(to bottom, rgba(250,250,248,0.42), rgba(250,250,248,0.32), rgba(250,250,248,0.46))'  // 娴呰壊妯＄硦锛氭槑鏄剧櫧闆?
-                    : 'linear-gradient(135deg, rgba(250,250,248,0.3) 0%, rgba(250,250,248,0.52) 50%, rgba(250,250,248,0.4) 100%)'  // 娴呰壊娌夋蹈锛氬己鐧介浘+娓愬彉
+                    ? 'linear-gradient(to bottom, rgba(250,250,248,0.42), rgba(250,250,248,0.32), rgba(250,250,248,0.46))'  // 浅色模糊：明显白雾
+                    : 'linear-gradient(135deg, rgba(250,250,248,0.3) 0%, rgba(250,250,248,0.52) 50%, rgba(250,250,248,0.4) 100%)'  // 浅色沉浸：强白雾+渐变
               }}
             />
             {/* 沉浸模式额外效果 - 边缘渐变和光晕 */}
@@ -4220,25 +4411,25 @@ function App() {
       {/* 鍐呭閸愬懎顔愮仦?*/}
       <div className="relative z-10 w-full h-full flex flex-col">
 
-        {/* 鎼滅储闈㈡澘 */}
-        {/* 设置闈㈡澘 */}
+        {/* 搜索面板 */}
+        {/* 设置面板 */}
         {/* cast props to any to satisfy prop mismatch between App and SettingsPanel typings */}
         {/* 设置面板保持挂载：关闭仅隐藏主面板，内部的首页自定义/模糊度等
             子弹窗链路（HomeCustomizeModal -> BlurAdjustModal）依赖组件存活。 */}
         <Suspense fallback={null}>
           <LazySettingsPanel {...({
           show: showSettings,
-          onClose: () => setShowSettings(false),
+          onClose: closeSettings,
           neteaseLoggedIn,
           neteaseUsername,
-          onNeteaseLogin: handleNeteaseLogin,
-          onNeteaseLogout: handleNeteaseLogout,
+          onNeteaseLogin: viewCallbacks.onNeteaseLogin,
+          onNeteaseLogout: viewCallbacks.onNeteaseLogout,
           qqLoggedIn,
           qqUsername,
           neteaseVip,
           qqVip,
-          onQQLogin: handleQQLogin,
-          onQQLogout: handleQQLogout,
+          onQQLogin: viewCallbacks.onQQLogin,
+          onQQLogout: viewCallbacks.onQQLogout,
           playerTheme,
             } as any)} />
         </Suspense>
@@ -4325,44 +4516,34 @@ function App() {
               style={{ willChange: 'transform, opacity, filter' }}
             >
             <LazyHomeView
-              onSongSelect={handleSongSelect}
+              onSongSelect={viewCallbacks.onSongSelect}
               restorePlaybackOrigin={restorePlaybackOrigin}
               neteaseLoggedIn={neteaseLoggedIn}
               neteaseUsername={neteaseUsername}
               neteaseAvatar={neteaseAvatar}
               neteaseUserId={neteaseUserId}
               neteaseVip={neteaseVip}
-              onNeteaseLogout={handleNeteaseLogout}
+              onNeteaseLogout={viewCallbacks.onNeteaseLogout}
               qqLoggedIn={qqLoggedIn}
               qqUsername={qqUsername}
               qqAvatar={qqAvatar}
               qqUserId={qqUserId}
               qqVip={qqVip}
-              onQQLogout={handleQQLogout}
-              onNeteaseLoginClick={() => {
-                setLoginPlatform('netease')
-                setShowLogin(true)
-              }}
-              onQQLoginClick={() => {
-                setLoginPlatform('qq')
-                setShowLogin(true)
-              }}
-              onSearchClick={() => setShowSearch(true)}
-              onRemoteClick={() => setShowRemote(true)}
-              onSettingsClick={() => setShowSettings(true)}
-              onProfileClick={(platform, initialTab = 'created') => {
-                setProfileInitialPlatform(platform)
-                setProfileInitialTab(initialTab)
-                setShowProfile(true)
-              }}
-              onOpenArtist={handleOpenArtist}
-              onOpenAlbum={handleOpenAlbum}
-              onPlayNext={handlePlayNext}
-              onAddToFavorites={handleAddToFavorites}
-              onRemoveFromFavorites={handleRemoveFromFavorites}
-              onAddToPlaylist={handleAddToPlaylist}
-              onViewComments={handleViewComments}
-              onCopyInfo={handleCopyInfo}
+              onQQLogout={viewCallbacks.onQQLogout}
+              onNeteaseLoginClick={viewCallbacks.onNeteaseLoginClick}
+              onQQLoginClick={viewCallbacks.onQQLoginClick}
+              onSearchClick={viewCallbacks.onSearchClick}
+              onRemoteClick={viewCallbacks.onRemoteClick}
+              onSettingsClick={viewCallbacks.onSettingsClick}
+              onProfileClick={viewCallbacks.onProfileClick}
+              onOpenArtist={viewCallbacks.onOpenArtist}
+              onOpenAlbum={viewCallbacks.onOpenAlbum}
+              onPlayNext={viewCallbacks.onPlayNext}
+              onAddToFavorites={viewCallbacks.onAddToFavorites}
+              onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+              onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+              onViewComments={viewCallbacks.onViewComments}
+              onCopyInfo={viewCallbacks.onCopyInfo}
               accentColor={dominantColor || '#3B82F6'}
               currentSong={currentSong}
               playerTheme={playerTheme}
@@ -4839,7 +5020,7 @@ function App() {
                   className="flex-1 w-full flex items-center justify-center"
                 >
                   <div className="w-full max-w-7xl h-[85vh] flex gap-12 items-center">
-                  {/* 宸︿晶锛氅皝闈㈠睍绀哄尯 */}
+                  {/* 左侧：封面展示区 */}
                   <div className="flex-1 flex flex-col items-center justify-center gap-6">
                     <AlbumCoverPlayer
                       coverUrl={currentTrack.coverUrl}
@@ -5010,22 +5191,13 @@ function App() {
           <LazyPlaylistPanel
             show={true}
             playerTheme={playerTheme}
-            onClose={() => setShowPlaylist(false)}
+            onClose={stableDialogCallbacks.closePlaylist}
             playlist={playlist}
             currentIndex={currentIndex}
-            onSmartReorder={handleSmartReorder}
+            onSmartReorder={stableDialogCallbacks.smartReorder}
             isSmartReordering={isSmartReordering}
             smartReorderProgress={smartReorderProgress}
-            onSongSelect={(index) => {
-              const song = playlist[index]
-              if (!song) return
-              audioPlayer.cancelTransition('playlist song selected', false)
-              bumpQueueRevision()
-              currentIndexRef.current = index
-              setCurrentIndex(index)
-              loadAndPlaySong(song, index)
-              setShowPlaylist(false)
-            }}
+            onSongSelect={stableDialogCallbacks.playlistSongSelect}
             neteaseVip={neteaseVip}
             qqVip={qqVip}
             currentPlatform={currentSong?.platform === 'qq' ? 'qq' : 'netease'}
@@ -5065,10 +5237,7 @@ function App() {
         <AnimatePresence>
           {showSearch && (
             <LazySearchPanel
-            onSongSelect={(song, searchResults, origin) => {
-              setShowSearch(false)
-              void handleSongSelect(song, searchResults, origin)
-            }}
+            onSongSelect={viewCallbacks.onSongSelect}
             restorePlaybackOrigin={restorePlaybackOrigin}
             onClose={() => {
               setShowSearch(false)
@@ -5081,14 +5250,14 @@ function App() {
             neteaseLoggedIn={neteaseLoggedIn}
             qqLoggedIn={qqLoggedIn}
             currentSong={currentSong}
-            onPlayNext={handlePlayNext}
-            onAddToFavorites={handleAddToFavorites}
-            onRemoveFromFavorites={handleRemoveFromFavorites}
-            onAddToPlaylist={handleAddToPlaylist}
-            onViewComments={handleViewComments}
-            onOpenArtist={handleOpenArtist}
-            onOpenAlbum={handleOpenAlbum}
-            onCopyInfo={handleCopyInfo}
+            onPlayNext={viewCallbacks.onPlayNext}
+            onAddToFavorites={viewCallbacks.onAddToFavorites}
+            onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+            onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+            onViewComments={viewCallbacks.onViewComments}
+            onOpenArtist={viewCallbacks.onOpenArtist}
+            onOpenAlbum={viewCallbacks.onOpenAlbum}
+            onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
         </AnimatePresence>
@@ -5120,10 +5289,7 @@ function App() {
             artistId={selectedArtistId}
             platform={selectedArtistPlatform}
             onClose={closeArtistDetail}
-            onSongSelect={(song, songs) => {
-              dismissArtistDetail()
-              void handleSongSelect(song, songs)
-            }}
+            onSongSelect={handleArtistDetailSongSelect}
             initialAlbumId={selectedArtistAlbumId}
             onAlbumOpen={setSelectedArtistAlbumId}
             initialTab={selectedArtistTab || 'hotSongs'}
@@ -5133,14 +5299,14 @@ function App() {
             currentSong={currentSong}
             neteaseVip={neteaseVip}
             qqVip={qqVip}
-            onPlayNext={handlePlayNext}
-            onAddToFavorites={handleAddToFavorites}
-            onRemoveFromFavorites={handleRemoveFromFavorites}
-            onAddToPlaylist={handleAddToPlaylist}
-            onViewComments={handleViewComments}
-            onOpenArtist={handleOpenArtist}
-            onOpenAlbum={handleOpenAlbum}
-            onCopyInfo={handleCopyInfo}
+            onPlayNext={viewCallbacks.onPlayNext}
+            onAddToFavorites={viewCallbacks.onAddToFavorites}
+            onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+            onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+            onViewComments={viewCallbacks.onViewComments}
+            onOpenArtist={viewCallbacks.onOpenArtist}
+            onOpenAlbum={viewCallbacks.onOpenAlbum}
+            onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
         </AnimatePresence>
@@ -5153,24 +5319,21 @@ function App() {
             key={'album-' + selectedAlbumId}
             albumId={selectedAlbumId}
             platform={selectedAlbumPlatform}
-            onClose={closeAlbumDetail}
-            onSongSelect={(song, songs) => {
-              dismissAlbumDetail()
-              void handleSongSelect(song, songs)
-            }}
+            onClose={stableDialogCallbacks.closeAlbumDetail}
+            onSongSelect={handleAlbumDetailSongSelect}
             accentColor={dominantColor || '#3B82F6'}
             playerTheme={playerTheme}
             currentSong={currentSong}
             neteaseVip={neteaseVip}
             qqVip={qqVip}
-            onPlayNext={handlePlayNext}
-            onAddToFavorites={handleAddToFavorites}
-            onRemoveFromFavorites={handleRemoveFromFavorites}
-            onAddToPlaylist={handleAddToPlaylist}
-            onViewComments={handleViewComments}
-            onOpenArtist={handleOpenArtist}
-            onOpenAlbum={handleOpenAlbum}
-            onCopyInfo={handleCopyInfo}
+            onPlayNext={viewCallbacks.onPlayNext}
+            onAddToFavorites={viewCallbacks.onAddToFavorites}
+            onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+            onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+            onViewComments={viewCallbacks.onViewComments}
+            onOpenArtist={viewCallbacks.onOpenArtist}
+            onOpenAlbum={viewCallbacks.onOpenAlbum}
+            onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
         </AnimatePresence>
@@ -5198,26 +5361,20 @@ function App() {
             canSwitchPlatform={neteaseLoggedIn && qqLoggedIn}
             userId={profileInitialPlatform === 'netease' ? neteaseUserId : qqUserId}
             cookie={profileInitialPlatform === 'netease' ? _neteaseCookie : _qqCookie}
-            onClose={() => setShowProfile(false)}
-            onSongSelect={(song, songs) => {
-              setShowProfile(false)
-              void handleSongSelect(song, songs)
-            }}
-            handleSwitchPlatform={() => setProfileInitialPlatform(prev => prev === 'netease' ? 'qq' : 'netease')}
-            onLogout={(platform) => {
-              if (platform === 'netease') handleNeteaseLogout()
-              else handleQQLogout()
-            }}
+            onClose={stableDialogCallbacks.closeProfile}
+            onSongSelect={viewCallbacks.onSongSelect}
+            handleSwitchPlatform={stableDialogCallbacks.switchProfilePlatform}
+            onLogout={stableDialogCallbacks.logout}
             currentSong={currentSong}
             playerTheme={playerTheme}
-            onOpenArtist={handleOpenArtist}
-            onOpenAlbum={handleOpenAlbum}
-            onPlayNext={handlePlayNext}
-            onAddToFavorites={handleAddToFavorites}
-            onRemoveFromFavorites={handleRemoveFromFavorites}
-            onAddToPlaylist={handleAddToPlaylist}
-            onViewComments={handleViewComments}
-            onCopyInfo={handleCopyInfo}
+            onOpenArtist={viewCallbacks.onOpenArtist}
+            onOpenAlbum={viewCallbacks.onOpenAlbum}
+            onPlayNext={viewCallbacks.onPlayNext}
+            onAddToFavorites={viewCallbacks.onAddToFavorites}
+            onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
+            onAddToPlaylist={viewCallbacks.onAddToPlaylist}
+            onViewComments={viewCallbacks.onViewComments}
+            onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
         </AnimatePresence>

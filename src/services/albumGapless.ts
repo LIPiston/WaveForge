@@ -372,8 +372,18 @@ export class AlbumGaplessService {
         if (!settled) preload.fadeFrame = requestAnimationFrame(tick)
       }
 
+      // 主驱动：rAF（~60fps）驱动音量赋值。此前 setInterval 与 rAF 双驱动，
+      // 让 applyStep 以 ~125Hz 重复执行（1.8s 混音约 300+ 次），白白增加主线程
+      // 负载。改为仅作超时看门狗：rAF 被浏览器/Electron 节流或暂停时兜底完成
+      // 混音，不参与常规音量赋值。
       preload.fadeWatchdogTimer = window.setInterval(() => {
-        applyStep(performance.now())
+        if (settled) return
+        const elapsedMs = performance.now() - started
+        // 仅当混音已到期（rAF 未能在 t>=1 收尾）时才调用一次 applyStep 兜底；
+        // 正常情况下 rAF 会在 t>=1 时 finish，看门狗不驱动任何音量变化。
+        if (elapsedMs >= durationMs) {
+          applyStep(performance.now())
+        }
       }, ALBUM_GAPLESS_GAIN_STEP_MS)
 
       preload.fadeFrame = requestAnimationFrame(tick)

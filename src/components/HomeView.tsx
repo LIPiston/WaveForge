@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Play, Music, TrendingUp, Flame, Clock, LogOut, Crown, User, Heart, MonitorSmartphone, Search, Settings, History } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier, getSongUrl } from '../services/musicApi'
@@ -85,8 +85,35 @@ const readPersistedHomeModuleCache = (): Record<string, HomeModuleSessionSnapsho
   }
 }
 
+// localStorage 持久化只写精简字段：仅保留渲染与点击所需的小字段（均为 Song 接口字段），
+// 丢弃原始响应可能附带的歌词缓存/播放地址/privilege 等大字段，避免每次保存都同步序列化整份冗余数据。
+const SLIM_SONG_FIELDS = ['id', 'mid', 'songType', 'name', 'artists', 'album', 'duration', 'platform', 'vip', 'noCopyright', 'commentCount', 'fee', 'fusedSources'] as const
+const SLIM_PLAYLIST_FIELDS = ['id', 'name', 'coverImgUrl', 'trackCount', 'playCount', 'description', 'platform', 'source', 'creator', 'isLike', 'dirId', 'userId', 'isCollected'] as const
+
+const slimHomeModuleSnapshot = (snapshot: { songs: Song[]; playlists: any[] }): { songs: Song[]; playlists: any[] } => {
+  const slimSong = (song: Song): Song => {
+    const result: Record<string, unknown> = {}
+    for (const field of SLIM_SONG_FIELDS) {
+      if (song[field as keyof Song] !== undefined) result[field] = song[field as keyof Song]
+    }
+    return result as unknown as Song
+  }
+  const slimPlaylist = (playlist: any) => {
+    const result: Record<string, unknown> = {}
+    for (const field of SLIM_PLAYLIST_FIELDS) {
+      if (playlist?.[field] !== undefined) result[field] = playlist[field]
+    }
+    return result
+  }
+  return {
+    songs: snapshot.songs.map(slimSong),
+    playlists: snapshot.playlists.map(slimPlaylist),
+  }
+}
+
 const saveHomeModuleSession = (key: string, snapshot: Omit<HomeModuleSessionSnapshot, 'updatedAt'>) => {
   const storedSnapshot = { songs: snapshot.songs, playlists: snapshot.playlists, updatedAt: Date.now() }
+  // 内存缓存保留完整歌曲对象，供同会话快速恢复
   homeModuleSessionCache.delete(key)
   homeModuleSessionCache.set(key, storedSnapshot)
   while (homeModuleSessionCache.size > HOME_MODULE_SESSION_CACHE_LIMIT) {
@@ -97,7 +124,8 @@ const saveHomeModuleSession = (key: string, snapshot: Omit<HomeModuleSessionSnap
 
   try {
     const persisted = readPersistedHomeModuleCache()
-    persisted[key] = storedSnapshot
+    // 落盘时用精简快照，避免同步主线程的大 JSON 序列化
+    persisted[key] = { ...storedSnapshot, ...slimHomeModuleSnapshot(storedSnapshot) }
     const entries = Object.entries(persisted)
       .filter(([, value]) => value && Array.isArray(value.songs) && Array.isArray(value.playlists))
       .sort((left, right) => right[1].updatedAt - left[1].updatedAt)
@@ -146,7 +174,7 @@ const getHomeModuleSessionKey = (
   return `${moduleId}:${loggedIn ? userId || 'signed-in' : 'guest'}:${devMode ? 'dev' : 'prod'}`
 }
 
-export default function HomeView({ 
+function HomeView({ 
   onSongSelect,
   restorePlaybackOrigin,
   neteaseLoggedIn,
@@ -1956,7 +1984,8 @@ export default function HomeView({
                           key={`module-song-${index}`}
                           initial={{ opacity: 0, y: 20 }}
                           animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: index * 0.01 }}
+                          // 逐项延迟只保留前 8 项，避免列表越长首屏入场越慢
+                          transition={{ delay: Math.min(index, 8) * 0.01 }}
                           whileHover={{ scale: 1.02 }}
                           onClick={() => onSongSelect(song, moduleSongs)}
                           onContextMenu={(e) => {
@@ -2025,7 +2054,8 @@ export default function HomeView({
                           key={`module-playlist-${playlist.id || index}`}
                           initial={{ opacity: 0, x: -20 }}
                           animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: index * 0.05 }}
+                          // 逐项延迟只保留前 8 项，避免列表越长首屏入场越慢
+                          transition={{ delay: Math.min(index, 8) * 0.05 }}
                           whileHover={{ x: 4, transition: { duration: 0.2 } }}
                           onClick={() => handlePlaylistClick(playlist)}
                           onContextMenu={(e) => handlePlaylistContextMenu(playlist, e)}
@@ -2176,7 +2206,8 @@ export default function HomeView({
                       layout: { type: "spring", stiffness: 300, damping: 30 },
                       opacity: { duration: 0.2 },
                       scale: { duration: 0.2 },
-                      delay: index * 0.03
+                      // 逐项延迟只保留前 8 项，避免网格越长首屏入场越慢
+                      delay: Math.min(index, 8) * 0.03
                     }}
                     whileHover={{ scale: 1.02, transition: { duration: 0.2 } }}
                     onMouseEnter={() => schedulePlaylistHoverPrefetch(playlist)}
@@ -2726,6 +2757,8 @@ export default function HomeView({
     </div>
   )
   }
+  // 导出 memo 包装：App 播放中约 1Hz 重渲染时，props 稳定则跳过整棵首页子树重渲染
+  export default memo(HomeView)
 
 
 

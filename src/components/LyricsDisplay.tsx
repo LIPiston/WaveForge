@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudioPulse'
-import { useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { reconcileBoundaryParentheses } from '../utils/lyricBoundaryParentheses'
 import { normalizeSequentialWordTiming, prepareLyricWords } from '../utils/lyricWordTiming'
 
@@ -125,7 +125,7 @@ interface RgbColor {
 }
 
 const stripSustainMarkup = (text: string) => text
-  .replace(/([\u4e00-\u9fff]+)\s*[锛?]([\u3040-\u309f\u30a0-\u30ff]+)[锛?]/g, '$1')
+  .replace(/([\u4e00-\u9fff]+)\s*[（]([\u3040-\u309f\u30a0-\u30ff]+)[）]/g, '$1')
   .trim()
 
 const countVocalCharacters = (text: string) => Array.from(text)
@@ -438,7 +438,7 @@ interface LyricsDisplayProps {
   playerTheme?: 'light' | 'dark'
 }
 
-export default function LyricsDisplay({ 
+export default memo(function LyricsDisplay({ 
   currentTime, 
   isPlaying, 
   accentColor, 
@@ -543,6 +543,18 @@ export default function LyricsDisplay({
     () => displayLyricsData.map(lyric => prepareLyricLine(lyric, sustainGlowEnabled)),
     [displayLyricsData, sustainGlowEnabled]
   )
+  // 是否有需要逐字时钟的歌词（逐字词或注音逐字词）
+  const hasWordTimedLines = useMemo(
+    () => preparedLyricsData.some(line => line.wordsWithIndex.length > 0 || line.romanWordsToRender.length > 0),
+    [preparedLyricsData]
+  )
+  // 是否有生成的间奏行（其圆点进度动画依赖平滑时钟）
+  const hasGeneratedInterludes = useMemo(
+    () => displayLyricsData.some(line => line.isGeneratedInterlude),
+    [displayLyricsData]
+  )
+  // 无逐字歌词且无间奏动画时，30fps 平滑时钟无消费者，播放中应停止空转
+  const needsSmoothPlaybackClock = hasWordTimedLines || hasGeneratedInterludes
 
   useEffect(() => {
     const updatePulseScale = () => {
@@ -562,7 +574,8 @@ export default function LyricsDisplay({
   }, [currentTime])
 
   useEffect(() => {
-    if (!isPlaying) {
+    // 暂停、无逐字歌词且无间奏动画时无需 30fps 平滑时钟
+    if (!isPlaying || !needsSmoothPlaybackClock) {
       if (wordRafRef.current !== null) {
         cancelAnimationFrame(wordRafRef.current)
         wordRafRef.current = null
@@ -588,7 +601,7 @@ export default function LyricsDisplay({
         wordRafRef.current = null
       }
     }
-  }, [isPlaying])
+  }, [isPlaying, needsSmoothPlaybackClock])
 
   const clearReturnTimer = () => {
     if (returnTimerRef.current) {
@@ -636,7 +649,7 @@ export default function LyricsDisplay({
     })
   }
   
-  // 澶勭悊榧犳爣婊氳疆婊氬姩
+  // 处理鼠标滚轮滚动
   const handleWheel = (e: React.WheelEvent) => {
     // React onWheel may be passive, so this handler does not call preventDefault
     // Handle only the lyric scrolling state here
@@ -674,7 +687,7 @@ export default function LyricsDisplay({
     clearReturnTimer()
   }
   
-  // 澶勭悊瀹瑰櫒榧犳爣绉诲嚭
+  // 处理容器鼠标移出
   const handleContainerMouseLeave = () => {
     isPointerInsideRef.current = false
     if (isManualScrollingRef.current) {
@@ -682,7 +695,7 @@ export default function LyricsDisplay({
     }
   }
   
-  // 澶勭悊姝岃瘝鎮仠
+  // 处理歌词悬停
   const handleLyricMouseEnter = (index: number) => {
     setHoveredIndex(index)
     setShowGlassFrame(false)
@@ -697,7 +710,7 @@ export default function LyricsDisplay({
     // Clear the automatic return timer
     clearReturnTimer()
     
-    // 娓呴櫎涔嬪墠鐨勬偓鍋滆鏃跺櫒
+    // 清除之前的悬停计时器
     if (hoverTimer) {
       clearTimeout(hoverTimer)
     }
@@ -712,7 +725,7 @@ export default function LyricsDisplay({
     }
   }
   
-  // 澶勭悊姝岃瘝绉诲嚭
+  // 处理歌词移出
   const handleLyricMouseLeave = () => {
     if (hoverTimer) {
       clearTimeout(hoverTimer)
@@ -728,7 +741,7 @@ export default function LyricsDisplay({
     // Keep the current position until the automatic return timer runs
   }
   
-  // 澶勭悊鐐瑰嚮璺宠浆
+  // 处理点击跳转
   const handleLyricClick = (time: number, index: number) => {
     if (onSeek && time >= 0) {
       onSeek(time)
@@ -1038,12 +1051,12 @@ export default function LyricsDisplay({
     }
   }
 
-  // 瑙ｆ瀽鏃ヨ娉ㄩ煶鏂囨湰锛堟尟銈婁划鍚嶏級
+  // 解析日语注音文本（振假名）
   const parseRubyText = (text: string): Array<{ base: string; ruby?: string }> => {
     const parts: Array<{ base: string; ruby?: string }> = []
-    // 鍖归厤妯″紡锛氫竴涓垨澶氫釜姹夊瓧鍚庤窡锛堝钩鍋囧悕/鐗囧亣鍚嶏級
-    // 浣跨敤鏇翠弗鏍肩殑鍖归厤锛氭眽瀛楀悗绱ц窡鎷彿鍐呯殑鍋囧悕锛屾敮鎸佸叏瑙掑拰鍗婅鎷彿
-    const rubyPattern = /([\u4e00-\u9fff]+)\s*[锛?]([\u3040-\u309f\u30a0-\u30ff]+)[锛?]/g
+    // 匹配模式：一个或多个汉字后跟（平假名/片假名）
+    // 使用更严格的匹配：汉字后紧跟括号内的假名，支持全角和半角括号
+    const rubyPattern = /([\u4e00-\u9fff]+)\s*[（]([\u3040-\u309f\u30a0-\u30ff]+)[）]/g
     
     let lastIndex = 0
     let match: RegExpExecArray | null
@@ -1054,9 +1067,9 @@ export default function LyricsDisplay({
         parts.push({ base: text.slice(lastIndex, match.index) })
       }
       
-      // 娣诲姞甯︽敞闊崇殑姹夊瓧
+      // 添加带注音的汉字
       parts.push({
-        base: match[1], // 姹夊瓧
+        base: match[1], // 汉字
         ruby: match[2]  // 鍋囧悕娉ㄩ煶
       })
       
@@ -1072,14 +1085,14 @@ export default function LyricsDisplay({
     return parts.length > 0 ? parts : [{ base: text }]
   }
 
-  // 娓叉煋甯︽敞闊崇殑鏂囨湰
+  // 渲染带注音的文字
   const renderTextWithRuby = (text: string) => {
     const parts = parseRubyText(text)
     
     return parts.map((part, index) => {
       if (part.ruby) {
-        // 浣跨敤 ruby 鏍囩鏄剧ず娉ㄩ煶锛孋SS 浼氱敤 column-reverse 鍙嶈浆
-        // 鎵€浠ヨ繖閲?base 鍐欏湪鍓嶉潰锛宺t 鍐欏湪鍚庨潰锛屾覆鏌撳悗 rt 浼氬湪涓婃柟
+        // 使用 ruby 标签显示注音，CSS 会用 column-reverse 反转
+        // 所以这里 base 写在前面，rt 写在后面，渲染后 rt 会在上方
         return (
           <ruby key={index}>
             {part.base}
@@ -1091,12 +1104,12 @@ export default function LyricsDisplay({
     })
   }
   
-  // 浠庢枃鏈腑绉婚櫎娉ㄩ煶鎷彿锛屽彧淇濈暀姹夊瓧
+  // 从文本中移除注音括号，只保留汉字
   const removeRubyAnnotations = (text: string): string => {
-    // 鍙Щ闄ゆ眽瀛楀悗闈㈢殑鍋囧悕娉ㄩ煶鎷彿锛屼笉绉婚櫎鏅€氭嫭鍙?    // 鍖归厤妯″紡锛氫竴涓垨澶氫釜姹夊瓧鍚庤窡鎷彿鍐呯殑鍋囧悕
-    return text.replace(/([\u4e00-\u9fff]+)\s*[锛?]([\u3040-\u309f\u30a0-\u30ff]+)[锛?]/g, '$1')
+    // 只移除汉字后面的假名注音括号，不移除普通括号；匹配模式：一个或多个汉字后跟括号内的假名
+    return text.replace(/([\u4e00-\u9fff]+)\s*[（]([\u3040-\u309f\u30a0-\u30ff]+)[）]/g, '$1')
   }
-  // 浼樺寲鐨勯€愬瓧娓叉煋
+  // 优化的逐字渲染
   const renderLyricLine = (
     preparedLyric: PreparedLyricLine,
     isCurrent: boolean,
@@ -1106,11 +1119,11 @@ export default function LyricsDisplay({
   ) => {
     const { lyric, wordsWithIndex, sustainProfiles } = preparedLyric
     if (effectiveWordByWordEnabled && isCurrent && lyric.words && lyric.words.length > 0) {
-      // 璁＄畻鐩稿浜庤寮€濮嬬殑褰撳墠鏃堕棿锛堟绉掞級
+      // 计算相对于行开始的当前时间（毫秒）
       const lineStartTime = lyric.time * 1000
       const absoluteCurrentMs = (playbackTime + lyricOffset) * 1000
       
-      // 鈿狅笍 淇锛氶€愬瓧楂樹寒寤惰繜200ms锛岃楂樹寒鏇村噯纭湴璺熼殢婕斿敱
+      // ✨ 修复：逐字高亮延迟200ms，让高亮更准确地跟随演唱
       const WORD_BY_WORD_DELAY_MS = 200
       const currentMs = Math.max(0, absoluteCurrentMs - lineStartTime - WORD_BY_WORD_DELAY_MS)
       
@@ -1146,15 +1159,15 @@ export default function LyricsDisplay({
       
       const renderSequencedCharacters = () => (
         wordsWithIndex.map(({ word, originalIndex }) => {
-          // 鈿狅笍 瀹夊叏妫€鏌ワ細纭繚 word.word 瀛樺湪
+          // ✨ 安全检查：确保 word.word 存在
           if (!word.word) {
             return null
           }
           
           const originalWordText = word.word
           
-          const wordText = removeRubyAnnotations(originalWordText) // 绉婚櫎娉ㄩ煶鎷彿锛屽彧淇濈暀姹夊瓧
-          const parsedParts = parseRubyText(originalWordText) // 瑙ｆ瀽娉ㄩ煶缁撴瀯
+          const wordText = removeRubyAnnotations(originalWordText) // 移除注音括号，只保留汉字
+          const parsedParts = parseRubyText(originalWordText) // 解析注音结构
           const hasRuby = parsedParts.some(part => part.ruby) // 妫€鏌ユ槸鍚︽湁娉ㄩ煶
           const isSpace = wordText.trim() === ''
 
@@ -1180,7 +1193,7 @@ export default function LyricsDisplay({
             ? getSustainTextShadow(sustainGlowColor.rgb, sustainGlowIntensity)
             : ''
           
-          // 鈿狅笍 淇锛氭娴嬫槸鍚︽槸鑻辨枃鍗曡瘝锛堣繛缁殑鎷変竵瀛楁瘝锛?          // 鑻辨枃鍗曡瘝涔熼渶瑕佹媶鍒嗘垚瀛楁瘝杩涜閫愬瓧楂樹寒
+          // ✨ 修复：检测是否是英文单词（连续的拉丁字母）；英文单词也需要拆分成字母进行逐字高亮
           const isEnglishWord = /^[a-zA-Z]+$/.test(wordText)
           
           // Split annotated text by ruby units, otherwise by visible characters.
@@ -1306,11 +1319,11 @@ export default function LyricsDisplay({
             const fillProgress = isSpace ? 0 : clamp((currentMs - startTime) / safeDuration)
             const fillWidth = fillProgress * 100
             const fullyFilled = currentMs >= endTime
-            // 鍏夋檿鏁堟灉鍙湪鍗曡瘝鐨勬椂闂磋寖鍥村唴鏄剧ず
+            // 光晕效果只在单词的时间范围内显示
             const isInTimeRange = currentMs >= startTime && currentMs < endTime
             const isActiveCharacter = !minimalWordEffect && activeProgress > 0.015 && isInTimeRange
             const isRecentlyCompleted = fullyFilled && releaseProgress < 1
-            // 濉厖鏁堟灉锛氭鍦ㄦ挱鏀炬椂鏄剧ず杩涘害锛屾挱鏀惧畬鎴愬悗鏄剧ず100%
+            // 填充效果：正在播放时显示进度，播放完成后显示100%
             const shouldShowFill = !isSpace && fillWidth > 0 && (isInTimeRange || fullyFilled)
             const displayFillWidth = fullyFilled ? 100 : fillWidth
 
@@ -1418,11 +1431,11 @@ export default function LyricsDisplay({
                   const fillProgress = clamp((currentMs - unitStartTime) / unitDuration)
                   const fillWidth = fillProgress * 100
                   const fullyFilled = currentMs >= unitEndTime
-                  // 鍏夋檿鏁堟灉鍙湪瀛楃鐨勬椂闂磋寖鍥村唴鏄剧ず
+                  // 光晕效果只在字符的时间范围内显示
                   const isInTimeRange = currentMs >= unitStartTime && currentMs < unitEndTime
                   const isActiveCharacter = !minimalWordEffect && activeProgress > 0.015 && isInTimeRange
                   const isRecentlyCompleted = fullyFilled && releaseProgress < 1
-                  // 濉厖鏁堟灉锛氭鍦ㄦ挱鏀炬椂鏄剧ず杩涘害锛屾挱鏀惧畬鎴愬悗鏄剧ず100%
+                  // 填充效果：正在播放时显示进度，播放完成后显示100%
                   const shouldShowFill = fillWidth > 0 && (isInTimeRange || fullyFilled)
                   const displayFillWidth = fullyFilled ? 100 : fillWidth
 
@@ -1569,11 +1582,11 @@ export default function LyricsDisplay({
     return <>{renderTextWithRuby(lyric.text)}</>
   }
 
-  // 鏍规嵁鍔ㄧ敾妯″紡鑾峰彇杩囨浮閰嶇疆
+  // 根据动画模式获取过渡配置
   const getTransitionConfig = () => {
     switch (effectiveAnimationMode) {
       case 'elegant':
-        // 浼橀泤锛氭鍦ㄦ挱鏀锯啋宸叉挱鏄笎闅愶紝鏈挱鈫掓鍦ㄦ挱鏄€愭笎鏄剧幇
+        // 优雅：正在播放→已播是渐隐，未播→正在播是逐渐显现
         return {
           layout: { duration: 0.95, ease: [0.25, 0.1, 0.25, 1] as const },
           opacity: { duration: 0.82, ease: [0.25, 0.1, 0.25, 1] as const },
@@ -1593,7 +1606,7 @@ export default function LyricsDisplay({
           fontWeight: { duration: 0.42, ease: [0.25, 0.1, 0.25, 1] as const },
         }
       case 'dynamic':
-        // 鐏靛姩锛氭洿鏈夋椿鍔涚殑杩囨浮鏁堟灉
+        // 灵动：更有活力的过渡效果
         return {
           layout: { duration: 0.58, ease: [0.2, 0.8, 0.2, 1] as const },
           opacity: { duration: 0.48, ease: [0.2, 0.8, 0.2, 1] as const },
@@ -1848,7 +1861,7 @@ export default function LyricsDisplay({
           maskImage: 'linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%)',
         }}
       >
-      {/* 姝岃瘝婊氬姩瀹瑰櫒 */}
+      {/* 歌词滚动容器 */}
       <AnimatePresence mode="wait">
         <motion.div
           key={trackId}
@@ -2095,7 +2108,7 @@ export default function LyricsDisplay({
                   }}
                 >
                   {(() => {
-                    // 濡傛灉鏈夐€愬瓧缃楅┈闊筹紝浣跨敤閫愬瓧娓叉煋
+                    // 如果有逐字罗马音，使用逐字渲染
                     if (effectiveWordByWordEnabled && lyric.romanWords && lyric.romanWords.length > 0) {
                       const lineStartTime = lyric.time * 1000
 
@@ -2187,5 +2200,5 @@ export default function LyricsDisplay({
       </div>
     </div>
   )
-}
+})
 

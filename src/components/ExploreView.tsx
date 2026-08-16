@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
 import {
@@ -141,7 +141,9 @@ const getGreeting = () => {
   return '晚上好，今晚想听什么'
 }
 
-function Cover({ src, alt, className = '', iconClassName = 'w-8 h-8', eager = false }: CoverProps) {
+// memo 包装：父级探索页内部状态（Banner 轮播、设置面板、换一批等）触发重渲染时，
+// 封面 props 均为原始类型且引用稳定，可跳过所有列表项 Cover 的重渲染。
+const Cover = memo(function Cover({ src, alt, className = '', iconClassName = 'w-8 h-8', eager = false }: CoverProps) {
   const [failed, setFailed] = useState(false)
   const resolved = src || ''
 
@@ -171,6 +173,12 @@ function Cover({ src, alt, className = '', iconClassName = 'w-8 h-8', eager = fa
       onError={() => setFailed(true)}
     />
   )
+})
+
+interface ExploreBannerItem {
+  imageUrl: string
+  url: string
+  title: string
 }
 
 // 封面墙背景：用歌曲封面拼成的动态海报墙（电影封面墙效果）。
@@ -247,6 +255,60 @@ function CoverWallBackground({
     </div>
   )
 }
+// 独立 memo 组件：Banner 每 5 秒自动轮播时只重渲染本组件，
+// 不再带动整个探索页（含所有推荐列表）重渲染。
+const ExploreBanner = memo(function ExploreBanner({
+  banners,
+  onBannerClick,
+}: {
+  banners: ExploreBannerItem[]
+  onBannerClick: (banner: ExploreBannerItem) => void
+}) {
+  const [bannerIndex, setBannerIndex] = useState(0)
+
+  useEffect(() => {
+    if (banners.length <= 1) return
+    const timer = setInterval(() => setBannerIndex(i => (i + 1) % banners.length), 5000)
+    return () => clearInterval(timer)
+  }, [banners.length])
+
+  if (banners.length === 0) return null
+
+  const current = banners[bannerIndex]
+  return (
+    <div className="relative mb-6 h-36 md:h-48 overflow-hidden rounded-[24px] border border-white/[0.08] bg-white/[0.045]">
+      <AnimatePresence initial={false}>
+        <motion.div
+          key={bannerIndex}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.5 }}
+          className="absolute inset-0 cursor-pointer"
+          onClick={() => onBannerClick(current)}
+        >
+          <img src={current.imageUrl} alt={current.title} className="w-full h-full object-cover" />
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-3">
+            <p className="text-white/90 text-sm font-medium truncate">{current.title}</p>
+          </div>
+        </motion.div>
+      </AnimatePresence>
+      {banners.length > 1 && (
+        <div className="absolute bottom-2 right-3 flex gap-1.5">
+          {banners.map((_, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setBannerIndex(i) }}
+              className={`h-1.5 rounded-full transition-all ${i === bannerIndex ? 'w-5 bg-white' : 'w-1.5 bg-white/40'}`}
+              aria-label={`Banner ${i + 1}`}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+})
 
 function SectionHeading({
   icon,
@@ -371,7 +433,7 @@ const writeExploreCache = (platform: ExplorePlatform, payload: ExplorePayload) =
   localStorage.setItem(EXPLORE_CACHE_KEY, JSON.stringify(next))
 }
 
-export default function ExploreView({
+function ExploreView({
   onSongSelect,
   restorePlaybackOrigin,
   currentSong = null,
@@ -446,8 +508,7 @@ export default function ExploreView({
   const [showMVExplore, setShowMVExplore] = useState(false)
   const [fmLoading, setFmLoading] = useState(false)
   // 网易云首页 Banner 轮播
-  const [banners, setBanners] = useState<{ imageUrl: string; url: string; title: string }[]>([])
-  const [bannerIndex, setBannerIndex] = useState(0)
+  const [banners, setBanners] = useState<ExploreBannerItem[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -463,15 +524,9 @@ export default function ExploreView({
     return () => { cancelled = true }
   }, [platform])
 
-  // Banner 自动轮播
-  useEffect(() => {
-    if (banners.length <= 1) return
-    const timer = setInterval(() => setBannerIndex(i => (i + 1) % banners.length), 5000)
-    return () => clearInterval(timer)
-  }, [banners.length])
-
   // 处理 Banner 点击（解析网易云 url 打开歌单/歌曲）
-  const handleBannerClick = (banner: { imageUrl: string; url: string; title: string }) => {
+  // useCallback 稳定引用：供 ExploreBanner memo 比较，避免父级每次重渲染传入新函数。
+  const handleBannerClick = useCallback((banner: ExploreBannerItem) => {
     const url = banner.url || ''
     const playlistMatch = url.match(/playlist\?id=(\d+)/)
     const songMatch = url.match(/song\?id=(\d+)/)
@@ -488,7 +543,7 @@ export default function ExploreView({
         window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '打开歌曲详情请使用搜索', type: 'info' } }))
       })
     }
-  }
+  }, [])
 
   // 网易云私人 FM：个性化电台推荐播放
   const handlePlayFM = async () => {
@@ -1238,39 +1293,7 @@ export default function ExploreView({
           </AnimatePresence>
 
           {/* 首页 Banner 轮播（网易云 / QQ） */}
-          {banners.length > 0 && (
-            <div className="relative mb-6 h-36 md:h-48 overflow-hidden rounded-[24px] border border-white/[0.08] bg-white/[0.045]">
-              <AnimatePresence initial={false}>
-                <motion.div
-                  key={bannerIndex}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.5 }}
-                  className="absolute inset-0 cursor-pointer"
-                  onClick={() => handleBannerClick(banners[bannerIndex])}
-                >
-                  <img src={banners[bannerIndex].imageUrl} alt={banners[bannerIndex].title} className="w-full h-full object-cover" />
-                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-3">
-                    <p className="text-white/90 text-sm font-medium truncate">{banners[bannerIndex].title}</p>
-                  </div>
-                </motion.div>
-              </AnimatePresence>
-              {banners.length > 1 && (
-                <div className="absolute bottom-2 right-3 flex gap-1.5">
-                  {banners.map((_, i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); setBannerIndex(i) }}
-                      className={`h-1.5 rounded-full transition-all ${i === bannerIndex ? 'w-5 bg-white' : 'w-1.5 bg-white/40'}`}
-                      aria-label={`Banner ${i + 1}`}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          <ExploreBanner banners={banners} onBannerClick={handleBannerClick} />
 
           {loading && !payload ? (
             <ExploreSkeleton />
@@ -1877,3 +1900,5 @@ export default function ExploreView({
     </div>
   )
 }
+// 导出 memo 包装：播放中 App 约 1Hz 重渲染时，props 稳定则跳过整棵探索页子树重渲染
+export default memo(ExploreView)

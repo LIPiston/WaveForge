@@ -36,9 +36,16 @@ export const clearSongUrlCache = () => {
   songUrlInvalidationVersions.clear()
 }
 
-if (typeof window !== 'undefined') {
-  window.addEventListener(AUDIO_QUALITY_SETTINGS_EVENT, clearSongUrlCache)
-  window.addEventListener('waveforge-auth-changed', clearSongUrlCache)
+// 模块加载时不再注册监听器（HMR/多实例会重复注册并累积）；
+// 改为惰性注册：首次调用 getSongUrl 时注册一次，事件触发时清缓存。
+let songUrlListenersRegistered = false
+const ensureSongUrlListenersRegistered = () => {
+  if (songUrlListenersRegistered) return
+  songUrlListenersRegistered = true
+  if (typeof window !== 'undefined') {
+    window.addEventListener(AUDIO_QUALITY_SETTINGS_EVENT, clearSongUrlCache)
+    window.addEventListener('waveforge-auth-changed', clearSongUrlCache)
+  }
 }
 
 const fingerprint = (value: string) => {
@@ -510,6 +517,7 @@ export async function searchAlbums(keywords: string, platform: 'netease' | 'qq' 
 
 // 获取歌曲播放URL（支持平台）
 export async function getSongUrl(id: number | string, platform: 'netease' | 'qq' = 'netease'): Promise<string | null> {
+  ensureSongUrlListenersRegistered()
   if (!String(id).trim()) return null
   const cacheKey = buildSongUrlCacheKey(id, platform)
   const now = Date.now()

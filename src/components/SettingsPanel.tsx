@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, Trash2, ChevronLeft, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone } from 'lucide-react'
 import LoginButton from './LoginButton'
@@ -66,7 +66,7 @@ interface SettingsPanelProps {
   playerTheme?: 'light' | 'dark'
 }
 
-export default function SettingsPanel({
+function SettingsPanel({
   show,
   onClose,
   neteaseLoggedIn,
@@ -2920,3 +2920,7 @@ export default function SettingsPanel({
     </AnimatePresence>
   )
 }
+
+// 常驻挂载（保活首页自定义/模糊度子弹窗链路），播放中 App 约 1Hz 重渲染时
+// props 稳定则跳过整棵子树重渲染，保留内部全部 hooks 与状态。
+export default memo(SettingsPanel)

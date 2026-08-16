@@ -3,9 +3,13 @@ import { fileURLToPath } from 'url'
 import { dirname, join, extname, resolve, sep } from 'path'
 import { readdir, stat, readFile } from 'fs/promises'
 import { existsSync, createReadStream } from 'fs'
+import { Readable } from 'stream'
 import dns from 'node:dns'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { Agent as HttpAgent } from 'http'
+import { Agent as HttpsAgent } from 'https'
+import compression from 'compression'
 import qqMusicApi from 'qq-music-api'
 import { decodeAG1Response, encodeAG1Request, zzcSign } from '@jixun/qmweb-sign'
 import axios from 'axios'
@@ -18,6 +22,31 @@ const execFileAsync = promisify(execFile)
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+
+// 进程级兜底：未处理的 Promise rejection 与未捕获异常只记录日志，不崩溃进程。
+// uncaughtException 状态下不尝试继续执行业务逻辑，仅记录后交由系统决定。
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason instanceof Error ? reason.stack || reason.message : reason)
+})
+process.on('uncaughtException', (error) => {
+  console.error('[uncaughtException]', error?.stack || error)
+})
+
+// qq-music-api 库内部 axios 不设 timeout（默认 0，网络挂起会无限等待）。在库方法
+// 入口统一封装 15s 超时：只在真实挂起时拒绝（同评论接口超时语义），正常结果与
+// 库内吞错 {result:400} 的 reject 行为保持不变；Promise.race 会订阅两个输入，
+// 竞速失败一侧的 rejection 不会变成 unhandledRejection。
+{
+  const qqApiOriginal = qqMusicApi.api.bind(qqMusicApi)
+  qqMusicApi.api = (path, query) =>
+    withTimeout(qqApiOriginal(path, query), 15000, `QQ 音乐 API ${path} 请求超时`)
+}
+
+// 上游 HTTP 客户端 keep-alive：本地服务高频转发播放 URL / 封面 / 评论等请求，
+// 复用 TCP 连接能省掉每次握手。qq-music-api 与下方直接 axios 调用都走 axios 默认
+// 实例，统一设默认 agent 即可覆盖；网易云增强 API 自建 per-request agent，不受影响。
+axios.defaults.httpAgent = new HttpAgent({ keepAlive: true, maxSockets: 64 })
+axios.defaults.httpsAgent = new HttpsAgent({ keepAlive: true, maxSockets: 64 })
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -55,14 +84,19 @@ function setQQMusicCookie(cookie) {
   return true
 }
 
-function useQQMusicCookie(cookie) {
-  if (typeof cookie === 'string' && cookie.trim()) {
-    setQQMusicCookie(cookie)
-  } else if (qqMusicCookie) {
-    // 其他请求可能临时设置过库内 Cookie，这里重新以统一状态为准。
-    setQQMusicCookie(qqMusicCookie)
-  }
+// 解析“本次请求有效 Cookie”：请求自带 cookie 时仅本次使用，绝不回写全局。
+// 全局 qqMusicCookie 是登录态的单一事实来源，只由显式登录/设置接口
+// （/api/qq/cookie、/api/qq/user/setCookie）通过 setQQMusicCookie 更新。
+function resolveRequestCookie(cookie) {
+  if (typeof cookie === 'string' && cookie.trim()) return cookie.trim()
   return qqMusicCookie
+}
+
+function useQQMusicCookie(cookie) {
+  // 历史接口名保留：仅解析本次请求有效 cookie，不再覆盖全局登录态。
+  // 修复前播放/读取路由会把请求自带的 cookie 无条件写回全局，并发请求时
+  // 后写者会冲掉先写者的登录态，导致“我喜欢”等写操作用错账号的 cookie。
+  return resolveRequestCookie(cookie)
 }
 
 function parseQQCookie(cookie = qqMusicCookie) {
@@ -94,8 +128,11 @@ function requireQQLogin(res, cookie) {
   return activeCookie
 }
 
-async function mutateQQSonglist({ dirid, mid, id, operation }) {
-  const parsedCookie = parseQQCookie()
+async function mutateQQSonglist({ dirid, mid, id, operation }, cookie = '') {
+  // 写操作只按本次请求使用请求自带的 cookie（解析 uin/签名、发送 Cookie 头），
+  // 绝不回写全局 qqMusicCookie，避免并发请求互相冲掉登录态。
+  const activeCookie = cookie || qqMusicCookie
+  const parsedCookie = parseQQCookie(activeCookie)
   const uin = String(
     parsedCookie.uin || parsedCookie.qqmusic_uin || parsedCookie.musicid || parsedCookie.wxuin || ''
   ).replace(/\D/g, '')
@@ -128,7 +165,7 @@ async function mutateQQSonglist({ dirid, mid, id, operation }) {
 
   // 保留用户登录时提交的原始 Cookie。重新 URL 编码 musickey/skey 会改变签名值，
   // 进而让 QQ 的旧版“我喜欢”接口误判为未登录或 invalid request。
-  const cookieHeader = qqMusicCookie || Object.entries(parsedCookie)
+  const cookieHeader = activeCookie || Object.entries(parsedCookie)
     .map(([key, value]) => `${key}=${String(value)}`)
     .join('; ')
   const response = await axios.get(endpoint, {
@@ -138,6 +175,7 @@ async function mutateQQSonglist({ dirid, mid, id, operation }) {
       Cookie: cookieHeader,
       Referer: 'https://y.qq.com/n/yqq/playlist'
     },
+    timeout: 15000,
     validateStatus: () => true
   })
   const result = typeof response.data === 'string'
@@ -239,8 +277,10 @@ async function requestQQCommentMutation({ cookie, endpoint = 'comment', data }) 
   return reportsSuccess ? { ...result, code: 0, message: resultMessage } : result
 }
 
-async function mutateQQSonglistModern({ dirid, songId, songType = 0, operation }) {
-  const parsedCookie = parseQQCookie()
+async function mutateQQSonglistModern({ dirid, songId, songType = 0, operation }, cookie = '') {
+  // 写操作只按本次请求使用请求自带的 cookie，绝不回写全局登录态。
+  const activeCookie = cookie || qqMusicCookie
+  const parsedCookie = parseQQCookie(activeCookie)
   const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || '').replace(/\D/g, '')
   const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
   if (!musicId || !musicKey) {
@@ -280,7 +320,7 @@ async function mutateQQSonglistModern({ dirid, songId, songType = 0, operation }
     }
   }
 
-  const cookieHeader = qqMusicCookie || Object.entries(parsedCookie)
+  const cookieHeader = activeCookie || Object.entries(parsedCookie)
     .map(([key, value]) => `${key}=${String(value)}`)
     .join('; ')
   // QQ 网页端对写请求启用 needSign：将 musicu.fcg 切换为 musics.fcg，
@@ -297,6 +337,7 @@ async function mutateQQSonglistModern({ dirid, songId, songType = 0, operation }
     },
     responseType: 'arraybuffer',
     transformResponse: data => data,
+    timeout: 15000,
     validateStatus: () => true
   })
   let responseData
@@ -339,8 +380,10 @@ async function mutateQQSonglistModern({ dirid, songId, songType = 0, operation }
 
 // 收藏/取消收藏歌单（关注歌单）。与「我喜欢」写入一致，走签名 MusicU 接口：
 // g_tk 从 qqmusic_key/qm_keyst 计算，ag-1 加密 + zzc 签名，POST 到 musics.fcg。
-async function mutateQQPlaylistConcern({ dissid, concern }) {
-  const parsedCookie = parseQQCookie()
+async function mutateQQPlaylistConcern({ dissid, concern }, cookie = '') {
+  // 写操作只按本次请求使用请求自带的 cookie，绝不回写全局登录态。
+  const activeCookie = cookie || qqMusicCookie
+  const parsedCookie = parseQQCookie(activeCookie)
   const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || parsedCookie.wxuin || '').replace(/\D/g, '')
   const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
   if (!musicId || !musicKey) {
@@ -355,7 +398,7 @@ async function mutateQQPlaylistConcern({ dissid, concern }) {
     { module: 'music.concern.ConcernMusicDiss', method: 'concern', param: { dissid: Number(dissid), concern: 1 } },
   ]
 
-  const cookieHeader = qqMusicCookie || Object.entries(parsedCookie)
+  const cookieHeader = activeCookie || Object.entries(parsedCookie)
     .map(([key, value]) => `${key}=${String(value)}`)
     .join('; ')
 
@@ -393,6 +436,7 @@ async function mutateQQPlaylistConcern({ dissid, concern }) {
         },
         responseType: 'arraybuffer',
         transformResponse: data => data,
+        timeout: 15000,
         validateStatus: () => true
       })
       let responseData
@@ -454,6 +498,7 @@ async function mutateQQPlaylistConcern({ dissid, concern }) {
             Origin: 'https://imgcache.qq.com',
             'Content-Type': 'application/x-www-form-urlencoded',
           },
+          timeout: 15000,
           validateStatus: () => true,
         }
       )
@@ -476,8 +521,10 @@ async function mutateQQPlaylistConcern({ dissid, concern }) {
   throw lastError || new Error('QQ 音乐收藏歌单失败')
 }
 
-async function resolveQQFavoritePlaylistId() {
-  const parsedCookie = parseQQCookie()
+async function resolveQQFavoritePlaylistId(cookie = '') {
+  // 读取“我喜欢”歌单目录同样按本次请求使用请求自带的 cookie，不回写全局。
+  const activeCookie = cookie || qqMusicCookie
+  const parsedCookie = parseQQCookie(activeCookie)
   const uin = String(
     parsedCookie.uin || parsedCookie.qqmusic_uin || parsedCookie.musicid || parsedCookie.wxuin || ''
   ).replace(/\D/g, '')
@@ -509,9 +556,10 @@ async function resolveQQFavoritePlaylistId() {
     const response = await axios.post(QQ_MUSICU_URL, payload, {
       headers: {
         ...QQ_HEADERS,
-        Cookie: qqMusicCookie,
+        Cookie: activeCookie,
         'Content-Type': 'application/json'
       },
+      timeout: 15000,
       validateStatus: () => true
     })
     const requestResult = response.data?.req_0
@@ -585,9 +633,10 @@ async function resolveQQFavoritePlaylistId() {
   return String(favoriteId)
 }
 
-async function getQQSongFavoriteState(songMid) {
+async function getQQSongFavoriteState(songMid, cookie = '') {
   if (!songMid) return null
-  const parsedCookie = parseQQCookie()
+  const activeCookie = cookie || qqMusicCookie
+  const parsedCookie = parseQQCookie(activeCookie)
   const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || '').replace(/\D/g, '')
   const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
   if (!musicId || !musicKey) return null
@@ -614,9 +663,10 @@ async function getQQSongFavoriteState(songMid) {
   const response = await axios.post(QQ_MUSICU_URL, payload, {
     headers: {
       ...QQ_HEADERS,
-      Cookie: qqMusicCookie,
+      Cookie: activeCookie,
       'Content-Type': 'application/json'
     },
+    timeout: 15000,
     validateStatus: () => true
   })
   const requestResult = response.data?.req_0
@@ -653,7 +703,23 @@ const QQ_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
 }
 
+const QQ_PLAYLIST_DETAIL_CACHE_TTL = 5 * 60 * 1000
+const QQ_PLAYLIST_DETAIL_CACHE_MAX = 50
+const qqPlaylistDetailCache = new Map()
+
 async function fetchQQPlaylistDetail(id, songNum = 10000) {
+  // 缓存键包含 songNum（它影响返回曲目数）；命中时按 LRU 刷新顺序并检查 TTL
+  const cacheKey = `${String(id)}:${String(songNum)}`
+  const cachedDetail = qqPlaylistDetailCache.get(cacheKey)
+  if (cachedDetail) {
+    if (cachedDetail.expiresAt > Date.now()) {
+      qqPlaylistDetailCache.delete(cacheKey)
+      qqPlaylistDetailCache.set(cacheKey, cachedDetail)
+      return cachedDetail.value
+    }
+    qqPlaylistDetailCache.delete(cacheKey)
+  }
+
   let legacyDetail = {}
   try {
     legacyDetail = await qqMusicApi.api('songlist', { id })
@@ -738,12 +804,21 @@ async function fetchQQPlaylistDetail(id, songNum = 10000) {
     song
   ])).values())
 
-  return {
+  const result = {
     ...firstPage.dirinfo,
     songlist: uniqueSongs,
     songnum: totalSongCount || uniqueSongs.length,
     total_song_num: totalSongCount || uniqueSongs.length
   }
+  if (qqPlaylistDetailCache.size >= QQ_PLAYLIST_DETAIL_CACHE_MAX) {
+    const oldestKey = qqPlaylistDetailCache.keys().next().value
+    if (oldestKey !== undefined) qqPlaylistDetailCache.delete(oldestKey)
+  }
+  qqPlaylistDetailCache.set(cacheKey, {
+    value: result,
+    expiresAt: Date.now() + QQ_PLAYLIST_DETAIL_CACHE_TTL
+  })
+  return result
 }
 
 async function fetchQQPlaylistFirstSong(id) {
@@ -822,6 +897,24 @@ function normalizeQQPlaylistDetail(detail, fallbackId) {
   }
 }
 
+// gzip 压缩（放在所有路由与 body 解析之前）：/api/explore/* 等聚合响应可达数百 KB，
+// 本地回环下压缩能显著减小序列化/传输开销。图片/视频/音频等媒体流一律跳过——
+// 它们已接近不可压缩且需要保留 Content-Length / Range 语义，压缩缓冲会破坏流式播放。
+// 过滤逻辑：按响应 Content-Type 排除媒体类型；SSE（text/event-stream）由
+// compression 内置的 Cache-Control: no-transform 规则自动跳过。
+app.use(compression({
+  threshold: 1024,
+  filter: (_req, res) => {
+    const contentType = res.getHeader('Content-Type')
+    const type = Array.isArray(contentType) ? contentType[0] : contentType
+    if (typeof type === 'string') {
+      // 排除媒体流与未知二进制类型，避免 gzip 缓冲大文件或破坏 Range 请求
+      if (/^(image|video|audio)\//.test(type) || type === 'application/octet-stream') return false
+    }
+    return true
+  }
+}))
+
 // CORS 支持
 app.use((req, res, next) => {
   const origin = req.headers.origin
@@ -874,76 +967,81 @@ let cachedIpLocationAt = 0
 // 将公网 IP 定位放在本地服务端执行，避免渲染层受到 CORS 和浏览器隐私策略影响。
 // 多服务顺序降级，避免一次定位同时消耗每个服务的限流额度。
 app.get('/api/location/ip', async (_req, res) => {
-  const providers = [
-    () => fetchLocationProvider('https://ipinfo.io/json', data => {
-      const [latitude, longitude] = String(data?.loc || '').split(',').map(Number)
-      return {
-        name: data.city || data.region || data.country || '当前位置',
-        region: data.region || '',
-        country: data.country || '',
-        latitude,
-        longitude,
-        provider: 'ipinfo.io',
-      }
-    }),
-    () => fetchLocationProvider('https://ipwho.is/?lang=zh-CN', data => {
-      if (data?.success === false) return null
-      return {
+  try {
+    const providers = [
+      () => fetchLocationProvider('https://ipinfo.io/json', data => {
+        const [latitude, longitude] = String(data?.loc || '').split(',').map(Number)
+        return {
+          name: data.city || data.region || data.country || '当前位置',
+          region: data.region || '',
+          country: data.country || '',
+          latitude,
+          longitude,
+          provider: 'ipinfo.io',
+        }
+      }),
+      () => fetchLocationProvider('https://ipwho.is/?lang=zh-CN', data => {
+        if (data?.success === false) return null
+        return {
+          name: data.city || data.region || data.country || '当前位置',
+          region: data.region || '',
+          country: data.country || '',
+          latitude: Number(data.latitude),
+          longitude: Number(data.longitude),
+          provider: 'ipwho.is',
+        }
+      }),
+      () => fetchLocationProvider('https://ipapi.co/json/', data => {
+        if (data?.error) return null
+        return {
+          name: data.city || data.region || data.country_name || '当前位置',
+          region: data.region || '',
+          country: data.country_name || data.country || '',
+          latitude: Number(data.latitude),
+          longitude: Number(data.longitude),
+          provider: 'ipapi.co',
+        }
+      }),
+      () => fetchLocationProvider('https://api.ip.sb/geoip', data => ({
         name: data.city || data.region || data.country || '当前位置',
         region: data.region || '',
         country: data.country || '',
         latitude: Number(data.latitude),
         longitude: Number(data.longitude),
-        provider: 'ipwho.is',
-      }
-    }),
-    () => fetchLocationProvider('https://ipapi.co/json/', data => {
-      if (data?.error) return null
-      return {
-        name: data.city || data.region || data.country_name || '当前位置',
-        region: data.region || '',
-        country: data.country_name || data.country || '',
-        latitude: Number(data.latitude),
-        longitude: Number(data.longitude),
-        provider: 'ipapi.co',
-      }
-    }),
-    () => fetchLocationProvider('https://api.ip.sb/geoip', data => ({
-      name: data.city || data.region || data.country || '当前位置',
-      region: data.region || '',
-      country: data.country || '',
-      latitude: Number(data.latitude),
-      longitude: Number(data.longitude),
-      provider: 'ip.sb',
-    })),
-  ]
+        provider: 'ip.sb',
+      })),
+    ]
 
-  if (cachedIpLocation && Date.now() - cachedIpLocationAt < IP_LOCATION_CACHE_TTL) {
-    res.setHeader('Cache-Control', 'private, max-age=3600')
-    return res.json({ success: true, ...cachedIpLocation, cached: true })
-  }
-
-  let lastError = null
-  for (const provider of providers) {
-    try {
-      const location = await provider()
-      cachedIpLocation = location
-      cachedIpLocationAt = Date.now()
+    if (cachedIpLocation && Date.now() - cachedIpLocationAt < IP_LOCATION_CACHE_TTL) {
       res.setHeader('Cache-Control', 'private, max-age=3600')
-      return res.json({ success: true, ...location })
-    } catch (error) {
-      lastError = error
+      return res.json({ success: true, ...cachedIpLocation, cached: true })
     }
-  }
 
-  // 公网服务短暂限流时沿用最近一次成功定位，不把 HTTP 状态暴露给界面。
-  if (cachedIpLocation) {
-    res.setHeader('Cache-Control', 'private, max-age=300')
-    return res.json({ success: true, ...cachedIpLocation, cached: true, stale: true })
-  }
+    let lastError = null
+    for (const provider of providers) {
+      try {
+        const location = await provider()
+        cachedIpLocation = location
+        cachedIpLocationAt = Date.now()
+        res.setHeader('Cache-Control', 'private, max-age=3600')
+        return res.json({ success: true, ...location })
+      } catch (error) {
+        lastError = error
+      }
+    }
 
-  console.warn('[天气定位] 所有 IP 定位服务均不可用:', lastError?.message || lastError)
-  return res.status(503).json({ success: false, error: '自动定位服务暂时繁忙，请稍后重试或选择手动定位' })
+    // 公网服务短暂限流时沿用最近一次成功定位，不把 HTTP 状态暴露给界面。
+    if (cachedIpLocation) {
+      res.setHeader('Cache-Control', 'private, max-age=300')
+      return res.json({ success: true, ...cachedIpLocation, cached: true, stale: true })
+    }
+
+    console.warn('[天气定位] 所有 IP 定位服务均不可用:', lastError?.message || lastError)
+    return res.status(503).json({ success: false, error: '自动定位服务暂时繁忙，请稍后重试或选择手动定位' })
+  } catch (error) {
+    console.error('[天气定位] 定位处理异常:', error?.stack || error)
+    return res.status(500).json({ success: false, error: '自动定位服务异常，请稍后重试或选择手动定位' })
+  }
 })
 
 // 设置QQ音乐Cookie的接口
@@ -1078,6 +1176,38 @@ function parseTimeToMs(timeStr) {
 // 图片代理常量与 SSRF 防护（/api/cover 与 /api/proxy-image 共用）
 const FETCH_TIMEOUT_MS = 8000
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+// 流式转发图片代理响应：保留 Content-Length 预检（超限时在发送任何字节前返回干净的 502），
+// 转发过程中再统计实际字节数兜底（无 Content-Length 的上游）。不再整读进内存，
+// 降低大图/多请求并发时的内存峰值；客户端中途断连或超限时销毁对端流，避免句柄泄漏。
+function streamProxyImage(response, res, label, tooLargeMessage) {
+  const contentLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+    console.error(`${label} content-length too large:`, contentLength)
+    res.status(502).set('Access-Control-Allow-Origin', '*').send(tooLargeMessage)
+    return false
+  }
+  const contentType = response.headers.get('content-type') || 'image/jpeg'
+  res.set({
+    'Content-Type': contentType,
+    'Access-Control-Allow-Origin': '*',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    'Cache-Control': 'public, max-age=86400',
+  })
+  let streamedBytes = 0
+  const body = Readable.fromWeb(response.body)
+  body.on('data', (chunk) => {
+    streamedBytes += chunk.length
+    if (streamedBytes > MAX_IMAGE_BYTES) {
+      body.destroy()
+      res.destroy()
+    }
+  })
+  body.on('error', () => res.destroy())
+  res.on('close', () => body.destroy())
+  body.pipe(res)
+  return true
+}
 
 // 判断地址是否属于内网/本机/链路本地等不允许代理访问的网段
 function isPrivateNetworkAddress(address) {
@@ -1231,32 +1361,8 @@ app.get('/api/cover', async (req, res) => {
       return
     }
 
-    // 响应大小限制，防止代理下载超大文件
-    const contentLength = Number(response.headers.get('content-length'))
-    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
-      console.error('Cover content-length too large:', contentLength)
-      res.status(502).set('Access-Control-Allow-Origin', '*').send('Cover too large')
-      return
-    }
-
-    const contentType = response.headers.get('content-type') || 'image/jpeg'
-    const buffer = await response.arrayBuffer()
-    if (buffer.byteLength > MAX_IMAGE_BYTES) {
-      console.error('Cover too large:', buffer.byteLength)
-      res.status(502).set('Access-Control-Allow-Origin', '*').send('Cover too large')
-      return
-    }
-    
-    if (isDev) console.log('Cover fetched successfully, size:', buffer.byteLength)
-    
-    res.set({
-      'Content-Type': contentType,
-      'Access-Control-Allow-Origin': '*',
-      'Cross-Origin-Resource-Policy': 'cross-origin',
-      'Cache-Control': 'public, max-age=86400',
-    })
-    
-    res.send(Buffer.from(buffer))
+    // 流式转发（保留 Content-Length 预检 + 实际字节数兜底，不整读进内存）
+    streamProxyImage(response, res, 'Cover', 'Cover too large')
   } catch (error) {
     console.error('封面代理错误:', error)
     res.status(500).set('Access-Control-Allow-Origin', '*').send('Failed to load cover')
@@ -1334,29 +1440,8 @@ app.get('/api/proxy-image', async (req, res) => {
       return
     }
 
-    // 响应大小限制，防止代理下载超大文件
-    const contentLength = Number(response.headers.get('content-length'))
-    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
-      console.error('Image content-length too large:', contentLength)
-      res.status(502).set('Access-Control-Allow-Origin', '*').send('Image too large')
-      return
-    }
-
-    const contentType = response.headers.get('content-type') || 'image/jpeg'
-    const buffer = await response.arrayBuffer()
-    if (buffer.byteLength > MAX_IMAGE_BYTES) {
-      console.error('Image too large:', buffer.byteLength)
-      res.status(502).set('Access-Control-Allow-Origin', '*').send('Image too large')
-      return
-    }
-    res.set({
-      'Content-Type': contentType,
-      'Access-Control-Allow-Origin': '*',
-      'Cross-Origin-Resource-Policy': 'cross-origin',
-      'Cache-Control': 'public, max-age=86400',
-    })
-    
-    res.send(Buffer.from(buffer))
+    // 流式转发（保留 Content-Length 预检 + 实际字节数兜底，不整读进内存）
+    streamProxyImage(response, res, 'Image', 'Image too large')
   } catch (error) {
     console.error('图片代理错误:', error)
     res.status(500).set('Access-Control-Allow-Origin', '*').send('Failed to load image')
@@ -1409,9 +1494,13 @@ async function withTimeout(promise, timeoutMs, message = '请求超时') {
 
 // 包装网易云 API 调用，添加统一的超时和重试逻辑
 async function callNeteaseAPIWithRetry(apiFunc, params, retries = 3, timeoutMs = 15000) {
+  // 底层 @neteasecloudmusicapienhanced/api 不转发 AbortSignal，但 createOption 会把
+  // query.timeout 透传到 axios settings，使底层请求在超时时被真正中止，避免
+  // Promise.race 只竞速留下孤儿请求。
+  const requestParams = { ...(params || {}), timeout: timeoutMs }
   for (let i = 0; i < retries; i++) {
     try {
-      const result = await withTimeout(apiFunc(params), timeoutMs)
+      const result = await withTimeout(apiFunc(requestParams), timeoutMs)
       
       if (result && result.body) {
         return result
@@ -1424,6 +1513,30 @@ async function callNeteaseAPIWithRetry(apiFunc, params, retries = 3, timeoutMs =
       await new Promise(resolve => setTimeout(resolve, 500 * (i + 1)))
     }
   }
+}
+
+// 专辑封面 URL 进程级缓存：避免每次搜索都对前 15 个专辑重复拉取详情（放大上游请求）。
+const NETEASE_ALBUM_COVER_CACHE_MAX = 1000
+const neteaseAlbumCoverCache = new Map()
+
+function getCachedNeteaseAlbumCover(albumId) {
+  const key = String(albumId)
+  const cached = neteaseAlbumCoverCache.get(key)
+  if (!cached) return ''
+  // 简单 LRU：命中时移到末尾，淘汰时删除最久未用的条目
+  neteaseAlbumCoverCache.delete(key)
+  neteaseAlbumCoverCache.set(key, cached)
+  return cached
+}
+
+function cacheNeteaseAlbumCover(albumId, url) {
+  const key = String(albumId)
+  if (!key || !url) return
+  if (neteaseAlbumCoverCache.size >= NETEASE_ALBUM_COVER_CACHE_MAX) {
+    const oldestKey = neteaseAlbumCoverCache.keys().next().value
+    if (oldestKey !== undefined) neteaseAlbumCoverCache.delete(oldestKey)
+  }
+  neteaseAlbumCoverCache.set(key, url)
 }
 
 // 网易云音乐 API 路由
@@ -2267,8 +2380,12 @@ async function enrichNeteaseRecentPlaylistCounts(payload, cookie = '') {
   if (pending.length === 0 || !NeteaseAPI?.playlist_detail) return payload
 
   let cursor = 0
+  // 路由级总 deadline：超时未完成的批次直接返回已有结果，避免整个最近播放
+  // 响应被拖到上游限流窗口之外。
+  const deadlineAt = Date.now() + 15000
   const worker = async () => {
     while (cursor < pending.length) {
+      if (Date.now() >= deadlineAt) break
       const row = pending[cursor]
       cursor += 1
       const resource = row?.resource || row?.data || row
@@ -2300,8 +2417,9 @@ async function enrichNeteaseRecentPlaylistCounts(payload, cookie = '') {
     }
   }
 
-  // Recent history has at most 100 entries. Keep metadata lookups bounded.
-  await Promise.all(Array.from({ length: Math.min(5, pending.length) }, () => worker()))
+  // Recent history has at most 100 entries. Keep metadata lookups bounded:
+  // 并发降到 3，配合总 deadline 控制上游调用量与限流风险。
+  await Promise.all(Array.from({ length: Math.min(3, pending.length) }, () => worker()))
   return payload
 }
 
@@ -2397,49 +2515,54 @@ function normalizeNeteaseJourneySongs(payload, preferredKeys = []) {
 // 网易云音乐旅程：所有数据均来自当前登录账号的官方用户接口。
 // 单项接口失败时保留其他卡片，避免一个实验性统计接口拖垮整个探索页。
 app.get('/api/netease/journey/overview', async (req, res) => {
-  const { uid, cookie } = req.query
-  if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
-  if (!uid) return res.status(400).json({ code: 400, error: '缺少网易云用户 ID' })
+  try {
+    const { uid, cookie } = req.query
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!uid) return res.status(400).json({ code: 400, error: '缺少网易云用户 ID' })
 
-  const auth = { cookie: String(cookie) }
-  const [record, total, report, monthlyRank, todayRank, preference, level, subcount] = await Promise.all([
-    fetchNeteaseJourneyPart('user_record', { ...auth, uid: String(uid), type: 0 }),
-    fetchNeteaseJourneyPart('listen_data_total', auth),
-    fetchNeteaseJourneyPart('listen_data_report', { ...auth, type: 'month' }),
-    fetchNeteaseJourneyPart('listen_data_song_play_rank', { ...auth, type: 'month' }),
-    fetchNeteaseJourneyPart('listen_data_today_song', auth),
-    fetchNeteaseJourneyPart('style_preference', auth),
-    fetchNeteaseJourneyPart('user_level', auth),
-    fetchNeteaseJourneyPart('user_subcount', auth),
-  ])
+    const auth = { cookie: String(cookie) }
+    const [record, total, report, monthlyRank, todayRank, preference, level, subcount] = await Promise.all([
+      fetchNeteaseJourneyPart('user_record', { ...auth, uid: String(uid), type: 0 }),
+      fetchNeteaseJourneyPart('listen_data_total', auth),
+      fetchNeteaseJourneyPart('listen_data_report', { ...auth, type: 'month' }),
+      fetchNeteaseJourneyPart('listen_data_song_play_rank', { ...auth, type: 'month' }),
+      fetchNeteaseJourneyPart('listen_data_today_song', auth),
+      fetchNeteaseJourneyPart('style_preference', auth),
+      fetchNeteaseJourneyPart('user_level', auth),
+      fetchNeteaseJourneyPart('user_subcount', auth),
+    ])
 
-  const recordSongs = normalizeNeteaseJourneySongs(record.data, ['allData', 'weekData'])
-  const monthlySongs = normalizeNeteaseJourneySongs(monthlyRank.data, ['songPlayRank', 'rankList'])
-  const todaySongs = normalizeNeteaseJourneySongs(todayRank.data, ['songPlayRank', 'rankList'])
+    const recordSongs = normalizeNeteaseJourneySongs(record.data, ['allData', 'weekData'])
+    const monthlySongs = normalizeNeteaseJourneySongs(monthlyRank.data, ['songPlayRank', 'rankList'])
+    const todaySongs = normalizeNeteaseJourneySongs(todayRank.data, ['songPlayRank', 'rankList'])
 
-  res.setHeader('Cache-Control', 'private, no-store')
-  res.json({
-    code: 200,
-    uid: String(uid),
-    rank: { ...record, songs: recordSongs },
-    report: {
-      available: total.available || report.available || monthlyRank.available || todayRank.available,
-      error: [total.error, report.error, monthlyRank.error, todayRank.error].filter(Boolean).join('；'),
-      total: total.data,
-      period: report.data,
-      monthlyRank: monthlyRank.data,
-      todayRank: todayRank.data,
-      monthlySongs,
-      todaySongs,
-    },
-    preference,
-    archive: {
-      available: level.available || subcount.available,
-      error: [level.error, subcount.error].filter(Boolean).join('；'),
-      level: level.data,
-      subcount: subcount.data,
-    },
-  })
+    res.setHeader('Cache-Control', 'private, no-store')
+    res.json({
+      code: 200,
+      uid: String(uid),
+      rank: { ...record, songs: recordSongs },
+      report: {
+        available: total.available || report.available || monthlyRank.available || todayRank.available,
+        error: [total.error, report.error, monthlyRank.error, todayRank.error].filter(Boolean).join('；'),
+        total: total.data,
+        period: report.data,
+        monthlyRank: monthlyRank.data,
+        todayRank: todayRank.data,
+        monthlySongs,
+        todaySongs,
+      },
+      preference,
+      archive: {
+        available: level.available || subcount.available,
+        error: [level.error, subcount.error].filter(Boolean).join('；'),
+        level: level.data,
+        subcount: subcount.data,
+      },
+    })
+  } catch (error) {
+    console.error('[网易云旅程概览] 处理异常:', error?.stack || error)
+    res.status(500).json({ code: 500, error: error?.message || '获取旅程概览失败' })
+  }
 })
 
 app.post('/api/netease/record/recent/report', async (req, res) => {
@@ -4627,9 +4750,12 @@ app.get('/api/qq/mv/url', async (req, res) => {
       return res.status(400).json({ error: '请提供视频vid' })
     }
     const cookie = String(req.query.cookie || '')
-    useQQMusicCookie(cookie)
+    // 播放类路由：请求 cookie 仅本次使用，不回写全局登录态。
+    // 请求未带 cookie 时回退到全局登录态（登录后 setCookie 已同步到全局）。
+    const activeCookie = resolveRequestCookie(cookie) || qqMusicCookie
+    console.log('[QQ音乐MV播放地址] Cookie状态:', activeCookie ? `已设置 (${activeCookie.length}字符)` : '未设置')
 
-    const parsedCookie = parseQQCookie(cookie)
+    const parsedCookie = parseQQCookie(activeCookie)
     const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || '').replace(/\D/g, '')
     const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
 
@@ -4647,7 +4773,7 @@ app.get('/api/qq/mv/url', async (req, res) => {
       req_0: { module: 'gosrf.Stream.MvUrlProxy', method: 'GetMvUrls', param: { vids: [String(vid)], request_typet: 10001 } }
     }
     const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
-      headers: { ...QQ_HEADERS, Cookie: cookie || qqMusicCookie, 'Content-Type': 'application/json' },
+      headers: { ...QQ_HEADERS, Cookie: activeCookie, 'Content-Type': 'application/json' },
       validateStatus: () => true
     })
     const d = resp.data?.req_0 || resp.data
@@ -4667,7 +4793,7 @@ app.get('/api/qq/mv/url', async (req, res) => {
       return res.status(200).json({
         url: null,
         error: '该MV暂无免费播放源，可能需VIP或受地区限制',
-        needCookie: !cookie,
+        needCookie: !activeCookie,
         vid: vid
       })
     }
@@ -4766,7 +4892,8 @@ app.get('/api/qq/mv/detail', async (req, res) => {
     if (!vid) {
       return res.status(400).json({ error: '请提供视频vid' })
     }
-    useQQMusicCookie(req.query.cookie)
+    // 播放类路由：请求 cookie 仅本次使用，不回写全局登录态。
+    resolveRequestCookie(req.query.cookie)
     // 使用 qq-music-api 库获取MV详情，参数名为 id
     const result = await qqMusicApi.api('mv', { id: vid })
     console.log('[QQ音乐MV详情] 接口返回data keys:', Object.keys(result.data || result || {}))
@@ -4899,13 +5026,8 @@ app.get('/api/qq/song/url', async (req, res) => {
     const normalizedCookie = cookie ? String(cookie).replace(/^['"]|['"]$/g, '') : qqMusicCookie
     console.log('[QQ URL] cookie: ' + (normalizedCookie ? 'provided' : 'missing'))
 
-    if (normalizedCookie) {
-      try {
-        setQQMusicCookie(normalizedCookie)
-      } catch (err) {
-        console.error('[QQ URL] failed to set cookie:', err.message)
-      }
-    }
+    // 播放类路由：请求 cookie 仅通过 qqMusicRequest 的 options.cookie 按本次请求
+    // 传递，绝不回写全局登录态，避免并发播放请求互相冲掉登录账号。
 
     const parsedCookie = parseQQCookie(normalizedCookie)
     const qqUin = String(parsedCookie.uin || parsedCookie.qqmusic_uin || parsedCookie.musicid || parsedCookie.wxuin || '').replace(/\D/g, '')
@@ -5414,7 +5536,7 @@ app.get('/api/qq/recommend/daily', async (req, res) => {
     if (isDev) console.log('[QQ音乐每日推荐] 正在获取每日推荐...')
     
     // 设置Cookie
-    useQQMusicCookie(cookie)
+    resolveRequestCookie(cookie)
 
     // 优先使用用户自行配置的 QQ Music Skills；未配置时直接读取登录账号
     // 的 99 号“猜你喜欢”电台并连续取批次，避免旧 recommend/daily 接口
@@ -5580,7 +5702,7 @@ app.get('/api/qq/recommend/songs', async (req, res) => {
     const { cookie } = req.query
     // 登录后读取账号 99 号“猜你喜欢”电台；访客只回退到公开新歌，
     // 不再用随机公共歌单伪装成个性化推荐。
-    const hasLogin = Boolean(useQQMusicCookie(cookie))
+    const hasLogin = Boolean(resolveRequestCookie(cookie))
     if (hasLogin) {
       const radio = await fetchQQRadioBatches(99, 30, 8, cookie)
       const radioSongs = radio?.tracks || radio?.songlist || radio?.list || []
@@ -5675,6 +5797,40 @@ const stripExploreMarkup = (value) => String(value || '')
 const settledExploreValue = (result, fallback = null) => (
   result?.status === 'fulfilled' ? result.value : fallback
 )
+
+// 并发组统一 deadline：与 Promise.allSettled 语义一致（保持响应结构不变），
+// 但最多等 deadlineMs（12s，与 Skills 的 12s abort 对齐）；超时后已完成的调用
+// 保留其结果，未完成的降级为 rejected，不阻塞整个探索页。
+function settleExploreCallsWithDeadline(calls, deadlineMs = 12000) {
+  return new Promise((resolve) => {
+    const results = new Array(calls.length).fill(null)
+    let remaining = calls.length
+    let settled = false
+    const done = () => {
+      if (settled) return
+      settled = true
+      resolve(results.map(result => result || {
+        status: 'rejected',
+        reason: new Error('QQ 探索页请求超时')
+      }))
+    }
+    calls.forEach((call, index) => {
+      Promise.resolve(call).then(
+        value => {
+          results[index] = { status: 'fulfilled', value }
+          remaining -= 1
+          if (remaining === 0) done()
+        },
+        reason => {
+          results[index] = { status: 'rejected', reason }
+          remaining -= 1
+          if (remaining === 0) done()
+        }
+      )
+    })
+    setTimeout(done, deadlineMs)
+  })
+}
 
 function normalizeNeteaseExploreSong(input, fallback = {}) {
   const track = input?.song || input?.mainSong || input || {}
@@ -5888,7 +6044,8 @@ async function requestQQMusicSkillBatches(path, params, key, listField, targetCo
 }
 
 async function fetchQQRadioBatches(id, targetCount = 30, maxBatches = 8, cookie = '', startBatch = 0) {
-  if (cookie) useQQMusicCookie(String(cookie))
+  // 播放/推荐类读取：请求 cookie 仅本次请求使用，不回写全局。
+  const requestCookie = cookie || qqMusicCookie
   let firstResult = null
   const tracks = []
   const seen = new Set()
@@ -5914,7 +6071,7 @@ async function fetchQQRadioBatches(id, targetCount = 30, maxBatches = 8, cookie 
           }
         },
         comm: { ct: 24, cv: 0 }
-      })
+      }, { cookie: requestCookie })
       return result?.songlist?.data || result?.songlist || result
     } catch (error) {
       console.warn(`[QQ音乐电台] 分页获取第 ${pageNo} 页失败，回退 qq-music-api:`, error?.message || error)
@@ -5949,7 +6106,7 @@ async function fetchQQRadioBatches(id, targetCount = 30, maxBatches = 8, cookie 
 app.get('/api/explore/qq/radio/next', async (req, res) => {
   try {
     const cookie = String(req.query.cookie || '')
-    const hasLogin = Boolean(useQQMusicCookie(cookie))
+    const hasLogin = Boolean(resolveRequestCookie(cookie))
     const count = Math.max(5, Math.min(Number(req.query.count) || 30, 60))
     const batch = Math.max(1, Math.floor(Number(req.query.batch) || 1))
     const excluded = new Set(String(req.query.exclude || '').split(',').map(value => value.trim()).filter(Boolean))
@@ -6122,10 +6279,10 @@ function setNeteaseSongDetailCache(song) {
   const key = String(song?.id || '')
   if (!key) return
   neteaseSongDetailCache.set(key, { song, expiresAt: Date.now() + NETEASE_SONG_DETAIL_TTL })
-  if (neteaseSongDetailCache.size > 20000) {
+  if (neteaseSongDetailCache.size > 5000) {
     for (const oldestKey of neteaseSongDetailCache.keys()) {
       neteaseSongDetailCache.delete(oldestKey)
-      if (neteaseSongDetailCache.size <= 15000) break
+      if (neteaseSongDetailCache.size <= 3500) break
     }
   }
 }
@@ -6410,7 +6567,7 @@ async function fetchNeteaseRadioPrograms(id, cookie = '', maxPrograms = 5000) {
 app.get('/api/explore/qq', async (req, res) => {
   try {
     const cookie = String(req.query.cookie || '')
-    const hasLogin = Boolean(useQQMusicCookie(cookie))
+    const hasLogin = Boolean(resolveRequestCookie(cookie))
     const skillKey = getQQMusicSkillKey(req)
     // Skills Key 与 QQ 账号绑定；未登录时不调用也不暴露任何 Skills 内容。
     const hasOfficialSkill = Boolean(hasLogin && skillKey)
@@ -6447,7 +6604,7 @@ app.get('/api/explore/qq', async (req, res) => {
       skillRadioResult,
       skillPlaylistResult,
       skillChartResult
-    ] = await Promise.allSettled(calls)
+    ] = await settleExploreCallsWithDeadline(calls)
 
     const chartGroups = settledExploreValue(chartResult, []) || []
     const communityPlaylists = settledExploreValue(playlistResult, { list: [] })?.list || []
@@ -6822,7 +6979,7 @@ app.get('/api/explore/chart', async (req, res) => {
     if (!id) return res.status(400).json({ code: 400, error: '请提供榜单 ID' })
 
     if (platform === 'qq') {
-      const hasLogin = Boolean(useQQMusicCookie(String(cookie || '')))
+      const hasLogin = Boolean(resolveRequestCookie(String(cookie || '')))
       const skillKey = getQQMusicSkillKey(req)
       if (source === 'qqmusic-skills' && hasLogin && skillKey) {
         const chart = await requestQQMusicSkillPages(
@@ -6921,7 +7078,7 @@ app.get('/api/explore/radio', async (req, res) => {
       })
     }
 
-    useQQMusicCookie(String(cookie || ''))
+    resolveRequestCookie(String(cookie || ''))
     // QQ 电台是无 page 参数的动态小批次接口；重复请求、去重后形成可连续播放的完整队列。
     const radio = await fetchQQRadioBatches(id, 30, 8, cookie)
     const rawTracks = radio?.tracks || radio?.songlist || radio?.list || []
@@ -6946,7 +7103,7 @@ app.get('/api/explore/radio', async (req, res) => {
 
 app.get('/api/explore/qq/skills/status', async (req, res) => {
   try {
-    const hasLogin = Boolean(useQQMusicCookie(String(req.query.cookie || '')))
+    const hasLogin = Boolean(resolveRequestCookie(String(req.query.cookie || '')))
     if (!hasLogin) return res.status(401).json({ code: 401, error: '请先登录 QQ 音乐' })
     const skillKey = getQQMusicSkillKey(req)
     if (!skillKey) return res.json({ code: 200, configured: false, valid: false })
@@ -6959,7 +7116,7 @@ app.get('/api/explore/qq/skills/status', async (req, res) => {
 
 app.get('/api/explore/qq/skills/report', async (req, res) => {
   try {
-    const hasLogin = Boolean(useQQMusicCookie(String(req.query.cookie || '')))
+    const hasLogin = Boolean(resolveRequestCookie(String(req.query.cookie || '')))
     const skillKey = getQQMusicSkillKey(req)
     if (!hasLogin) return res.status(401).json({ code: 401, error: '请先登录 QQ 音乐' })
     if (!skillKey) return res.status(401).json({ code: 401, error: '请先配置 QQ 音乐官方 API Key' })
@@ -6976,7 +7133,7 @@ app.get('/api/explore/qq/skills/report', async (req, res) => {
 })
 
 app.post('/api/explore/qq/skills/interpretation', async (req, res) => {
-  const hasLogin = Boolean(useQQMusicCookie(String(req.body?.cookie || '')))
+  const hasLogin = Boolean(resolveRequestCookie(String(req.body?.cookie || '')))
   const skillKey = getQQMusicSkillKey(req)
   const query = String(req.body?.query || '').trim().slice(0, 500)
   const assetTypes = Array.isArray(req.body?.assetTypes)
@@ -7064,8 +7221,8 @@ app.get('/api/qq/user/detail', async (req, res) => {
     if (!id) {
       return res.status(400).json({ result: 500, errMsg: '请提供用户ID' })
     }
-    // 如果提供了cookie，临时设置它
-    useQQMusicCookie(cookie)
+    // 读取类路由：请求 cookie 仅本次使用，不回写全局登录态。
+    resolveRequestCookie(cookie)
     
     // 使用qq-music-api获取用户信息
     const result = await qqMusicApi.api('user/detail', { id })
@@ -7090,8 +7247,8 @@ app.get('/api/qq/user/playlist', async (req, res) => {
     if (!id) {
       return res.status(400).json({ result: 500, errMsg: '请提供用户ID' })
     }
-    // 如果提供了cookie，临时设置它
-    useQQMusicCookie(cookie)
+    // 读取类路由：请求 cookie 仅本次使用，不回写全局登录态。
+    resolveRequestCookie(cookie)
     
     // 使用qq-music-api获取用户歌单
     const result = await qqMusicApi.api('user/songlist', { id })
@@ -7113,7 +7270,8 @@ app.get('/api/qq/user/collect', async (req, res) => {
     if (!id) {
       return res.status(400).json({ result: 500, errMsg: '请提供用户ID' })
     }
-    useQQMusicCookie(cookie)
+    // 读取类路由：请求 cookie 仅本次使用，不回写全局登录态。
+    resolveRequestCookie(cookie)
 
     // 直接使用库内已有的收藏歌单路由。旧代码调用了不存在的 getCookie()，
     // 因而无论是否登录，请求头里的 Cookie 始终为空。
@@ -7138,7 +7296,7 @@ app.get('/api/qq/playlist/detail', async (req, res) => {
     if (!id) {
       return res.status(400).json({ result: 500, errMsg: '请提供歌单ID' })
     }
-    const hasLogin = Boolean(useQQMusicCookie(cookie))
+    const hasLogin = Boolean(resolveRequestCookie(cookie))
     const skillKey = getQQMusicSkillKey(req)
     if (source === 'qqmusic-skills' && hasLogin && skillKey) {
       const skillPlaylist = await requestQQMusicSkillPages(
@@ -7299,7 +7457,7 @@ app.post('/api/qq/like', async (req, res) => {
     // 重复收藏/重复取消按幂等成功处理，避免 QQ 用业务错误码拒绝重复写入。
     if (songMid) {
       try {
-        const favoriteState = await getQQSongFavoriteState(songMid)
+        const favoriteState = await getQQSongFavoriteState(songMid, cookie)
         if (favoriteState === shouldLike) {
           return res.json({
             result: 100,
@@ -7315,13 +7473,13 @@ app.post('/api/qq/like', async (req, res) => {
 
     // 当前 QQ 网页端使用 MusicU PlaylistDetailWrite。旧目录号 201 不能直接
     // 用作写入目标，需要先解析该账号“我喜欢”条目的实际 tid。
-    const favoritePlaylistId = await resolveQQFavoritePlaylistId()
+    const favoritePlaylistId = await resolveQQFavoritePlaylistId(cookie)
     const data = await mutateQQSonglistModern({
       dirid: favoritePlaylistId,
       songId: numericId,
       songType: resolvedSongType ?? 0,
       operation: shouldLike ? 'add' : 'remove'
-    })
+    }, cookie)
     if (data?.result === 500 || data?.code === 500 || data?.errMsg || data?.msg === '操作失败') {
       return res.status(500).json({
         result: 500,
@@ -7503,7 +7661,7 @@ app.post('/api/qq/playlist/tracks', async (req, res) => {
       songId: trackList,
       songType: resolvedSongType ?? 0,
       operation: op === 'add' ? 'add' : 'remove'
-    })
+    }, cookie)
     if (data?.result === 500 || data?.code === 500 || data?.errMsg) {
       return res.status(500).json({ result: 500, data, error: data.errMsg || data.error || '修改歌单歌曲失败' })
     }
@@ -7522,7 +7680,7 @@ app.post('/api/qq/playlist/subscribe', async (req, res) => {
 
     // 现代 MusicU 签名接口：g_tk 从 qqmusic_key/qm_keyst 计算，
     // 旧 fcg_qm_order_diss 需要 skey/p_skey，现代登录不再提供，会导致 500。
-    const data = await mutateQQPlaylistConcern({ dissid: String(id), concern: subscribe === true })
+    const data = await mutateQQPlaylistConcern({ dissid: String(id), concern: subscribe === true }, cookie)
     res.json({ result: 100, data, message: subscribe ? '已收藏歌单' : '已取消收藏' })
   } catch (error) {
     console.error('[QQ音乐收藏歌单] 失败:', error)
@@ -7589,7 +7747,12 @@ async function getWallpaperEnginePathFromProcess() {
 }
 
 // 获取所有可能的 Wallpaper Engine 路径
-async function getWallpaperEnginePaths(customPath = null) {
+// 解析结果按 customPath 做进程级缓存：每次请求 spawn 两个 PowerShell（进程查询 +
+// 注册表读取）开销大，且安装路径在运行期间不会变化；仅当 ?path= 参数变更时才重算。
+const WALLPAPER_ENGINE_PATH_CACHE_MAX = 20
+const wallpaperEnginePathCache = new Map()
+
+async function resolveWallpaperEnginePaths(customPath = null) {
   const paths = []
 
   // 1. 用户自定义路径（优先级最高）
@@ -7633,6 +7796,21 @@ async function getWallpaperEnginePaths(customPath = null) {
   paths.push(...defaultPaths)
 
   return paths
+}
+
+// 带进程级缓存的路径解析入口：缓存 Promise 本身，并发请求共享同一次解析；
+// 缓存键包含 customPath，?path= 变更时自然重算。
+function getWallpaperEnginePaths(customPath = null) {
+  const cacheKey = String(customPath || '')
+  const cached = wallpaperEnginePathCache.get(cacheKey)
+  if (cached) return cached
+  const resultPromise = resolveWallpaperEnginePaths(customPath)
+  if (wallpaperEnginePathCache.size >= WALLPAPER_ENGINE_PATH_CACHE_MAX) {
+    const oldestKey = wallpaperEnginePathCache.keys().next().value
+    if (oldestKey !== undefined) wallpaperEnginePathCache.delete(oldestKey)
+  }
+  wallpaperEnginePathCache.set(cacheKey, resultPromise)
+  return resultPromise
 }
 
 // WallpaperEngine 壁纸扫描 API
@@ -7895,6 +8073,15 @@ app.get('/api/wallpaper-engine/media', async (req, res) => {
         'Content-Type': contentType
       })
 
+      // 读取失败（文件被占用/移动/删除）时销毁响应，避免句柄泄漏与挂起；
+      // 客户端提前断开时反向销毁读取流，避免底层文件句柄残留。
+      fileStream.on('error', (error) => {
+        console.error('[壁纸媒体流] 读取失败:', error?.message || error)
+        res.destroy()
+      })
+      res.on('close', () => {
+        fileStream.destroy()
+      })
       fileStream.pipe(res)
     } else {
       // 完整文件
@@ -7904,7 +8091,15 @@ app.get('/api/wallpaper-engine/media', async (req, res) => {
         'Accept-Ranges': 'bytes'
       })
 
-      createReadStream(mediaPath).pipe(res)
+      const fullStream = createReadStream(mediaPath)
+      fullStream.on('error', (error) => {
+        console.error('[壁纸媒体流] 读取失败:', error?.message || error)
+        res.destroy()
+      })
+      res.on('close', () => {
+        fullStream.destroy()
+      })
+      fullStream.pipe(res)
     }
   } catch (error) {
     console.error('获取媒体文件失败:', error)
@@ -8034,8 +8229,8 @@ app.get('/api/qq/comment', async (req, res) => {
     
     const topId = await resolveQQCommentTopId(id, biztype)
 
-    // 使用qq-music-api库获取评论
-    useQQMusicCookie(cookie)
+    // 使用qq-music-api库获取评论（读取类：请求 cookie 仅本次使用，不回写全局）
+    resolveRequestCookie(cookie)
     let result = await qqMusicApi.api('comment', {
       id: topId,
       pageNo: pageNum + 1, // API从1开始计数
@@ -8623,7 +8818,10 @@ app.post('/api/qq/artist/subscribe', async (req, res) => {
     if (!mid) return res.status(400).json({ result: 500, error: '请提供歌手MID' })
     if (!requireQQLogin(res, cookie)) return
 
-    const parsedCookie = parseQQCookie()
+    // 写操作只按本次请求使用请求自带的 cookie（优先）；请求未带时回退全局登录态，
+    // 绝不回写全局，避免并发请求互相冲掉登录态。
+    const activeCookie = cookie || qqMusicCookie
+    const parsedCookie = parseQQCookie(activeCookie)
     const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || '').replace(/\D/g, '')
     const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
 
@@ -8645,7 +8843,8 @@ app.post('/api/qq/artist/subscribe', async (req, res) => {
           req_0: musicuAttempts[0]
         }
         const unsigResp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', unsigPayload, {
-          headers: { ...QQ_HEADERS, Cookie: qqMusicCookie, 'Content-Type': 'application/json' },
+          headers: { ...QQ_HEADERS, Cookie: activeCookie, 'Content-Type': 'application/json' },
+          timeout: 15000,
           validateStatus: () => true
         })
         const unsigCode = Number(unsigResp.data?.req_0?.code ?? unsigResp.data?.code)
@@ -8671,8 +8870,8 @@ app.post('/api/qq/artist/subscribe', async (req, res) => {
           const sign = zzcSign(requestBody)
           const signedUrl = `https://u6.y.qq.com/cgi-bin/musics.fcg?_=${Date.now()}&encoding=ag-1&sign=${encodeURIComponent(sign)}`
           const musicuResponse = await axios.post(signedUrl, encryptedBody, {
-            headers: { ...QQ_HEADERS, Cookie: qqMusicCookie, 'Content-Type': 'text/plain' },
-            responseType: 'arraybuffer', transformResponse: data => data, validateStatus: () => true
+            headers: { ...QQ_HEADERS, Cookie: activeCookie, 'Content-Type': 'text/plain' },
+            responseType: 'arraybuffer', transformResponse: data => data, timeout: 15000, validateStatus: () => true
           })
           const musicuData = JSON.parse(decodeAG1Response(new Uint8Array(musicuResponse.data)))
           const code = Number(musicuData?.req_0?.code ?? musicuData?.code)
@@ -8701,7 +8900,8 @@ app.post('/api/qq/artist/subscribe', async (req, res) => {
         platform: 'yqq.json', needNewCode: 1, ct: 24, cv: 4747474,
         singermid: String(mid), uin: musicId
       },
-      headers: { ...QQ_HEADERS, Cookie: qqMusicCookie, Referer: 'https://y.qq.com/' },
+      headers: { ...QQ_HEADERS, Cookie: activeCookie, Referer: 'https://y.qq.com/' },
+      timeout: 15000,
       validateStatus: () => true
     })
 
@@ -8755,6 +8955,7 @@ async function callQQRelationList(method, start, num, cookie) {
   }
   const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
     headers: { ...QQ_HEADERS, Cookie: cookie, 'Content-Type': 'application/json' },
+    timeout: 15000,
     validateStatus: () => true
   })
   return resp.data?.req_0 || resp.data
@@ -8850,6 +9051,7 @@ app.post('/api/qq/user/subscribe', async (req, res) => {
     }
     const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
       headers: { ...QQ_HEADERS, Cookie: cookie, 'Content-Type': 'application/json' },
+      timeout: 15000,
       validateStatus: () => true
     })
     const code = Number(resp.data?.req_0?.code ?? resp.data?.code)
@@ -8936,6 +9138,7 @@ app.get('/api/qq/user/favs', async (req, res) => {
     }
     const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
       headers: { ...QQ_HEADERS, Cookie: cookie, 'Content-Type': 'application/json' },
+      timeout: 15000,
       validateStatus: () => true
     })
     const d = resp.data?.req_0 || resp.data
@@ -8961,6 +9164,10 @@ app.get('/api/qq/user/profile', async (req, res) => {
     const musicId = String(parsedCookie.uin || '').replace(/\D/g, '')
     const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
     if (!musicId || !musicKey) throw new Error('QQ 登录凭证缺少 uin 或 qm_keyst，请重新登录')
+    // 每次进入用户主页需 3 次上游请求，按 EncUin + 登录账号缓存（防止跨账号数据互串）
+    const cacheKey = recommendCacheKeyWithCookie('qq:user-profile', encUin, cookie)
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const comm = {
       ct: 24, cv: 4747474, platform: 'yqq.json', uin: musicId, qq: musicId,
       authst: musicKey,
@@ -8972,6 +9179,7 @@ app.get('/api/qq/user/profile', async (req, res) => {
     const call = async (req0) => {
       const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', { comm, req_0: req0 }, {
         headers: { ...QQ_HEADERS, Cookie: cookie, 'Content-Type': 'application/json' },
+        timeout: 15000,
         validateStatus: () => true
       })
       return resp.data?.req_0 || resp.data
@@ -8985,7 +9193,7 @@ app.get('/api/qq/user/profile', async (req, res) => {
     // 粉丝列表（他人）
     const fansResult = await call({ module: 'music.concern.RelationList', method: 'GetFansList', param: { From: 0, Size: 30, HostUin: encUin } })
 
-    res.json({
+    const payload = {
       result: 100,
       data: {
         encUin,
@@ -8994,7 +9202,9 @@ app.get('/api/qq/user/profile', async (req, res) => {
         follows: followResult?.data?.List || [],
         fans: fansResult?.data?.List || [],
       }
-    })
+    }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[QQ用户主页] 获取失败:', error)
     res.status(502).json({ result: 500, error: error?.message || '获取用户主页失败' })
@@ -9005,13 +9215,59 @@ app.get('/api/qq/user/profile', async (req, res) => {
 // 补充：Banner/歌单分类/热门歌单/相似歌单/榜单/歌手分类（双平台）
 // ═══════════════════════════════════════════════════════════════
 
+// 歌曲详情侧栏/推荐类接口的进程级缓存：这些接口随每次打开歌曲详情弹窗被调用，
+// 数据本身短期稳定（相似歌曲/相关歌单/歌曲百科/所在歌单），缓存 Map + TTL + 上限
+// 防泄漏，参考既有 qqPlaybackMetadataCache / neteaseSongDetailCache 模式。
+const RECOMMEND_CACHE_MAX = 300
+const RECOMMEND_CACHE_TTL = 10 * 60 * 1000
+const recommendCache = new Map()
+
+function getRecommendCache(key) {
+  const cached = recommendCache.get(key)
+  if (!cached) return null
+  if (cached.expiresAt <= Date.now()) {
+    recommendCache.delete(key)
+    return null
+  }
+  // 简单 LRU：命中移到末尾，淘汰时删除最久未用的条目
+  recommendCache.delete(key)
+  recommendCache.set(key, cached)
+  return cached.value
+}
+
+function setRecommendCache(key, value) {
+  if (!key || value === undefined || value === null) return
+  recommendCache.set(key, { value, expiresAt: Date.now() + RECOMMEND_CACHE_TTL })
+  while (recommendCache.size > RECOMMEND_CACHE_MAX) {
+    const oldestKey = recommendCache.keys().next().value
+    if (oldestKey === undefined) break
+    recommendCache.delete(oldestKey)
+  }
+}
+
+// 登录态相关的缓存键叠加 cookie 短哈希，避免不同账号数据互串
+function recommendCacheKeyWithCookie(prefix, id, cookie) {
+  let hash = 7
+  const cookieStr = String(cookie || '')
+  for (let i = 0; i < cookieStr.length; i++) {
+    hash = (hash * 31 + cookieStr.charCodeAt(i)) | 0
+  }
+  return `${prefix}:${String(id)}:${hash}`
+}
+
+
 // 网易云首页 Banner
 app.get('/api/netease/banner', async (req, res) => {
   try {
     if (!NeteaseAPI || !NeteaseAPI.banner) return res.status(500).json({ error: 'API 未初始化' })
+    const cacheKey = 'ne:banner'
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await callNeteaseAPIWithRetry(NeteaseAPI.banner, { type: 2 })
     const body = result.body || result
-    res.json({ banners: Array.isArray(body.banners) ? body.banners : [] })
+    const payload = { banners: Array.isArray(body.banners) ? body.banners : [] }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[网易云Banner] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9166,9 +9422,14 @@ app.get('/api/netease/song/simi', async (req, res) => {
     const { id, cookie, limit = 10 } = req.query
     if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
     if (!NeteaseAPI || !NeteaseAPI.simi_song) return res.status(500).json({ error: 'API 未初始化' })
+    const cacheKey = recommendCacheKeyWithCookie('ne:simi', id, cookie)
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await callNeteaseAPIWithRetry(NeteaseAPI.simi_song, { id: String(id), cookie: String(cookie || '') })
     const body = result.body || result
-    res.json({ songs: (Array.isArray(body.songs) ? body.songs : []).slice(0, Number(limit)) })
+    const payload = { songs: (Array.isArray(body.songs) ? body.songs : []).slice(0, Number(limit)) }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[网易云也爱听] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9181,11 +9442,16 @@ app.get('/api/netease/song/related-playlist', async (req, res) => {
     const { id, cookie } = req.query
     if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
     if (!NeteaseAPI || !NeteaseAPI.simi_playlist) return res.status(500).json({ error: 'API 未初始化' })
+    const cacheKey = recommendCacheKeyWithCookie('ne:song-rel', id, cookie)
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await callNeteaseAPIWithRetry(NeteaseAPI.simi_playlist, {
       id: String(id), limit: 5, offset: 0, cookie: String(cookie || '')
     })
     const body = result.body || result
-    res.json({ playlists: Array.isArray(body.playlists) ? body.playlists.slice(0, 5) : [] })
+    const payload = { playlists: Array.isArray(body.playlists) ? body.playlists.slice(0, 5) : [] }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[网易云相关歌单] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9199,10 +9465,13 @@ app.get('/api/netease/song/related-playlist', async (req, res) => {
 // QQ 首页 Banner
 app.get('/api/qq/banner', async (req, res) => {
   try {
+    const cacheKey = 'qq:banner'
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await qqMusicApi.api('recommend/banner')
     const banners = Array.isArray(result) ? result : (Array.isArray(result?.banner) ? result.banner : [])
     // 过滤专辑推广轮播（recommend/banner 常返回整屏 album 广告，左下角标 album）
-    res.json({ banners: banners
+    const payload = { banners: banners
       .filter((b) => {
         const rawUrl = String(b.h5Url || b.url || '')
         const title = String(b.title || b.name || b.typeStr || '').toLowerCase()
@@ -9215,7 +9484,9 @@ app.get('/api/qq/banner', async (req, res) => {
         url: b.h5Url || b.url || '',
         title: b.title || b.name || b.typeStr || '',
       }))
-      .filter(b => b.imageUrl) })
+      .filter(b => b.imageUrl) }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[QQ Banner] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9442,8 +9713,12 @@ app.get('/api/netease/song/wiki', async (req, res) => {
     const { id } = req.query
     if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
     if (!NeteaseAPI || !NeteaseAPI.song_wiki_summary) return res.status(500).json({ error: 'API 未初始化' })
+    const cacheKey = `ne:wiki:${String(id)}`
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await callNeteaseAPIWithRetry(NeteaseAPI.song_wiki_summary, { id: String(id) })
     const body = result.body || result
+    setRecommendCache(cacheKey, body)
     res.json(body)
   } catch (error) {
     console.error('[网易云歌曲百科] 获取失败:', error)
@@ -9456,8 +9731,13 @@ app.get('/api/qq/song/playlist', async (req, res) => {
   try {
     const { mid, limit = 10 } = req.query
     if (!mid) return res.status(400).json({ error: '请提供歌曲mid' })
+    const cacheKey = `qq:song-playlist:${String(mid)}:${Number(limit)}`
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await qqMusicApi.api('song/playlist', { mid: String(mid), limit: Number(limit) })
-    res.json({ result: 100, data: result })
+    const payload = { result: 100, data: result }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[QQ歌曲所在歌单] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9467,9 +9747,12 @@ app.get('/api/qq/song/playlist', async (req, res) => {
 // QQ「听 [歌曲] 的也在听」——基于当前歌曲的跨歌手推荐（相似歌曲 + 相似歌的相似扩展，15 首）
 app.get('/api/qq/song/listen-also', async (req, res) => {
   try {
-    const { songid } = req.query
+    const { songid, singermid, cookie } = req.query
     if (!songid) return res.status(400).json({ error: '请提供歌曲ID' })
-    useQQMusicCookie(req.query.cookie)
+    useQQMusicCookie(cookie)
+    const cacheKey = `qq:listen-also:${String(songid)}:${String(singermid || '')}`
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const seen = new Set()
     const merged = []
     // 第一层：当前歌曲的相似歌曲
@@ -9512,7 +9795,9 @@ app.get('/api/qq/song/listen-also', async (req, res) => {
         platform: 'qq'
       }
     }).filter(s => s.mid || s.id)
-    res.json({ result: 100, data: { songs } })
+    const payload = { result: 100, data: { songs } }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[QQ也在听] 获取失败:', error?.message || error)
     res.status(502).json({ result: 500, error: error?.message || '获取失败' })
@@ -9524,13 +9809,16 @@ app.get('/api/qq/song/like-also', async (req, res) => {
   try {
     const { songid, offset = 0 } = req.query
     if (!songid) return res.status(400).json({ error: '请提供歌曲ID' })
-    useQQMusicCookie(req.query.cookie)
+    // 每首歌 + offset 对应一批固定的歌单（换一批是切 offset，天然命中不同缓存项）
+    const off = Number(offset) || 0
+    const cacheKey = `qq:like-also:${String(songid)}:${off}`
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     // 相似歌曲（5 首）+ 当前歌，各自拉相关歌单合并；offset 换一批用不同种子顺序
     const sims = await qqMusicApi.api('song/similar', { id: String(songid) })
     const simList = Array.isArray(sims) ? sims : (Array.isArray(sims?.songInfoList) ? sims.songInfoList : [])
     const seedIds = [Number(songid), ...simList.map(s => Number(s?.id || s?.songid || 0))].filter(Boolean)
     // offset 轮转种子顺序（换一批）
-    const off = Number(offset) || 0
     const rotated = off === 0 ? seedIds : [...seedIds.slice(off % Math.max(seedIds.length, 1)), ...seedIds.slice(0, off % Math.max(seedIds.length, 1))]
     const seen = new Set()
     const playlists = []
@@ -9557,7 +9845,9 @@ app.get('/api/qq/song/like-also', async (req, res) => {
       } catch { /* 单首相关歌单失败忽略 */ }
       if (playlists.length >= 6) break
     }
-    res.json({ result: 100, data: { playlists: playlists.slice(0, 6) } })
+    const payload = { result: 100, data: { playlists: playlists.slice(0, 6) } }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[QQ也爱歌单] 获取失败:', error?.message || error)
     res.status(502).json({ result: 500, error: error?.message || '获取失败' })
@@ -9932,7 +10222,25 @@ app.get('/health', (req, res) => {
   })
 })
 
-app.listen(PORT, '127.0.0.1', () => {
+// 统一错误中间件：Express 4 不转发 async handler 的 rejection，凡是 async 路由
+// 漏掉 try/catch 抛出的错误都会走到这里。绝不向上抛给进程，避免崩溃。
+app.use((err, req, res, next) => {
+  if (res.headersSent) {
+    return next(err)
+  }
+  console.error('[错误中间件]', req.method, req.originalUrl, err?.stack || err)
+  res.status(500).json({ error: err?.message || '服务器内部错误' })
+})
+
+const server = app.listen(PORT, '127.0.0.1', () => {
+})
+server.on('error', (error) => {
+  if (error?.code === 'EADDRINUSE') {
+    console.error(`[服务器启动失败] 端口 ${PORT} 已被占用，请关闭占用该端口的程序后重试`)
+  } else {
+    console.error('[服务器启动失败]', error?.stack || error)
+  }
+  process.exit(1)
 })
 
 export default app

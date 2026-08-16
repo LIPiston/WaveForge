@@ -21,18 +21,29 @@ export const EMPTY_AUDIO_PULSE_STORE: AudioPulseStore = Object.freeze({
   subscribe: () => () => undefined,
 })
 
-function createPulseStore(): AudioPulseStore & { publish: (snapshot: AudioPulseSnapshot) => void } {
+function createPulseStore(): AudioPulseStore & {
+  publish: (snapshot: AudioPulseSnapshot) => void
+  hasListeners: () => boolean
+  setStartCallback: (callback: (() => void) | null) => void
+} {
   let snapshot = EMPTY_PULSE
   const listeners = new Set<() => void>()
+  // 有新订阅者出现时重启 rAF 循环（由 effect 注入当前的 start 函数）
+  let startCallback: (() => void) | null = null
   return {
     getSnapshot: () => snapshot,
     subscribe: listener => {
       listeners.add(listener)
+      startCallback?.()
       return () => listeners.delete(listener)
     },
     publish: next => {
       snapshot = next
       listeners.forEach(listener => listener())
+    },
+    hasListeners: () => listeners.size > 0,
+    setStartCallback: callback => {
+      startCallback = callback
     },
   }
 }
@@ -68,8 +79,40 @@ export function useAudioPulseStore(
     let frame = 0
     let previousTime = performance.now()
     let disposed = false
+    let running = false
+    let unsubscribeAnalyzer: (() => void) | null = null
+
+    // 脉冲循环运行期间作为分析器 store 的 no-op 订阅者注册：无订阅者时
+    // useAudioAnalyzer 自动停帧（桌面模式无脉冲组件、窗口隐藏等场景）。
+    const ensureAnalyzer = (on: boolean) => {
+      if (on && !unsubscribeAnalyzer) {
+        unsubscribeAnalyzer = analyzer.subscribe(() => {})
+      } else if (!on && unsubscribeAnalyzer) {
+        unsubscribeAnalyzer()
+        unsubscribeAnalyzer = null
+      }
+    }
+
+    const stop = () => {
+      running = false
+      if (frame) {
+        cancelAnimationFrame(frame)
+        frame = 0
+      }
+      ensureAnalyzer(false)
+    }
+
+    const start = () => {
+      if (disposed || running) return
+      if (document.visibilityState === 'hidden' || !store.hasListeners()) return
+      running = true
+      ensureAnalyzer(true)
+      previousTime = performance.now()
+      frame = requestAnimationFrame(update)
+    }
 
     const update = (now: number) => {
+      frame = 0
       if (disposed) return
       const delta = Math.min(50, Math.max(1, now - previousTime))
       previousTime = now
@@ -167,14 +210,32 @@ export function useAudioPulseStore(
         || (next.scale === 0 && previous.scale !== 0)
       ) store.publish(next)
 
-      if (active || next.scale > 0 || envelope.strongTriggerTime >= 0) frame = requestAnimationFrame(update)
-      else if (store.getSnapshot() !== EMPTY_PULSE) store.publish(EMPTY_PULSE)
+      // 无消费者（桌面模式/首页无脉冲组件）或窗口隐藏时停帧；消费订阅后经
+      // setStartCallback 重启。窗口隐藏时 Electron backgroundThrottling 关闭，
+      // rAF 后台仍全速执行，必须主动停帧。
+      if (store.hasListeners() && document.visibilityState === 'visible'
+        && (active || next.scale > 0 || envelope.strongTriggerTime >= 0)) {
+        frame = requestAnimationFrame(update)
+      } else {
+        running = false
+        ensureAnalyzer(false)
+        if (!active && store.getSnapshot() !== EMPTY_PULSE) store.publish(EMPTY_PULSE)
+      }
     }
 
-    frame = requestAnimationFrame(update)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') stop()
+      else start()
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    store.setStartCallback(start)
+    start()
     return () => {
       disposed = true
-      cancelAnimationFrame(frame)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      store.setStartCallback(null)
+      stop()
       if (!active) store.publish(EMPTY_PULSE)
     }
   }, [analyzer, active, mode])

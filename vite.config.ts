@@ -26,6 +26,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // opencc-js 主入口捆绑全部转换方向（cn↔tw/hk/twp/jp），桌面歌词只用 cn→tw。
+      // 定向到 cn2t 子路径可去掉 t2cn 等反向字典，缩减桌面歌词窗口 ~30KB（minified）且行为不变。
+      'opencc-js': 'opencc-js/cn2t',
     },
   },
   server: {
@@ -44,6 +47,19 @@ export default defineConfig({
         .readdirSync(__dirname)
         .filter((file) => file.endsWith('.html'))
         .map((file) => path.resolve(__dirname, file)),
+      output: {
+        // 将稳定的大体量第三方依赖拆为独立 vendor chunk：
+        // 1) 提升浏览器并行加载（虽然桌面版用 file:// 串行加载，但 chunk 尺寸更小、更利于缓存命中与懒加载）。
+        // 2) React 生态（react/react-dom/scheduler）与动画库（framer-motion + motion-dom/motion-utils）
+        //    在主应用与两个桌面窗口入口之间共享；leaflet 目前只在天气地图懒加载路径使用。
+        // 注意：base 保持 './'，Vite 会自动生成相对路径，拆 chunk 不影响 file:// 下资源定位。
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('leaflet')) return 'vendor-leaflet'
+          if (id.includes('framer-motion') || id.includes('/motion-dom/') || id.includes('/motion-utils/')) return 'vendor-motion'
+          if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/react-is/') || id.includes('/scheduler/')) return 'vendor-react'
+        },
+      },
     },
   },
 })

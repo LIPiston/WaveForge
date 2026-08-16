@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo, type ReactElement } from 'react'
+import { List, useDynamicRowHeight, type ListImperativeAPI, type RowComponentProps } from 'react-window'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Song } from '../services/musicApi'
 import { getProxiedImageUrl } from '../services/musicApi'
@@ -143,6 +144,260 @@ function isQQCommentMutationSuccessful(result: any): boolean {
     .some(value => value === 0 || value === 100 || value === 200)
 }
 
+function formatTime(timestamp: number) {
+  if (!timestamp || isNaN(timestamp)) return '未知时间'
+
+  const date = new Date(timestamp)
+  const now = new Date()
+  const diff = now.getTime() - date.getTime()
+
+  if (diff < 0) return '刚刚'
+
+  const seconds = Math.floor(diff / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  const days = Math.floor(hours / 24)
+  const months = Math.floor(days / 30)
+  const years = Math.floor(days / 365)
+
+  if (seconds < 60) return '刚刚'
+  if (minutes < 60) return `${minutes}分钟前`
+  if (hours < 24) return `${hours}小时前`
+  if (days < 30) return `${days}天前`
+  if (months < 12) return `${months}个月前`
+  return `${years}年前`
+}
+
+// 挂载动画只作用于首屏 N 条评论，避免每条评论都重复创建 framer-motion 入场动画
+const COMMENT_ANIMATE_LIMIT = 20
+
+interface CommentItemProps {
+  comment: Comment
+  index: number
+  expanded: boolean
+  isLoggedIn: boolean
+  canDelete: boolean
+  onLike: (comment: Comment) => void
+  onReply: (comment: Comment) => void
+  onDelete: (comment: Comment) => void
+  onToggleReplies: (comment: Comment) => void
+}
+
+// 独立 memo 组件：点赞/删除/展开回复时只有目标评论的对象引用变化，
+// 其余行的 comment prop 引用不变，可跳过重渲染（避免整表重建）。
+const CommentItem = memo(function CommentItem({
+  comment, index, expanded, isLoggedIn, canDelete,
+  onLike, onReply, onDelete, onToggleReplies,
+}: CommentItemProps) {
+  const shouldAnimate = index < COMMENT_ANIMATE_LIMIT
+  const visibleReplies = expanded ? comment.replies : comment.replies?.slice(0, 1)
+
+  return (
+    <motion.div
+      {...(shouldAnimate ? { initial: { opacity: 0, y: 10 }, animate: { opacity: 1, y: 0 } } : {})}
+      className="p-4 hover:bg-white/3 transition-colors"
+    >
+      <div className="flex items-start space-x-3">
+        <img
+          src={comment.user.avatarUrl ? `http://localhost:3001/api/proxy-image?url=${encodeURIComponent(comment.user.avatarUrl)}` : ''}
+          alt={comment.user.nickname}
+          className="w-10 h-10 rounded-full object-cover flex-shrink-0"
+          onError={(e) => {
+            const target = e.target as HTMLImageElement;
+            target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="40" height="40"%3E%3Crect fill="%23374151" width="40" height="40"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dy=".3em" fill="%239CA3AF" font-size="16"%3E?%3C/text%3E%3C/svg%3E';
+          }}
+        />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline space-x-2 mb-1">
+            <span className="text-sm font-medium text-blue-400">
+              {comment.user.nickname}
+            </span>
+            <span className="text-xs text-gray-500">
+              {formatTime(comment.time)}
+            </span>
+          </div>
+          <p className="text-sm text-gray-200 leading-relaxed mb-3">
+            {comment.content}
+          </p>
+
+          {/* 操作按钮 */}
+          <div className="flex items-center space-x-4 text-xs">
+            {isLoggedIn && (
+              <button
+                onClick={() => onLike(comment)}
+                className={`flex items-center space-x-1 transition-colors ${
+                  comment.isLiked ? 'text-pink-400' : 'text-gray-400 hover:text-pink-400'
+                }`}
+              >
+                <ThumbsUp className={`w-4 h-4 ${comment.isLiked ? 'fill-current' : ''}`} />
+                <span>{comment.likedCount > 0 ? comment.likedCount : '赞'}</span>
+              </button>
+            )}
+
+            {!isLoggedIn && (
+              <div className="flex items-center space-x-1 text-gray-400">
+                <ThumbsUp className="w-4 h-4" />
+                <span>{comment.likedCount > 0 ? comment.likedCount : '赞'}</span>
+              </div>
+            )}
+
+            {isLoggedIn && (
+              <button
+                onClick={() => onReply(comment)}
+                className="flex items-center space-x-1 text-gray-400 hover:text-blue-400 transition-colors"
+              >
+                <MessageCircle className="w-4 h-4" />
+                <span>回复</span>
+              </button>
+            )}
+
+            {canDelete && isLoggedIn && (
+              <button
+                onClick={() => onDelete(comment)}
+                className="flex items-center space-x-1 text-gray-400 hover:text-red-400 transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>删除</span>
+              </button>
+            )}
+          </div>
+
+          {/* 回复列表 */}
+          {comment.replyCount > 0 && (
+            <div className="mt-3 bg-white/5 rounded-lg p-3">
+              {comment.replies && comment.replies.length > 0 && (
+                <div className="space-y-2">
+                  {visibleReplies?.map((reply) => (
+                    <div key={reply.replyId} className="text-sm">
+                      <span className="text-blue-400">{reply.user.nickname}</span>
+                      {reply.beRepliedUser && (
+                        <>
+                          <span className="text-gray-500 mx-1">回复</span>
+                          <span className="text-blue-400">{reply.beRepliedUser}</span>
+                        </>
+                      )}
+                      <span className="text-gray-500">: </span>
+                      <span className="text-gray-300">{reply.content}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* 展开当前接口已经返回的楼中楼回复。 */}
+              {comment.replyCount > 1 && (
+                <button
+                  onClick={() => onToggleReplies(comment)}
+                  className="mt-2 text-xs text-blue-400 hover:text-blue-300"
+                >
+                  {expanded ? '收起回复' : `查看${comment.replyCount}条回复`}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  )
+})
+
+// ===== 评论虚拟化 =====
+// 评论行高可变（内容行数、展开楼中楼回复、回复输入框），采用扁平行数组 +
+// useDynamicRowHeight（ResizeObserver 实测行高）。行类型涵盖：热评段标题、
+// 热评、分隔线、全部评论标题、普通评论、加载更多按钮、没有更多提示。
+type CommentRow =
+  | { kind: 'hot-header' }
+  | { kind: 'hot-comment'; comment: Comment; index: number }
+  | { kind: 'divider' }
+  | { kind: 'all-header' }
+  | { kind: 'comment'; comment: Comment; index: number }
+  | { kind: 'load-more' }
+  | { kind: 'no-more' }
+
+type CommentRowData = {
+  rows: CommentRow[]
+  expandedReplies: Set<string>
+  isLoggedIn: boolean
+  currentUserId: string
+  isPlaylistResource: boolean
+  onLike: (comment: Comment) => void
+  onReply: (comment: Comment) => void
+  onDelete: (comment: Comment) => void
+  onToggleReplies: (comment: Comment) => void
+  isLoadingMore: boolean
+  onLoadMore: () => void
+}
+
+// 虚拟行：按 kind 渲染；评论行复用已 memo 的 CommentItem（点赞/删除/展开仅目标行重渲染）。
+function CommentVirtualRow({ index, style, ...data }: RowComponentProps<CommentRowData>): ReactElement | null {
+  const row = data.rows[index]
+  if (!row) return null
+  if (row.kind === 'comment' || row.kind === 'hot-comment') {
+    const comment = row.comment
+    return (
+      <div style={style}>
+        <CommentItem
+          comment={comment}
+          index={row.index}
+          expanded={data.expandedReplies.has(comment.commentId)}
+          isLoggedIn={data.isLoggedIn}
+          canDelete={Boolean(comment.isOwn || (data.currentUserId && comment.user.userId === data.currentUserId))}
+          onLike={data.onLike}
+          onReply={data.onReply}
+          onDelete={data.onDelete}
+          onToggleReplies={data.onToggleReplies}
+        />
+      </div>
+    )
+  }
+  if (row.kind === 'hot-header') {
+    return (
+      <div style={style} className="flex items-center gap-2 px-2 py-3 text-gray-400 text-sm border-b border-white/5">
+        <span className="text-yellow-500">★</span>
+        <span>精彩评论</span>
+      </div>
+    )
+  }
+  if (row.kind === 'divider') {
+    return <div style={style} className="border-t border-white/5 my-3" />
+  }
+  if (row.kind === 'all-header') {
+    return (
+      <div style={style} className="flex items-center gap-2 px-2 py-2 text-gray-400 text-sm">
+        <span>全部评论</span>
+      </div>
+    )
+  }
+  if (row.kind === 'load-more') {
+    return (
+      <div style={style} className="flex items-center justify-center py-6">
+        <button
+          onClick={data.onLoadMore}
+          disabled={data.isLoadingMore}
+          className="px-6 py-2.5 bg-white/10 hover:bg-white/20 backdrop-blur-sm text-white rounded-full transition-all flex items-center space-x-2 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {data.isLoadingMore ? (
+            <>
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              <span>加载中...</span>
+            </>
+          ) : (
+            <>
+              <span>加载更多评论</span>
+              <ChevronDown className="w-4 h-4" />
+            </>
+          )}
+        </button>
+      </div>
+    )
+  }
+  // no-more
+  return (
+    <div style={style} className="flex items-center justify-center py-6 text-gray-500 text-sm">
+      没有更多评论了
+    </div>
+  )
+}
+
 export default function CommentModal({ isOpen, onClose, song = null, playlist = null, resourceType = 'song' }: CommentModalProps) {
   const isPlaylistResource = resourceType === 'playlist'
   const resourcePlatform = isPlaylistResource ? (playlist?.platform || 'netease') : (song?.platform || 'netease')
@@ -164,12 +419,29 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
   const isLoadingMoreRef = useRef(false)
   const loadingRef = useRef(false)
   const loadCommentsRef = useRef<(reset?: boolean) => Promise<void>>(async () => {})
+  // rAF 合并滚动续页检查：滚动事件高频触发，这里只在下一帧执行一次判定
+  const scrollCheckFrameRef = useRef<number | null>(null)
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current
     if (!el) return
     if (!hasMoreCommentsRef.current || isLoadingMoreRef.current || loadingRef.current) return
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
-      loadCommentsRef.current(false)
+    if (scrollCheckFrameRef.current !== null) return
+    scrollCheckFrameRef.current = window.requestAnimationFrame(() => {
+      scrollCheckFrameRef.current = null
+      const container = scrollContainerRef.current
+      if (!container) return
+      if (!hasMoreCommentsRef.current || isLoadingMoreRef.current || loadingRef.current) return
+      if (container.scrollHeight - container.scrollTop - container.clientHeight < 200) {
+        loadCommentsRef.current(false)
+      }
+    })
+  }, [])
+
+  // 卸载时取消尚未执行的滚动续页 rAF 帧
+  useEffect(() => () => {
+    if (scrollCheckFrameRef.current !== null) {
+      cancelAnimationFrame(scrollCheckFrameRef.current)
+      scrollCheckFrameRef.current = null
     }
   }, [])
   const [loading, setLoading] = useState(false)
@@ -500,30 +772,6 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     }
   }
 
-  const formatTime = (timestamp: number) => {
-    if (!timestamp || isNaN(timestamp)) return '未知时间'
-    
-    const date = new Date(timestamp)
-    const now = new Date()
-    const diff = now.getTime() - date.getTime()
-    
-    if (diff < 0) return '刚刚'
-    
-    const seconds = Math.floor(diff / 1000)
-    const minutes = Math.floor(seconds / 60)
-    const hours = Math.floor(minutes / 60)
-    const days = Math.floor(hours / 24)
-    const months = Math.floor(days / 30)
-    const years = Math.floor(days / 365)
-    
-    if (seconds < 60) return '刚刚'
-    if (minutes < 60) return `${minutes}分钟前`
-    if (hours < 24) return `${hours}小时前`
-    if (days < 30) return `${days}天前`
-    if (months < 12) return `${months}个月前`
-    return `${years}年前`
-  }
-
   // 获取当前视图的评论列表
   const getDisplayComments = () => {
     // 新版API已经在服务端进行了排序，直接返回
@@ -531,6 +779,37 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
   }
 
   const displayComments = getDisplayComments()
+
+  // ===== 评论虚拟化：扁平行数组 + 动态行高 =====
+  const commentRows = useMemo<CommentRow[]>(() => {
+    const rows: CommentRow[] = []
+    // 热评区网易云/QQ 共用：热评展示在顶部，下方是全部评论
+    if (hotComments.length > 0) {
+      rows.push({ kind: 'hot-header' })
+      hotComments.forEach((comment, index) => rows.push({ kind: 'hot-comment', comment, index }))
+      rows.push({ kind: 'divider' }, { kind: 'all-header' })
+    }
+    displayComments.forEach((comment, index) => rows.push({ kind: 'comment', comment, index }))
+    if (hasMoreComments && !loading) rows.push({ kind: 'load-more' })
+    else if (!hasMoreComments && displayComments.length > 0) rows.push({ kind: 'no-more' })
+    return rows
+  }, [hotComments, displayComments, hasMoreComments, loading])
+
+  // 变高行：ResizeObserver 实测每行高度；估算值用于首帧定位
+  const dynamicRowHeight = useDynamicRowHeight({ defaultRowHeight: 96 })
+  // 评论列表虚拟化后 List 外层 div 即滚动容器，同步给 scrollContainerRef
+  // （供续页判断与 ScrollToTop 使用）
+  const commentListRef = useRef<ListImperativeAPI | null>(null)
+  const commentOuterRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (isOpen && !loading && !error) {
+      const listEl = commentListRef.current?.element ?? null
+      if (listEl) scrollContainerRef.current = listEl
+    }
+    return () => {
+      scrollContainerRef.current = commentOuterRef.current
+    }
+  }, [isOpen, loading, error, commentRows.length])
 
   // 点赞评论
   const handleLike = async (commentId: string) => {
@@ -565,17 +844,12 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         const result = await response.json()
         
         if (response.ok && result.code === 200) {
-          // 点赞成功，更新本地状态
-          setAllComments(allComments.map(c => {
-            if (c.commentId === commentId) {
-              return {
-                ...c,
-                isLiked: newLikeState,
-                likedCount: newLikeState ? c.likedCount + 1 : c.likedCount - 1
-              }
-            }
-            return c
-          }))
+          // 点赞成功，仅更新目标评论（其余行的 comment 引用不变，避免整表重建）
+          setAllComments(previous => previous.map(c => (
+            c.commentId === commentId
+              ? { ...c, isLiked: newLikeState, likedCount: newLikeState ? c.likedCount + 1 : c.likedCount - 1 }
+              : c
+          )))
         } else {
           setActionError('点赞操作失败：' + (result.message || result.error || '未知错误'))
         }
@@ -596,17 +870,12 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         const result = await response.json()
         
         if (isQQCommentMutationSuccessful(result)) {
-          // 点赞成功，更新本地状态
-          setAllComments(allComments.map(c => {
-            if (c.commentId === commentId) {
-              return {
-                ...c,
-                isLiked: newLikeState,
-                likedCount: newLikeState ? c.likedCount + 1 : c.likedCount - 1
-              }
-            }
-            return c
-          }))
+          // 点赞成功，仅更新目标评论（其余行的 comment 引用不变，避免整表重建）
+          setAllComments(previous => previous.map(c => (
+            c.commentId === commentId
+              ? { ...c, isLiked: newLikeState, likedCount: newLikeState ? c.likedCount + 1 : c.likedCount - 1 }
+              : c
+          )))
         } else {
           setActionError('点赞操作失败：' + (result.error || result.message || '未知错误'))
         }
@@ -863,125 +1132,6 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     }
   }
 
-  // 渲染单个评论
-  const renderComment = (comment: Comment) => {
-    const isExpanded = expandedReplies.has(comment.commentId)
-    const visibleReplies = isExpanded ? comment.replies : comment.replies?.slice(0, 1)
-
-    return (
-      <motion.div
-        key={comment.commentId}
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="p-4 hover:bg-white/3 transition-colors"
-      >
-        <div className="flex items-start space-x-3">
-          <img
-            src={comment.user.avatarUrl ? `http://localhost:3001/api/proxy-image?url=${encodeURIComponent(comment.user.avatarUrl)}` : ''}
-            alt={comment.user.nickname}
-            className="w-10 h-10 rounded-full object-cover flex-shrink-0"
-            onError={(e) => {
-              const target = e.target as HTMLImageElement;
-              target.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="40" height="40"%3E%3Crect fill="%23374151" width="40" height="40"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dy=".3em" fill="%239CA3AF" font-size="16"%3E?%3C/text%3E%3C/svg%3E';
-            }}
-          />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-baseline space-x-2 mb-1">
-              <span className="text-sm font-medium text-blue-400">
-                {comment.user.nickname}
-              </span>
-              <span className="text-xs text-gray-500">
-                {formatTime(comment.time)}
-              </span>
-            </div>
-            <p className="text-sm text-gray-200 leading-relaxed mb-3">
-              {comment.content}
-            </p>
-            
-            {/* 操作按钮 */}
-            <div className="flex items-center space-x-4 text-xs">
-              {isLoggedIn && (
-                <button
-                  onClick={() => handleLike(comment.commentId)}
-                  className={`flex items-center space-x-1 transition-colors ${
-                    comment.isLiked ? 'text-pink-400' : 'text-gray-400 hover:text-pink-400'
-                  }`}
-                >
-                  <ThumbsUp className={`w-4 h-4 ${comment.isLiked ? 'fill-current' : ''}`} />
-                  <span>{comment.likedCount > 0 ? comment.likedCount : '赞'}</span>
-                </button>
-              )}
-              
-              {!isLoggedIn && (
-                <div className="flex items-center space-x-1 text-gray-400">
-                  <ThumbsUp className="w-4 h-4" />
-                  <span>{comment.likedCount > 0 ? comment.likedCount : '赞'}</span>
-                </div>
-              )}
-              
-              {isLoggedIn && (
-                <button
-                  onClick={() => {
-                    setReplyingTo({ commentId: comment.commentId, username: comment.user.nickname })
-                    setShowCommentInput(true)
-                    setTimeout(() => inputRef.current?.focus(), 100)
-                  }}
-                  className="flex items-center space-x-1 text-gray-400 hover:text-blue-400 transition-colors"
-                >
-                  <MessageCircle className="w-4 h-4" />
-                  <span>回复</span>
-                </button>
-              )}
-
-              {(comment.isOwn || (currentUserId && comment.user.userId === currentUserId)) && isLoggedIn && (
-                <button
-                  onClick={() => setPendingDeleteComment(comment)}
-                  className="flex items-center space-x-1 text-gray-400 hover:text-red-400 transition-colors"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  <span>删除</span>
-                </button>
-              )}
-            </div>
-
-            {/* 回复列表 */}
-            {comment.replyCount > 0 && (
-              <div className="mt-3 bg-white/5 rounded-lg p-3">
-                {comment.replies && comment.replies.length > 0 && (
-                  <div className="space-y-2">
-                    {visibleReplies?.map((reply) => (
-                      <div key={reply.replyId} className="text-sm">
-                        <span className="text-blue-400">{reply.user.nickname}</span>
-                        {reply.beRepliedUser && (
-                          <>
-                            <span className="text-gray-500 mx-1">回复</span>
-                            <span className="text-blue-400">{reply.beRepliedUser}</span>
-                          </>
-                        )}
-                        <span className="text-gray-500">: </span>
-                        <span className="text-gray-300">{reply.content}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                
-                {/* 展开当前接口已经返回的楼中楼回复。 */}
-                {comment.replyCount > 1 && (
-                  <button
-                    onClick={() => toggleReplies(comment)}
-                    className="mt-2 text-xs text-blue-400 hover:text-blue-300"
-                  >
-                    {isExpanded ? '收起回复' : `查看${comment.replyCount}条回复`}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </motion.div>
-    )
-  }
-
   if (!isOpen) return null
 
   return (
@@ -1180,7 +1330,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           </AnimatePresence>
 
           {/* 评论列表 */}
-          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto custom-scrollbar">
+          <div ref={(el) => { commentOuterRef.current = el }} onScroll={handleScroll} className="flex-1 overflow-y-auto custom-scrollbar">
             {loading ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <div className="w-8 h-8 border-4 border-pink-500 border-t-transparent rounded-full animate-spin mb-3"></div>
@@ -1203,53 +1353,33 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
                 </p>
               </div>
             ) : (
-              <div>
-                {/* 热评区（网易云/QQ 共用）：热评展示在顶部，下方是全部评论 */}
-                {hotComments.length > 0 && (
-                  <div>
-                    <div className="flex items-center gap-2 px-2 py-3 text-gray-400 text-sm border-b border-white/5">
-                      <span className="text-yellow-500">★</span>
-                      <span>精彩评论</span>
-                    </div>
-                    {hotComments.map((comment) => renderComment(comment))}
-                    <div className="border-t border-white/5 my-3"></div>
-                    <div className="flex items-center gap-2 px-2 py-2 text-gray-400 text-sm">
-                      <span>全部评论</span>
-                    </div>
-                  </div>
-                )}
-
-                {displayComments.map((comment) => renderComment(comment))}
-                
-                {/* 加载更多按钮 */}
-                {hasMoreComments && !loading && (
-                  <div className="flex items-center justify-center py-6">
-                    <button
-                      onClick={() => loadComments(false)}
-                      disabled={isLoadingMore}
-                      className="px-6 py-2.5 bg-white/10 hover:bg-white/20 backdrop-blur-sm text-white rounded-full transition-all flex items-center space-x-2 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isLoadingMore ? (
-                        <>
-                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                          <span>加载中...</span>
-                        </>
-                      ) : (
-                        <>
-                          <span>加载更多评论</span>
-                          <ChevronDown className="w-4 h-4" />
-                        </>
-                      )}
-                    </button>
-                  </div>
-                )}
-                
-                {!hasMoreComments && displayComments.length > 0 && (
-                  <div className="flex items-center justify-center py-6 text-gray-500 text-sm">
-                    没有更多评论了
-                  </div>
-                )}
-              </div>
+              <List<CommentRowData>
+                listRef={commentListRef}
+                className="custom-scrollbar"
+                style={{ height: '100%', width: '100%' }}
+                onScroll={handleScroll}
+                rowCount={commentRows.length}
+                rowHeight={dynamicRowHeight}
+                overscanCount={6}
+                rowComponent={CommentVirtualRow}
+                rowProps={{
+                  rows: commentRows,
+                  expandedReplies,
+                  isLoggedIn,
+                  currentUserId,
+                  isPlaylistResource,
+                  onLike: (target) => void handleLike(target.commentId),
+                  onReply: (target) => {
+                    setReplyingTo({ commentId: target.commentId, username: target.user.nickname })
+                    setShowCommentInput(true)
+                    setTimeout(() => inputRef.current?.focus(), 100)
+                  },
+                  onDelete: (target) => setPendingDeleteComment(target),
+                  onToggleReplies: (target) => void toggleReplies(target),
+                  isLoadingMore,
+                  onLoadMore: () => loadComments(false),
+                }}
+              />
             )}
           </div>
         </motion.div>

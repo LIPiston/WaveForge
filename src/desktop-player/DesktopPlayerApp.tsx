@@ -239,8 +239,29 @@ function LyricMarquee({ progress, lineStart, lineDuration, playing, contentKey, 
 
   useEffect(() => {
     if (!playing || overflowWidth <= 0) return
-    const timer = window.setInterval(() => forceMarqueeTick(value => value + 1), 1000 / 30)
-    return () => window.clearInterval(timer)
+    // 窗口隐藏（document.visibilityState !== 'visible'）时暂停节拍定时器，
+    // 恢复可见时重新启动，避免常驻 30fps setInterval 空转 setState 消耗 CPU/功耗。
+    let marqueeTimer: number | null = null
+    const startMarqueeTimer = () => {
+      if (marqueeTimer !== null) return
+      marqueeTimer = window.setInterval(() => forceMarqueeTick(value => value + 1), 1000 / 30)
+    }
+    const stopMarqueeTimer = () => {
+      if (marqueeTimer !== null) {
+        window.clearInterval(marqueeTimer)
+        marqueeTimer = null
+      }
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') startMarqueeTimer()
+      else stopMarqueeTimer()
+    }
+    startMarqueeTimer()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      stopMarqueeTimer()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   }, [playing, overflowWidth])
 
   const safeDuration = Math.max(1.8, lineDuration || 4.2)
@@ -273,8 +294,28 @@ function LyricLineView({ state, showTranslation, showRomaji, compact = false }: 
   const [, forceLocalLyricTick] = useState(0)
   useEffect(() => {
     if (!state.playing || !state.lyric?.words?.length) return
-    const timer = window.setInterval(() => forceLocalLyricTick(value => value + 1), 60)
-    return () => window.clearInterval(timer)
+    // 窗口隐藏时暂停逐字刷新定时器，恢复可见时重新启动（避免常驻 60ms setInterval 空转）。
+    let lyricTimer: number | null = null
+    const startLyricTimer = () => {
+      if (lyricTimer !== null) return
+      lyricTimer = window.setInterval(() => forceLocalLyricTick(value => value + 1), 60)
+    }
+    const stopLyricTimer = () => {
+      if (lyricTimer !== null) {
+        window.clearInterval(lyricTimer)
+        lyricTimer = null
+      }
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') startLyricTimer()
+      else stopLyricTimer()
+    }
+    startLyricTimer()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      stopLyricTimer()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   }, [state.playing, state.lyric?.line, state.lyric?.words?.length])
   const interpolatedProgress = getInterpolatedDesktopProgress(realtime, state.playing)
   const lyric = state.lyric

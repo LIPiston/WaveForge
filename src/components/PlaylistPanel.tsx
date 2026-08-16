@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Music, Crown, Loader2, Sparkles } from 'lucide-react'
 import { Song } from '../services/musicApi'
@@ -26,7 +26,7 @@ const PLAYLIST_ROW_GAP = 8
 const PLAYLIST_ROW_HEIGHT = PLAYLIST_CARD_HEIGHT + PLAYLIST_ROW_GAP
 const PLAYLIST_OVERSCAN = 5
 
-export default function PlaylistPanel({
+function PlaylistPanel({
   show,
   onClose,
   playlist,
@@ -289,3 +289,5 @@ export default function PlaylistPanel({
     </AnimatePresence>
   )
 }
+
+export default memo(PlaylistPanel)

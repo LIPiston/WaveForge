@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useRef } from 'react'
 import { Minus, Square, X, Minimize2, Maximize2 } from 'lucide-react'
 
-export default function TitleBar() {
+// 无 props 的常驻组件：memo 后父级（App 1Hz 重渲染）不再连带重渲染它，
+// 其状态仅由窗口 IPC/鼠标事件驱动
+export default memo(function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false)
   const [isHovered, setIsHovered] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -180,4 +182,4 @@ export default function TitleBar() {
       </div>
     </>
   )
-}
+})

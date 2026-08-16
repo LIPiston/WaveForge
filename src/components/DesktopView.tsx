@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { lazy, Suspense, memo, useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Search, Settings, X, Play, Clock, Volume2, VolumeX, LogIn, Captions, Heart, MonitorSmartphone } from 'lucide-react'
 import PlaylistCarousel3D from './PlaylistCarousel3D'
@@ -121,7 +121,7 @@ const qqRecentSongHashId = (mid: string): number => {
   return Math.abs(hash) || 1
 }
 
-export default function DesktopView({
+function DesktopView({
   onSongSelect,
   restorePlaybackOrigin,
   currentSong,
@@ -2305,3 +2305,5 @@ export default function DesktopView({
     </div>
   )
 }
+// 导出 memo 包装：播放中 App 约 1Hz 重渲染时，props 稳定则跳过整棵桌面模式子树重渲染
+export default memo(DesktopView)

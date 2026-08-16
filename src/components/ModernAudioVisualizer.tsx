@@ -95,7 +95,7 @@ export default function ModernAudioVisualizer({
     let animationFrame = 0
     let lastSample = 0
     let disposed = false
-    // 娓愬彉瀵硅薄鍙緷璧栫敾甯冨搴︿笌閰嶈壊锛堥厤鑹插湪 effect 鐢熷懡鍛ㄦ湡鍐呬笉鍙橈級锛屾寜瀹藉害缂撳瓨锛?    // 閬垮厤姣忓抚鏂板缓 CanvasGradient 閫犳垚鎸佺画鍒嗛厤
+    // 渐变对象只依赖画布宽度与配色（配色在 effect 生命周期内不变），按宽度缓存；避免每帧新建 CanvasGradient 造成持续分配
     let cachedBarGradientWidth = -1
     let cachedBarGradient: CanvasGradient | null = null
     let cachedCenterLineGradient: CanvasGradient | null = null

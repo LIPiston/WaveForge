@@ -71,6 +71,12 @@ export default function ProgressiveGlyphText({
     let anchorTime = 0
     let anchorWallTime = performance.now()
     let playing = false
+    // 行末时间（最后一个非空白字形的结束时间）。整行唱完后填充不再变化，
+    // 停掉 60fps 外推循环避免空转；下一行激活时 glyphs 变化会重跑本 effect 并重启循环。
+    const lineEndTime = glyphs.reduce(
+      (maxEnd, glyph) => (!glyph.isWhitespace ? Math.max(maxEnd, glyph.endTime) : maxEnd),
+      0
+    )
 
     const updateFill = (currentTime: number) => {
       glyphs.forEach((glyph, index) => {
@@ -88,8 +94,10 @@ export default function ProgressiveGlyphText({
 
     const tick = (now: number) => {
       const extrapolated = playing ? Math.min(0.5, (now - anchorWallTime) / 1000) : 0
-      updateFill(anchorTime + extrapolated + timeOffset)
-      animationFrame = playing ? requestAnimationFrame(tick) : null
+      const currentTime = anchorTime + extrapolated + timeOffset
+      updateFill(currentTime)
+      // 整行已唱完则停帧（外推值已无可见变化），等下一次播放时间发布再经 syncClock 重启。
+      animationFrame = playing && currentTime < lineEndTime ? requestAnimationFrame(tick) : null
     }
 
     const syncClock = () => {
@@ -98,7 +106,9 @@ export default function ProgressiveGlyphText({
       anchorWallTime = performance.now()
       playing = snapshot.isPlaying
       updateFill(anchorTime + timeOffset)
-      if (playing && animationFrame === null) animationFrame = requestAnimationFrame(tick)
+      if (playing && animationFrame === null && anchorTime + timeOffset < lineEndTime) {
+        animationFrame = requestAnimationFrame(tick)
+      }
     }
 
     fillRefs.current.length = glyphs.length

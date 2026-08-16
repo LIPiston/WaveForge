@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ArrowUp } from 'lucide-react'
 
@@ -28,17 +28,33 @@ const ScrollToTop: React.FC<ScrollToTopProps> = ({
   const resolvedContainerRef = containerRef ?? scrollContainerRef
   const resolvedTheme = theme ?? playerTheme ?? 'dark'
   const [showButton, setShowButton] = useState(false)
+  // rAF 合并滚动判定：同一帧内多次 scroll 只执行一次，且布尔值未变时跳过 setState
+  const showButtonRef = useRef(false)
+  const scrollCheckFrameRef = useRef<number | null>(null)
 
   useEffect(() => {
     const container = resolvedContainerRef?.current
     if (!container) return
 
     const handleScroll = () => {
-      setShowButton(container.scrollHeight > container.clientHeight && container.scrollTop > threshold)
+      if (scrollCheckFrameRef.current !== null) return
+      scrollCheckFrameRef.current = window.requestAnimationFrame(() => {
+        scrollCheckFrameRef.current = null
+        const next = container.scrollHeight > container.clientHeight && container.scrollTop > threshold
+        if (next === showButtonRef.current) return
+        showButtonRef.current = next
+        setShowButton(next)
+      })
     }
     handleScroll()
     container.addEventListener('scroll', handleScroll)
-    return () => container.removeEventListener('scroll', handleScroll)
+    return () => {
+      container.removeEventListener('scroll', handleScroll)
+      if (scrollCheckFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollCheckFrameRef.current)
+        scrollCheckFrameRef.current = null
+      }
+    }
   }, [resolvedContainerRef, threshold])
 
   const scrollToTop = () => {

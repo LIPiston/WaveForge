@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback, memo, type CSSProperties, type ReactElement } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Music, Disc, Video, Info, Loader, ListMusic, Calendar, Eye, Users, Heart, UserPlus, UserCheck } from 'lucide-react'
+import { List, type ListImperativeAPI, type RowComponentProps } from 'react-window'
 import { getArtistDetail, getArtistTopSongs, getArtistAllSongs, getArtistAlbums, getArtistMVs, Artist, Song, Album, getProxiedImageUrl, resolveSongAlbumIdentifier, subscribeArtist, getSimilarArtists, isArtistFollowed } from '../services/musicApi'
 import CachedImage from './CachedImage'
 import AlbumDetailModal from './AlbumDetailModal'
@@ -10,6 +11,361 @@ import ScrollToCurrentSong from './ScrollToCurrentSong'
 import SongContextMenu from './SongContextMenu'
 import { getUserPlaylists } from '../services/playlistService'
 import { getReadableAccentColor } from '../utils/desktopAccentColor'
+
+type TabType = 'hotSongs' | 'allSongs' | 'albums' | 'videos' | 'similarArtists' | 'info'
+
+const formatDuration = (ms: number) => {
+  const seconds = Math.floor(ms / 1000)
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
+
+interface ArtistSongRowProps {
+  song: Song
+  index: number
+  isCurrent: boolean
+  playerTheme: 'light' | 'dark'
+  accentColor: string
+  readableAccentColor: string
+  isVip: boolean
+  onSelect: (song: Song) => void
+  onContextMenu: (event: React.MouseEvent, song: Song) => void
+}
+
+// memo 歌曲行：全部歌曲/热门歌曲列表可达上千行，任一状态变化（分页、关注、右键菜单等）
+// 都会触发整表重渲染；抽取为 memo 组件后，只有 props 变化的行才会重渲染。
+const ArtistSongRow = memo(function ArtistSongRow({
+  song, index, isCurrent, playerTheme, accentColor, readableAccentColor, isVip,
+  onSelect, onContextMenu,
+}: ArtistSongRowProps) {
+  const textPrimary = playerTheme === 'dark' ? 'text-white' : 'text-black'
+  const textSecondary = playerTheme === 'dark' ? 'text-white/60' : 'text-black/60'
+  const textTertiary = playerTheme === 'dark' ? 'text-white/40' : 'text-black/40'
+  const bgCard = playerTheme === 'dark' ? 'bg-white/5' : 'bg-black/5'
+  return (
+    <motion.div
+      data-song-index={index}
+      onClick={() => onSelect(song)}
+      onContextMenu={(e) => onContextMenu(e, song)}
+      style={isCurrent ? { backgroundColor: `${readableAccentColor}33` } : undefined}
+      className={`flex items-center gap-4 p-3 rounded-xl cursor-pointer transition-colors group ${
+        isCurrent
+          ? ''
+          : `hover:${bgCard}`
+      }`}
+      onMouseEnter={(e) => {
+        if (isCurrent) {
+          e.currentTarget.style.backgroundColor = `${accentColor}4D`
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (isCurrent) {
+          e.currentTarget.style.backgroundColor = `${accentColor}33`
+        }
+      }}
+    >
+      {/* 序号 */}
+      <div
+        className={`w-8 text-center text-xs ${
+          isCurrent
+            ? 'font-medium'
+            : `${textTertiary}`
+        }`}
+        style={isCurrent ? { color: readableAccentColor } : undefined}
+      >
+        {index + 1}
+      </div>
+
+      {/* 封面 */}
+      <div className={`w-10 h-10 rounded-lg overflow-hidden ${bgCard} flex-shrink-0`}>
+        {song.album?.picUrl ? (
+          <CachedImage
+            src={song.album.picUrl}
+            alt={song.name}
+            className="w-full h-full object-cover"
+            fallback={
+              <div className="w-full h-full flex items-center justify-center">
+                <Music className={`w-4 h-4 ${textPrimary}/20`} />
+              </div>
+            }
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <Music className={`w-4 h-4 ${textPrimary}/20`} />
+          </div>
+        )}
+      </div>
+
+      {/* 歌曲信息 */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <h3
+            className={`font-medium truncate text-sm transition-colors ${
+              isCurrent
+                ? ''
+                : textPrimary
+            }`}
+            style={isCurrent ? { color: readableAccentColor } : undefined}
+            onMouseEnter={(e) => {
+              if (!isCurrent) {
+                e.currentTarget.style.color = accentColor
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!isCurrent) {
+                e.currentTarget.style.color = ''
+              }
+            }}
+          >
+            {song.name}
+          </h3>
+          {song.vip && !isVip && (
+            <span className="flex-shrink-0 px-1.5 py-0.5 text-xs font-bold rounded border border-yellow-500 text-yellow-500">
+              VIP
+            </span>
+          )}
+          {song.noCopyright && (
+            <span className={`flex-shrink-0 px-1.5 py-0.5 text-xs font-medium rounded bg-gray-600/80 ${textPrimary}/80`}>
+              无版权
+            </span>
+          )}
+        </div>
+        <p
+          className={`text-xs truncate ${
+            isCurrent ? '' : textSecondary
+          }`}
+          style={isCurrent ? { color: readableAccentColor, opacity: 0.8 } : undefined}
+        >
+          {song.album?.name}
+        </p>
+      </div>
+
+      {/* 时长 */}
+      <div className={`${textTertiary} text-xs`}>
+        {formatDuration(song.duration)}
+      </div>
+    </motion.div>
+  )
+})
+
+// 全部歌曲虚拟化行：react-window List 的行组件（index/style 由库注入 + rowProps）。
+// 前 N 行渲染歌曲，最后一行渲染「加载更多/已加载全部」提示（rowCount 多计一行）。
+// 与组件内 isCurrentSong 同逻辑（无闭包依赖，供模块级虚拟行使用）
+const songIsCurrent = (song: Song, currentSong: Song | null | undefined) =>
+  Boolean(currentSong && currentSong.id === song.id && currentSong.platform === song.platform)
+
+// 全部歌曲虚拟化行数据（不含 index/style，由 react-window 注入）
+type AllSongsRowData = {
+  songs: Song[]
+  currentSong: Song | null | undefined
+  playerTheme: 'light' | 'dark'
+  accentColor: string
+  readableAccentColor: string
+  isVip: boolean
+  onSelect: (song: Song) => void
+  onContextMenu: (event: React.MouseEvent, song: Song) => void
+  loading: boolean
+  hasMore: boolean
+  textPrimary: string
+  textSecondary: string
+  textTertiary: string
+}
+
+// 虚拟化已限制同时渲染的行数，行组件无需再 memo。
+function AllSongsRow({ index, style, ...data }: RowComponentProps<AllSongsRowData>): ReactElement | null {
+  const {
+    songs,
+    currentSong,
+    playerTheme,
+    accentColor,
+    readableAccentColor,
+    isVip,
+    onSelect,
+    onContextMenu,
+    loading,
+    hasMore,
+    textPrimary,
+    textSecondary,
+    textTertiary,
+  } = data
+  if (index < songs.length) {
+    const song = songs[index]
+    return (
+      <div style={style} className="px-4">
+        <ArtistSongRow
+          song={song}
+          index={index}
+          isCurrent={songIsCurrent(song, currentSong)}
+          playerTheme={playerTheme}
+          accentColor={accentColor}
+          readableAccentColor={readableAccentColor}
+          isVip={isVip}
+          onSelect={onSelect}
+          onContextMenu={onContextMenu}
+        />
+      </div>
+    )
+  }
+  // 列表尾部提示行：加载中显示 spinner；加载完成且无更多时显示总数；还有更多时（列表仍在续页间隙）不渲染内容
+  return (
+    <div style={style} className="flex items-center justify-center">
+      {loading ? (
+        <div className="flex items-center justify-center gap-2">
+          <Loader className={`w-6 h-6 ${textPrimary}/60 animate-spin`} />
+          <span className={`${textSecondary} text-sm`}>加载更多...</span>
+        </div>
+      ) : hasMore ? null : (
+        <span className={`${textTertiary} text-sm`}>已加载全部 {songs.length} 首歌曲</span>
+      )}
+    </div>
+  )
+}
+
+interface ArtistAlbumCardProps {
+  album: Album
+  playerTheme: 'light' | 'dark'
+  onOpen: (album: Album) => void
+}
+
+// memo 专辑卡片：艺人专辑最多 1000 张，避免无关状态变化时整网格重渲染
+const ArtistAlbumCard = memo(function ArtistAlbumCard({ album, playerTheme, onOpen }: ArtistAlbumCardProps) {
+  const textPrimary = playerTheme === 'dark' ? 'text-white' : 'text-black'
+  const textSecondary = playerTheme === 'dark' ? 'text-white/60' : 'text-black/60'
+  const textTertiary = playerTheme === 'dark' ? 'text-white/40' : 'text-black/40'
+  const bgCard = playerTheme === 'dark' ? 'bg-white/5' : 'bg-black/5'
+  return (
+    <motion.div
+      whileHover={{ scale: 1.05 }}
+      onClick={() => onOpen(album)}
+      className={`rounded-xl overflow-hidden ${bgCard} cursor-pointer transition-all group`}
+    >
+      {/* 专辑封面 */}
+      <div className="aspect-square relative overflow-hidden bg-white/5">
+        {album.picUrl ? (
+          <CachedImage
+            src={album.picUrl}
+            alt={album.name}
+            className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+            fallback={
+              <div className="w-full h-full flex items-center justify-center">
+                <Disc className={`w-16 h-16 ${textPrimary}/20`} />
+              </div>
+            }
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <Disc className={`w-16 h-16 ${textPrimary}/20`} />
+          </div>
+        )}
+      </div>
+
+      {/* 专辑信息 */}
+      <div className="p-3">
+        <h3 className={`${textPrimary} font-medium truncate mb-1`}>
+          {album.name}
+        </h3>
+        <div className="flex items-center gap-2 text-xs">
+          <Calendar className={`w-3 h-3 ${textTertiary}`} />
+          <p className={`${textSecondary} truncate`}>
+            {album.publishTime ? new Date(album.publishTime).getFullYear() : '未知'}
+          </p>
+        </div>
+        {album.size && (
+          <div className="flex items-center gap-2 text-xs mt-1">
+            <ListMusic className={`w-3 h-3 ${textTertiary}`} />
+            <p className={`${textSecondary}`}>
+              {album.size} 首歌曲
+            </p>
+          </div>
+        )}
+      </div>
+    </motion.div>
+  )
+})
+
+interface ArtistMvCardProps {
+  mv: any
+  index: number
+  playerTheme: 'light' | 'dark'
+  onOpen: (mv: any, index: number) => void
+}
+
+// memo MV 卡片：MV 最多 1000 条，避免无关状态变化时整网格重渲染
+const ArtistMvCard = memo(function ArtistMvCard({ mv, index, playerTheme, onOpen }: ArtistMvCardProps) {
+  const textPrimary = playerTheme === 'dark' ? 'text-white' : 'text-black'
+  const textSecondary = playerTheme === 'dark' ? 'text-white/60' : 'text-black/60'
+  const textTertiary = playerTheme === 'dark' ? 'text-white/40' : 'text-black/40'
+  const bgCard = playerTheme === 'dark' ? 'bg-white/5' : 'bg-black/5'
+  return (
+    <motion.div
+      whileHover={{ scale: 1.03 }}
+      onClick={() => onOpen(mv, index)}
+      className={`rounded-lg overflow-hidden ${bgCard} cursor-pointer transition-all group`}
+    >
+      {/* MV封面 */}
+      <div className="aspect-video relative overflow-hidden bg-white/5">
+        {mv.imgurl16v9 || mv.imgurl ? (
+          <CachedImage
+            src={mv.imgurl16v9 || mv.imgurl}
+            alt={mv.name}
+            className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+            fallback={
+              <div className="w-full h-full flex items-center justify-center">
+                <Video className={`w-12 h-12 ${textPrimary}/20`} />
+              </div>
+            }
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <Video className={`w-12 h-12 ${textPrimary}/20`} />
+          </div>
+        )}
+
+        {/* 时长标签 */}
+        {mv.duration && (
+          <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/70 text-white text-xs">
+            {formatDuration(mv.duration)}
+          </div>
+        )}
+
+        {/* 悬停播放按钮 */}
+        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+          <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center">
+            <Play className="w-6 h-6 text-gray-900 ml-0.5" fill="currentColor" />
+          </div>
+        </div>
+      </div>
+
+      {/* MV信息 */}
+      <div className="p-2.5">
+        <h3 className={`${textPrimary} font-medium mb-1.5 line-clamp-2 text-sm`}>
+          {mv.name}
+        </h3>
+        <div className="flex items-center gap-3 text-xs">
+          {mv.playCount && (
+            <div className="flex items-center gap-1">
+              <Eye className={`w-3 h-3 ${textTertiary}`} />
+              <span className={`${textSecondary}`}>
+                {mv.playCount > 10000
+                  ? `${(mv.playCount / 10000).toFixed(1)}万`
+                  : mv.playCount}
+              </span>
+            </div>
+          )}
+          {mv.publishTime && (
+            <div className="flex items-center gap-1">
+              <Calendar className={`w-3 h-3 ${textTertiary}`} />
+              <span className={`${textSecondary}`}>
+                {new Date(mv.publishTime).toLocaleDateString()}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  )
+})
 
 interface ArtistDetailModalProps {
   artistId: string | number
@@ -34,8 +390,6 @@ interface ArtistDetailModalProps {
   onOpenAlbum?: (albumId: string, platform: 'netease' | 'qq') => void
   onCopyInfo?: (song: Song) => void
 }
-
-type TabType = 'hotSongs' | 'allSongs' | 'albums' | 'videos' | 'similarArtists' | 'info'
 
 export default function ArtistDetailModal({
   artistId,
@@ -89,6 +443,21 @@ export default function ArtistDetailModal({
   const [similarArtists, setSimilarArtists] = useState<any[]>([])
   const allSongsScrollRef = useRef<HTMLDivElement>(null) // 全部歌曲滚动容器的引用
   const hotSongsScrollRef = useRef<HTMLDivElement>(null) // 热门歌曲滚动容器的引用
+  // 虚拟化列表：react-window List 的外层 div 即滚动容器。allSongs 激活时把它的
+  // DOM 元素同步进 allSongsScrollRef（供 ScrollToTop/ScrollToCurrentSong 使用），
+  // 离开 allSongs 时恢复为外层内容容器。外层容器用函数 ref 保存，避免被覆盖。
+  const allSongsOuterRef = useRef<HTMLDivElement | null>(null)
+  const allSongsListRef = useRef<ListImperativeAPI | null>(null)
+  // 歌曲行固定高度（p-3 上下留白 + 40px 封面）；列表尾部提示条高度
+  const ALL_SONG_ROW_HEIGHT = 64
+  useEffect(() => {
+    if (activeTab !== 'allSongs') return
+    const listEl = allSongsListRef.current?.element ?? null
+    if (listEl) allSongsScrollRef.current = listEl
+    return () => {
+      allSongsScrollRef.current = allSongsOuterRef.current
+    }
+  }, [activeTab, allSongs.length])
   
   const textPrimary = playerTheme === 'dark' ? 'text-white' : 'text-black'
   const textSecondary = playerTheme === 'dark' ? 'text-white/60' : 'text-black/60'
@@ -470,13 +839,6 @@ export default function ArtistDetailModal({
     }
   }
 
-  const formatDuration = (ms: number) => {
-    const seconds = Math.floor(ms / 1000)
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
-
   const handlePlayAll = () => {
     // 播放全部按钮始终播放热门歌曲
     if (hotSongs.length > 0 && onSongSelect) {
@@ -484,6 +846,33 @@ export default function ArtistDetailModal({
       onClose()
     }
   }
+
+  // 稳定回调：供 memo 列表项使用，保证父级重渲染时回调引用不变
+  const handleSongRowSelect = useCallback((song: Song) => {
+    if (onSongSelect) {
+      // 区分来源：全部歌曲使用 allSongs 队列，热门歌曲使用 hotSongs 队列
+      const sourceSongs = allSongs.includes(song) ? allSongs : hotSongs
+      onSongSelect(song, sourceSongs)
+      onClose()
+    }
+  }, [onSongSelect, allSongs, hotSongs, onClose])
+
+  const handleSongContextMenu = useCallback((event: React.MouseEvent, song: Song) => {
+    handleContextMenu(event, song, allSongs.includes(song) ? allSongs : hotSongs)
+  }, [allSongs, hotSongs])
+
+  const handleAlbumOpen = useCallback((album: Album) => {
+    setSelectedAlbum(album)
+    // 通知父组件专辑被打开
+    if (onAlbumOpen) {
+      // QQ音乐必须使用 mid (字符串格式)，网易云使用 id
+      onAlbumOpen(album.mid || album.id!)
+    }
+  }, [onAlbumOpen])
+
+  const handleMvOpen = useCallback((mv: any, index: number) => {
+    setSelectedMV({ id: mv.id, name: mv.name, platform: mv.platform, index })
+  }, [])
 
   // 使用艺人头像作为背景
   const backgroundImage = artist?.picUrl || ''
@@ -833,7 +1222,7 @@ export default function ArtistDetailModal({
 
           {/* 内容区（添加滚动） */}
           <div 
-            ref={allSongsScrollRef}
+            ref={(el) => { allSongsOuterRef.current = el }}
             onScroll={handleScroll}
             className="flex-1 overflow-y-auto p-4 custom-scrollbar"
             style={{
@@ -864,120 +1253,20 @@ export default function ArtistDetailModal({
               <div className="space-y-1" ref={hotSongsScrollRef}>
                 {hotSongs.length > 0 ? (
                   <>
-                    {hotSongs.map((song, index) => {
-                      const isCurrent = isCurrentSong(song)
-                      return (
-                      <motion.div
-                        key={`hot-song-${index}`}
-                        data-song-index={index}
-                        onClick={() => {
-                          if (onSongSelect) {
-                            onSongSelect(song, hotSongs)
-                            onClose()
-                          }
-                        }}
-                        onContextMenu={(e) => handleContextMenu(e, song, hotSongs)}
-                        style={isCurrent ? {
-                          backgroundColor: `${readableAccentColor}33`,
-                        } : undefined}
-                        className={`flex items-center gap-4 p-3 rounded-xl cursor-pointer transition-colors group ${
-                          isCurrent 
-                            ? '' 
-                            : `hover:${bgCard}`
-                        }`}
-                        onMouseEnter={(e) => {
-                          if (isCurrent) {
-                            e.currentTarget.style.backgroundColor = `${accentColor}4D`
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (isCurrent) {
-                            e.currentTarget.style.backgroundColor = `${accentColor}33`
-                          }
-                        }}
-                      >
-                    {/* 序号 */}
-                    <div 
-                      className={`w-8 text-center text-xs ${
-                        isCurrent 
-                          ? 'font-medium' 
-                          : `${textTertiary}`
-                      }`}
-                      style={isCurrent ? { color: readableAccentColor } : undefined}
-                    >
-                      {index + 1}
-                    </div>
-
-                    {/* 封面 */}
-                    <div className={`w-10 h-10 rounded-lg overflow-hidden ${bgCard} flex-shrink-0`}>
-                      {song.album?.picUrl ? (
-                        <CachedImage 
-                          src={song.album.picUrl} 
-                          alt={song.name} 
-                          className="w-full h-full object-cover"
-                          fallback={
-                            <div className="w-full h-full flex items-center justify-center">
-                              <Music className={`w-4 h-4 ${textPrimary}/20`} />
-                            </div>
-                          }
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <Music className={`w-4 h-4 ${textPrimary}/20`} />
-                        </div>
-                      )}
-                    </div>
-
-                    {/* 歌曲信息 */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <h3 
-                          className={`font-medium truncate text-sm transition-colors ${
-                            isCurrent 
-                              ? '' 
-                              : textPrimary
-                          }`}
-                          style={isCurrent ? { color: readableAccentColor } : undefined}
-                          onMouseEnter={(e) => {
-                            if (!isCurrent) {
-                              e.currentTarget.style.color = accentColor
-                            }
-                          }}
-                          onMouseLeave={(e) => {
-                            if (!isCurrent) {
-                              e.currentTarget.style.color = ''
-                            }
-                          }}
-                        >
-                          {song.name}
-                        </h3>
-                        {song.vip && !isVip && (
-                          <span className="flex-shrink-0 px-1.5 py-0.5 text-xs font-bold rounded border border-yellow-500 text-yellow-500">
-                            VIP
-                          </span>
-                        )}
-                        {song.noCopyright && (
-                          <span className={`flex-shrink-0 px-1.5 py-0.5 text-xs font-medium rounded bg-gray-600/80 ${textPrimary}/80`}>
-                            无版权
-                          </span>
-                        )}
-                      </div>
-                      <p 
-                        className={`text-xs truncate ${
-                          isCurrent ? '' : textSecondary
-                        }`}
-                        style={isCurrent ? { color: readableAccentColor, opacity: 0.8 } : undefined}
-                      >
-                        {song.album?.name}
-                      </p>
-                    </div>
-
-                    {/* 时长 */}
-                    <div className={`${textTertiary} text-xs`}>
-                      {formatDuration(song.duration)}
-                    </div>
-                  </motion.div>
-                )})}
+                    {hotSongs.map((song, index) => (
+                      <ArtistSongRow
+                        key={`hot-song-${song.platform}-${song.mid || song.id}-${index}`}
+                        song={song}
+                        index={index}
+                        isCurrent={isCurrentSong(song)}
+                        playerTheme={playerTheme}
+                        accentColor={accentColor}
+                        readableAccentColor={readableAccentColor}
+                        isVip={isVip}
+                        onSelect={handleSongRowSelect}
+                        onContextMenu={handleSongContextMenu}
+                      />
+                    ))}
                   </>
                 ) : hotSongsError ? (
                   <div className={`flex flex-col items-center justify-center py-20 ${textSecondary}`}>
@@ -1005,135 +1294,32 @@ export default function ArtistDetailModal({
               <div className="space-y-1">
                 {allSongs.length > 0 ? (
                   <>
-                    {allSongs.map((song, index) => {
-                      const isCurrent = isCurrentSong(song)
-                      return (
-                      <motion.div
-                        key={`all-song-${index}`}
-                        data-song-index={index}
-                        onClick={() => {
-                          if (onSongSelect) {
-                            onSongSelect(song, allSongs)
-                            onClose()
-                          }
-                        }}
-                        onContextMenu={(e) => handleContextMenu(e, song, allSongs)}
-                        style={isCurrent ? {
-                          backgroundColor: `${readableAccentColor}33`,
-                        } : undefined}
-                        className={`flex items-center gap-4 p-3 rounded-xl cursor-pointer transition-colors group ${
-                          isCurrent 
-                            ? '' 
-                            : `hover:${bgCard}`
-                        }`}
-                        onMouseEnter={(e) => {
-                          if (isCurrent) {
-                            e.currentTarget.style.backgroundColor = `${accentColor}4D`
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (isCurrent) {
-                            e.currentTarget.style.backgroundColor = `${accentColor}33`
-                          }
-                        }}
-                      >
-                        {/* 序号 */}
-                        <div 
-                          className={`w-8 text-center text-xs ${
-                            isCurrent 
-                              ? 'font-medium' 
-                              : `${textTertiary}`
-                          }`}
-                          style={isCurrent ? { color: readableAccentColor } : undefined}
-                        >
-                          {index + 1}
-                        </div>
-
-                        {/* 封面 */}
-                        <div className={`w-10 h-10 rounded-lg overflow-hidden ${bgCard} flex-shrink-0`}>
-                          {song.album?.picUrl ? (
-                            <CachedImage 
-                              src={song.album.picUrl} 
-                              alt={song.name} 
-                              className="w-full h-full object-cover"
-                              fallback={
-                                <div className="w-full h-full flex items-center justify-center">
-                                  <Music className={`w-4 h-4 ${textPrimary}/20`} />
-                                </div>
-                              }
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <Music className={`w-4 h-4 ${textPrimary}/20`} />
-                            </div>
-                          )}
-                        </div>
-
-                        {/* 歌曲信息 */}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <h3 
-                              className={`font-medium truncate text-sm transition-colors ${
-                                isCurrent 
-                                  ? '' 
-                                  : textPrimary
-                              }`}
-                              style={isCurrent ? { color: readableAccentColor } : undefined}
-                              onMouseEnter={(e) => {
-                                if (!isCurrent) {
-                                  e.currentTarget.style.color = accentColor
-                                }
-                              }}
-                              onMouseLeave={(e) => {
-                                if (!isCurrent) {
-                                  e.currentTarget.style.color = ''
-                                }
-                              }}
-                            >
-                              {song.name}
-                            </h3>
-                            {song.vip && !isVip && (
-                              <span className="flex-shrink-0 px-1.5 py-0.5 text-xs font-bold rounded border border-yellow-500 text-yellow-500">
-                                VIP
-                              </span>
-                            )}
-                            {song.noCopyright && (
-                              <span className={`flex-shrink-0 px-1.5 py-0.5 text-xs font-medium rounded bg-gray-600/80 ${textPrimary}/80`}>
-                                无版权
-                              </span>
-                            )}
-                          </div>
-                          <p 
-                            className={`text-xs truncate ${
-                              isCurrent ? '' : textSecondary
-                            }`}
-                            style={isCurrent ? { color: readableAccentColor, opacity: 0.8 } : undefined}
-                          >
-                            {song.album?.name}
-                          </p>
-                        </div>
-
-                        {/* 时长 */}
-                        <div className={`${textTertiary} text-xs`}>
-                          {formatDuration(song.duration)}
-                        </div>
-                      </motion.div>
-                    )})}
-                    
-                    {/* 加载更多提示 */}
-                    {loadingAllSongs && (
-                      <div className="flex items-center justify-center py-8">
-                        <Loader className={`w-6 h-6 ${textPrimary}/60 animate-spin`} />
-                        <span className={`${textSecondary} ml-2 text-sm`}>加载更多...</span>
-                      </div>
-                    )}
-                    
-                    {/* 没有更多了 */}
-                    {!allSongsHasMore && !loadingAllSongs && (
-                      <div className={`flex items-center justify-center py-8 ${textTertiary} text-sm`}>
-                        已加载全部 {allSongs.length} 首歌曲
-                      </div>
-                    )}
+                    {/* 全部歌曲虚拟化列表：仅渲染可视区行 + overscan，千级列表不再全量挂载 DOM */}
+                    <List<AllSongsRowData>
+                      listRef={allSongsListRef}
+                      className="custom-scrollbar"
+                      style={{ height: '100%', width: '100%' }}
+                      onScroll={handleScroll}
+                      rowCount={allSongs.length + 1}
+                      rowHeight={ALL_SONG_ROW_HEIGHT}
+                      overscanCount={10}
+                      rowComponent={AllSongsRow}
+                      rowProps={{
+                        songs: allSongs,
+                        currentSong,
+                        playerTheme,
+                        accentColor,
+                        readableAccentColor,
+                        isVip,
+                        onSelect: handleSongRowSelect,
+                        onContextMenu: handleSongContextMenu,
+                        loading: loadingAllSongs,
+                        hasMore: allSongsHasMore,
+                        textPrimary,
+                        textSecondary,
+                        textTertiary,
+                      }}
+                    />
                   </>
                 ) : loadingAllSongs ? (
                   <div className="flex flex-col items-center justify-center py-20">
@@ -1172,60 +1358,12 @@ export default function ArtistDetailModal({
                 ) : albums.length > 0 ? (
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                     {albums.map((album) => (
-                      <motion.div
-                        key={album.id || album.mid}
-                        whileHover={{ scale: 1.05 }}
-                        onClick={() => {
-                          setSelectedAlbum(album)
-                          // 通知父组件专辑被打开
-                          if (onAlbumOpen) {
-                            // QQ音乐必须使用 mid (字符串格式)，网易云使用 id
-                            onAlbumOpen(album.mid || album.id!)
-                          }
-                        }}
-                        className={`rounded-xl overflow-hidden ${bgCard} cursor-pointer transition-all group`}
-                      >
-                        {/* 专辑封面 */}
-                        <div className="aspect-square relative overflow-hidden bg-white/5">
-                          {album.picUrl ? (
-                            <CachedImage 
-                              src={album.picUrl}
-                              alt={album.name}
-                              className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
-                              fallback={
-                                <div className="w-full h-full flex items-center justify-center">
-                                  <Disc className={`w-16 h-16 ${textPrimary}/20`} />
-                                </div>
-                              }
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <Disc className={`w-16 h-16 ${textPrimary}/20`} />
-                            </div>
-                          )}
-                        </div>
-
-                        {/* 专辑信息 */}
-                        <div className="p-3">
-                          <h3 className={`${textPrimary} font-medium truncate mb-1`}>
-                            {album.name}
-                          </h3>
-                          <div className="flex items-center gap-2 text-xs">
-                            <Calendar className={`w-3 h-3 ${textTertiary}`} />
-                            <p className={`${textSecondary} truncate`}>
-                              {album.publishTime ? new Date(album.publishTime).getFullYear() : '未知'}
-                            </p>
-                          </div>
-                          {album.size && (
-                            <div className="flex items-center gap-2 text-xs mt-1">
-                              <ListMusic className={`w-3 h-3 ${textTertiary}`} />
-                              <p className={`${textSecondary}`}>
-                                {album.size} 首歌曲
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      </motion.div>
+                      <ArtistAlbumCard
+                        key={`album-${album.platform}-${album.mid || album.id}`}
+                        album={album}
+                        playerTheme={playerTheme}
+                        onOpen={handleAlbumOpen}
+                      />
                     ))}
                   </div>
                 ) : (
@@ -1248,73 +1386,13 @@ export default function ArtistDetailModal({
                 ) : mvs.length > 0 ? (
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                     {mvs.map((mv, index) => (
-                        <motion.div
-                          key={mv.id}
-                          whileHover={{ scale: 1.03 }}
-                          onClick={() => setSelectedMV({ id: mv.id, name: mv.name, platform: mv.platform, index })}
-                          className={`rounded-lg overflow-hidden ${bgCard} cursor-pointer transition-all group`}
-                        >
-                        {/* MV封面 */}
-                        <div className="aspect-video relative overflow-hidden bg-white/5">
-                          {mv.imgurl16v9 || mv.imgurl ? (
-                            <CachedImage 
-                              src={mv.imgurl16v9 || mv.imgurl}
-                              alt={mv.name}
-                              className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
-                              fallback={
-                                <div className="w-full h-full flex items-center justify-center">
-                                  <Video className={`w-12 h-12 ${textPrimary}/20`} />
-                                </div>
-                              }
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <Video className={`w-12 h-12 ${textPrimary}/20`} />
-                            </div>
-                          )}
-                          
-                          {/* 时长标签 */}
-                          {mv.duration && (
-                            <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/70 text-white text-xs">
-                              {formatDuration(mv.duration)}
-                            </div>
-                          )}
-                          
-                          {/* 悬停播放按钮 */}
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center">
-                              <Play className="w-6 h-6 text-gray-900 ml-0.5" fill="currentColor" />
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* MV信息 */}
-                        <div className="p-2.5">
-                          <h3 className={`${textPrimary} font-medium mb-1.5 line-clamp-2 text-sm`}>
-                            {mv.name}
-                          </h3>
-                          <div className="flex items-center gap-3 text-xs">
-                            {mv.playCount && (
-                              <div className="flex items-center gap-1">
-                                <Eye className={`w-3 h-3 ${textTertiary}`} />
-                                <span className={`${textSecondary}`}>
-                                  {mv.playCount > 10000 
-                                    ? `${(mv.playCount / 10000).toFixed(1)}万` 
-                                    : mv.playCount}
-                                </span>
-                              </div>
-                            )}
-                            {mv.publishTime && (
-                              <div className="flex items-center gap-1">
-                                <Calendar className={`w-3 h-3 ${textTertiary}`} />
-                                <span className={`${textSecondary}`}>
-                                  {new Date(mv.publishTime).toLocaleDateString()}
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </motion.div>
+                      <ArtistMvCard
+                        key={`mv-${mv.platform}-${mv.id}-${index}`}
+                        mv={mv}
+                        index={index}
+                        playerTheme={playerTheme}
+                        onOpen={handleMvOpen}
+                      />
                     ))}
                   </div>
                 ) : (
