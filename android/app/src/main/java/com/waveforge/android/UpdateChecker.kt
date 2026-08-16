@@ -71,6 +71,7 @@ object UpdateChecker {
                 if (!force && prefs.getString(KEY_LAST_NOTIFIED, null) == remoteVersionName) return@Thread
 
                 val notes = manifest.optString("notes", "")
+                val codename = manifest.optString("codename", "")
                 val artifacts = manifest.optJSONObject("artifacts")?.optJSONObject("android-arm64")
                 val apkUrl = artifacts
                     ?.optJSONArray("urls")
@@ -83,7 +84,7 @@ object UpdateChecker {
                 if (!force) prefs.edit().putString(KEY_LAST_NOTIFIED, remoteVersionName).apply()
 
                 android.os.Handler(Looper.getMainLooper()).post {
-                    showUpdateDialog(context, remoteVersionName, notes, apkUrl, expectedSha)
+                    showUpdateDialog(context, remoteVersionName, codename, notes, apkUrl, expectedSha)
                 }
             } catch (t: Throwable) {
                 Log.d(TAG, "检查更新失败: ${t.message}")
@@ -124,12 +125,16 @@ object UpdateChecker {
     private fun showUpdateDialog(
         context: Context,
         versionName: String,
+        codename: String,
         notes: String,
         apkUrl: String,
         expectedSha: String,
     ) {
         val builder = AlertDialog.Builder(context)
-        builder.setTitle("发现新版本 v$versionName")
+        builder.setTitle(
+            if (codename.isBlank()) "发现新版本 v$versionName"
+            else "发现新版本 v$versionName「$codename」"
+        )
         builder.setMessage(if (notes.isBlank()) "是否下载并安装更新？" else "$notes\n\n是否下载并安装更新？")
         builder.setCancelable(true)
         builder.setNegativeButton("稍后", null)

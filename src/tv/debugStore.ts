@@ -43,6 +43,30 @@ export function initDebugMode(): void {
   setDebugMode(readDebugMode())
 }
 
+// ── 调试面板可见性（开发者模式子开关，localStorage 持久化） ──
+export const DEBUG_PANEL_KEYS = {
+  backend: 'waveforge:debug-show-backend',
+  frontend: 'waveforge:debug-show-frontend',
+  perf: 'waveforge:debug-show-perf',
+}
+
+export function getDebugPanelVisible(key: string): boolean {
+  try {
+    return localStorage.getItem(key) !== '0'
+  } catch {
+    return true
+  }
+}
+
+export function setDebugPanelVisible(key: string, visible: boolean): void {
+  try {
+    localStorage.setItem(key, visible ? '1' : '0')
+  } catch {
+    // ignore
+  }
+  window.dispatchEvent(new CustomEvent('debugPanelsChanged'))
+}
+
 // ── 前端日志 ──
 export interface LogLine {
   time: string

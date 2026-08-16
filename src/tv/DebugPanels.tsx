@@ -17,10 +17,13 @@ import {
   stopPerfMeasurement,
   startBackendLogPolling,
   stopBackendLogPolling,
+  DEBUG_PANEL_KEYS,
+  getDebugPanelVisible,
+  setDebugPanelVisible,
   type LogLine,
 } from './debugStore'
 
-const PANEL_BG = 'rgba(8, 12, 20, 0.72)'
+const PANEL_BG = 'rgba(8, 12, 20, 0.55)'
 const PANEL_BORDER = 'rgba(255,255,255,0.14)'
 
 const levelColor: Record<LogLine['level'], string> = {
@@ -41,7 +44,7 @@ function LogView({ lines, label, height }: { lines: LogLine[]; label: string; he
     <div
       ref={ref}
       className="overflow-auto font-mono text-[11px] leading-4"
-      style={{ height, color: '#e6edf3' }}
+      style={{ height, color: '#e6edf3', pointerEvents: 'auto' }}
     >
       {lines.length === 0 && <div style={{ color: '#8b949e' }}>{label}（暂无日志）</div>}
       {lines.map((line, i) => (
@@ -60,8 +63,16 @@ export default function DebugPanels() {
   const backendLogs = useBackendLogs()
   const perf = usePerf()
   const [perfDetailed, setPerfDetailed] = useState(false)
-  const [showBackend, setShowBackend] = useState(true)
-  const [showFrontend, setShowFrontend] = useState(true)
+  // 面板可见性来自开发者模式子开关（localStorage）；事件触发时强制刷新
+  const [, force] = useState(0)
+  useEffect(() => {
+    const onChange = () => force((v) => v + 1)
+    window.addEventListener('debugPanelsChanged', onChange)
+    return () => window.removeEventListener('debugPanelsChanged', onChange)
+  }, [])
+  const showBackend = getDebugPanelVisible(DEBUG_PANEL_KEYS.backend)
+  const showFrontend = getDebugPanelVisible(DEBUG_PANEL_KEYS.frontend)
+  const showPerf = getDebugPanelVisible(DEBUG_PANEL_KEYS.perf)
 
   useEffect(() => {
     if (debug) {
@@ -87,6 +98,7 @@ export default function DebugPanels() {
     fontSize: 11,
     padding: '2px 8px',
     cursor: 'pointer',
+    pointerEvents: 'auto',
   } as const
 
   return (
@@ -95,13 +107,13 @@ export default function DebugPanels() {
       {showBackend && (
         <div
           className="fixed bottom-3 left-3 z-[9000] rounded-lg border"
-          style={{ background: PANEL_BG, borderColor: PANEL_BORDER, width: 460, maxHeight: 200, backdropFilter: 'blur(6px)' }}
+          style={{ background: PANEL_BG, borderColor: PANEL_BORDER, width: 460, maxHeight: 200, backdropFilter: 'blur(2px)' }}
         >
           <div className="flex items-center justify-between px-2 py-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
             <span style={{ color: '#7ee787', fontSize: 11, fontWeight: 600 }}>后端日志</span>
             <button
               style={headerBtn}
-              onClick={() => setShowBackend(false)}
+              onClick={() => setDebugPanelVisible(DEBUG_PANEL_KEYS.backend, false)}
               className="tv-debug-btn"
               aria-label="关闭后端日志"
             >
@@ -124,12 +136,12 @@ export default function DebugPanels() {
             width: 460,
             maxHeight: 200,
             bottom: stackBottom,
-            backdropFilter: 'blur(6px)',
+            backdropFilter: 'blur(2px)',
           }}
         >
           <div className="flex items-center justify-between px-2 py-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
             <span style={{ color: '#9cdcfe', fontSize: 11, fontWeight: 600 }}>前端日志</span>
-            <button style={headerBtn} onClick={() => setShowFrontend(false)} className="tv-debug-btn" aria-label="关闭前端日志">
+            <button style={headerBtn} onClick={() => setDebugPanelVisible(DEBUG_PANEL_KEYS.frontend, false)} className="tv-debug-btn" aria-label="关闭前端日志">
               ×
             </button>
           </div>
@@ -140,9 +152,10 @@ export default function DebugPanels() {
       )}
 
       {/* 性能信息（右上） */}
+      {showPerf && (
       <div
         className="fixed right-3 top-3 z-[9000] rounded-lg border"
-        style={{ background: PANEL_BG, borderColor: PANEL_BORDER, minWidth: 150, backdropFilter: 'blur(6px)' }}
+        style={{ background: PANEL_BG, borderColor: PANEL_BORDER, minWidth: 150, backdropFilter: 'blur(2px)' }}
       >
         <div className="flex items-center justify-between gap-2 px-2 py-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
           <span style={{ color: '#ffd28a', fontSize: 11, fontWeight: 600 }}>性能</span>
@@ -150,7 +163,7 @@ export default function DebugPanels() {
             <button style={headerBtn} onClick={() => setPerfDetailed((v) => !v)} className="tv-debug-btn" aria-label="切换性能显示模式">
               {perfDetailed ? '简约' : '详细'}
             </button>
-            <button style={headerBtn} onClick={() => setPerfDetailed(false)} className="tv-debug-btn" aria-label="关闭性能面板">
+            <button style={headerBtn} onClick={() => setDebugPanelVisible(DEBUG_PANEL_KEYS.perf, false)} className="tv-debug-btn" aria-label="关闭性能面板">
               ×
             </button>
           </div>
@@ -168,6 +181,7 @@ export default function DebugPanels() {
           )}
         </div>
       </div>
+      )}
     </div>
   )
 }

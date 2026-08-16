@@ -63,6 +63,25 @@ function versionCodeOf(version) {
   return major * 10000 + minor * 100 + patch
 }
 
+// A 方案版本代号（水声主题，贴合"澜音"）：0.1.x → 涟漪 さざなみ 等。
+// patch 版本沿用所属 minor 的代号。
+const VERSION_CODENAMES = {
+  1: { zh: '涟漪', ja: 'さざなみ' },
+  2: { zh: '潮汐', ja: 'ちょうせき' },
+  3: { zh: '涌浪', ja: 'うねり' },
+  4: { zh: '海风', ja: 'うみかぜ' },
+  5: { zh: '潮鸣', ja: 'しおなり' },
+  6: { zh: '深蓝', ja: 'こんぺき' },
+  7: { zh: '极光', ja: 'オーロラ' },
+  10: { zh: '澜', ja: 'おおなみ' },
+}
+
+function versionCodename(version) {
+  const minor = parseInt(String(version).split('.')[1] || '', 10)
+  const c = VERSION_CODENAMES[minor]
+  return c ? `${c.zh} ${c.ja}` : ''
+}
+
 function readVersionFromGradle() {
   const gradle = readFileSync(join(ROOT, 'android/app/build.gradle.kts'), 'utf8')
   const m = gradle.match(/val appVersionName = "([^"]+)"/)
@@ -222,6 +241,7 @@ async function main() {
 
   const manifest = {
     version,
+    codename: versionCodename(version),
     androidVersionCode: versionCodeOf(version),
     notes,
     artifacts: {},

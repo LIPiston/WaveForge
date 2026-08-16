@@ -8,6 +8,8 @@ import AudioQualitySettingsModal from './AudioQualitySettingsModal'
 import RemoteControlSettingsModal from './RemoteControlSettingsModal'
 import CacheClearModal from './CacheClearModal'
 import packageInfo from '../../package.json'
+import { getVersionDisplay } from '../services/versionInfo'
+import { getDebugPanelVisible, setDebugPanelVisible } from '../tv/debugStore'
 import { isTvModeActive } from '../platform'
 import sponsorData from '../data/afdianSponsors.generated.json'
 import {
@@ -524,7 +526,7 @@ function SettingsPanel({
       } else {
         setUpdateCheck({
           status: 'available',
-          message: `发现新版本 ${remoteVersion}`,
+          message: `发现新版本 ${getVersionDisplay(remoteVersion)}`,
           url: winUrl || fallbackUrl,
           // 桌面端（Electron）可用多源下载安装；纯浏览器只跳发布页
           downloadUrls: winUrl ? withDownloadProxies(winUrl) : undefined,
@@ -2696,6 +2698,34 @@ function SettingsPanel({
                           </p>
                         </div>
                       )}
+
+                      {/* 调试面板子开关（开发者模式开启后显示） */}
+                      {developerMode && (
+                        <div className="mt-3 rounded-xl border p-4" style={{ backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)', borderColor: borderColor }}>
+                          <div className={`${textPrimary} font-medium mb-2 text-sm`}>调试面板</div>
+                          {[
+                            { key: 'waveforge:debug-show-backend', label: '后端日志（左下）' },
+                            { key: 'waveforge:debug-show-frontend', label: '前端日志（左下）' },
+                            { key: 'waveforge:debug-show-perf', label: '性能面板（右上）' },
+                          ].map((panel) => {
+                            const on = getDebugPanelVisible(panel.key)
+                            return (
+                              <label key={panel.key} className="flex items-center justify-between py-1.5 cursor-pointer">
+                                <span className={`text-xs ${textSecondary}`}>{panel.label}</span>
+                                <span className="relative inline-flex items-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={on}
+                                    onChange={(e) => setDebugPanelVisible(panel.key, e.target.checked)}
+                                    className="sr-only peer"
+                                  />
+                                  <span className={`w-9 h-5 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all`} style={{ backgroundColor: on ? accentColor : '' }}></span>
+                                </span>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -2741,7 +2771,7 @@ function SettingsPanel({
                           <h2 className={`text-2xl font-bold ${textPrimary}`}>关于 WaveForge</h2>
                         </div>
                         <span className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold ${playerTheme === 'dark' ? 'bg-white/10 text-white/70' : 'bg-black/5 text-black/60'}`}>
-                          v{packageInfo.version} Beta
+                          {getVersionDisplay(packageInfo.version)} · 预览版
                         </span>
                       </div>
 

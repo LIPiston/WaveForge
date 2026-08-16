@@ -94,7 +94,42 @@ function isVisible(el: HTMLElement): boolean {
   if (r.width < 2 || r.height < 2) return false
   if (r.bottom < 0 || r.top > window.innerHeight) return false
   if (r.right < 0 || r.left > window.innerWidth) return false
+  // 滚动容器裁剪判定：被可滚动/裁剪祖先挡住（滚出可视区）的元素不算候选——
+  // 否则滚到页面底部按"上"会跳到容器外/不可见的元素（如设置页跳标签栏）。
+  if (isClippedByScroll(el)) return false
   return true
+}
+
+/** 元素是否被某个滚动/裁剪祖先排除在可视区之外（rect 不相交）。 */
+function isClippedByScroll(el: HTMLElement): boolean {
+  const r = el.getBoundingClientRect()
+  let node: HTMLElement | null = el.parentElement
+  while (node) {
+    const style = getComputedStyle(node)
+    const o = style.overflow
+    const oy = style.overflowY
+    const scrolls =
+      oy === 'auto' || oy === 'scroll' || o === 'auto' || o === 'scroll' || o === 'hidden' || oy === 'hidden'
+    if (scrolls) {
+      const pr = node.getBoundingClientRect()
+      if (r.bottom < pr.top + 1 || r.top > pr.bottom - 1 || r.right < pr.left + 1 || r.left > pr.right - 1) {
+        return true
+      }
+    }
+    node = node.parentElement
+  }
+  return false
+}
+
+/** 元素所在的最近滚动容器（overflow-y auto/scroll）。 */
+function scrollParentOf(el: HTMLElement): HTMLElement | null {
+  let node: HTMLElement | null = el.parentElement
+  while (node) {
+    const style = getComputedStyle(node)
+    if (style.overflowY === 'auto' || style.overflowY === 'scroll') return node
+    node = node.parentElement
+  }
+  return null
 }
 
 /**
@@ -267,7 +302,14 @@ function bestNeighbor(current: HTMLElement, dir: Direction): HTMLElement | null 
     const parallel = dir === 'left' || dir === 'right' ? Math.abs(dx) : Math.abs(dy)
     const perpendicular = dir === 'left' || dir === 'right' ? Math.abs(dy) : Math.abs(dx)
     // 垂直方向偏差权重大，避免对角线跳跃
-    const score = parallel + perpendicular * 1.5
+    let score = parallel + perpendicular * 1.5
+    // 同滚动容器优先：上下导航不应跳出当前面板的滚动区（如设置页内容区→左侧标签栏），
+    // 跨容器候选加重惩罚，仅在无同容器候选时才会被选到。
+    if (dir === 'up' || dir === 'down') {
+      const curScroll = scrollParentOf(current)
+      const candScroll = scrollParentOf(el)
+      if (curScroll && candScroll !== curScroll) score += 400
+    }
     if (score < bestScore) {
       bestScore = score
       best = el

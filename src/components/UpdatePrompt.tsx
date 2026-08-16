@@ -20,6 +20,7 @@ import {
   GITEE_RELEASES_URL,
   type UpdateManifest,
 } from '../services/updateConstants'
+import { getVersionDisplay } from '../services/versionInfo'
 import { isAndroid, isDesktop } from '../platform'
 
 interface UpdatePromptProps {
@@ -185,7 +186,7 @@ export default function UpdatePrompt({ playerTheme = 'dark' }: UpdatePromptProps
                 检测到新的软件版本（{isDesktop() ? 'Windows' : '网页版'}）
               </div>
               <div className={`mt-1 text-xs ${textSecondary}`}>
-                版本号：v{manifest.version}
+                版本号：{getVersionDisplay(manifest.version || '')}
               </div>
               {notes && (
                 <p className={`mt-2 text-xs leading-relaxed ${textSecondary}`}>{displayedNotes}</p>
@@ -254,7 +255,7 @@ export default function UpdatePrompt({ playerTheme = 'dark' }: UpdatePromptProps
               <div className="min-w-0 flex-1">
                 <h3 className={`text-lg font-semibold ${textPrimary}`}>版本更新成功</h3>
                 <p className={`mt-1 text-sm ${textSecondary}`}>
-                  当前版本：v{packageInfo.version}
+                  当前版本：{getVersionDisplay(packageInfo.version)}
                 </p>
                 {successInfo.notes && (
                   <div className={`mt-3 rounded-xl p-3 text-sm leading-relaxed ${isDark ? 'bg-white/5' : 'bg-black/5'}`}>
