@@ -252,7 +252,7 @@ export default function SearchPanel({
     if (!restorePlaybackOrigin?.surface.startsWith('search')) return
     const restoredPlatform: SearchPlatform = restorePlaybackOrigin.searchMode === 'fused'
       ? 'fused'
-      : (restorePlaybackOrigin.platform || platform)
+      : (restorePlaybackOrigin.platform === 'apple' ? 'netease' : (restorePlaybackOrigin.platform || platform))
     if (restoredPlatform !== platform) setPlatform(restoredPlatform)
 
     if (restorePlaybackOrigin.surface === 'search-album' && restorePlaybackOrigin.albumId) {
