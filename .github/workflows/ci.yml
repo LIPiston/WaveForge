@@ -35,6 +35,9 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 生成赞助商数据（prebuild 钩子，src/data 被 gitignore）
+        run: npm run prebuild
+
       - name: 类型检查（tsc --noEmit）
         run: npm run lint
 
