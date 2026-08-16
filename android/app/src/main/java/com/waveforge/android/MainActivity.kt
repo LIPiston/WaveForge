@@ -44,8 +44,15 @@ class MainActivity : Activity() {
         private const val ASSETS_VERSION = 4
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
-        // 与桌面版 Electron 登录窗口同一个 URL（需要登录的页面，登录后自动带出 cookie）
-        private const val QQ_LOGIN_URL = "https://y.qq.com/n/ryqq_v2/profile/like/song"
+        // QQ 统一登录页（appid=716027609 为 QQ 音乐）：自带二维码，加载即出扫码登录，
+        // 手机 QQ 扫后跳回 s_url（y.qq.com），音乐 cookie 随之写入，轮询即可捕获。
+        // 比加载 y.qq.com 再模拟点击"登录"更可靠（电视无鼠标，无需任何网页操作）。
+        private const val QQ_LOGIN_URL =
+            "https://xui.ptlogin2.qq.com/cgi-bin/xlogin" +
+            "?appid=716027609" +
+            "&daid=16" +
+            "&pt_no_auth=1" +
+            "&s_url=https%3A%2F%2Fy.qq.com%2Fn%2Fryqq_v2%2Fprofile%2Flike%2Fsong"
     }
 
     private lateinit var webView: WebView
@@ -198,6 +205,8 @@ class MainActivity : Activity() {
                 )
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
+                // 登录弹窗可能用 window.open 打开，允许并重定向回当前覆盖层
+                settings.javaScriptCanOpenWindowsAutomatically = true
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 setBackgroundColor(Color.parseColor("#0a0f14"))
                 webViewClient = object : WebViewClient() {
@@ -215,6 +224,20 @@ class MainActivity : Activity() {
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         injectQQLoginHelper(view)
+                    }
+                }
+                webChromeClient = object : WebChromeClient() {
+                    // window.open 的新窗口重定向到当前覆盖层，避免 QQ 登录弹窗打不开
+                    override fun onCreateWindow(
+                        view: WebView?,
+                        isDialog: Boolean,
+                        isUserGesture: Boolean,
+                        resultMsg: android.os.Message?
+                    ): Boolean {
+                        val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                        transport.webView = view
+                        resultMsg.sendToTarget()
+                        return true
                     }
                 }
             }
@@ -252,15 +275,63 @@ class MainActivity : Activity() {
             """
             (function () {
               if (document.getElementById('wf-qq-login-bar')) return;
+
+              // ---- 顶部提示条 + 关闭按钮 ----
               var bar = document.createElement('div');
               bar.id = 'wf-qq-login-bar';
               bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483000;background:rgba(8,12,20,0.94);color:#fff;font-size:15px;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-family:sans-serif;';
-              bar.innerHTML = '<span>请在电视屏幕上使用手机 QQ 扫码登录，完成后将自动返回</span>' +
+              bar.innerHTML = '<span>请用手机 QQ 扫一扫电视上的二维码登录，完成后自动返回</span>' +
                 '<button id="wf-qq-login-close" style="flex:none;background:rgba(255,255,255,0.16);color:#fff;border:none;border-radius:8px;padding:8px 18px;font-size:14px;">关闭</button>';
               document.body.appendChild(bar);
               document.getElementById('wf-qq-login-close').addEventListener('click', function () {
                 try { window.WaveForgeNative.closeQQLogin(); } catch (e) {}
               });
+
+              // ---- 自动打开登录弹窗（电视无鼠标，不能让用户去点"登录"） ----
+              // ptlogin2 统一登录页自带二维码，无需自动点击（且避免误点"密码登录"）
+              if (location.hostname.indexOf('ptlogin') !== -1) return;
+              window.__wfAutoLoginTries = window.__wfAutoLoginTries || 0;
+
+              function pickByText(texts) {
+                var all = document.querySelectorAll('button, a, div, span, li, em, i');
+                for (var i = 0; i < all.length; i++) {
+                  var el = all[i];
+                  if (el.children.length > 4) continue; // 跳过容器
+                  var t = (el.textContent || '').trim();
+                  if (!t || t.length > 6) continue;
+                  for (var k = 0; k < texts.length; k++) {
+                    if (t === texts[k] || t.indexOf(texts[k]) !== -1) return el;
+                  }
+                }
+                return null;
+              }
+
+              function loginDialogOpened() {
+                if (document.querySelector('iframe[src*="ptlogin"], iframe[src*="xui.ptlogin"], [id*="ptlogin"], [class*="ptlogin"]')) return true;
+                var bodyText = (document.body ? document.body.innerText : '');
+                return bodyText.indexOf('二维码') !== -1 || bodyText.indexOf('扫码') !== -1;
+              }
+
+              function tryOpenLogin() {
+                if (loginDialogOpened() || window.__wfAutoLoginTries > 6) return;
+                window.__wfAutoLoginTries++;
+                // 1) 点"登录"
+                var btn = pickByText(['登录', '登 录', '立即登录', '登录QQ']);
+                if (btn) { btn.click(); }
+                // 2) 等弹窗渲染后，若默认不是扫码 tab，点"扫码登录/二维码"
+                setTimeout(function () {
+                  if (loginDialogOpened()) return;
+                  var qr = pickByText(['扫码登录', '二维码登录', '扫码', '二维码']);
+                  if (qr) qr.click();
+                }, 1800);
+                // 3) 没弹出来就再试
+                setTimeout(tryOpenLogin, 2500);
+              }
+
+              // 页面可能是 SPA，多等几轮让脚本渲染完成
+              setTimeout(tryOpenLogin, 800);
+              setTimeout(tryOpenLogin, 2500);
+              setTimeout(tryOpenLogin, 5000);
             })();
             """.trimIndent(),
             null
