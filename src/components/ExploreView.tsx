@@ -526,7 +526,7 @@ export default function ExploreView({
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [platform, qqLoggedIn, neteaseLoggedIn, authRevision, platformPreferences.enhancedApi])
+  }, [platform, qqLoggedIn, neteaseLoggedIn, authRevision, platformPreferences])
 
   useEffect(() => {
     localStorage.setItem('explorePlatform', platform)
@@ -1825,7 +1825,6 @@ export default function ExploreView({
             if (identifier) onOpenArtist?.(String(identifier), menuPlatform)
           }}
           onCopyInfo={onCopyInfo}
-          onDislike={handleDislike}
           userPlaylists={userPlaylists}
           platform={(songContextMenu.song.platform || (platform === 'apple' ? 'netease' : platform)) as 'netease' | 'qq'}
         />
