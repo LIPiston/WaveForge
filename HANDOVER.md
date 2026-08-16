@@ -5,12 +5,12 @@
 
 ---
 
-## 1. 项目状态（2026-08-14）
+## 1. 项目状态（2026-08-16）
 
-- **阶段**：功能基本完整，处于维护/收尾阶段。核心功能（双平台搜索/播放/歌词/无缝衔接/桌面模式/壁纸联动）均已实现且通过自动化验证。
-- **代码基线**：当前 HEAD `b0a487a`（2026-08-14 双会话合并提交：遥控器/SongDetail/模式切换重构 + 完整浅色模式与 UI 修复，详见 SESSION_SUMMARY(3)/(4)）；更早历史来自远程 `YoshinoRinn/WaveForge` 的**朋友优化合并版**（`f5d59b9`）。
-- **稳定性**：最近一次完整回归通过 —— `npm run lint` 0 报错、`vite build` 成功、Python 节拍服务与分析/渲染 worker 在嵌入式 3.13 上端到端实测通过（分析→渲染全链路）、后端安全修复点复测通过、Playwright 生产构建冒烟通过（首页加载/标签切换/播放/进度推进）。
-- **代码规模**：前端 137 个 TS/TSX，后端 `local-server.mjs` 单文件约 8.2k 行，Python 服务约 2.1k 行。
+- **阶段**：功能完整，处于维护/优化阶段。核心功能（双平台搜索/播放/歌词/无缝衔接/桌面模式/壁纸联动）均已实现；**多平台分支**（Android TV、Apple 歌词/探索）已合入。
+- **代码基线**：当前 HEAD `050d315`（2026-08-16 远程 lyrics-apple 分支合并：Android TV + Apple 逐字/探索 + 探索页设置重构 + compression 依赖）；本地含 12 个性能 commit（`1c8ef0c`~`6acf49c`）+ 回归修复（`d1b5e5f`）+ 版本更迭（`8b09d60` v0.1.2）。
+- **稳定性**：`npm run lint` 0 报错、`npm run test` **12 文件 / 152 用例全过**、`vite build` 成功、便携版（win-unpacked）启动冒烟通过（四服务 3001-3004 全 200、首页推荐/热歌榜数据非空）。
+- **代码规模**：前端约 160+ TS/TSX（含 Android TV 与 Apple 分支），后端 `local-server.mjs` 单文件约 10.2k 行，Python 服务约 2.1k 行。
 
 ## 2. 环境（重要）
 
@@ -21,6 +21,9 @@
 | 离线 wheel 缓存 | `python-beat-service/packages/`（41 个 cp313 wheel，`start.bat` 离线安装用，**已入库**） |
 | 系统 Python | PythonEvm312（3.12.7）、PythonEvm314 —— 仅作回退，生产用嵌入式 |
 | Node/前端 | Electron 42、React 19、Vite 6、TS 5.8 |
+| 多平台 | Android TV（Gradle + nodejs-mobile，`build:android`）、Apple 分支（`src/services/apple*`） |
+
+> ⚠️ **端口占用坑（2026-08-16 实测）**：本机另一个项目 **ReWaveForge**（`E:\FolderForVibeCoding\dsh\ReWaveForge\backend-go\bin\waveforge-server.exe`）会抢占 **3001/3101** 端口——WaveForge 后端启动失败（日志"端口已被占用"）、前端连到 Go 服务的空数据（首页/榜单全部"没有加载到内容"、`/health` 返回 unauthorized）。**症状 = 前端功能大面积不对时先查 3001 是否被其他进程占用**（`netstat -ano | grep :3001`）。
 
 **运行时升级历史**：2026-08-13 从 3.11.9 升级到 3.13.15（此前 README 宣称 3.13 但实际 bundle 的是 3.11.9，属修复性升级）。离线 wheels 随之重建为 cp313 全集。
 
@@ -46,10 +49,27 @@
 6. **音频格式白名单**：`beat_analyzer.py` 仅接受 `.mp3/.flac/.wav/.ogg`（运行时 libsndfile 不支持 m4a/aac/opus/webm，且无 ffmpeg）。
 7. **离线安装**：`start.bat` 的 `--no-index --find-links=packages` 依赖 `packages/` 里的 cp313 wheels —— 若再升级 Python 主版本，需重建 wheel 集（`pip download --only-binary=:all: -d packages`）。
 8. **prebuild 钩子**：`npm run build` 会自动执行 `sync:sponsors --optional`，依赖 `WaveForge-Afdian.env` 中的爱发电 Token；未配置时软失败，不影响构建（详见 `AFDIAN_SPONSORS.md`）。
+9. **回归修复记录（2026-08-16 审计，commit `d1b5e5f`）**：
+   - 无限推荐队列裁剪：`setCurrentIndex` 原在 `setTimeout(0)` 里、与 `setPlaylist` 不同步 → 中间帧 `currentIndex` 越界导致播放页闪回首页 → 已改为同批次同步提交。
+   - `loadAndPlay` 的 `NotAllowedError` 被静默吞掉（浏览器/手势策略拒绝 play 是真实失败）→ 已恢复走失败重试路径，仅 `AbortError` 静默。
+   - `/api/qq/mv/url` merge 后 `parseQQCookie` 用了原始 `req.query.cookie` 局部变量，仅依赖全局登录态时解析空 → 改 `resolveRequestCookie(cookie) || qqMusicCookie`。
+   - `/api/qq/artist/subscribe` 签名 payload 与请求头写死全局 cookie → 改请求级 cookie（`cookie || qqMusicCookie`）。
 
-## 5. 未决事项（可选做）
+## 5. 性能优化记录（2026-08-16 多轮并行，commit `1c8ef0c`~`6acf49c`）
 
-> 2026-08-14 已并行处理大部分（见 §6 历史决策）。剩余：
+> 全部通过 lint 0 错误 / vitest 152 用例 / build 成功；便携版冒烟验证过。**改动时勿回退这些基线**。
+
+1. **渲染降频**：三视图（HomeView/ExploreView/DesktopView）memo + `viewCallbacks`（30 个 latest-ref 稳定回调）；弹窗（SettingsPanel/SongDetailModal/SimilarSongsPanel/UserProfileModal/UserProfileView/ProfileView/AlbumDetailModal/PlaylistPanel/PlaylistDetailPanel）全部 memo + `stableDialogCallbacks`；过渡进度 rAF 三处 30fps 节流（结束帧强制 emit）；歌词 30fps 平滑时钟门控（无逐字词/无间奏停 rAF 空转）；频谱/脉冲 rAF 双门控（消费者计数 + visibility）；Banner 轮播抽离 memo 组件。
+2. **列表虚拟化**：CommentModal（扁平行数组 + `useDynamicRowHeight` 变高行）、ArtistDetailModal 全部歌曲（定高 64px）用 react-window；ProfileView 6 个高成本列表抽 memo 行组件 + latest-ref 回调。
+3. **内存治理**：8 处缓存加 LRU 上限（SearchPanel/响度/补偿/推荐等）；v1/v2 引擎 dispose 清空节点引用；无限推荐队列裁剪（保留当前曲前 100 首）；封面 IndexedDB 写幂等 + `enforceLimit` 60s 节流；`cacheManager` 死代码（封面已迁移 IndexedDB）。
+4. **传输**：`/api/cover`、`/api/proxy-image` 流式转发（`streamProxyImage()`，不再整读 20MB 进内存）；后端 gzip（compression，filter 排除 image/video/audio 保流式）；axios keepAlive Agent；遥控器广播改增量（不再每 100ms 全量序列化 500 条 playlist）。
+5. **首屏/启动**：leaflet 懒加载（WeatherDetailsModal 拆 `weatherVisualTheme.tsx`）；vite manualChunks（vendor-react/motion/leaflet）+ opencc-js `cn2t` 子路径（主入口 -23%）；`createAnalysisRuntime` 同步 statSync 扫描移入 `setImmediate`。
+6. **Python 服务**：beat `cleanup_cache` 60s 节流（3000 缓存文件 585ms→即时）+ `threaded=True`；loudness 分段能量积分 numpy 向量化（`np.add.reduceat`）+ K 加权系数缓存 + 测量结果磁盘缓存（256MB/30 天，同文件重测跳过解码）。
+7. **cookie 单事实源**（1c8ef0c）：全局 `qqMusicCookie` 只在登录/设置接口更新；播放/读取路由用 `resolveRequestCookie` 只读；写操作按请求级 cookie 传递——修并发播放/写操作互相冲掉登录态。
+
+## 5b. 未决事项（可选做）
+
+> 2026-08-14 已并行处理大部分（见 §6 历史决策）；2026-08-16 完成性能优化与回归审计。剩余：
 
 - [ ] **license 机制未强制执行**：`desktop/device-license.cjs` 计算授权但无功能门控（纯展示）。曾尝试加入"激活后拦截未授权播放"的门控，因会**限制现有功能**而被撤销——正确方向是"激活解锁**新**功能"而非限制已有功能，等付费功能规划时再做。
 - [x] ~~**cuefield 时间线执行器为死代码**~~：✅ 已清理（2026-08-14）——删除 `cuefieldAutoMix.ts`/`cuefieldTimelineExecutor.ts`/`cuefieldApi.ts` 三文件 + `gaplessIntegration.ts` 约 400 行不可达代码（三方案分流/albumGapless 完整保留）。**遗留**：后端 `local-server.mjs:8027` 的 `/api/cuefield/transition` 路由无前端调用方，可后续清理。
@@ -106,6 +126,9 @@
   - **新增后端路由**（一批）：`/api/qq/banner`、`/api/qq/song/playlist`、`/api/qq/songlist/category|list`、`/api/qq/album/sublist`、`/api/qq/artist/sublist2`、`/api/qq/user/favs`、`/api/qq/user/profile`、`/api/qq/user/subscribe`、`/api/netease/banner`、`/api/netease/playlist/hot|catlist|highquality|simi|related`、`/api/netease/top/artists|album|mv`、`/api/netease/artist/list`、`/api/netease/dj/recommend|catelist|hot`、`/api/netease/daily/signin`、`/api/netease/song/wiki`、`/api/netease/simi/mv`、`/api/netease/mv/sublist`。
   - **新建组件**：`MVExploreModal.tsx`（MV 分类浏览+搜索，探索页顶栏 Film 入口）、`UserProfileView.tsx`（查看他人全屏个人中心，后被 ProfileView viewStack 替代为内部切换）、`UserProfileModal.tsx`（临时弹窗，已被 viewStack 取代）。
   - **使用注意**：所有 QQ 关注/粉丝/主页接口**必须用最新登录的 qm_keyst**（应用内重新粘贴 QQ cookie，旧 key 返回 1000/空）；QQ 他人创建歌单/我喜欢歌曲/评论回复/听歌排行为平台限制。
+- 2026-08-16：**多轮性能优化（12 个 commit：`1c8ef0c`~`6acf49c`）** —— 详见 §5 性能优化记录：渲染降频（三视图/弹窗/列表行组件 memo + latest-ref 稳定回调、过渡 30fps 节流、歌词/频谱/脉冲 rAF 门控）、react-window 虚拟化（评论变高行/艺人定高行）、内存治理（8 处缓存上限、引擎 dispose 清引用、队列裁剪、IndexedDB 写幂等+修剪节流）、传输（封面流式转发、gzip、keep-alive、遥控器增量广播）、首屏/启动（leaflet 懒加载、vendor 拆分、主入口 -23%、analysis 延迟初始化）、Python 服务（缓存清理节流、向量化、磁盘缓存）、cookie 单事实源（并发播放/写操作不再互相冲登录态）。
+- 2026-08-16：**回归审计 + 修复（commit `d1b5e5f`）** —— 用户反馈"功能不对"后系统性语义核对（4 个并行审计代理 + git 对照原实现）：修复队列裁剪闪白、NotAllowedError 静默、MV/关注歌手 cookie 三处回归；环境层根因是 **ReWaveForge Go 后端抢占 3001**（见 §2 端口坑）。修复后 lint 0 / 152 用例 / build 通过，便携版 v0.1.2 冒烟验证（四服务 200、数据非空）。
+- 2026-08-16：**融合远程 lyrics-apple 分支（fast-forward 到 `050d315`）** —— Android TV（`android/` + `src/tv/`，`build:android`/`fetch:nodejs-mobile`/`publish:release` 脚本）、Apple 歌词/探索分支（`AppleCoverFx`/`AppleExploreView`/`AppleLoginPanel` + `appleAuth`/`appleCatalog`/`appleMusic`）、探索页设置重构/封面墙背景/歌曲详情增强、compression 依赖。零冲突合并，本地性能优化与回归修复全部保留。
 
 ## 7. 常用操作速查
 
@@ -116,7 +139,7 @@ test-python-service.bat       # 检查节拍服务 3002
 
 # 验证
 npm run lint                  # 类型检查
-npm run test                  # vitest 单测（119 用例）
+npm run test                  # vitest 单测（12 文件 / 152 用例）
 npm run build                 # 生产构建
 npm run test:license          # 设备授权自测
 ./resources/python-embed/python.exe -m pip install --no-index --find-links=python-beat-service/packages --dry-run -r python-beat-service/requirements.txt  # 验证离线安装可解析
@@ -127,6 +150,10 @@ npm run version:dry           # 预览更迭（不落地）
 
 # 运行时重建
 npm run bundle-python         # 重建嵌入式 3.13.15（需联网）
+
+# Android TV（多平台分支）
+npm run fetch:nodejs-mobile   # 拉取 nodejs-mobile 运行时
+npm run build:android         # 生成 Android 前端资产（vite.android.config.ts）
 
 # 爱发电赞助名单
 npm run sync:sponsors         # 手动刷新 src/data/afdianSponsors.generated.json

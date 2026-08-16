@@ -1,6 +1,6 @@
 # AGENTS.md — WaveForge 澜音工坊
 
-Desktop music player (Windows/Electron) for QQ Music + NetEase Cloud Music. Frontend React 19 + TypeScript + Tailwind CSS 4 + Vite 6, backend Node/Express, Python beat-analysis service for DJ-style gapless playback. UI text and code comments are predominantly **Chinese** — keep new user-facing strings consistent with the existing language.
+Desktop music player (Windows/Electron) for QQ Music + NetEase Cloud Music. Frontend React 19 + TypeScript + Tailwind CSS 4 + Vite 6, backend Node/Express, Python beat-analysis service for DJ-style gapless playback. UI text and code comments are predominantly **Chinese** — keep new user-facing strings consistent with the existing language. 仓库同时含 **Android TV**（`android/` + `src/tv/`，构建脚本 `build:android`）与 **Apple 歌词/探索分支**（`src/components/Apple*`）——改桌面端时勿破坏多平台分支。
 
 ## Commands
 
@@ -9,11 +9,14 @@ npm run dev:electron     # Full dev: Vite (3000) + API server (3001) + Electron 
 npm run dev              # Vite dev server only (port 3000)
 npm run dev:api          # Express backend only (local-server.mjs, port 3001)
 npm run lint             # Typecheck: tsc --noEmit (covers src/ only; no ESLint in repo)
-npm run test             # vitest 单测 (test/*.test.ts, 119 用例)
+npm run test             # vitest 单测 (test/*.test.ts, 12 文件 152 用例)
 npm run build            # vite build -> dist/ (multi-entry: every *.html in repo root)
 npm run build:electron   # build + electron-builder NSIS -> release/
 npm run build:full       # bundle-python + build:electron (完整发布流水线)
 npm run build:electron:dir  # build + electron-builder --win dir (未打包目录, 便于调试)
+npm run build:android    # 生成 Android TV 前端资产 (scripts/build-android-assets.mjs)
+npm run fetch:nodejs-mobile  # 拉取 nodejs-mobile 运行时（Android 用）
+npm run publish:release  # 一键发布脚本 (scripts/publish-release.mjs)
 npm run bundle-python    # Rebuild embedded Python runtime (3.13.15) -> resources/python-embed/
 npm run test:license     # 设备授权自测 (scripts/test-device-license.cjs)
 npm run sync:sponsors    # 从爱发电 API 刷新 src/data/afdianSponsors.generated.json
@@ -61,10 +64,12 @@ npm run version:dry     # 预览将要执行的操作（不落地）
 - **引擎版本切换**：`src/services/audioEngineVersion.ts`（localStorage `waveforge:audio-engine-version`，默认 v1）。调音室头部 v1/v2 切换按钮 → App `switchAudioEngine`：热切换（暂停音乐 → dispose 旧链 → attach 新链 → 恢复播放）或冷切换（音频图未就绪时仅存配置，下次启动生效），右上角弹 2s 切换提示。调音室 UI：v1=`MixingStudio.tsx`，v2=`MixingStudioV2.tsx`，按版本 lazy 渲染。**两引擎 dispose 都会全断 masterGain 并摘除 soundtouch/limiter 再恢复直连，避免并联打架**。
 - `desktop/` — Electron main process, **CommonJS** (`main.cjs`, `preload.cjs`, `config-manager.cjs`, `device-license.cjs`). Not covered by `tsc --noEmit`.
 - `src/desktop-lyrics/` + `src/desktop-player/` — standalone renderer entries for `desktop-lyrics.html` / `desktop-player.html`.
-- `local-server.mjs` — single-file Express backend (~8k lines, port 3001). Extra route modules in `server/` are registered here. QQ cookie state must flow through the single `qqMusicCookie` source of truth.
+- `local-server.mjs` — single-file Express backend (~10k lines, port 3001). Extra route modules in `server/` are registered here. QQ cookie state must flow through the single `qqMusicCookie` source of truth. **cookie 单事实源规则**：全局 `qqMusicCookie` 只在显式登录/设置接口（`/api/qq/cookie`、`/api/qq/user/setCookie`）更新；播放/读取路由一律用 `resolveRequestCookie(cookie)`（请求 cookie 仅本次使用，绝不回写全局），写操作按请求级 cookie 传递——并发播放/写操作不得互相冲掉登录态。
+- `android/` + `src/tv/` — **Android TV 平台**（Gradle 工程 + TV 键盘/媒体键桥 `src/tv/tvCore.ts`、`mediaKeyBridge.ts`、`TvKeyboard.tsx`），前端资产经 `npm run build:android`（`scripts/build-android-assets.mjs`，`vite.android.config.ts`）。桌面端改动注意保持跨平台兼容（`src/platform.ts`、`src/electronShim.ts`）。
+- `src/components/Apple*` — **Apple 歌词/探索分支**：`AppleCoverFx.tsx`（Apple 逐字歌词特效）、`AppleExploreView.tsx`、`AppleLoginPanel.tsx`；配套服务 `src/services/appleAuth.ts` / `appleCatalog.ts` / `appleMusic.ts`。与桌面歌词模式（LyricsDisplay 内 `apple` 模式）严格隔离，改桌面端勿破坏。
 - `desktop/main.cjs` 还含 **QQ音乐 QMK API Key 领取窗口**（`QMK_OFFICIAL_KEY_URL` y.qq.com；独立 session partition `waveforge-qq-skill-key`，每次打开前清空避免复用登录态）——编辑时保留隔离分区与导航守卫逻辑。
-- `scripts/` — dev 启动器（`dev-electron.mjs`、`start-api.mjs`、debug/hidden VBS）、`bundle-python.mjs`（重建嵌入式 Python）、`sync-afdian-sponsors.mjs`、`test-device-license.cjs`。
-- `python-beat-service/` — Flask beat analysis (port 3002) for Smart AutoMix; app degrades to Fixed Crossfade when down. `loudness_server.py`（port 3003）为独立响度测量服务（`/lufs`，响度归一化用）；`compensation_server.py`（port 3004）为独立频响补偿设计服务（`/compensation`，ISO 226 简化等响度模型 + 场景预设 + 自定义频段 → 多段 Biquad 参数）。三服务完全解耦、三入口（dev-electron.mjs / main.cjs / start-full.bat）同模式拉起。
+- `scripts/` — dev 启动器（`dev-electron.mjs`、`start-api.mjs`、debug/hidden VBS）、`bundle-python.mjs`（重建嵌入式 Python）、`build-android-assets.mjs` / `fetch-nodejs-mobile.mjs` / `publish-release.mjs`（Android 与发布）、`sync-afdian-sponsors.mjs`、`test-device-license.cjs`。
+- `python-beat-service/` — Flask beat analysis (port 3002) for Smart AutoMix; app degrades to Fixed Crossfade when down. `loudness_server.py`（port 3003）为独立响度测量服务（`/lufs`，响度归一化用）；`compensation_server.py`（port 3004）为独立频响补偿设计服务（`/compensation`，ISO 226 简化等响度模型 + 场景预设 + 自定义频段 → 多段 Biquad 参数）。三服务完全解耦、三入口（dev-electron.mjs / main.cjs / start-full.bat）同模式拉起。三服务均已做性能优化：beat 缓存清理 60s 节流、loudness 分段积分向量化 + 测量磁盘缓存（256MB/30 天）、线程并发（threaded=True）。
 - **Git repo** (has history — use `git log`/`git blame`; rollback via `git reset`). `data/`, `cache/`, `logs/`, `dist/`, `release/` are ignored runtime artifacts.
 
 ## Conventions
@@ -72,7 +77,8 @@ npm run version:dry     # 预览将要执行的操作（不落地）
 - **Relative imports everywhere** — `@/` alias is configured but unused; match the `./`/`../` style.
 - **No ESLint** — `npm run lint` is typecheck only. Strict TS in `src/`.
 - **Use `debugLog()` (src/utils/debugLog.ts) instead of `console.log` in hot paths** — gated behind `localStorage['waveforge:verbose-log']` to avoid console memory growth.
-- **Files must be UTF-8** — Windows encoding issues previously broke Chinese UI text.
+- **Files must be UTF-8** — Windows encoding issues previously broke Chinese UI text（曾出现 GBK 误读乱码，含正则字符类损坏）。
+- **性能基线（已完成的优化，勿回退）**：三视图/弹窗/列表行组件 memo + latest-ref 稳定回调（`viewCallbacks`/`stableDialogCallbacks`）；过渡进度 30fps 节流；评论/艺人列表 react-window 虚拟化；封面代理流式转发；`/api/cover`、`/api/proxy-image` 经 `streamProxyImage()` 流式（不整读进内存）；后端 gzip（compression 中间件，filter 排除 image/video/audio）；axios keepAlive；Python 服务缓存清理节流/向量化。
 - Ports: 3000 Vite / 3001 backend (127.0.0.1, CORS allows only localhost:3000, file://, null origins) / 3002 Python beat / 3003 Python loudness / 3004 Python compensation.
 
 ## Backend security invariants (do not break when editing)
@@ -81,10 +87,13 @@ npm run version:dry     # 预览将要执行的操作（不落地）
 - `/api/cover` and `/api/proxy-image` have an SSRF guard blocking private/loopback/link-local IPs and DNS names resolving to them. **The internal proxy chain `proxy-image → cover` is legitimate**: guard must keep allowing `localhost:3001` (the app's own origin) — inner `/api/cover` still validates the final CDN target, so blocking localhost:3001 would break comment/playlist avatars.
 - `/api/wallpaper-engine/preview` & `/media` enforce path containment under the WE base dir (resolve + startsWith(base+sep)).
 - **Netease xeapi**: `initNeteaseAPI()` in local-server.mjs calls the lib's `generateConfig()` at startup to register an anonymous token and fetch the xeapi public key (cached in `os.tmpdir()/xeapi_public_key`). If `/api/netease/song/url` starts returning `xeapi public key is missing`, the tmp cache was cleared — restart the server.
+- **QQ 播放/写操作 cookie**：播放类路由（song/url、mv/url、mv/detail、comment、user/detail 等）用 `resolveRequestCookie(cookie)` 只读不写全局；写操作（like、playlist/tracks、subscribe、artist/subscribe）一律传请求级 cookie 并 `cookie || qqMusicCookie` 回退。改 cookie 逻辑时保持此单事实源约束。
 
 ## Read before touching
 
 - `README.md` — feature map (seamless gapless modes, lyrics, visualizers, desktop/wallpaper mode).
+- `HANDOVER.md` — 交接文档：项目状态、环境、已知问题、未决事项、历史决策（每次大改后更新）。
+- `CONTEXT.md` — 音效域词汇表（效果/场景方案/自定义状态/频响补偿等术语定义）。
 - `LICENSE_SYSTEM.md` — device licensing (Ed25519; generator is a **separate** project, never rotate keys casually).
 - `CACHE_SYSTEM.md` — IndexedDB cache design; `CachedImage` double-buffering.
 - `AFDIAN_SPONSORS.md` — 爱发电赞助配置/流程（`sync:sponsors` 的数据源说明）。
@@ -92,3 +101,4 @@ npm run version:dry     # 预览将要执行的操作（不落地）
 - `PROJECT_HISTORY.md` — historical dev milestones / Phase 2 planning (archive; don't treat as current spec).
 - `WALLPAPER_GUIDE.md` / `DESKTOP_MODE.md` — wallpaper & desktop-mode feature docs.
 - `PYTHON_EMBEDDING_GUIDE.md` — embedded Python build/rebuild process.
+- `docs/歌词对比-LyricsBlossom.md` — Apple Music 歌词逆向对比分析（Apple 逐字模式参考）。

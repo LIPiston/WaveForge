@@ -1,6 +1,6 @@
 # WaveForge 澜音工坊
 
-沉浸式桌面音乐播放器（Windows / Electron），支持 **QQ 音乐 + 网易云音乐**双平台：搜索、播放、歌词、可视化、智能推荐、无缝衔接（DJ 级转场）、桌面模式与壁纸联动。
+沉浸式桌面音乐播放器（Windows / Electron），支持 **QQ 音乐 + 网易云音乐**双平台：搜索、播放、歌词、可视化、智能推荐、无缝衔接（DJ 级转场）、桌面模式与壁纸联动。仓库同时含 **Android TV** 与 **Apple 歌词/探索**多平台分支。
 
 ## 快速开始
 
@@ -17,11 +17,12 @@ npm run dev:electron           # 一键启动：Vite(3000) + API(3001) + Electro
 - **双平台搜索与推荐**：QQ 音乐 + 网易云实时搜索、每日推荐、热歌榜/飙升榜、猜你喜欢
 - **QQ 音乐 API Key 领取**：内置引导窗口直达 y.qq.com 领取 qmk API Key（独立隔离 session，每次打开清空登录态）
 - **无缝衔接播放**：三种模式 —— Smart AutoMix（智能节拍匹配+BPM 同步，需 Python）/ Beat Crossfade（节拍交叉淡化）/ Fixed Crossfade（固定时长，默认）
-- **歌词系统**：LRC 解析、逐字歌词（QQ）、实时滚动、点击跳转
+- **歌词系统**：LRC 解析、逐字歌词（QQ）、实时滚动、点击跳转；逐字特效模式（清晰/柔和/Apple 逆向还原）
 - **可视化**：频谱柱 / 波形 / 环形 / 3D 可视化
 - **桌面模式**：桌面小组件、专注计时、生产力工具、自定义壁纸
 - **Wallpaper Engine 联动**：读取本地 WE 配置并同步音频可视化
 - **缓存系统**：IndexedDB（封面双缓冲、歌单缓存、免闪切换）
+- **社交/个人中心**：QQ/网易云关注与粉丝、查看他人主页、QQ MV 浏览、私人 FM、智能播放
 
 ## 技术架构
 
@@ -32,22 +33,26 @@ npm run dev:electron           # 一键启动：Vite(3000) + API(3001) + Electro
 音频:    Web Audio API + 节拍分析（Python 3.13 + librosa）
 音乐源:  qq-music-api + NeteaseCloudMusicApiEnhanced
 可视化:  Three.js + React Three Fiber
+多平台:  Android TV（android/ + src/tv/，vite.android.config.ts）
+         Apple 歌词/探索分支（src/components/Apple*，src/services/apple*）
 ```
 
 ```
 WaveForge/
 ├── src/                        # React 前端
-│   ├── components/            # 组件（App.tsx 懒加载）
-│   ├── services/              # API 客户端、缓存、无缝衔接逻辑
+│   ├── components/            # 组件（App.tsx 懒加载；Apple* 为 Apple 分支）
+│   ├── services/              # API 客户端、缓存、无缝衔接逻辑、apple* 服务
 │   ├── audio/                 # 播放引擎（队列/转场规划/渲染器）
+│   ├── tv/                    # Android TV（TvKeyboard/mediaKeyBridge/tvCore）
 │   ├── hooks/  api/  utils/  types/
+├── android/                    # Android TV Gradle 工程（build:android 生成资产）
 ├── desktop/                   # Electron 主进程 + preload（.cjs）
 ├── server/                    # 后端附加路由（hazard/location/comment）
-├── local-server.mjs           # Express 后端（约 8k 行，单文件）
+├── local-server.mjs           # Express 后端（约 10k 行，单文件）
 ├── python-beat-service/       # 节拍分析服务（Flask，端口 3002）
 │   └── packages/              # 离线 wheel 缓存（cp313，对应内置 3.13）
 ├── resources/python-embed/    # 嵌入式 Python 3.13.15（npm run bundle-python 重建）
-└── scripts/                   # dev/build/打包脚本
+└── scripts/                   # dev/build/打包/发布脚本
 ```
 
 ## 开发命令
@@ -57,11 +62,14 @@ npm run dev:electron    # 完整开发（前端+后端+Electron）
 npm run dev             # 仅 Vite（3000）
 npm run dev:api         # 仅 API（3001）
 npm run lint            # TypeScript 类型检查（tsc --noEmit）
-npm run test            # vitest 单测（核心逻辑 111 用例）
+npm run test            # vitest 单测（12 文件 152 用例）
 npm run build           # 生产构建 -> dist/
 npm run build:electron  # 打包 NSIS 安装版 -> release/（发布用）
 npm run build:full      # 完整发布：bundle-python + build:electron
 npm run build:electron:dir  # 构建 + 未打包目录（本地调试用，不发布）
+npm run build:android   # 生成 Android TV 前端资产
+npm run fetch:nodejs-mobile  # 拉取 Android 运行时
+npm run publish:release # 一键发布脚本
 npm run version:patch|minor|major  # 版本号更迭（自动 commit/tag/push）
 npm run bundle-python   # 重建嵌入式 Python 运行时（3.13.15）
 npm run test:license    # 设备授权自测
@@ -101,6 +109,7 @@ gh release create v<version> release/WaveForge-<version>-Setup.exe --title "v<ve
 4. 首次播放网易云高音质需后端启动时联网拉取 xeapi 公钥（已自动化）
 5. 响度归一化依赖响度服务（3003），未启动/失败时自动回退原声
 6. 频响补偿与均衡器、响度归一化互斥（避免同一频段叠加/双重整形），与低音/人声/伴奏增强可叠加
+7. QQ 他人歌单/我喜欢歌曲/评论回复/听歌排行受平台限制；QQ 关注/粉丝接口必须用最新登录的 qm_keyst
 
 ## 文档
 
@@ -108,7 +117,6 @@ gh release create v<version> release/WaveForge-<version>-Setup.exe --title "v<ve
 - [HANDOVER.md](./HANDOVER.md) — 交接文档：状态、已知问题、未决事项
 - [CONTEXT.md](./CONTEXT.md) — 音效域词汇表（音效/场景方案/自定义状态/频响补偿等术语定义）
 - [docs/adr/](./docs/adr/) — 架构决策记录（叠加效果模型/频响补偿互斥/导出链共享构建）
-- [SESSION_SUMMARY(2).md](./SESSION_SUMMARY(2).md) — v0.1.0 发布后工作记录（测试/版本机制/gapless 模块化/UpNext 修复）
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) — 故障排除
 - [CACHE_SYSTEM.md](./CACHE_SYSTEM.md) — 缓存系统设计
 - [LICENSE_SYSTEM.md](./LICENSE_SYSTEM.md) — 设备授权机制
@@ -117,6 +125,7 @@ gh release create v<version> release/WaveForge-<version>-Setup.exe --title "v<ve
 - [WALLPAPER_GUIDE.md](./WALLPAPER_GUIDE.md) / [DESKTOP_MODE.md](./DESKTOP_MODE.md) — 壁纸与桌面模式
 - [PROJECT_HISTORY.md](./PROJECT_HISTORY.md) — 历史开发记录与 Phase 2 规划
 - [PYTHON_EMBEDDING_GUIDE.md](./PYTHON_EMBEDDING_GUIDE.md) — 嵌入式 Python 构建
+- [docs/歌词对比-LyricsBlossom.md](./docs/歌词对比-LyricsBlossom.md) — Apple Music 歌词逆向对比（Apple 逐字模式）
 
 ## 许可证
 
