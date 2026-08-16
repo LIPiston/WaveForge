@@ -8996,6 +8996,38 @@ app.get('/api/qq/songlist/list', async (req, res) => {
   }
 })
 
+// 网易云「喜欢这首歌的人也爱听」（相似歌曲，需登录）
+app.get('/api/netease/song/simi', async (req, res) => {
+  try {
+    const { id, cookie, limit = 10 } = req.query
+    if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.simi_song) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.simi_song, { id: String(id), cookie: String(cookie) })
+    const body = result.body || result
+    res.json({ songs: (Array.isArray(body.songs) ? body.songs : []).slice(0, Number(limit)) })
+  } catch (error) {
+    console.error('[网易云也爱听] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云「相关歌单」（包含此歌曲的歌单，需登录）
+app.get('/api/netease/song/related-playlist', async (req, res) => {
+  try {
+    const { id, cookie } = req.query
+    if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.related_playlist) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.related_playlist, { id: String(id), cookie: String(cookie) })
+    const body = result.body || result
+    res.json({ playlists: Array.isArray(body.playlists) ? body.playlists.slice(0, 5) : [] })
+  } catch (error) {
+    console.error('[网易云相关歌单] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
 // ═══════════════════════════════════════════════════════════════
 // 补充二：QQ Banner / 网易云电台 / 相关歌单 / 相似MV / 签到 / 歌曲百科 / 歌曲所在歌单 / MV收藏
 // ═══════════════════════════════════════════════════════════════
@@ -9126,6 +9158,94 @@ app.get('/api/qq/song/playlist', async (req, res) => {
   } catch (error) {
     console.error('[QQ歌曲所在歌单] 获取失败:', error)
     res.status(502).json({ error: error.message })
+  }
+})
+
+// QQ「听 [歌曲] 的也在听」——相似歌曲 + 同歌手热门歌合并 15 首
+app.get('/api/qq/song/listen-also', async (req, res) => {
+  try {
+    const { songid, singermid } = req.query
+    if (!songid) return res.status(400).json({ error: '请提供歌曲ID' })
+    useQQMusicCookie(req.query.cookie)
+    const sims = await qqMusicApi.api('song/similar', { id: String(songid) })
+    const simList = Array.isArray(sims) ? sims : (Array.isArray(sims?.songInfoList) ? sims.songInfoList : [])
+    const merged = [...simList]
+    // 同歌手热门歌补充
+    if (singermid) {
+      try {
+        const artistSongs = await qqMusicApi.api('singer/songs', { singermid: String(singermid), num: 20, page: 1 })
+        const list = artistSongs?.list || artistSongs?.songlist || []
+        if (Array.isArray(list)) {
+          for (const s of list) {
+            const mid = s?.mid || s?.songmid || s?.songMid
+            if (mid && !merged.some(m => (m?.mid || m?.songmid || m?.songMid) === mid)) merged.push(s)
+            if (merged.length >= 15) break
+          }
+        }
+      } catch { /* 歌手热门补充分支失败忽略 */ }
+    }
+    const songs = merged.slice(0, 15).map((s) => {
+      const track = s?.songInfo || s
+      const album = track?.album || {}
+      return {
+        id: Number(track.id || track.songid || 0),
+        mid: track.mid || track.songmid || track.songMid || '',
+        name: track.name || track.title || track.songname || '',
+        artists: Array.isArray(track.singer) ? track.singer.map((a) => ({ name: a.name || a.title || '', mid: a.mid })) : [],
+        album: { name: album.name || '', picUrl: album.picUrl || album.picurl || '' },
+        duration: Number(track.interval || 0) * 1000,
+        platform: 'qq'
+      }
+    }).filter(s => s.mid || s.id)
+    res.json({ result: 100, data: { songs } })
+  } catch (error) {
+    console.error('[QQ也在听] 获取失败:', error?.message || error)
+    res.status(502).json({ result: 500, error: error?.message || '获取失败' })
+  }
+})
+
+// QQ「喜欢 [歌曲] 的人也爱它们」——相似歌曲的相关歌单合并（每批 6 个，offset 换一批）
+app.get('/api/qq/song/like-also', async (req, res) => {
+  try {
+    const { songid, offset = 0 } = req.query
+    if (!songid) return res.status(400).json({ error: '请提供歌曲ID' })
+    useQQMusicCookie(req.query.cookie)
+    // 相似歌曲（5 首）+ 当前歌，各自拉相关歌单合并；offset 换一批用不同种子顺序
+    const sims = await qqMusicApi.api('song/similar', { id: String(songid) })
+    const simList = Array.isArray(sims) ? sims : (Array.isArray(sims?.songInfoList) ? sims.songInfoList : [])
+    const seedIds = [Number(songid), ...simList.map(s => Number(s?.id || s?.songid || 0))].filter(Boolean)
+    // offset 轮转种子顺序（换一批）
+    const off = Number(offset) || 0
+    const rotated = off === 0 ? seedIds : [...seedIds.slice(off % Math.max(seedIds.length, 1)), ...seedIds.slice(0, off % Math.max(seedIds.length, 1))]
+    const seen = new Set()
+    const playlists = []
+    for (const sid of rotated) {
+      try {
+        const related = await qqMusicApi.api('song/playlist', { id: sid })
+        const list = Array.isArray(related) ? related : (related?.list || [])
+        for (const p of list) {
+          const tid = String(p?.tid || '')
+          if (tid && !seen.has(tid)) {
+            seen.add(tid)
+            playlists.push({
+              id: tid,
+              name: p?.dissname || '未知歌单',
+              coverImgUrl: p?.imgurl || '',
+              trackCount: Number(p?.song_num || 0),
+              playCount: Number(p?.listen_num || 0),
+              creator: p?.creator || '',
+              platform: 'qq'
+            })
+          }
+          if (playlists.length >= 6) break
+        }
+      } catch { /* 单首相关歌单失败忽略 */ }
+      if (playlists.length >= 6) break
+    }
+    res.json({ result: 100, data: { playlists: playlists.slice(0, 6) } })
+  } catch (error) {
+    console.error('[QQ也爱歌单] 获取失败:', error?.message || error)
+    res.status(502).json({ result: 500, error: error?.message || '获取失败' })
   }
 })
 

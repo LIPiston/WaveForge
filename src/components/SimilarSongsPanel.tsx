@@ -15,11 +15,21 @@ interface SimilarSongsPanelProps {
 
 export default function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme }: SimilarSongsPanelProps) {
   const dark = playerTheme === 'dark'
+  const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
   const [songs, setSongs] = useState<Song[]>([])
   const [loading, setLoading] = useState(true)
   const [contextMenu, setContextMenu] = useState<{ show: boolean; x: number; y: number; song: Song | null }>({ show: false, x: 0, y: 0, song: null })
   const textPrimary = dark ? 'text-white' : 'text-black'
   const textSecondary = dark ? 'text-white/60' : 'text-black/60'
+
+  useEffect(() => {
+    const handleAccent = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail) setAccentColor(detail)
+    }
+    window.addEventListener('accentColorChanged', handleAccent)
+    return () => window.removeEventListener('accentColorChanged', handleAccent)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -64,49 +74,92 @@ export default function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-[85] flex items-center justify-center p-4"
-      style={{ backgroundColor: dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.25)', backdropFilter: 'blur(8px)' }}
+      style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(8px)' }}
       onClick={onClose}
     >
       <motion.div
-        initial={{ scale: 0.92, opacity: 0, y: 12 }}
+        initial={{ scale: 0.94, opacity: 0, y: 12 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.92, opacity: 0, y: 12 }}
-        transition={{ type: 'spring', damping: 26, stiffness: 320 }}
+        exit={{ scale: 0.94, opacity: 0, y: 12 }}
+        transition={{ type: 'spring', damping: 28, stiffness: 320 }}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-sm overflow-hidden rounded-3xl shadow-2xl max-h-[80vh] flex flex-col"
-        style={{ background: dark ? 'rgba(14,17,24,0.86)' : 'rgba(255,255,255,0.9)', border: `1px solid ${dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)'}`, backdropFilter: 'blur(30px)' }}
+        className="w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden rounded-3xl shadow-2xl relative"
       >
-        <div className="flex items-center justify-between px-5 py-4 shrink-0" style={{ borderBottom: `1px solid ${dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'}` }}>
-          <div className="flex items-center gap-2">
-            <Music className="w-5 h-5" style={{ color: '#3B82F6' }} />
-            <h2 className={`text-base font-semibold ${textPrimary}`}>相似歌曲</h2>
-          </div>
-          <button onClick={onClose} className={`p-2 rounded-full transition-colors ${dark ? 'hover:bg-white/15' : 'hover:bg-black/10'}`}>
-            <X className={`w-5 h-5 ${textSecondary}`} />
-          </button>
+        {/* 液态玻璃背景 - 使用歌曲封面 */}
+        <div className="absolute inset-0 rounded-3xl overflow-hidden">
+          {song.album?.picUrl && (
+            <div
+              className="absolute inset-0 bg-cover bg-center"
+              style={{ backgroundImage: `url(${getProxiedImageUrl(song.album.picUrl)})`, filter: 'blur(40px) brightness(0.6)' }}
+            />
+          )}
+          <div
+            className="absolute inset-0"
+            style={{
+              background: 'linear-gradient(135deg, rgba(0,0,0,0.3) 0%, rgba(20,20,30,0.5) 50%, rgba(0,0,0,0.4) 100%)',
+              backdropFilter: 'blur(80px) saturate(200%)',
+              WebkitBackdropFilter: 'blur(80px) saturate(200%)',
+            }}
+          />
+          <div
+            className="absolute inset-0 rounded-3xl"
+            style={{ border: '1px solid rgba(255,255,255,0.2)', boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.15)', pointerEvents: 'none' }}
+          />
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {loading ? (
-            <div className={`text-center py-8 ${textSecondary}`}>加载中...</div>
-          ) : songs.length === 0 ? (
-            <div className={`text-center py-8 ${textSecondary}`}>暂无相似歌曲</div>
-          ) : (
-            songs.map((s, i) => (
-              <div key={s.mid || s.id || i} className={`flex items-center gap-3 rounded-xl px-3 py-2 ${dark ? 'hover:bg-white/5' : 'hover:bg-black/5'} transition-colors group`}>
-                <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0" style={{ background: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }}>
-                  {s.album?.picUrl ? <img src={getProxiedImageUrl(s.album.picUrl, 100)} alt="" className="w-full h-full object-cover" /> : <Music className="w-5 h-5 m-auto text-white/40" />}
+
+        <div className="relative z-10 flex flex-col h-full min-h-0">
+          {/* 头部横向：歌曲信息 */}
+          <div className="p-5 border-b flex-shrink-0" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${accentColor}26`, color: accentColor }}>
+                  <Music className="w-4.5 h-4.5" />
                 </div>
-                <div className="min-w-0 flex-1">
-                  <p className={`text-sm truncate ${textPrimary}`}>{s.name}</p>
-                  <p className={`text-xs truncate ${textSecondary}`}>{Array.isArray(s.artists) ? s.artists.map(a => a.name).join(' / ') : ''}</p>
-                </div>
-                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {onPlayNext && <button onClick={() => { onPlayNext(s); onClose() }} className={`p-2 rounded-full ${dark ? 'hover:bg-white/10' : 'hover:bg-black/10'} transition-colors`} title="下一首播放"><ListPlus className={`w-4 h-4 ${textSecondary}`} /></button>}
-                  {onPlayNow && <button onClick={() => { onPlayNow(s); onClose() }} className={`p-2 rounded-full ${dark ? 'hover:bg-white/10' : 'hover:bg-black/10'} transition-colors`} title="立即播放"><Play className={`w-4 h-4 ${textSecondary}`} fill="currentColor" /></button>}
+                <div>
+                  <h2 className="text-base font-semibold text-white">相似歌曲</h2>
+                  <div className="text-white/50 text-[11px] -mt-0.5">{song.platform === 'qq' ? 'QQ音乐' : '网易云音乐'}</div>
                 </div>
               </div>
-            ))
-          )}
+              <button onClick={onClose} className="p-2 rounded-full transition-colors hover:bg-white/15">
+                <X className="w-5 h-5 text-white/60" />
+              </button>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-xl overflow-hidden shrink-0" style={{ border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.06)' }}>
+                {song.album?.picUrl ? <img src={getProxiedImageUrl(song.album.picUrl, 100)} alt={song.name} className="w-full h-full object-cover" /> : <Music className="w-5 h-5 m-auto mt-3.5 text-white/30" />}
+              </div>
+              <div className="min-w-0">
+                <p className="text-white text-sm font-medium truncate">{song.name}</p>
+                <p className="text-white/50 text-xs truncate">{(song.artists || []).map(a => a.name).join(' / ')}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* 相似歌曲列表 */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-2">
+            {loading ? (
+              <div className="text-center py-10 text-white/60 text-sm">加载中...</div>
+            ) : songs.length === 0 ? (
+              <div className="text-center py-10 text-white/50 text-sm">暂无相似歌曲</div>
+            ) : (
+              songs.map((s, i) => (
+                <div key={s.mid || s.id || i} className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-white/5 transition-colors group">
+                  <span className="w-5 text-center text-xs text-white/35">{i + 1}</span>
+                  <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                    {s.album?.picUrl ? <img src={getProxiedImageUrl(s.album.picUrl, 100)} alt="" className="w-full h-full object-cover" /> : <Music className="w-5 h-5 m-auto text-white/40" />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm truncate text-white">{s.name}</p>
+                    <p className="text-xs truncate text-white/60">{Array.isArray(s.artists) ? s.artists.map(a => a.name).join(' / ') : ''}</p>
+                  </div>
+                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {onPlayNext && <button onClick={() => { onPlayNext(s); onClose() }} className="p-2 rounded-full hover:bg-white/10 transition-colors" title="下一首播放"><ListPlus className="w-4 h-4 text-white/60" /></button>}
+                    {onPlayNow && <button onClick={() => { onPlayNow(s); onClose() }} className="p-2 rounded-full hover:bg-white/10 transition-colors" title="立即播放"><Play className="w-4 h-4 text-white/60" fill="currentColor" /></button>}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </motion.div>
     </motion.div>

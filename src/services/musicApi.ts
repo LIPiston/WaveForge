@@ -2682,6 +2682,58 @@ export async function getNeteaseDjRecommend(): Promise<any> {
   }
 }
 
+/** QQ 听 [歌曲] 的也在听（相似 + 同歌手热门 15 首） */
+export async function getQQListenAlso(songid: number | string, singermid?: string): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('qq')
+    const response = await fetch(`${API_BASE}/qq/song/listen-also?songid=${encodeURIComponent(String(songid))}${singermid ? `&singermid=${encodeURIComponent(singermid)}` : ''}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data?.data?.songs || []
+  } catch (error) {
+    console.error('也在听获取失败:', error)
+    return []
+  }
+}
+
+/** QQ 喜欢 [歌曲] 的人也爱它们（相关歌单 6 个，offset 换一批） */
+export async function getQQLikeAlso(songid: number | string, offset: number = 0): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('qq')
+    const response = await fetch(`${API_BASE}/qq/song/like-also?songid=${encodeURIComponent(String(songid))}&offset=${offset}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data?.data?.playlists || []
+  } catch (error) {
+    console.error('也爱歌单获取失败:', error)
+    return []
+  }
+}
+
+/** 网易云「喜欢这首歌的人也爱听」（相似歌曲，需登录） */
+export async function getNeteaseSimiSong(id: number | string, limit: number = 10): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease')
+    const response = await fetch(`${API_BASE}/netease/song/simi?id=${encodeURIComponent(String(id))}&limit=${limit}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data?.songs || []
+  } catch (error) {
+    console.error('网易云也爱听获取失败:', error)
+    return []
+  }
+}
+
+/** 网易云「相关歌单」（包含此歌曲的歌单，需登录） */
+export async function getNeteaseRelatedPlaylist(id: number | string): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease')
+    const response = await fetch(`${API_BASE}/netease/song/related-playlist?id=${encodeURIComponent(String(id))}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data?.playlists || []
+  } catch (error) {
+    console.error('网易云相关歌单获取失败:', error)
+    return []
+  }
+}
+
 /** 获取网易云用户详情（公开，可查任意用户） */
 export async function getUserDetail(uid: string): Promise<any> {
   try {
