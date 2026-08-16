@@ -46,8 +46,9 @@ object UpdateChecker {
             .edit().putBoolean(KEY_ENABLED, enabled).apply()
     }
 
-    /** 入口：后台线程检查，有新版则弹窗（UI 线程）。 */
-    fun check(context: Context) {
+    /** 入口：后台线程检查，有新版则弹窗（UI 线程）。
+     *  @param force 手动触发（设置页按钮）：忽略"每版本只提示一次"限制，每次都检查。 */
+    fun check(context: Context, force: Boolean = false) {
         Thread {
             try {
                 val manifest = fetchManifest() ?: return@Thread
@@ -59,7 +60,7 @@ object UpdateChecker {
                 if (remoteVersionCode <= currentCode) return@Thread
 
                 val prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-                if (prefs.getString(KEY_LAST_NOTIFIED, null) == remoteVersionName) return@Thread
+                if (!force && prefs.getString(KEY_LAST_NOTIFIED, null) == remoteVersionName) return@Thread
 
                 val notes = manifest.optString("notes", "")
                 val artifacts = manifest.optJSONObject("artifacts")?.optJSONObject("android-arm64")
@@ -70,7 +71,8 @@ object UpdateChecker {
                     ?: return@Thread
                 val expectedSha = artifacts.optString("sha256", "")
 
-                prefs.edit().putString(KEY_LAST_NOTIFIED, remoteVersionName).apply()
+                // 手动触发时不记录，用户每次点"检查更新"都应能看到结果
+                if (!force) prefs.edit().putString(KEY_LAST_NOTIFIED, remoteVersionName).apply()
 
                 android.os.Handler(Looper.getMainLooper()).post {
                     showUpdateDialog(context, remoteVersionName, notes, apkUrl, expectedSha)

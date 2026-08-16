@@ -410,34 +410,41 @@ function SettingsPanel({
   const checkForUpdates = async () => {
     setUpdateCheck({ status: 'checking', message: '正在检查…' })
     try {
-      const releaseResponse = await fetch('https://api.github.com/repos/YoshinoRinn/WaveForge/releases/latest', {
-        headers: { Accept: 'application/vnd.github+json' },
-        cache: 'no-store',
-      })
-      let remoteVersion = ''
-      let releaseUrl = 'https://github.com/YoshinoRinn/WaveForge/releases'
-      if (releaseResponse.ok) {
-        const release = await releaseResponse.json()
-        remoteVersion = String(release.tag_name || '')
-        releaseUrl = String(release.html_url || releaseUrl)
-      } else if (releaseResponse.status === 404) {
-        const tagsResponse = await fetch('https://api.github.com/repos/YoshinoRinn/WaveForge/tags?per_page=1', {
-          headers: { Accept: 'application/vnd.github+json' },
-          cache: 'no-store',
-        })
-        if (tagsResponse.ok) {
-          const tags = await tagsResponse.json()
-          remoteVersion = String(tags?.[0]?.name || '')
-        } else throw new Error(`GitHub 返回 ${tagsResponse.status}`)
-      } else {
-        throw new Error(`GitHub 返回 ${releaseResponse.status}`)
+      // Android（TV/平板）：交给原生更新器——它知道本机 versionCode 且能下载安装
+      const nativeBridge = (window as any).WaveForgeNative
+      if (nativeBridge?.checkForUpdates) {
+        nativeBridge.checkForUpdates()
+        setUpdateCheck({ status: 'current', message: '已开始检查，如有新版本将弹出提示' })
+        return
       }
 
-      if (!remoteVersion) throw new Error('仓库没有可比较的版本标签')
+      // 桌面/网页：拉双源更新清单（Gitee 主源、GitHub 备源，国内可达），比较版本号
+      const manifestUrls = [
+        'https://gitee.com/kirito666233/wave-forge/raw/master/update.json',
+        'https://raw.githubusercontent.com/YoshinoRinn/WaveForge/master/update.json',
+      ]
+      let manifest: { version?: string; artifacts?: Record<string, { urls?: string[] }> } | null = null
+      for (const url of manifestUrls) {
+        try {
+          const res = await fetch(url, { cache: 'no-store' })
+          if (res.ok) {
+            manifest = await res.json()
+            break
+          }
+        } catch {
+          // 尝试下一个源
+        }
+      }
+      if (!manifest?.version) throw new Error('更新清单不可用，请检查网络')
+
+      const remoteVersion = String(manifest.version)
+      const winUrl = manifest.artifacts?.['win-x64']?.urls?.[0]
+      const fallbackUrl = 'https://gitee.com/kirito666233/wave-forge/releases'
+
       if (compareVersions(remoteVersion, packageInfo.version) <= 0) {
         setUpdateCheck({ status: 'current', message: '当前已是最新版本' })
       } else {
-        setUpdateCheck({ status: 'available', message: `发现新版本 ${remoteVersion}`, url: releaseUrl })
+        setUpdateCheck({ status: 'available', message: `发现新版本 ${remoteVersion}`, url: winUrl || fallbackUrl })
       }
     } catch (error) {
       setUpdateCheck({ status: 'error', message: `检查失败：${error instanceof Error ? error.message : '网络不可用'}` })

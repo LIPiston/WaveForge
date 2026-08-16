@@ -1,5 +1,6 @@
 import { debugLog } from './utils/debugLog'
 import { parseStoredBoolean } from './utils/storage'
+import { isTv } from './platform'
 import { lazy, memo, Suspense, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps } from 'react'
 import AlbumCoverPlayer from './components/AlbumCoverPlayer'
 import LyricsDisplay from './components/LyricsDisplay'
@@ -386,7 +387,9 @@ function App() {
   // 视图模式状态（探索 / 简约 / 桌面）
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const saved = localStorage.getItem('viewMode')
-    return saved === 'explore' || saved === 'minimal' || saved === 'desktop' ? saved : 'minimal'
+    const mode = saved === 'explore' || saved === 'minimal' || saved === 'desktop' ? saved : 'minimal'
+    // TV 无桌面模式（桌面小组件/壁纸是 Windows 专属）：历史保存值也不会恢复成桌面
+    return isTv() && mode === 'desktop' ? 'minimal' : mode
   })
   const viewModeChangeRevisionRef = useRef(0)
   
@@ -1867,6 +1870,8 @@ function App() {
   // 监听视图模式变化
   useEffect(() => {
     const applyMode = (mode: 'explore' | 'minimal' | 'desktop') => {
+      // TV 无桌面模式：遥控器/远程/恢复路径都不可能进入桌面（模式卡片也已由 tv.css 隐藏）
+      if (isTv() && mode === 'desktop') mode = 'minimal'
       setViewMode(mode)
       setEnteredFromMode(mode)
       // 切换模式时清掉待恢复的歌单/搜索来源，避免切回后又自动打开上一次的歌单
@@ -3330,6 +3335,25 @@ function App() {
       window.removeEventListener(PLAYBACK_SHORTCUT_SETTINGS_EVENT, handleSettingsChange)
     }
   }, [])
+
+  // 媒体会话元数据：电视/系统状态栏显示正在播放的歌曲信息（封面/歌名/歌手）
+  useEffect(() => {
+    if (!currentSong) return
+    if (!('mediaSession' in navigator)) return
+    try {
+      const artists = (currentSong.artists || []).map((a) => a.name).filter(Boolean).join(', ')
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentSong.name || '未知歌曲',
+        artist: artists || currentSong.album?.name || '',
+        album: currentSong.album?.name || '',
+        artwork: currentSong.album?.picUrl
+          ? [{ src: getProxiedImageUrl(currentSong.album.picUrl), sizes: '512x512' }]
+          : [],
+      })
+    } catch (error) {
+      console.warn('更新媒体会话元数据失败:', error)
+    }
+  }, [currentSong])
 
   // 小窗口点 X 关闭后，主进程会广播开关状态，这里转成 DOM 事件供设置面板同步
   useEffect(() => {

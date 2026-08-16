@@ -36,6 +36,12 @@ html.tv-mode [data-tv-focus]:focus-within [class*='opacity-0'] {
   opacity: 1 !important;
 }
 
+/* TV 无桌面模式：隐藏模式切换里的"桌面"卡片（桌面小组件/壁纸为 Windows 专属）。
+   App.tsx 另有防御性护栏，确保 TV 上 viewMode 永远不会是 desktop。 */
+html.tv-mode button[aria-label='切换到桌面模式'] {
+  display: none !important;
+}
+
 /* 桌面窗口按钮条（最小化/最大化/关闭）在 TV 上无意义，隐藏。
    TitleBar 组件本身也会在 tv-mode 下返回 null，这里是双保险。 */
 html.tv-mode .tv-hide-desktop-chrome {

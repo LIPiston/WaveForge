@@ -87,6 +87,13 @@ class MainActivity : Activity() {
             settings.cacheMode = WebSettings.LOAD_DEFAULT
             webViewClient = WebViewClient()
             webChromeClient = WebChromeClient()
+            // 供前端"检查更新"按钮触发原生更新器（TV 上由原生弹窗下载安装）
+            addJavascriptInterface(object {
+                @android.webkit.JavascriptInterface
+                fun checkForUpdates() {
+                    UpdateChecker.check(this@MainActivity, force = true)
+                }
+            }, "WaveForgeNative")
         }
         root.addView(webView)
         setContentView(root)
