@@ -112,6 +112,12 @@ contextBridge.exposeInMainWorld('electron', {
     getStats: () => ipcRenderer.invoke('audio-download:get-stats'),
     clearCache: () => ipcRenderer.invoke('audio-download:clear-cache'),
   },
+
+  // 应用更新：多源下载安装包 → sha256 校验 → 打开安装向导
+  update: {
+    downloadAndInstall: (urls, sha256) =>
+      ipcRenderer.invoke('update:download-and-install', urls, sha256),
+  },
   
   // 配置管理
   config: {

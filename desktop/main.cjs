@@ -22,9 +22,10 @@ for (const stream of [process.stdout, process.stderr]) {
 
 // Avoid spawning chcp/cmd.exe here. Electron is a GUI process, and the child
 // console can flash visibly whenever the main process is initialized.
-const { app, BrowserWindow, ipcMain, protocol, shell, session, safeStorage, dialog, globalShortcut, clipboard, utilityProcess } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, shell, session, safeStorage, dialog, globalShortcut, clipboard, utilityProcess, net } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const crypto = require('crypto')
 const startupTimingLogPath = process.env.WAVEFORGE_STARTUP_LOG || ''
 function logStartupTiming(message) {
   const line = '[Electron +' + Math.round(performance.now() - electronProcessStartedAt) + 'ms] ' + message
@@ -3206,6 +3207,54 @@ app.whenReady().then(() => {
       return { success: true }
     }
     return { success: false }
+  })
+
+  // 应用更新：多源下载安装包 → sha256 校验 → 打开安装向导
+  ipcMain.handle('update:download-and-install', async (_event, urls, expectedSha) => {
+    const downloadDir = path.join(app.getPath('userData'), 'update')
+    fs.mkdirSync(downloadDir, { recursive: true })
+    for (const url of Array.isArray(urls) ? urls : [urls]) {
+      const destPath = path.join(downloadDir, `WaveForge-Setup-${Date.now()}.exe`)
+      try {
+        let digest = ''
+        await new Promise((resolve, reject) => {
+          const request = net.request(String(url))
+          request.setRedirectMode('follow')
+          const hash = crypto.createHash('sha256')
+          const writeStream = fs.createWriteStream(destPath)
+          let settled = false
+          const fail = (err) => { if (!settled) { settled = true; reject(err) } }
+          request.on('response', (response) => {
+            if (response.statusCode < 200 || response.statusCode >= 300) {
+              fail(new Error(`HTTP ${response.statusCode}`))
+              return
+            }
+            response.on('data', (chunk) => {
+              hash.update(chunk)
+              writeStream.write(chunk)
+            })
+            response.on('end', () => {
+              writeStream.end()
+              digest = hash.digest('hex')
+              if (!settled) { settled = true; resolve() }
+            })
+            response.on('error', fail)
+          })
+          request.on('error', fail)
+          request.end()
+        })
+        if (expectedSha && digest.toLowerCase() !== String(expectedSha).toLowerCase()) {
+          throw new Error('安装包校验失败（sha256 不匹配）')
+        }
+        const opened = await shell.openPath(destPath)
+        if (opened) throw new Error(`无法打开安装向导：${opened}`)
+        return { success: true, path: destPath }
+      } catch (err) {
+        console.error('❌ [更新] 下载失败:', url, err?.message || err)
+        try { fs.unlinkSync(destPath) } catch { /* ignore */ }
+      }
+    }
+    return { success: false, error: '所有下载源均失败' }
   })
   
   // 配置管理 IPC 处理器

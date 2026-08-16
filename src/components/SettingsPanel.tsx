@@ -26,7 +26,13 @@ import {
   type AppleMusicSettings,
 } from '../services/appleMusic'
 
-type UpdateCheckState = { status: 'idle' | 'checking' | 'current' | 'available' | 'error'; message?: string; url?: string }
+type UpdateCheckState = {
+  status: 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'error'
+  message?: string
+  url?: string
+  downloadUrls?: string[]
+  sha256?: string
+}
 type DeviceGrant = { feature: string; label: string; issuedAt: number; expiresAt: number | null; note?: string }
 type DeviceState = { status: 'idle' | 'loading' | 'ready' | 'error'; deviceId: string; storage?: 'registry' | 'file'; grants: DeviceGrant[]; message?: string }
 
@@ -449,13 +455,10 @@ function SettingsPanel({
         return
       }
 
-      // 桌面/网页：拉双源更新清单（Gitee 主源、GitHub 备源，国内可达），比较版本号
-      const manifestUrls = [
-        'https://gitee.com/kirito666233/wave-forge/raw/master/update.json',
-        'https://raw.githubusercontent.com/YoshinoRinn/WaveForge/master/update.json',
-      ]
-      let manifest: { version?: string; artifacts?: Record<string, { urls?: string[] }> } | null = null
-      for (const url of manifestUrls) {
+      // 桌面/网页：拉多源更新清单（Gitee 主源 → ghproxy 加速的 GitHub → GitHub 直连），比较版本号
+      const { UPDATE_MANIFEST_URLS, withDownloadProxies } = await import('../services/updateConstants')
+      let manifest: { version?: string; artifacts?: Record<string, { urls?: string[]; sha256?: string }> } | null = null
+      for (const url of UPDATE_MANIFEST_URLS) {
         try {
           const res = await fetch(url, { cache: 'no-store' })
           if (res.ok) {
@@ -469,16 +472,42 @@ function SettingsPanel({
       if (!manifest?.version) throw new Error('更新清单不可用，请检查网络')
 
       const remoteVersion = String(manifest.version)
-      const winUrl = manifest.artifacts?.['win-x64']?.urls?.[0]
+      const winArtifact = manifest.artifacts?.['win-x64']
+      const winUrl = winArtifact?.urls?.[0]
+      const sha256 = winArtifact?.sha256 || ''
       const fallbackUrl = 'https://gitee.com/kirito666233/wave-forge/releases'
 
       if (compareVersions(remoteVersion, packageInfo.version) <= 0) {
         setUpdateCheck({ status: 'current', message: '当前已是最新版本' })
       } else {
-        setUpdateCheck({ status: 'available', message: `发现新版本 ${remoteVersion}`, url: winUrl || fallbackUrl })
+        setUpdateCheck({
+          status: 'available',
+          message: `发现新版本 ${remoteVersion}`,
+          url: winUrl || fallbackUrl,
+          // 桌面端（Electron）可用多源下载安装；纯浏览器只跳发布页
+          downloadUrls: winUrl ? withDownloadProxies(winUrl) : undefined,
+          sha256,
+        })
       }
     } catch (error) {
       setUpdateCheck({ status: 'error', message: `检查失败：${error instanceof Error ? error.message : '网络不可用'}` })
+    }
+  }
+
+  const handleDownloadUpdate = async () => {
+    const urls = updateCheck.downloadUrls
+    const bridge = window.electron?.update
+    if (!urls?.length || !bridge?.downloadAndInstall) return
+    setUpdateCheck((prev) => ({ ...prev, status: 'downloading', message: '正在下载更新安装包…' }))
+    try {
+      const result = await bridge.downloadAndInstall(urls, updateCheck.sha256 || '')
+      setUpdateCheck((prev) =>
+        result.success
+          ? { ...prev, status: 'current', message: '安装包已下载，请在弹出的安装向导中完成安装' }
+          : { ...prev, status: 'error', message: `下载失败：${result.error || '未知错误'}` }
+      )
+    } catch (err) {
+      setUpdateCheck((prev) => ({ ...prev, status: 'error', message: `下载失败：${err instanceof Error ? err.message : '未知错误'}` }))
     }
   }
   
@@ -2682,13 +2711,20 @@ function SettingsPanel({
                       </div>
 
                       <div className={`mt-4 pt-4 border-t ${borderColor}`}>
-                        <button onClick={() => void checkForUpdates()} disabled={updateCheck.status === 'checking'} className={`w-full py-3 px-4 rounded-xl ${playerTheme === 'dark' ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'} ${textPrimary} font-medium transition-colors disabled:opacity-60`}>
-                          {updateCheck.status === 'checking' ? '正在检查新版本…' : '检查新版本'}
+                        <button onClick={() => void checkForUpdates()} disabled={updateCheck.status === 'checking' || updateCheck.status === 'downloading'} className={`w-full py-3 px-4 rounded-xl ${playerTheme === 'dark' ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'} ${textPrimary} font-medium transition-colors disabled:opacity-60`}>
+                          {updateCheck.status === 'checking' ? '正在检查新版本…' : updateCheck.status === 'downloading' ? '正在下载更新安装包…' : '检查新版本'}
                         </button>
                         {updateCheck.message && (
                           <p className={`${updateCheck.status === 'error' ? 'text-red-400' : textSecondary} mt-3 text-center text-sm`}>
                             {updateCheck.message}
-                            {updateCheck.status === 'available' && updateCheck.url && <button onClick={() => window.open(updateCheck.url, '_blank')} className="ml-2 underline">查看发布页</button>}
+                            {updateCheck.status === 'available' && (
+                              <>
+                                {updateCheck.downloadUrls?.length && window.electron?.update?.downloadAndInstall ? (
+                                  <button onClick={() => void handleDownloadUpdate()} className="ml-2 rounded-lg px-3 py-1 text-sm font-medium text-white" style={{ backgroundColor: accentColor }}>下载并安装</button>
+                                ) : null}
+                                {updateCheck.url && <button onClick={() => window.open(updateCheck.url, '_blank')} className="ml-2 underline">查看发布页</button>}
+                              </>
+                            )}
                           </p>
                         )}
                       </div>

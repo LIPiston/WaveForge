@@ -204,6 +204,10 @@ export interface ElectronAPI {
     getStats: () => Promise<{ fileCount: number; totalSize: number; maxSize: number; cachePath: string }>
     clearCache: () => Promise<{ success: boolean }>
   }
+  /** 应用更新：下载安装包（多源逐个尝试）→ sha256 校验 → 打开安装向导 */
+  update: {
+    downloadAndInstall: (urls: string[], sha256: string) => Promise<{ success: boolean; error?: string; path?: string }>
+  }
   config: {
     getCachePath: () => Promise<string>
     setCachePath: (path: string) => Promise<{ success: boolean; error?: string }>

@@ -27,9 +27,11 @@ object UpdateChecker {
 
     private const val TAG = "WaveForgeUpdater"
 
-    // 版本无关的固定地址（发布脚本维护仓库根目录的 update.json）
+    // 版本无关的固定地址（发布脚本维护仓库根目录的 update.json）。
+    // 网络现实：国内无法裸连 GitHub → Gitee 主源、ghproxy 加速的 GitHub 备源、GitHub 直连兜底。
     private val MANIFEST_URLS = listOf(
         "https://gitee.com/kirito666233/wave-forge/raw/master/update.json",
+        "https://ghproxy.net/https://raw.githubusercontent.com/YoshinoRinn/WaveForge/master/update.json",
         "https://raw.githubusercontent.com/YoshinoRinn/WaveForge/master/update.json",
     )
 

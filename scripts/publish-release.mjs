@@ -29,6 +29,21 @@ const GITEE_REPO = 'kirito666233/wave-forge'
 const GITHUB_REPO = 'YoshinoRinn/WaveForge'
 const UPDATE_JSON = 'update.json'
 
+// GitHub 下载加速前缀：国内无法裸连 GitHub，产物 URL 里附加 ghproxy 系列备源
+const GH_DOWNLOAD_PROXIES = ['https://ghproxy.net/', 'https://mirror.ghproxy.com/']
+
+/** 把某产物的下载地址写入 manifest：GitHub 地址附加 ghproxy 加速 + 直连，Gitee 直连 */
+function pushArtifactUrls(manifest, name, url) {
+  const artifact = name.includes('.apk') ? manifest.artifacts['android-arm64'] : manifest.artifacts['win-x64']
+  if (!artifact) return
+  if (url.includes('github.com')) {
+    for (const p of GH_DOWNLOAD_PROXIES) artifact.urls.push(p + url)
+    artifact.urls.push(url)
+  } else {
+    artifact.urls.push(url)
+  }
+}
+
 function parseArgs(argv) {
   const args = {}
   for (let i = 0; i < argv.length; i++) {
@@ -234,8 +249,7 @@ async function main() {
         files,
       })
       for (const [name, url] of Object.entries(urls)) {
-        const artifact = name.includes('.apk') ? manifest.artifacts['android-arm64'] : manifest.artifacts['win-x64']
-        artifact?.urls.push(url)
+        pushArtifactUrls(manifest, name, url)
       }
     } else {
       console.warn('[跳过] 未设置 GITEE_TOKEN，不发布 Gitee Release')
@@ -244,8 +258,7 @@ async function main() {
     try {
       const urls = await publishGithub({ version, notes, files })
       for (const [name, url] of Object.entries(urls)) {
-        const artifact = name.includes('.apk') ? manifest.artifacts['android-arm64'] : manifest.artifacts['win-x64']
-        artifact?.urls.push(url)
+        pushArtifactUrls(manifest, name, url)
       }
     } catch (e) {
       console.warn('[跳过] GitHub 发布失败：' + e.message)
