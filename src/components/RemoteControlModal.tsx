@@ -58,8 +58,8 @@ export default function RemoteControlModal({ onClose, playerTheme }: RemoteContr
         setStatus(st || { running: false, port: 25566, token: '', clientCount: 0, maxClients: 5, clients: [], ips: [] })
         setSettings(stg)
         if (st && !st.running && st.error) setError(st.error)
-      } else if (isAndroid()) {
-        // TV：设备内置 Node 已自动启动遥控服务（复用 PC 端同一套 remote-server），
+      } else {
+        // TV / 浏览器调试：设备内置 Node 已自动启动遥控服务（复用 PC 端同一套 remote-server），
         // 读取状态（含 token / 端口 / 网卡 IP），用于生成手机连接二维码
         const res = await fetch('http://localhost:3001/api/tv/remote-status', { cache: 'no-store' })
         if (res.ok) {
@@ -67,10 +67,8 @@ export default function RemoteControlModal({ onClose, playerTheme }: RemoteContr
           setStatus(st || { running: false, port: 25566, token: '', clientCount: 0, maxClients: 5, clients: [], ips: [] })
           if (st && !st.running) setError('遥控器服务未就绪')
         } else {
-          setError('遥控器服务未就绪')
+          setError('遥控器服务未就绪（当前环境未启动）')
         }
-      } else {
-        throw new Error('遥控器服务不可用')
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : '启动失败')
@@ -94,8 +92,9 @@ export default function RemoteControlModal({ onClose, playerTheme }: RemoteContr
 
   useEffect(() => {
     void start()
-    if (isAndroid()) {
-      // TV：无 Electron 事件，轮询状态（客户端增减 / 端口 / IP 变化）
+    const bridge = window.electron?.remote
+    if (!bridge) {
+      // TV/浏览器调试：无 Electron 事件，轮询状态（客户端增减 / 端口 / IP 变化）
       const timer = window.setInterval(() => {
         void fetch('http://localhost:3001/api/tv/remote-status', { cache: 'no-store' })
           .then((r) => (r.ok ? r.json() : null))
@@ -106,7 +105,6 @@ export default function RemoteControlModal({ onClose, playerTheme }: RemoteContr
       }, 3000)
       return () => window.clearInterval(timer)
     }
-    const bridge = window.electron?.remote
     // 关闭弹窗不停服务：遥控持续到软件关闭或手动断开
     const offClients = bridge?.onClientsChange((st) => {
       setStatus(prev => ({ ...prev, ...st }))
