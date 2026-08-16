@@ -2,7 +2,6 @@ import { debugLog, isVerboseLogEnabled } from './utils/debugLog'
 import { parseStoredBoolean } from './utils/storage'
 import { isTv } from './platform'
 import { isPerfModeEfficiency } from './tv/perfMode'
-import { coversDifferSignificantly } from './utils/coverCompare'
 import { lazy, memo, Suspense, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps } from 'react'
 import AlbumCoverPlayer from './components/AlbumCoverPlayer'
 import LyricsDisplay from './components/LyricsDisplay'
@@ -1014,9 +1013,9 @@ function App() {
     return request
   }, [])
 
-  // Apple Music：非阻塞解析曲目匹配，提供高清/特殊封面（摩登模式粒子动效数据源）。
-  // 规则：平台封面优先 —— 仅当"高置信匹配 + 封面差异显著（特殊封面）"或平台无封面时才替换。
-  // 高置信匹配：标题命中且（歌手或时长验证通过），避免 iTunes 同名不同曲的错误封面被当成特殊封面。
+  // Apple Music：非阻塞解析曲目匹配，为摩登模式的动态粒子效果提供 AM 封面。
+  // 规则：显示封面永远用平台（AM 不替换、不补位）；AM 封面仅在高置信匹配时供
+  // 摩登动态效果使用（避免 iTunes 同名不同曲/地区版本误判）。
   const resolveAppleCover = useCallback((song: Song) => {
     const settings = getAppleMusicSettings()
     const latestKey = getSongKey(song)
@@ -1030,9 +1029,8 @@ function App() {
       setAppleCoverUrl(null)
       return
     }
-    const platformCover = song.album?.picUrl ? getProxiedImageUrl(song.album.picUrl) : ''
     void resolveAppleTrack(title, artist, song.duration)
-      .then(async match => {
+      .then(match => {
         // 切歌后丢弃过期结果
         if (activeTrackKeyRef.current !== latestKey) return
         if (!match?.artworkUrl) {
@@ -1048,20 +1046,7 @@ function App() {
         const titleOk = songT && (t === songT || t.includes(songT) || songT.includes(t))
         const artistOk = songA && (a === songA || a.includes(songA) || songA.includes(a))
         const durationOk = song.duration ? Math.abs((match.durationMs || 0) - song.duration) < 3000 : true
-        if (!titleOk || !(artistOk || durationOk)) {
-          setAppleCoverUrl(null)
-          return
-        }
-        const amUrl = getProxiedImageUrl(match.artworkUrl)
-        // 平台无封面 → AM 直接补位（避免"无封面"）
-        if (!platformCover) {
-          setAppleCoverUrl(amUrl)
-          return
-        }
-        // 平台有封面 → 仅当 AM 封面与平台封面差异显著（特殊封面）才替换
-        const special = await coversDifferSignificantly(platformCover, amUrl)
-        if (activeTrackKeyRef.current !== latestKey) return
-        setAppleCoverUrl(special ? amUrl : null)
+        setAppleCoverUrl(titleOk && (artistOk || durationOk) ? getProxiedImageUrl(match.artworkUrl) : null)
       })
       .catch(() => {
         if (activeTrackKeyRef.current === latestKey) setAppleCoverUrl(null)
@@ -2124,7 +2109,8 @@ function App() {
   }
 
   // Apple Music 命中时全局替换封面（异步解析、不阻塞：先显示平台封面，命中后无缝替换）
-  const displayCoverUrl = appleCoverUrl || currentTrack.coverUrl
+  // 显示封面：始终用平台封面（AM 封面只用于摩登模式的动态粒子效果，不替换显示封面）
+  const displayCoverUrl = currentTrack.coverUrl
 
   // 提取封面主色调
   const { dominantColor: extractedColor, palette: coverPalette } = useColorThief(displayCoverUrl)
