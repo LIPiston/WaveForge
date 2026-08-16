@@ -32,16 +32,54 @@ export const isAndroid = () => detectPlatform() === 'android-tv' || detectPlatfo
 export const isTv = () => detectPlatform() === 'android-tv'
 
 /**
+ * PC 测试开关：localStorage['waveforge:tv-mode']=1 或 URL 带 ?tv=1 时，
+ * 在任意浏览器强制进入 TV 遥控器模式（焦点环/空间导航/软键盘全可用），
+ * 方便在电脑上模拟电视遥控器（方向键=D-pad，Enter=OK，Backspace/Esc=BACK）。
+ */
+const TV_MODE_FLAG = 'waveforge:tv-mode'
+
+export function isTvModeForced(): boolean {
+  try {
+    return localStorage.getItem(TV_MODE_FLAG) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function setTvModeForced(on: boolean): void {
+  try {
+    if (on) localStorage.setItem(TV_MODE_FLAG, '1')
+    else localStorage.removeItem(TV_MODE_FLAG)
+  } catch {
+    // ignore
+  }
+}
+
+/**
  * 在 <html> 上标记平台：CSS 通过 html.tv-mode / html[data-platform] 选择器做
  * 焦点交互适配（显示焦点环、把 hover 揭示的 UI 改为 focus 揭示等）。
+ * 支持 ?tv=1 强制进入 TV 模式（PC 模拟测试）。
  */
 export function initPlatformUI(): void {
   const kind = detectPlatform()
   const root = document.documentElement
+
+  // URL ?tv=1 / ?tv=0 覆盖 localStorage 开关
+  try {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('tv') === '1') setTvModeForced(true)
+    else if (params.get('tv') === '0') setTvModeForced(false)
+  } catch {
+    // ignore
+  }
+
+  const forced = isTvModeForced()
   root.dataset.platform = kind
   // 安卓端当前只面向 TV 遥控器，统一启用 tv-mode 焦点交互；
-  // 平板触摸适配到位后再收敛到 android-tv 才启用。
-  if (kind === 'android-tv' || kind === 'android-tablet') {
+  // 平板触摸适配到位后再收敛到 android-tv 才启用。PC 上用 ?tv=1 强制进入。
+  if (forced || kind === 'android-tv' || kind === 'android-tablet') {
     root.classList.add('tv-mode')
+  } else {
+    root.classList.remove('tv-mode')
   }
 }

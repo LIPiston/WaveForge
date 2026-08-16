@@ -362,6 +362,8 @@ function handleKeyDown(e: KeyboardEvent): void {
       e.preventDefault()
       activate()
       return
+    case 8: // Backspace（PC 模拟 TV 的 BACK）
+    case 27: // Escape（PC 模拟 TV 的 BACK）
     case 4: // KEYCODE_BACK
       if (dispatchTvBack()) {
         e.preventDefault()

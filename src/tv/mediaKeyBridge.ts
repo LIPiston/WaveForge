@@ -62,9 +62,10 @@ export function installMediaKeyBridge(): void {
   document.addEventListener('keydown', (e) => {
     if (!isTvMode()) return
     const code = e.keyCode
-    const isPlayPause = code === 85 || code === 126 || code === 127 || code === 86
-    const isNext = code === 87
-    const isPrev = code === 88
+    const isPlayPause =
+      code === 85 || code === 126 || code === 127 || code === 86 || code === 179 // 179=PC 媒体播放/暂停
+    const isNext = code === 87 || code === 176 // 176=PC 下一首
+    const isPrev = code === 88 || code === 177 // 177=PC 上一首
     if (!isPlayPause && !isNext && !isPrev) return
 
     // 输入框聚焦时不拦截（避免把媒体键当文本输入）

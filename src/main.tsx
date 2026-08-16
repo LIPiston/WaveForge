@@ -4,7 +4,7 @@ import './index.css'
 import './tv/tv.css'
 import App from './App'
 import { startMemoryWatchdog } from './utils/memoryWatchdog'
-import { initPlatformUI } from './platform'
+import { initPlatformUI, setTvModeForced } from './platform'
 import { installElectronShim } from './electronShim'
 import { startTv } from './tv/tvCore'
 import { installMediaKeyBridge } from './tv/mediaKeyBridge'
@@ -21,6 +21,15 @@ startTv()
 
 // 遥控器媒体键 → 应用播放控制桥接（仅 tv-mode 生效）。
 installMediaKeyBridge()
+
+// PC 模拟测试：Ctrl+Alt+T 在「TV 遥控器模式 / 鼠标模式」间切换（刷新生效）。
+window.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.altKey && e.code === 'KeyT') {
+    e.preventDefault()
+    setTvModeForced(!document.documentElement.classList.contains('tv-mode'))
+    window.location.reload()
+  }
+})
 
 // 内存观察哨：仅当 localStorage 中设置了 waveforge:memory-debug=1 时生效，
 // 用于定位播放期间内存持续增长的来源（控制台执行 localStorage.setItem('waveforge:memory-debug','1') 后重启）。
