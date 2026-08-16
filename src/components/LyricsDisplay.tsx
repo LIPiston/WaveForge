@@ -3,6 +3,17 @@ import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudio
 import { useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { reconcileBoundaryParentheses } from '../utils/lyricBoundaryParentheses'
 import { normalizeSequentialWordTiming, prepareLyricWords } from '../utils/lyricWordTiming'
+import { getAgentTintColor, getAppleMusicSettings } from '../services/appleMusic'
+
+/** 十六进制色 → rgba（对唱演唱者着色用） */
+const hexToRgba = (hex: string, alpha: number) => {
+  const match = hex.match(/^#([\da-f]{6})$/i)?.[1]
+  if (!match) return hex
+  const red = Number.parseInt(match.slice(0, 2), 16)
+  const green = Number.parseInt(match.slice(2, 4), 16)
+  const blue = Number.parseInt(match.slice(4, 6), 16)
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`
+}
 
 interface LyricWord {
   word: string
@@ -21,6 +32,9 @@ interface LyricLine {
   isGeneratedInterlude?: boolean
   interludeStartTime?: number
   interludeEndTime?: number
+  /** Apple Music 对唱：ttm:agent id（如 v1/v2） */
+  agent?: string
+  agentName?: string
 }
 
 type WordByWordEffectMode = 'clear' | 'soft' | 'apple'
@@ -543,6 +557,12 @@ export default function LyricsDisplay({
     () => displayLyricsData.map(lyric => prepareLyricLine(lyric, sustainGlowEnabled)),
     [displayLyricsData, sustainGlowEnabled]
   )
+  // 对唱歌词：统计演唱者数量（≥2 才着色），并读取用户设置开关
+  const appleAgentCount = useMemo(
+    () => new Set(displayLyricsData.map(line => line.agent).filter(Boolean)).size,
+    [displayLyricsData]
+  )
+  const appleDuetColorsEnabled = useMemo(() => getAppleMusicSettings().duetColors, [])
 
   useEffect(() => {
     const updatePulseScale = () => {
@@ -1115,6 +1135,13 @@ export default function LyricsDisplay({
       const currentMs = Math.max(0, absoluteCurrentMs - lineStartTime - WORD_BY_WORD_DELAY_MS)
       
       const effectConfig = getWordEffectConfig(effectiveWordByWordEffectMode)
+      // 对唱行：未唱底色带演唱者色相（主唱保持默认灰，其余演唱者取调色板色）
+      const lineInactiveColor = appleDuetColorsEnabled && appleAgentCount >= 2 && lyric.agent
+        ? (() => {
+            const tint = getAgentTintColor(lyric.agent, appleAgentCount, !isLightTheme)
+            return tint ? hexToRgba(tint, 0.5) : effectConfig.inactiveColor
+          })()
+        : effectConfig.inactiveColor
       const getFillOverlayStyle = (fillWidth: number) => {
         if (!effectConfig.isSoft) {
           return {
@@ -1250,7 +1277,7 @@ export default function LyricsDisplay({
                       key={`${unitIndex}-${unit.base}`}
                       className="inline-block relative py-[0.02em]"
                       style={{
-                        color: unitFullyFilled ? 'transparent' : effectConfig.inactiveColor,
+                        color: unitFullyFilled ? 'transparent' : lineInactiveColor,
                         textShadow: unitShadow,
                         filter: isSustainGlowActive
                           ? `brightness(${1.03 + sustainGlowIntensity * 0.09}) saturate(${1.04 + sustainGlowIntensity * 0.14})`
@@ -1322,7 +1349,7 @@ export default function LyricsDisplay({
                 style={{
                   ['--word-progress' as string]: `${fillWidth}%`,
                   ['--word-accent' as string]: sustainGlowColor.css,
-                  color: isSpace || fullyFilled ? 'transparent' : effectConfig.inactiveColor,
+                  color: isSpace || fullyFilled ? 'transparent' : lineInactiveColor,
                   opacity: isSpace ? 0 : 1,
                   textShadow: isSustainGlowActive
                     ? sustainTextShadow
@@ -1434,7 +1461,7 @@ export default function LyricsDisplay({
                       style={{
                         ['--word-progress' as string]: `${fillWidth}%`,
                         ['--word-accent' as string]: sustainGlowColor.css,
-                        color: fullyFilled ? 'transparent' : effectConfig.inactiveColor,
+                        color: fullyFilled ? 'transparent' : lineInactiveColor,
                         opacity: 1,
                         textShadow: isSustainGlowActive
                           ? sustainTextShadow

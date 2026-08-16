@@ -1,6 +1,6 @@
 /**
  * TTML (Timed Text Markup Language) 解析器
- * 用于解析 AMLL TTML DB 的逐字歌词格式
+ * 用于解析 Apple Music / AMLL TTML DB 的逐字歌词格式
  */
 
 export interface TTMLWord {
@@ -15,19 +15,37 @@ export interface TTMLLine {
   endTime: number
   translation?: string
   roman?: string
+  /** 演唱者（ttm:agent 引用，如 v1/v2）——对唱/多声部歌曲用于逐人着色 */
+  agent?: string
+  /** x-bg 背景和声词（带独立时间轴，可作弱化渲染） */
+  bgWords?: TTMLWord[]
+}
+
+export interface TTMLAgent {
+  id: string
+  type: string
 }
 
 export interface TTMLLyric {
   lines: TTMLLine[]
+  /** head 中声明的演唱者（person/group/other） */
+  agents?: TTMLAgent[]
+  /** 前导静音偏移（毫秒），时间轴整体平移用 */
+  leadingSilenceMs?: number
 }
 
 /**
- * 解析时间字符串（格式：HH:MM:SS.mmm 或 MM:SS.mmm）
+ * 解析时间字符串（格式：HH:MM:SS.mmm / MM:SS.mmm / 1,234 秒,毫秒 / 纯秒）
  */
 function parseTime(timeStr: string): number {
   const normalized = timeStr.trim()
   if (normalized.endsWith('ms')) return Number.parseFloat(normalized) || 0
   if (normalized.endsWith('s')) return (Number.parseFloat(normalized) || 0) * 1000
+  // AMLL 方言：begin="1,234" 表示 1秒+234毫秒
+  if (/^\d+,\d+$/.test(normalized)) {
+    const [secondsPart, msPart] = normalized.split(',')
+    return (Number.parseInt(secondsPart, 10) || 0) * 1000 + (Number.parseInt(msPart, 10) || 0)
+  }
 
   const parts = normalized.split(':')
   let seconds = 0
@@ -45,6 +63,9 @@ function parseTime(timeStr: string): number {
   return seconds * 1000 // 转换为毫秒
 }
 
+const getTtmlAttr = (element: Element, qualifiedName: string, namespace = 'http://www.w3.org/ns/ttml#metadata') =>
+  element.getAttributeNS(namespace, qualifiedName) || element.getAttribute(`ttm:${qualifiedName}`)
+
 /**
  * 解析TTML XML文本
  */
@@ -56,11 +77,42 @@ export function parseTTML(ttmlText: string): TTMLLyric {
   }
 
   const lines: TTMLLine[] = []
+  const agents: TTMLAgent[] = []
+  let leadingSilenceMs: number | undefined
+
+  // head 元数据：演唱者声明 + 前导静音
+  const metadataNodes = Array.from(xmlDoc.getElementsByTagNameNS('*', 'metadata'))
+  metadataNodes.forEach(metadata => {
+    Array.from(metadata.children).forEach(node => {
+      const local = node.localName || ''
+      if (local === 'agent') {
+        const id = node.getAttributeNS('http://www.w3.org/XML/1998/namespace', 'id') || node.getAttribute('xml:id') || ''
+        const type = node.getAttribute('type') || 'other'
+        if (id && !agents.some(agent => agent.id === id)) agents.push({ id, type })
+      } else if (local === 'leadingSilence') {
+        const text = (node.textContent || '').trim()
+        if (!text) return
+        const value = Number.parseFloat(text)
+        if (Number.isFinite(value)) {
+          // 兼容三种写法：带 ms 后缀（毫秒）、小数（秒）、纯数字（毫秒）
+          leadingSilenceMs = text.endsWith('ms')
+            ? Math.round(value)
+            : String(text).includes('.')
+              ? Math.round(value * 1000)
+              : Math.round(value)
+        }
+      }
+    })
+  })
 
   // 获取所有 <p> 元素（每个代表一行歌词）
   const paragraphs = Array.from(xmlDoc.getElementsByTagNameNS('*', 'p'))
 
   paragraphs.forEach(p => {
+    // 个别 Apple 文件把翻译/罗马音作为独立 <p> 行：不作为主歌词行渲染
+    const paragraphRole = getTtmlAttr(p, 'role')
+    if (paragraphRole === 'x-translation' || paragraphRole === 'x-roman') return
+
     const begin = p.getAttribute('begin')
     const end = p.getAttribute('end')
     
@@ -70,6 +122,7 @@ export function parseTTML(ttmlText: string): TTMLLyric {
     const lineEndTime = parseTime(end)
     
     const words: TTMLWord[] = []
+    const bgWords: TTMLWord[] = []
     let translation = ''
     let roman = ''
     let primaryText = ''
@@ -90,8 +143,7 @@ export function parseTTML(ttmlText: string): TTMLLyric {
 
       const span = node as Element
       if (span.localName !== 'span') return
-      const role = span.getAttributeNS('http://www.w3.org/ns/ttml#metadata', 'role')
-        || span.getAttribute('ttm:role')
+      const role = getTtmlAttr(span, 'role')
 
       if (role === 'x-translation') {
         // 翻译文本
@@ -99,7 +151,38 @@ export function parseTTML(ttmlText: string): TTMLLyric {
       } else if (role === 'x-roman') {
         // 罗马音
         roman = span.textContent || ''
-      } else if (role !== 'x-bg') {
+      } else if (role === 'x-bg') {
+        // 背景和声：递归收集带时间的词（弱化渲染用）
+        const collectBg = (el: Element): TTMLWord[] => {
+          const collected: TTMLWord[] = []
+          Array.from(el.childNodes).forEach(child => {
+            if (child.nodeType === Node.TEXT_NODE) {
+              const text = child.textContent || ''
+              if (text && collected.length > 0) {
+                collected[collected.length - 1].text += text
+              } else if (text) {
+                collected.push({ text, startTime: lineStartTime, endTime: lineEndTime })
+              }
+              return
+            }
+            if (child.nodeType !== Node.ELEMENT_NODE) return
+            const childEl = child as Element
+            if (childEl.localName !== 'span') return
+            const subRole = getTtmlAttr(childEl, 'role')
+            if (subRole && subRole !== 'x-bg') return
+            const wordBegin = childEl.getAttribute('begin')
+            const wordEnd = childEl.getAttribute('end')
+            const text = childEl.textContent || ''
+            if (wordBegin && wordEnd && text) {
+              collected.push({ text, startTime: parseTime(wordBegin), endTime: parseTime(wordEnd) })
+            } else {
+              collected.push(...collectBg(childEl))
+            }
+          })
+          return collected
+        }
+        bgWords.push(...collectBg(span))
+      } else {
         // 普通歌词词语
         const wordBegin = span.getAttribute('begin')
         const wordEnd = span.getAttribute('end')
@@ -135,12 +218,14 @@ export function parseTTML(ttmlText: string): TTMLLyric {
         startTime: lineStartTime,
         endTime: lineEndTime,
         translation: translation || undefined,
-        roman: roman || undefined
+        roman: roman || undefined,
+        agent: getTtmlAttr(p, 'agent') || undefined,
+        bgWords: bgWords.length > 0 ? bgWords : undefined,
       })
     }
   })
   
-  return { lines }
+  return { lines, agents: agents.length > 0 ? agents : undefined, leadingSilenceMs }
 }
 
 /**
