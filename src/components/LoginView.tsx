@@ -22,11 +22,13 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
   const generationRef = useRef(0)
   const mountedRef = useRef(false)
   
-  // QQ??Cookie??
+  // QQ 登录相关状态
   const [qqCookie, setQQCookie] = useState('')
   const [qqError, setQQError] = useState('')
   const [showCopiedToast, setShowCopiedToast] = useState(false)
-  const [qqManualMode, setQQManualMode] = useState(false) // QQ????????
+  const [qqManualMode, setQQManualMode] = useState(false) // QQ 手动模式
+  // 应用内扫码登录（TV）回调的最新引用，供事件监听使用（在函数定义后赋值）
+  const handleQQLoginWithCookieRef = useRef<(cookie: string) => Promise<void>>(async () => {})
 
   const clearPolling = () => {
     if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current)
@@ -49,26 +51,38 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
       setLoading(true)
       setQQError('')
       const electron = window.electron
-      if (!electron?.openQQLoginWindow) {
-        setQQError('??????? QQ ??????????????')
+      const native = (window as any).WaveForgeNative
+      if (!electron?.openQQLoginWindow && !native?.openQQLogin) {
+        setQQError('当前环境不支持自动登录，请手动获取 Cookie 后粘贴')
         setLoading(false)
         return
       }
-      const result = await electron.openQQLoginWindow()
-      if (!mountedRef.current) return
-      if (result.success && result.cookie) {
-        await handleQQLoginWithCookie(result.cookie)
-      } else if (result.error) {
-        setQQError(result.error)
-        setLoading(false)
-      } else {
-        setQQError('?????')
-        setLoading(false)
+
+      if (electron?.openQQLoginWindow) {
+        // 桌面：Electron 登录窗口（登录成功自动抓取 cookie）
+        const result = await electron.openQQLoginWindow()
+        if (!mountedRef.current) return
+        if (result.success && result.cookie) {
+          await handleQQLoginWithCookie(result.cookie)
+        } else if (result.error) {
+          setQQError(result.error)
+          setLoading(false)
+        } else {
+          setQQError('未获取到登录信息')
+          setLoading(false)
+        }
+        return
       }
+
+      // TV/安卓：应用内扫码登录——原生侧弹出 QQ 登录页（手机扫码），
+      // 抓到 cookie 后通过 qqLoginCookieCaptured 事件回传
+      setQQError('')
+      setQQManualMode(false)
+      native.openQQLogin()
     } catch (err) {
       if (!mountedRef.current) return
-      console.error('??????:', err)
-      setQQError('????????')
+      console.error('QQ 自动登录失败:', err)
+      setQQError('QQ 自动登录失败')
       setLoading(false)
     }
   }
@@ -88,7 +102,7 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
         }, 500)
       }, 3500)
     } catch (err) {
-      console.error('????:', err)
+      console.error('打开网页失败:', err)
     }
   }
 
@@ -153,7 +167,7 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
       startPolling(key, generation)
     } catch (error) {
       if (controller.signal.aborted || !isCurrent(generation)) return
-      console.error('???????:', error)
+      console.error('网易云扫码失败:', error)
       setLoading(false)
       setStatus('expired')
     } finally {
@@ -174,6 +188,26 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
       requestControllerRef.current = null
     }
   }, [platform])
+
+  // TV 应用内扫码登录：原生侧抓到 QQ cookie 后回传
+  useEffect(() => {
+    const onCookieCaptured = (e: Event) => {
+      const detail = (e as CustomEvent<{ cookie?: string }>).detail
+      if (!detail?.cookie) return
+      setLoading(false)
+      void handleQQLoginWithCookieRef.current(detail.cookie)
+    }
+    const onLoginClosed = () => {
+      setLoading(false)
+      setQQError('未获取到登录信息，请重试')
+    }
+    window.addEventListener('qqLoginCookieCaptured', onCookieCaptured)
+    window.addEventListener('qqLoginClosed', onLoginClosed)
+    return () => {
+      window.removeEventListener('qqLoginCookieCaptured', onCookieCaptured)
+      window.removeEventListener('qqLoginClosed', onLoginClosed)
+    }
+  }, [])
 
   const handleRefresh = () => {
     void generateQRCode()
@@ -202,6 +236,7 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
 
     onLoginSuccess(cookie)
   }
+  handleQQLoginWithCookieRef.current = handleQQLoginWithCookie
 
   const handleQQLogin = () => {
     handleQQLoginWithCookie(qqCookie.trim())
@@ -390,7 +425,11 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
                       <Music className="w-16 h-16 text-green-500 mx-auto" />
                       <div>
                         <h3 className="text-xl font-medium text-white mb-2">QQ音乐登录</h3>
-                        <p className="text-white/60 text-sm">弹出窗口后请选择立即登录，登录成功后本窗口将自动关闭</p>
+                        <p className="text-white/60 text-sm">
+                          {(window as any).WaveForgeNative?.openQQLogin
+                            ? '请在电视屏幕上使用手机 QQ 扫码登录，登录成功后自动返回'
+                            : '弹出窗口后请选择立即登录，登录成功后本窗口将自动关闭'}
+                        </p>
                       </div>
                     </div>
 
@@ -419,7 +458,7 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
                         className="flex-1 px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-full font-medium transition-colors inline-flex items-center justify-center gap-2"
                       >
                         <ExternalLink className="w-4 h-4" />
-                        打开登录窗口
+                        {(window as any).WaveForgeNative?.openQQLogin ? '手机扫码登录' : '打开登录窗口'}
                       </button>
                       <button
                         onClick={onCancel}

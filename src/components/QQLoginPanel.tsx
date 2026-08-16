@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Music, ExternalLink, Copy, Check } from 'lucide-react'
+import { X, Music, ExternalLink, Copy, Check, QrCode } from 'lucide-react'
 import { useTvBack } from '../tv/tvCore'
 
 interface QQLoginPanelProps {
@@ -32,7 +32,26 @@ export default function QQLoginPanel({ onClose, onLoginSuccess }: QQLoginPanelPr
     }
   }, [])
 
+  // TV：原生应用内扫码登录，抓到 cookie 后自动完成登录
+  const nativeBridge = (window as any).WaveForgeNative
+  const canNativeLogin = Boolean(nativeBridge?.openQQLogin)
+
+  useEffect(() => {
+    const onCookieCaptured = (e: Event) => {
+      const detail = (e as CustomEvent<{ cookie?: string }>).detail
+      if (!detail?.cookie) return
+      if (mountedRef.current) onLoginSuccess(detail.cookie)
+    }
+    window.addEventListener('qqLoginCookieCaptured', onCookieCaptured)
+    return () => window.removeEventListener('qqLoginCookieCaptured', onCookieCaptured)
+  }, [onLoginSuccess])
+
   const handleOpenQQMusic = () => {
+    // TV：没有浏览器可调起，直接走应用内扫码登录
+    if (nativeBridge?.openQQLogin) {
+      nativeBridge.openQQLogin()
+      return
+    }
     window.open('https://y.qq.com', '_blank')
   }
 
@@ -61,12 +80,12 @@ document.cookie
   const handleLogin = async () => {
     const trimmedCookie = cookie.trim()
     if (!trimmedCookie) {
-      setError('???Cookie')
+      setError('请输入 Cookie')
       return
     }
 
     if (!trimmedCookie.includes('uin') && !trimmedCookie.includes('qm_keyst') && !trimmedCookie.includes('qqmusic_key')) {
-      setError('Cookie??????????????Cookie??')
+      setError('Cookie 格式不正确，请从 y.qq.com 登录后获取完整的 Cookie')
       return
     }
 
@@ -88,13 +107,13 @@ document.cookie
       if (result.result === 100) {
         onLoginSuccess(trimmedCookie)
       } else {
-        setError('????????Cookie????')
+        setError('Cookie 无效，请检查后重试')
       }
     } catch (err) {
       if (controller.signal.aborted) return
       if (!mountedRef.current) return
-      console.error('????:', err)
-      setError('????????')
+      console.error('QQ 登录失败:', err)
+      setError('登录失败，请重试')
     } finally {
       if (loginControllerRef.current === controller) loginControllerRef.current = null
     }
@@ -148,13 +167,24 @@ document.cookie
               </div>
               <div className="flex-1">
                 <h3 className="text-white font-medium mb-2">打开QQ音乐官网并登录</h3>
-                <button
-                  onClick={handleOpenQQMusic}
-                  className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  打开 y.qq.com
-                </button>
+                {canNativeLogin ? (
+                  // TV：应用内扫码登录（无浏览器可调起）
+                  <button
+                    onClick={() => nativeBridge.openQQLogin()}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                  >
+                    <QrCode className="w-4 h-4" />
+                    手机扫码登录（电视）
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleOpenQQMusic}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    打开 y.qq.com
+                  </button>
+                )}
               </div>
             </div>
 

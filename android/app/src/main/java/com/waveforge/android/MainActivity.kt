@@ -3,14 +3,18 @@ package com.waveforge.android
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -37,12 +41,17 @@ class MainActivity : Activity() {
     companion object {
         private const val NODE_ASSETS_DIR = "nodejs-project"
         private const val PREF_TAG_KEY = "node_assets_version"
-        private const val ASSETS_VERSION = 2
+        private const val ASSETS_VERSION = 4
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
+        // 与桌面版 Electron 登录窗口同一个 URL（需要登录的页面，登录后自动带出 cookie）
+        private const val QQ_LOGIN_URL = "https://y.qq.com/n/ryqq_v2/profile/like/song"
     }
 
     private lateinit var webView: WebView
+    private lateinit var rootView: FrameLayout
+    private var qqLoginWebView: WebView? = null
+    private var qqLoginPolling: Thread? = null
     private val nodeStarted = AtomicBoolean(false)
 
     init {
@@ -58,7 +67,7 @@ class MainActivity : Activity() {
         // TV 播放场景保持屏幕常亮。
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val root = FrameLayout(this).apply {
+        rootView = FrameLayout(this).apply {
             setBackgroundColor(Color.parseColor("#0a0f14"))
         }
 
@@ -68,7 +77,7 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { gravity = Gravity.CENTER }
         }
-        root.addView(progress)
+        rootView.addView(progress)
 
         webView = WebView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -93,10 +102,21 @@ class MainActivity : Activity() {
                 fun checkForUpdates() {
                     UpdateChecker.check(this@MainActivity, force = true)
                 }
+
+                // 应用内 QQ 扫码登录（电视上没有 Electron 登录窗口）
+                @android.webkit.JavascriptInterface
+                fun openQQLogin() {
+                    openQQLoginWindow()
+                }
+
+                @android.webkit.JavascriptInterface
+                fun closeQQLogin() {
+                    closeQQLoginWindow()
+                }
             }, "WaveForgeNative")
         }
-        root.addView(webView)
-        setContentView(root)
+        rootView.addView(webView)
+        setContentView(rootView)
 
         if (nodeStarted.compareAndSet(false, true)) {
             Thread {
@@ -166,9 +186,131 @@ class MainActivity : Activity() {
         false
     }
 
+    // ---------- 应用内 QQ 扫码登录（电视上没有 Electron 登录窗口） ----------
+
+    private fun openQQLoginWindow() {
+        if (qqLoginWebView != null) return // 已打开
+        runOnUiThread {
+            val overlay = WebView(this).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                setBackgroundColor(Color.parseColor("#0a0f14"))
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        val url = request?.url?.toString() ?: return false
+                        if (!isQQDomain(url)) {
+                            // 登录流程之外的站点交给系统浏览器，避免登录态外泄
+                            try {
+                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                            } catch (_: Exception) {}
+                            return true
+                        }
+                        return false
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        injectQQLoginHelper(view)
+                    }
+                }
+            }
+            rootView.addView(overlay)
+            qqLoginWebView = overlay
+            overlay.loadUrl(QQ_LOGIN_URL)
+            startQQCookiePolling()
+        }
+    }
+
+    private fun closeQQLoginWindow() {
+        qqLoginPolling?.interrupt()
+        qqLoginPolling = null
+        runOnUiThread {
+            qqLoginWebView?.destroy()
+            qqLoginWebView?.let { rootView.removeView(it) }
+            qqLoginWebView = null
+            // 通知 SPA 登录流程已结束（未取到 cookie 时用于复位 loading）
+            webView.post {
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('qqLoginClosed', { detail: {} }))", null)
+            }
+        }
+    }
+
+    private fun isQQDomain(url: String): Boolean = try {
+        val host = Uri.parse(url).host?.lowercase() ?: return false
+        host == "qq.com" || host.endsWith(".qq.com")
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun injectQQLoginHelper(view: WebView?) {
+        view?.evaluateJavascript(
+            """
+            (function () {
+              if (document.getElementById('wf-qq-login-bar')) return;
+              var bar = document.createElement('div');
+              bar.id = 'wf-qq-login-bar';
+              bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483000;background:rgba(8,12,20,0.94);color:#fff;font-size:15px;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-family:sans-serif;';
+              bar.innerHTML = '<span>请在电视屏幕上使用手机 QQ 扫码登录，完成后将自动返回</span>' +
+                '<button id="wf-qq-login-close" style="flex:none;background:rgba(255,255,255,0.16);color:#fff;border:none;border-radius:8px;padding:8px 18px;font-size:14px;">关闭</button>';
+              document.body.appendChild(bar);
+              document.getElementById('wf-qq-login-close').addEventListener('click', function () {
+                try { window.WaveForgeNative.closeQQLogin(); } catch (e) {}
+              });
+            })();
+            """.trimIndent(),
+            null
+        )
+    }
+
+    private fun startQQCookiePolling() {
+        qqLoginPolling?.interrupt()
+        qqLoginPolling = Thread {
+            var attempts = 0
+            while (!Thread.currentThread().isInterrupted && attempts < 300) { // 最多 10 分钟
+                attempts++
+                val cookie = CookieManager.getInstance().getCookie("https://y.qq.com/")
+                if (cookie != null && isQQLoggedInCookie(cookie)) {
+                    runOnUiThread {
+                        val payload = org.json.JSONObject().put("cookie", cookie).toString()
+                        webView.evaluateJavascript(
+                            "window.dispatchEvent(new CustomEvent('qqLoginCookieCaptured', { detail: $payload }))",
+                            null
+                        )
+                        closeQQLoginWindow()
+                    }
+                    return@Thread
+                }
+                try {
+                    Thread.sleep(2000)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+            }
+        }.apply { start() }
+    }
+
+    private fun isQQLoggedInCookie(cookie: String): Boolean {
+        val hasUserId = cookie.contains("uin=") || cookie.contains("wxuin=")
+        val hasMusicKey = cookie.contains("qm_keyst=") || cookie.contains("qqmusic_key=")
+        return hasUserId && hasMusicKey
+    }
+
     // ---------- 遥控器键位 ----------
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // BACK：QQ 登录覆盖层打开时优先关闭它
+        if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_DOWN) {
+            if (qqLoginWebView != null) {
+                closeQQLoginWindow()
+                return true
+            }
+        }
+
         // 媒体键通常不会作为 DOM 事件到达 WebView，这里显式转发给页面（页面侧有对应 keydown 处理）。
         if (webView.visibility == View.VISIBLE) {
             when (event.keyCode) {
@@ -200,6 +342,11 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        // QQ 登录覆盖层打开时优先关闭
+        if (qqLoginWebView != null) {
+            closeQQLoginWindow()
+            return
+        }
         // BACK：优先返回页面历史，否则退到桌面。
         if (webView.visibility == View.VISIBLE && webView.canGoBack()) {
             webView.goBack()
@@ -210,6 +357,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        qqLoginPolling?.interrupt()
+        qqLoginWebView?.destroy()
         webView.destroy()
     }
 }
