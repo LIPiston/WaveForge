@@ -24,13 +24,16 @@
     "test": "vitest run",
     "lint": "tsc --noEmit",
     "sync:sponsors": "node scripts/sync-afdian-sponsors.mjs",
-    "prebuild": "node scripts/sync-afdian-sponsors.mjs --optional",
+    "prebuild": "node scripts/build-v3-worklet.mjs && node scripts/sync-afdian-sponsors.mjs --optional",
     "test:license": "node scripts/test-device-license.cjs",
     "version:patch": "node scripts/bump-version.mjs patch",
     "version:minor": "node scripts/bump-version.mjs minor",
     "version:major": "node scripts/bump-version.mjs major",
     "version:pre": "node scripts/bump-version.mjs pre",
-    "version:dry": "node scripts/bump-version.mjs --dry-run"
+    "version:dry": "node scripts/bump-version.mjs --dry-run",
+    "build:v3-worklet": "node scripts/build-v3-worklet.mjs",
+    "predev": "node scripts/build-v3-worklet.mjs",
+    "predev:electron": "node scripts/build-v3-worklet.mjs"
   },
   "build": {
     "appId": "com.waveforge.desktop",
@@ -124,6 +127,8 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
     "@types/express": "^4.17.21",
     "@types/jsmediatags": "^3.9.6",
     "@types/leaflet": "^1.9.20",
@@ -135,6 +140,7 @@
     "autoprefixer": "^10.4.21",
     "electron": "^42.5.0",
     "electron-builder": "^26.15.3",
+    "jsdom": "^29.1.1",
     "png-to-ico": "^3.0.2",
     "sharp": "^0.35.3",
     "tailwindcss": "^4.1.14",

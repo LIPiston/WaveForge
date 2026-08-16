@@ -37,3 +37,6 @@ logs/
 !/README.md
 !/HANDOVER.md
 !/CONTEXT.md
+
+# v3 融合临时目录（用户待删，不入库）
+temp/

@@ -43,6 +43,18 @@ function CrossfadeBackground({
     }
   }, [coverUrl, incomingUrl, isTransitioning, visibleUrl])
 
+  // 兜底提升：淡入动画完成回调（onAnimationComplete）在快速连续切歌/动画中断时
+  // 可能不触发，incomingUrl 永远不晋升为 visibleUrl → 封面停留在旧歌。这里用定时器
+  // 强制在动画时长 + 余量后完成晋升（与动画回调幂等：先到者生效，后到者 no-op）。
+  useEffect(() => {
+    if (!incomingUrl) return
+    const t = window.setTimeout(() => {
+      setVisibleUrl(incomingUrl)
+      setIncomingUrl('')
+    }, 1200)
+    return () => window.clearTimeout(t)
+  }, [incomingUrl])
+
 
   const explicitTransition = Boolean(
     isTransitioning

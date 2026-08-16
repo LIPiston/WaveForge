@@ -21,3 +21,11 @@ function verboseEnabled(): boolean {
 export function debugLog(...args: unknown[]): void {
   if (verboseEnabled()) console.log(...args)
 }
+
+/**
+ * 开发者调试模式是否开启（localStorage 'waveforge:verbose-log' === '1'，带缓存）。
+ * 除详细日志外，也用于门控仅调试期可见的 UI 提示（如 gapless 衔接方案弹窗）。
+ */
+export function isVerboseLogEnabled(): boolean {
+  return verboseEnabled()
+}
