@@ -933,8 +933,9 @@ function App() {
     const songId = platform === 'qq' ? (song.mid || song.id) : song.id
     const lyricsCacheGeneration = lyricsCacheGenerationRef.current
     let lyricsLoadedFromPersistentCache = false
-    // 歌词缓存版本：评分/数据源逻辑变更时递增，使旧缓存（旧评分选中的劣质源）失效
-    const lyricsCacheKey = `v2:${cacheKey}`
+    // 歌词缓存版本：评分/数据源/解析逻辑变更时递增，使旧缓存（旧解析选中的劣质/残缺源）失效。
+    // v2→v3：修复网易云"JSON 元数据+LRC 正文"混合格式解析后，旧缓存里的"作词/作曲"空壳必须作废。
+    const lyricsCacheKey = `v3:${cacheKey}`
     const request = indexedDBCache.getCachedLyrics<LyricLine[]>(lyricsCacheKey, platform)
       .catch(() => null)
       .then(persistedLyrics => {
