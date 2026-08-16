@@ -4702,10 +4702,11 @@ app.get('/api/qq/mv/url', async (req, res) => {
     }
     const cookie = String(req.query.cookie || '')
     // 播放类路由：请求 cookie 仅本次使用，不回写全局登录态。
-    resolveRequestCookie(cookie)
-    console.log('[QQ音乐MV播放地址] Cookie状态:', qqMusicCookie ? `已设置 (${qqMusicCookie.length}字符)` : '未设置')
+    // 请求未带 cookie 时回退到全局登录态（登录后 setCookie 已同步到全局）。
+    const activeCookie = resolveRequestCookie(cookie) || qqMusicCookie
+    console.log('[QQ音乐MV播放地址] Cookie状态:', activeCookie ? `已设置 (${activeCookie.length}字符)` : '未设置')
 
-    const parsedCookie = parseQQCookie(cookie)
+    const parsedCookie = parseQQCookie(activeCookie)
     const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || '').replace(/\D/g, '')
     const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
 
@@ -4723,7 +4724,7 @@ app.get('/api/qq/mv/url', async (req, res) => {
       req_0: { module: 'gosrf.Stream.MvUrlProxy', method: 'GetMvUrls', param: { vids: [String(vid)], request_typet: 10001 } }
     }
     const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
-      headers: { ...QQ_HEADERS, Cookie: cookie || qqMusicCookie, 'Content-Type': 'application/json' },
+      headers: { ...QQ_HEADERS, Cookie: activeCookie, 'Content-Type': 'application/json' },
       validateStatus: () => true
     })
     const d = resp.data?.req_0 || resp.data
@@ -4743,7 +4744,7 @@ app.get('/api/qq/mv/url', async (req, res) => {
       return res.status(200).json({
         url: null,
         error: '该MV暂无免费播放源，可能需VIP或受地区限制',
-        needCookie: !cookie,
+        needCookie: !activeCookie,
         vid: vid
       })
     }
@@ -8698,7 +8699,10 @@ app.post('/api/qq/artist/subscribe', async (req, res) => {
     if (!mid) return res.status(400).json({ result: 500, error: '请提供歌手MID' })
     if (!requireQQLogin(res, cookie)) return
 
-    const parsedCookie = parseQQCookie()
+    // 写操作只按本次请求使用请求自带的 cookie（优先）；请求未带时回退全局登录态，
+    // 绝不回写全局，避免并发请求互相冲掉登录态。
+    const activeCookie = cookie || qqMusicCookie
+    const parsedCookie = parseQQCookie(activeCookie)
     const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || '').replace(/\D/g, '')
     const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
 
@@ -8720,7 +8724,7 @@ app.post('/api/qq/artist/subscribe', async (req, res) => {
           req_0: musicuAttempts[0]
         }
         const unsigResp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', unsigPayload, {
-          headers: { ...QQ_HEADERS, Cookie: qqMusicCookie, 'Content-Type': 'application/json' },
+          headers: { ...QQ_HEADERS, Cookie: activeCookie, 'Content-Type': 'application/json' },
           timeout: 15000,
           validateStatus: () => true
         })
@@ -8747,7 +8751,7 @@ app.post('/api/qq/artist/subscribe', async (req, res) => {
           const sign = zzcSign(requestBody)
           const signedUrl = `https://u6.y.qq.com/cgi-bin/musics.fcg?_=${Date.now()}&encoding=ag-1&sign=${encodeURIComponent(sign)}`
           const musicuResponse = await axios.post(signedUrl, encryptedBody, {
-            headers: { ...QQ_HEADERS, Cookie: qqMusicCookie, 'Content-Type': 'text/plain' },
+            headers: { ...QQ_HEADERS, Cookie: activeCookie, 'Content-Type': 'text/plain' },
             responseType: 'arraybuffer', transformResponse: data => data, timeout: 15000, validateStatus: () => true
           })
           const musicuData = JSON.parse(decodeAG1Response(new Uint8Array(musicuResponse.data)))
@@ -8777,7 +8781,7 @@ app.post('/api/qq/artist/subscribe', async (req, res) => {
         platform: 'yqq.json', needNewCode: 1, ct: 24, cv: 4747474,
         singermid: String(mid), uin: musicId
       },
-      headers: { ...QQ_HEADERS, Cookie: qqMusicCookie, Referer: 'https://y.qq.com/' },
+      headers: { ...QQ_HEADERS, Cookie: activeCookie, Referer: 'https://y.qq.com/' },
       timeout: 15000,
       validateStatus: () => true
     })

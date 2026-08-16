@@ -2579,17 +2579,19 @@ function App() {
         playlistRef.current = nextQueue
         const nextRevision = bumpQueueRevision()
         const currentIndexInNewQueue = currentIndexRef.current - trimmedPrefix
+        // 队列裁剪后旧索引越界：若只 setPlaylist 而把 currentIndex 推迟到 setTimeout，
+        // 中间帧 currentIndex >= playlist.length → currentSong=null → 播放页闪回首页。
+        // 必须与 setPlaylist 同步提交 currentIndex（同一批次），避免越界空白帧。
+        currentIndexRef.current = currentIndexInNewQueue
         setPlaylist(nextQueue)
+        setCurrentIndex(currentIndexInNewQueue)
         window.setTimeout(() => {
-          currentIndexRef.current = currentIndexInNewQueue
           preloadUpcomingSongs(currentIndexInNewQueue, nextRevision, playMode, nextQueue)
           if (shouldAdvance) {
             const nextIndex = trimmedQueue.length
             currentIndexRef.current = nextIndex
             setCurrentIndex(nextIndex)
             void loadAndPlaySong(nextQueue[nextIndex], nextIndex, nextQueue)
-          } else {
-            setCurrentIndex(currentIndexInNewQueue)
           }
         }, 0)
       })

@@ -1499,10 +1499,11 @@ export function useAudioPlayer(
     } catch (error) {
       if (loadRevision !== currentLoadRevisionRef.current) return false
       const err = error instanceof Error ? error : null
-      // 用户在加载/播放中暂停会中止在途的 play()（媒体元素以 AbortError 拒绝），
-      // NotAllowedError 也是播放被中断的同类错误——均属正常打断，不应误报为播放失败：
-      // 只清 loading 标志，静默返回 false（暂停状态已由 togglePlay 发布）。
-      if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
+      // 用户在加载/播放中暂停会中止在途的 play()（媒体元素以 AbortError 拒绝）——
+      // 这是正常打断，只清 loading 标志，静默返回 false（暂停状态已由 togglePlay 发布）。
+      // NotAllowedError 表示浏览器/用户手势策略阻止了播放，歌曲实际不会出声，是真实失败：
+      // 不能静默，必须走失败路径（App 会提示 + 重试一次），否则播放器卡在 loading 态无反馈。
+      if (err && err.name === 'AbortError') {
         isLoadingRef.current = false
         return false
       }
