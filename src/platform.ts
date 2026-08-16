@@ -32,6 +32,15 @@ export const isAndroid = () => detectPlatform() === 'android-tv' || detectPlatfo
 export const isTv = () => detectPlatform() === 'android-tv'
 
 /**
+ * TV UI 是否激活：检查 html.tv-mode 类。
+ * 真机（Android）与浏览器强制（?tv=1 / localStorage 开关）都返回 true——
+ * 用于"TV 专属 UI/设置"的门控，方便在浏览器里调试 TV 界面。
+ */
+export function isTvModeActive(): boolean {
+  return typeof document !== 'undefined' && document.documentElement.classList.contains('tv-mode')
+}
+
+/**
  * PC 测试开关：localStorage['waveforge:tv-mode']=1 或 URL 带 ?tv=1 时，
  * 在任意浏览器强制进入 TV 遥控器模式（焦点环/空间导航/软键盘全可用），
  * 方便在电脑上模拟电视遥控器（方向键=D-pad，Enter=OK，Backspace/Esc=BACK）。

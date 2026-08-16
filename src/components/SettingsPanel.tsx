@@ -8,7 +8,7 @@ import AudioQualitySettingsModal from './AudioQualitySettingsModal'
 import RemoteControlSettingsModal from './RemoteControlSettingsModal'
 import CacheClearModal from './CacheClearModal'
 import packageInfo from '../../package.json'
-import { isAndroid } from '../platform'
+import { isTvModeActive } from '../platform'
 import sponsorData from '../data/afdianSponsors.generated.json'
 import {
   loadPlaybackShortcutSettings,
@@ -2009,8 +2009,8 @@ function SettingsPanel({
               {/* 高级标签页 */}
               {activeTab === 'advanced' && (
                 <div className="space-y-6">
-                  {/* TV 端：设备配置检查 + 性能模式（置顶） */}
-                  {isAndroid() && (
+                  {/* TV 端：设备配置检查 + 性能模式（置顶，tv-mode 激活时显示，浏览器 ?tv=1 可测） */}
+                  {isTvModeActive() && (
                     <div className={`${bgCard} rounded-2xl border ${borderColor} p-4`}>
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
@@ -2550,7 +2550,7 @@ function SettingsPanel({
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>性能优化</h3>
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`}>
-                      {!isAndroid() && (
+                      {!isTvModeActive() && (
                       <div className="flex items-center justify-between">
                         <div>
                           <div className={`${textPrimary} font-medium mb-1`}>GPU 硬件加速</div>
@@ -2568,7 +2568,7 @@ function SettingsPanel({
                       </div>
                       )}
                       <div className={`${textTertiary} text-xs mt-3 p-3 rounded-lg`} style={{ backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
-                        {isAndroid() ? (
+                        {isTvModeActive() ? (
                           <div>TV 端渲染由系统 WebView 自动管理（GPU 合成），无需手动配置。当前状态：{gpuStatus?.actualEnabled ? 'GPU 合成已启用' : '未知'}</div>
                         ) : (
                           <>

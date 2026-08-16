@@ -35,6 +35,8 @@ export default function ImmersiveControls({
   const tvMode = useTvMode()
   const remoteCursorMode = useRemoteCursorMode()
   const effectiveHovered = (tvMode && !remoteCursorMode) || isHovered
+  // TV 紧凑布局：按钮/间距更小、更适配遥控器排版（手机遥控器连上时用 PC 式布局）
+  const tvCompact = tvMode && !remoteCursorMode
 
   const [accentColor, setAccentColor] = useState(() => {
     const saved = localStorage.getItem('accentColor')
@@ -75,9 +77,12 @@ export default function ImmersiveControls({
   }
 
   const featureButtonCount = (hasTranslation ? 1 : 0) + (hasRoman ? 1 : 0)
-  const romanButtonTop = hasTranslation ? '8rem' : '4rem'
-  const quickSettingsTop = `${4 + featureButtonCount * 4}rem`
-  const mixingStudioTop = `${8 + featureButtonCount * 4}rem`
+  const rowRem = tvCompact ? 3.2 : 4 // 每个按钮行占位高度（rem），TV 紧凑更小
+  const romanButtonTop = hasTranslation ? `${(tvCompact ? 6.4 : 8)}rem` : `${(tvCompact ? 3.2 : 4)}rem`
+  const quickSettingsTop = `${(tvCompact ? 3.2 : 4) + featureButtonCount * rowRem}rem`
+  const mixingStudioTop = `${(tvCompact ? 6.4 : 8) + featureButtonCount * rowRem}rem`
+  const btnPad = tvCompact ? 'p-2.5' : 'p-3' // 按钮内边距
+  const iconCls = tvCompact ? 'w-5 h-5' : 'w-6 h-6' // 图标尺寸
   const featureButtonTransition = {
     duration: 0.48,
     ease: [0.22, 1, 0.36, 1] as const,
@@ -88,7 +93,7 @@ export default function ImmersiveControls({
       className="fixed top-[34px] right-0 z-40"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      style={{ width: '120px', height: `${214 + featureButtonCount * 50}px` }}
+      style={{ width: tvCompact ? '104px' : '120px', height: tvCompact ? `${158 + featureButtonCount * 38}px` : `${214 + featureButtonCount * 50}px` }}
     >
       {/* Home按钮 */}
       <motion.button
@@ -106,13 +111,13 @@ export default function ImmersiveControls({
         whileHover={{ scale: 1.1, x: -2 }}
         whileTap={{ scale: 0.9 }}
         onClick={onHomeClick}
-        className={`absolute top-0 right-6 p-3 rounded-full backdrop-blur-md border transition-colors ${
+        className={`absolute top-0 right-6 ${btnPad} rounded-full backdrop-blur-md border transition-colors ${
           playerTheme === 'dark'
             ? 'bg-black/40 hover:bg-black/60 border-white/20'
             : 'bg-white/50 hover:bg-white/70 border-black/20'
         }`}
       >
-        <Home className={`w-6 h-6 ${playerTheme === 'dark' ? 'text-white' : 'text-black'}`} />
+        <Home className={`${iconCls} ${playerTheme === 'dark' ? 'text-white' : 'text-black'}`} />
       </motion.button>
 
       {/* 翻译按钮 - 只在有翻译时显示 */}
@@ -130,7 +135,7 @@ export default function ImmersiveControls({
           whileHover={{ scale: 1.06, x: -3, transition: { duration: 0.24, ease: [0.22, 1, 0.36, 1] } }}
           whileTap={{ scale: 0.96 }}
           onClick={onTranslationToggle}
-          className="absolute top-16 right-6 p-3 rounded-full backdrop-blur-md border transition-colors overflow-hidden"
+          className="absolute top-16 right-6 ${btnPad} rounded-full backdrop-blur-md border transition-colors overflow-hidden"
           style={{
             backgroundColor: translationEnabled
               ? accentColor
@@ -157,7 +162,7 @@ export default function ImmersiveControls({
             />
           )}
           <Languages 
-            className="w-6 h-6 relative z-10" 
+            className="${iconCls} relative z-10" 
             style={{
               color: translationEnabled ? '#fff' : playerTheme === 'dark' ? '#fff' : '#000'
             }}
@@ -180,7 +185,7 @@ export default function ImmersiveControls({
           whileHover={{ scale: 1.06, x: -3, transition: { duration: 0.24, ease: [0.22, 1, 0.36, 1] } }}
           whileTap={{ scale: 0.96 }}
           onClick={onRomanToggle}
-          className="absolute right-6 p-3 rounded-full backdrop-blur-md border transition-colors overflow-hidden"
+          className="absolute right-6 ${btnPad} rounded-full backdrop-blur-md border transition-colors overflow-hidden"
           style={{
             top: romanButtonTop,
             backgroundColor: romanEnabled
@@ -207,7 +212,7 @@ export default function ImmersiveControls({
             />
           )}
           <Captions
-            className="w-6 h-6 relative z-10"
+            className="${iconCls} relative z-10"
             style={{
               color: romanEnabled ? '#fff' : playerTheme === 'dark' ? '#fff' : '#000'
             }}
@@ -248,7 +253,7 @@ export default function ImmersiveControls({
           whileHover={{ scale: 1.1, x: -2 }}
           whileTap={{ scale: 0.9 }}
           onClick={(e) => onOpenMixingStudio?.(e.currentTarget.getBoundingClientRect())}
-          className={`absolute right-6 p-3 rounded-full backdrop-blur-md border transition-colors ${
+          className={`absolute right-6 ${btnPad} rounded-full backdrop-blur-md border transition-colors ${
             playerTheme === 'dark'
               ? 'bg-black/40 hover:bg-black/60 border-white/20'
               : 'bg-white/50 hover:bg-white/70 border-black/20'
@@ -256,7 +261,7 @@ export default function ImmersiveControls({
           style={{ top: mixingStudioTop }}
           aria-label="打开调音室"
         >
-          <AudioLines className={`w-6 h-6 ${playerTheme === 'dark' ? 'text-white' : 'text-black'}`} />
+          <AudioLines className={`${iconCls} ${playerTheme === 'dark' ? 'text-white' : 'text-black'}`} />
         </motion.button>
       )}
     </div>

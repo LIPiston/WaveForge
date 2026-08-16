@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, Upload, Trash2, Image as ImageIcon, Video, Check, RotateCcw, QrCode } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { wallpaperManager, WallpaperFile, WallpaperMode, WallpaperSwitchMode } from '../services/wallpaperManager'
-import { isAndroid } from '../platform'
+import { isTvModeActive } from '../platform'
 
 interface WallpaperCustomizeModalProps {
   show: boolean
@@ -69,7 +69,7 @@ export default function WallpaperCustomizeModal({ show, onClose, playerTheme = '
 
   // TV：手机扫码上传壁纸（手机浏览器 → 设备 25567 → 设备存储 → 这里拉回导入 IndexedDB）
   useEffect(() => {
-    if (!show || !isAndroid()) return
+    if (!show || !isTvModeActive()) return
     void (async () => {
       try {
         const stRes = await fetch('http://localhost:3001/api/tv/remote-status', { cache: 'no-store' })
@@ -349,7 +349,7 @@ export default function WallpaperCustomizeModal({ show, onClose, playerTheme = '
                 </div>
 
                 {/* TV：手机扫码上传壁纸 */}
-                {isAndroid() && (
+                {isTvModeActive() && (
                   <div className={`mb-6 rounded-xl ${bgCard} border ${borderColor} p-4`}>
                     <div className="flex items-center gap-3 mb-3">
                       <QrCode className="w-5 h-5" style={{ color: accentColor }} />

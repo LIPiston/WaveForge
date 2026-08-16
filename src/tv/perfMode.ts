@@ -8,7 +8,7 @@
  * 生效机制：html 上打 wf-perf-* 类（tv.css 分档控制动画）+ JS 侧（组件读 usePerfMode）。
  */
 import { useSyncExternalStore } from 'react'
-import { isAndroid } from '../platform'
+import { isTvModeActive } from '../platform'
 
 export type PerfMode = 'efficiency' | 'normal' | 'enhanced'
 
@@ -17,7 +17,7 @@ const listeners = new Set<() => void>()
 let mode: PerfMode = readStored()
 
 function autoDefault(): PerfMode {
-  if (!isAndroid()) return 'normal'
+  if (!isTvModeActive()) return 'normal'
   try {
     const dm = (navigator as unknown as { deviceMemory?: number }).deviceMemory
     if (typeof dm === 'number' && dm > 0 && dm < 3) return 'efficiency'
@@ -106,7 +106,7 @@ export interface CacheLimits {
 
 export function getCacheLimits(): CacheLimits {
   const MB = 1024 * 1024
-  if (!isAndroid()) {
+  if (!isTvModeActive()) {
     return {
       coverCount: 500, coverBytes: 2 * 1024 * MB, singleImage: 10 * MB,
       idbCoverBytes: 256 * MB, playlistCount: 100, playlistBytes: 50 * MB,
