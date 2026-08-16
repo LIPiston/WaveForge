@@ -28,6 +28,11 @@ export function installElectronShim(): void {
         gpuFeatureStatus: { gpu_compositing: 'enabled' },
         gpuList: [],
       }),
+      confirmGpuChange: async () => {},
+      revertGpuChange: async () => {},
+    },
+    audio: {
+      getSystemVolume: async () => ({ volume: 100, muted: false }),
     },
     audioDownload: {
       prepare: unavailable('audioDownload'),
@@ -42,10 +47,27 @@ export function installElectronShim(): void {
       getCacheStats: async () => ({ count: 0, size: 0 }),
     },
     mediaKeys: {
-      setEnabled: () => {},
+      setEnabled: async () => {},
+      onControl: () => () => {},
     },
     developerMode: {
       set: () => {},
+    },
+    // 桌面小组件/桌面歌词桥：浏览器环境提供空实现，
+    // 避免 App 里 `?.getInitialState?.().then(...)` 在 undefined 上 .then/.catch 崩溃。
+    desktopPlayer: {
+      getInitialState: async () => ({ enabled: false }),
+      onEnabledChanged: () => () => {},
+      onControl: () => () => {},
+      setEnabled: () => {},
+      getSettings: async () => ({}),
+      pushState: () => {},
+    },
+    desktopLyrics: {
+      getInitialState: async () => ({ enabled: false }),
+      getSettings: async () => ({}),
+      onEnabledChanged: () => () => {},
+      setEnabled: () => {},
     },
   }
 }

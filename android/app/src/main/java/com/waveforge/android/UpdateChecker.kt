@@ -1,9 +1,12 @@
 package com.waveforge.android
 
+import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.core.content.FileProvider
 import org.json.JSONObject
@@ -69,7 +72,7 @@ object UpdateChecker {
 
                 prefs.edit().putString(KEY_LAST_NOTIFIED, remoteVersionName).apply()
 
-                android.os.Handler(context.mainLooper).post {
+                android.os.Handler(Looper.getMainLooper()).post {
                     showUpdateDialog(context, remoteVersionName, notes, apkUrl, expectedSha)
                 }
             } catch (t: Throwable) {
@@ -138,13 +141,13 @@ object UpdateChecker {
                 if (expectedSha.isNotBlank() && !sha256(file).equals(expectedSha, ignoreCase = true)) {
                     throw IllegalStateException("下载文件校验失败")
                 }
-                android.os.Handler(context.mainLooper).post {
+                Handler(Looper.getMainLooper()).post {
                     dialog.dismiss()
                     installApk(context, file)
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "下载失败: ${t.message}")
-                android.os.Handler(context.mainLooper).post {
+                Handler(Looper.getMainLooper()).post {
                     dialog.dismiss()
                     AlertDialog.Builder(context)
                         .setTitle("下载更新失败")
