@@ -4,10 +4,15 @@
  *  - 前端日志：左下角（后端面板上方，两个都开时一上一下）
  *  - 性能信息：右上角（简约/详细两档）
  *
- * 特性：弹窗样式、半透明、内容 pointer-events:none、整体 data-tv-skip——
- * 遥控器空间导航与手机远程光标都不会选中/阻塞这三个框。
+ * 特性：弹窗样式、半透明、整体 data-tv-skip——遥控器空间导航不会选中这些框。
+ *
+ * 交互性：纯 TV 遥控器场景（非 PC、未连手机远程遥控）下仅展示——
+ * 不显示滚动条、关闭按钮与 简约/详细 切换（遥控器无法操作）；
+ * PC 或手机远程遥控器连接时与 PC 行为一致，可正常滚动/关闭/切换。
  */
 import { useEffect, useRef, useState } from 'react'
+import { isTvModeActive } from '../platform'
+import { useRemoteCursorMode } from './tvCore'
 import {
   useDebugMode,
   useFrontendLogs,
@@ -34,7 +39,7 @@ const levelColor: Record<LogLine['level'], string> = {
   debug: '#8b949e',
 }
 
-function LogView({ lines, label, height }: { lines: LogLine[]; label: string; height: number }) {
+function LogView({ lines, label, height, interactive }: { lines: LogLine[]; label: string; height: number; interactive: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = ref.current
@@ -43,8 +48,8 @@ function LogView({ lines, label, height }: { lines: LogLine[]; label: string; he
   return (
     <div
       ref={ref}
-      className="overflow-auto font-mono text-[11px] leading-4"
-      style={{ height, color: '#e6edf3', pointerEvents: 'auto' }}
+      className={`overflow-auto font-mono text-[11px] leading-4 ${interactive ? '' : 'wf-no-scrollbar'}`}
+      style={{ height, color: '#e6edf3', pointerEvents: interactive ? 'auto' : 'none' }}
     >
       {lines.length === 0 && <div style={{ color: '#8b949e' }}>{label}（暂无日志）</div>}
       {lines.map((line, i) => (
@@ -73,6 +78,9 @@ export default function DebugPanels() {
   const showBackend = getDebugPanelVisible(DEBUG_PANEL_KEYS.backend)
   const showFrontend = getDebugPanelVisible(DEBUG_PANEL_KEYS.frontend)
   const showPerf = getDebugPanelVisible(DEBUG_PANEL_KEYS.perf)
+  // 交互模式：PC 或手机远程遥控器连接后，与 PC 行为一致（可滚动/关闭/切换）；
+  // 纯 TV 遥控器下仅展示，隐藏滚动条、关闭按钮与显示模式切换。
+  const interactive = !isTvModeActive() || useRemoteCursorMode()
 
   useEffect(() => {
     if (debug) {
@@ -111,17 +119,19 @@ export default function DebugPanels() {
         >
           <div className="flex items-center justify-between px-2 py-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
             <span style={{ color: '#7ee787', fontSize: 11, fontWeight: 600 }}>后端日志</span>
-            <button
-              style={headerBtn}
-              onClick={() => setDebugPanelVisible(DEBUG_PANEL_KEYS.backend, false)}
-              className="tv-debug-btn"
-              aria-label="关闭后端日志"
-            >
-              ×
-            </button>
+            {interactive && (
+              <button
+                style={headerBtn}
+                onClick={() => setDebugPanelVisible(DEBUG_PANEL_KEYS.backend, false)}
+                className="tv-debug-btn"
+                aria-label="关闭后端日志"
+              >
+                ×
+              </button>
+            )}
           </div>
           <div style={{ padding: 4 }}>
-            <LogView lines={backendLogs} label="后端" height={150} />
+            <LogView lines={backendLogs} label="后端" height={150} interactive={interactive} />
           </div>
         </div>
       )}
@@ -141,12 +151,14 @@ export default function DebugPanels() {
         >
           <div className="flex items-center justify-between px-2 py-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
             <span style={{ color: '#9cdcfe', fontSize: 11, fontWeight: 600 }}>前端日志</span>
-            <button style={headerBtn} onClick={() => setDebugPanelVisible(DEBUG_PANEL_KEYS.frontend, false)} className="tv-debug-btn" aria-label="关闭前端日志">
-              ×
-            </button>
+            {interactive && (
+              <button style={headerBtn} onClick={() => setDebugPanelVisible(DEBUG_PANEL_KEYS.frontend, false)} className="tv-debug-btn" aria-label="关闭前端日志">
+                ×
+              </button>
+            )}
           </div>
           <div style={{ padding: 4 }}>
-            <LogView lines={frontendLogs} label="前端" height={150} />
+            <LogView lines={frontendLogs} label="前端" height={150} interactive={interactive} />
           </div>
         </div>
       )}
@@ -157,17 +169,19 @@ export default function DebugPanels() {
         className="fixed right-3 top-3 z-[9000] rounded-lg border"
         style={{ background: PANEL_BG, borderColor: PANEL_BORDER, minWidth: 150, backdropFilter: 'blur(2px)' }}
       >
-        <div className="flex items-center justify-between gap-2 px-2 py-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-          <span style={{ color: '#ffd28a', fontSize: 11, fontWeight: 600 }}>性能</span>
-          <div className="flex items-center gap-1">
-            <button style={headerBtn} onClick={() => setPerfDetailed((v) => !v)} className="tv-debug-btn" aria-label="切换性能显示模式">
-              {perfDetailed ? '简约' : '详细'}
-            </button>
-            <button style={headerBtn} onClick={() => setDebugPanelVisible(DEBUG_PANEL_KEYS.perf, false)} className="tv-debug-btn" aria-label="关闭性能面板">
-              ×
-            </button>
+          <div className="flex items-center justify-between gap-2 px-2 py-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+            <span style={{ color: '#ffd28a', fontSize: 11, fontWeight: 600 }}>性能</span>
+            {interactive && (
+              <div className="flex items-center gap-1">
+                <button style={headerBtn} onClick={() => setPerfDetailed((v) => !v)} className="tv-debug-btn" aria-label="切换性能显示模式">
+                  {perfDetailed ? '简约' : '详细'}
+                </button>
+                <button style={headerBtn} onClick={() => setDebugPanelVisible(DEBUG_PANEL_KEYS.perf, false)} className="tv-debug-btn" aria-label="关闭性能面板">
+                  ×
+                </button>
+              </div>
+            )}
           </div>
-        </div>
         <div className="px-2 py-1.5 font-mono text-[11px] leading-4" style={{ color: '#e6edf3' }}>
           {perfDetailed ? (
             <>
