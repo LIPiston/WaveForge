@@ -4,6 +4,8 @@
 
 # 构建产物
 /app/build/
+/app/.cxx/
+/build/
 /.gradle/
 /local.properties
 *.apk
