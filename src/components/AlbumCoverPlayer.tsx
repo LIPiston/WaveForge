@@ -149,19 +149,28 @@ function AlbumCoverPlayer({
             exit={{ opacity: 0, scale: 1.05 }}
             transition={{ duration: 0.6, ease: 'easeInOut' }}
           >
-            <CachedImage
-              src={validCoverUrl}
-              alt="Album Cover"
+            {/* 封面 URL 变化（含同曲内切到 Apple 特殊封面）时淡入，避免生硬跳变 */}
+            <motion.div
+              key={validCoverUrl}
               className="h-full w-full"
-              lazy={false}
-              fallback={
-                <img
-                  src={defaultCover}
-                  alt="No Cover"
-                  className="h-full w-full object-cover"
-                />
-              }
-            />
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.35, ease: 'easeInOut' }}
+            >
+              <CachedImage
+                src={validCoverUrl}
+                alt="Album Cover"
+                className="h-full w-full"
+                lazy={false}
+                fallback={
+                  <img
+                    src={defaultCover}
+                    alt="No Cover"
+                    className="h-full w-full object-cover"
+                  />
+                }
+              />
+            </motion.div>
           </motion.div>
         )}
       </div>

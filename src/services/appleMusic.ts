@@ -365,13 +365,21 @@ export async function resolveAppleTrack(
  * 获取 Apple Music 歌词（LyricLine[]）。
  * 优先 AMP 直连（需 token），否则走 AMLL am-lyrics 社区库（免 token）。
  */
+/** 用户是否已完成 Apple Music 登录（未登录不请求 AM 歌词/特殊封面数据）。 */
+export function isAppleMusicConfigured(): boolean {
+  const s = getAppleAuthState()
+  const settings = getAppleMusicSettings()
+  return Boolean(s.loggedIn && settings.developerToken && settings.mediaUserToken)
+}
+
 export async function getAppleMusicLyrics(
   title: string,
   artist: string,
   durationMs?: number,
 ): Promise<LyricLine[]> {
   const settings = getAppleMusicSettings()
-  if (!settings.enabled || !title || !artist) return []
+  // 未登录默认关闭 AM 歌词：不请求 Apple 官方接口，也不用社区库替换平台歌词
+  if (!settings.enabled || !title || !artist || !isAppleMusicConfigured()) return []
 
   const match = await resolveAppleTrack(title, artist, durationMs)
   if (!match) return []

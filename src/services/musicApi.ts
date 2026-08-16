@@ -5,7 +5,7 @@ import {
   AUDIO_QUALITY_SETTINGS_EVENT,
   getAudioQualityRequest,
 } from './audioQualitySettings'
-import { getAppleMusicLyrics } from './appleMusic'
+import { getAppleMusicLyrics, isAppleMusicConfigured } from './appleMusic'
 
 const isYrcTimestampFragment = (value: string) => {
   const trimmed = value.trim()
@@ -1066,8 +1066,10 @@ export async function getLyrics(
       // 平台官方源只请求当前歌曲所属平台
       { name: platformSourceName, promise: getPlatformLyrics(id, platform) },
       { name: 'AMLL TTML DB', promise: getAMLLTTMLLyrics(id, platform) },
-      // Apple Music：iTunes 匹配 → AMP 直连（有 token）或 AMLL am-lyrics 社区库
-      { name: 'Apple Music', promise: songName && artistName ? getAppleMusicLyrics(songName, artistName, duration) : Promise.resolve([]) },
+      // Apple Music：仅在用户已完成 Apple 登录时才请求（未登录默认关闭，不替换平台歌词）
+      ...(isAppleMusicConfigured()
+        ? [{ name: 'Apple Music', promise: songName && artistName ? getAppleMusicLyrics(songName, artistName, duration) : Promise.resolve([]) }]
+        : []),
       { name: 'Lrclib', promise: songName && artistName ? getLrclibLyrics(songName, artistName, duration) : Promise.resolve([]) }
     ]
     
