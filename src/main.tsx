@@ -8,6 +8,8 @@ import { initPlatformUI, setTvModeForced } from './platform'
 import { installElectronShim } from './electronShim'
 import { startTv } from './tv/tvCore'
 import { initPerfMode } from './tv/perfMode'
+import { captureFrontendConsole, initDebugMode } from './tv/debugStore'
+import DebugPanels from './tv/DebugPanels'
 import { installMediaKeyBridge } from './tv/mediaKeyBridge'
 import { installRemoteBridge } from './tv/remoteBridge'
 import TvKeyboard from './tv/TvKeyboard'
@@ -23,6 +25,10 @@ startTv()
 
 // TV 性能模式：按内存自动选默认档，打上 wf-perf-* 类
 initPerfMode()
+
+// 调试模式：捕获前端日志 + 初始化开关状态（面板组件 DebugPanels 按需挂载）
+captureFrontendConsole()
+initDebugMode()
 
 // 遥控器媒体键 → 应用播放控制桥接（仅 tv-mode 生效）。
 installMediaKeyBridge()
@@ -47,5 +53,6 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
     <TvKeyboard />
+    <DebugPanels />
   </StrictMode>,
 )

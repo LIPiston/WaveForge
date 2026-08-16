@@ -11,6 +11,32 @@
  * 注意：打包为 CJS（nodejs-mobile 以 require 方式加载），不能用 import.meta.url；
  * 资源根目录由进程入口参数 argv[1]（main.cjs 路径）推导。
  */
+// ── 后端日志环形缓冲（TV 调试面板轮询展示）：必须先于 local-server 的 import，捕获其启动日志 ──
+const serverLogs = []
+for (const method of ['log', 'info', 'warn', 'error', 'debug']) {
+  const orig = console[method].bind(console)
+  console[method] = (...args) => {
+    const text = args
+      .map((a) => {
+        if (typeof a === 'string') return a
+        if (a instanceof Error) return a.stack || a.message
+        try {
+          return JSON.stringify(a)
+        } catch {
+          return String(a)
+        }
+      })
+      .join(' ')
+    serverLogs.push({
+      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      level: method,
+      text,
+    })
+    if (serverLogs.length > 300) serverLogs.splice(0, serverLogs.length - 300)
+    orig(...args)
+  }
+}
+
 import localApp from './local-server.mjs'
 import express from 'express'
 import { dirname, join } from 'path'
@@ -187,6 +213,12 @@ localApp.get('/api/tv/wallpapers/:name', (req, res) => {
   }
   res.type('image/jpeg')
   createReadStream(file).pipe(res)
+})
+
+// ── 后端日志环形缓冲（TV 调试面板轮询展示） ──
+// SPA 调试面板拉取后端日志（本机接口）
+localApp.get('/api/tv/logs', (req, res) => {
+  res.json({ lines: serverLogs.slice(-100), total: serverLogs.length })
 })
 
 console.log('[WaveForge Android] API + SPA 已就绪: http://localhost:3001')
