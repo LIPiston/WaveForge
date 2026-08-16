@@ -141,6 +141,8 @@ class MainActivity : Activity() {
                 webView.visibility = View.VISIBLE
                 webView.requestFocus()
                 webView.loadUrl(SERVER_URL)
+                // 应用内更新检查（后台拉清单，有新版弹窗，不影响启动）
+                UpdateChecker.check(this)
             }
         }.start()
     }

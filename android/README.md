@@ -65,6 +65,28 @@ adb logcat | grep -iE "waveforge|node|chromium"
 - **文本输入**（搜索框、QQ cookie）：自动弹出屏幕软键盘（TV 无系统输入法）
 - **桌面专属 UI**（窗口按钮、桌面小组件、壁纸、遥控、GPU 设置）在 TV 上自动隐藏/不可用
 
+## 更新机制（应用内一键升级）
+
+TV 上没有应用商店，WaveForge 内置"下载 APK + 系统安装器"的更新流程：
+
+- **端上**：应用启动后在后台拉取更新清单 `update.json`（**Gitee 主源 + GitHub 备源**，免鉴权），
+  有新版（`androidVersionCode` 更大）就弹窗询问 → 下载 APK → sha256 校验 → 调系统安装器安装。
+  每版本只提示一次；可在 `SharedPreferences('waveforge-update')` 关闭自动检查。
+- **发版**（两种方式任选）：
+  - **本地**：`GITEE_TOKEN=xxx node scripts/publish-release.mjs --apk <app-arm64.apk> --notes "更新内容"`（GitHub 用 `gh auth login` 或 `GH_TOKEN`）
+  - **CI 自动**：推一个 `v0.2.0` 这样的 tag → GitHub Actions 构建 APK → 自动发布双源 + 推送 update.json（仓库需配置 `GITEE_TOKEN` Secret）
+- **清单固定地址**：`https://gitee.com/kirito666233/wave-forge/raw/master/update.json`（GitHub 备源同理），
+  由发布脚本每次发版生成并提交到仓库根目录，客户端地址永不变。
+- **首次安装 APK 时**：电视会要求允许"安装未知来源应用"，允许一次即可，之后更新无需再授权。
+
+### Gitee 仓库补同步（当前 gitee 是约一个月前的初始内容）
+
+```bash
+git remote add gitee https://gitee.com/kirito666233/wave-forge.git
+git push gitee master
+git push gitee --tags
+```
+
 ## 已知限制与后续
 
 - **媒体会话元数据**（电视状态栏"正在播放"的封面/歌名）暂未设置：需要在
@@ -76,8 +98,8 @@ adb logcat | grep -iE "waveforge|node|chromium"
   降级为固定交叉淡化 / 不可用。
 - **QQ 登录**：网易云扫码登录可用；QQ 需要粘贴 cookie（软键盘 + 粘贴键，或手机复制后
   在 TV 剪贴板同步——部分电视支持）。
-- **APK 体积**：libnode 三 ABI + 69MB 资产，debug 包较大；后续可只保留 arm64-v8a
-  （`app/build.gradle.kts` 的 `abiFilters`）并把 node_modules 裁剪到运行时必需项。
+- **APK 体积**：默认只打 arm64（现代电视全是 64 位），约 100MB 级；若需支持老式 32 位盒子，
+  在 `app/build.gradle.kts` 的 `abiFilters` 加回 `"armeabi-v7a"`。
 - **平板端**：触摸/分屏适配未做，`src/platform.ts` 已留出 `android-tablet` 分支。
 
 ## 相关文件
@@ -91,5 +113,8 @@ adb logcat | grep -iE "waveforge|node|chromium"
 | `src/tv/TvKeyboard.tsx` | 遥控器屏幕软键盘 |
 | `src/tv/mediaKeyBridge.ts` | 遥控器媒体键 → 播放控制 |
 | `src/platform.ts` / `src/electronShim.ts` | 平台检测 / 非桌面环境 electron 桩 |
+| `android/app/src/main/java/com/waveforge/android/UpdateChecker.kt` | 应用内更新器（双源清单 → 下载 → sha256 → 系统安装器） |
+| `scripts/publish-release.mjs` | 发布脚本：构建产物 → Gitee/GitHub Release + 生成 update.json 并推送 |
+| `.github/workflows/release.yml` | 打 tag 自动构建 APK 并发布双源 |
 | `scripts/build-android-assets.mjs` | 资产组装（vite + esbuild + npm + 版本自增） |
 | `scripts/fetch-nodejs-mobile.mjs` | 拉取 libnode 运行时 |
