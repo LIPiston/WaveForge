@@ -64,8 +64,9 @@ function versionCodeOf(version) {
 }
 
 // A 方案版本代号（水声主题，贴合"澜音"）：0.1.x → 涟漪 さざなみ 等。
-// patch 版本沿用所属 minor 的代号。
+// patch 版本沿用所属 minor 的代号；1.0 起为正式版，统一收在"澜 おおなみ"。
 const VERSION_CODENAMES = {
+  0: { zh: '澜', ja: 'おおなみ' },
   1: { zh: '涟漪', ja: 'さざなみ' },
   2: { zh: '潮汐', ja: 'ちょうせき' },
   3: { zh: '涌浪', ja: 'うねり' },
@@ -73,12 +74,13 @@ const VERSION_CODENAMES = {
   5: { zh: '潮鸣', ja: 'しおなり' },
   6: { zh: '深蓝', ja: 'こんぺき' },
   7: { zh: '极光', ja: 'オーロラ' },
-  10: { zh: '澜', ja: 'おおなみ' },
+  8: { zh: '白浪', ja: 'しらなみ' },
+  9: { zh: '深渊', ja: 'しんえん' },
 }
 
 function versionCodename(version) {
-  const minor = parseInt(String(version).split('.')[1] || '', 10)
-  const c = VERSION_CODENAMES[minor]
+  const [major = 0, minor = 0] = String(version).split('.').map((n) => parseInt(n, 10) || 0)
+  const c = major >= 1 ? VERSION_CODENAMES[0] : VERSION_CODENAMES[minor]
   return c ? `${c.zh} ${c.ja}` : ''
 }
 
