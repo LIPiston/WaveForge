@@ -11,9 +11,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTvMode, setKeyboardActive, useTvBack, startTv } from './tvCore'
 
-const LOWERCASE = 'abcdefghijklmnopqrstuvwxyz'.split('')
-const UPPERCASE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
-const SYMBOLS = ['0','1','2','3','4','5','6','7','8','9','.','-','_','@',':','/',"'",'"','(',')',',','!','?','#','&','+',' ']
+// 标准 QWERTY 布局（按真实键盘行排列），数字/符号页同理
+const KEY_ROWS: Record<Page, string[]> = {
+  lower: ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'],
+  upper: ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'],
+  symbols: ['1234567890', '-=[]\\;\',./', '!@#$%^&*()_+', '{}|:"<>?`~'],
+}
 const SPACE = ' '
 
 function isEditable(el: Element | null): boolean {
@@ -129,16 +132,25 @@ export default function TvKeyboard() {
     }
   }
 
-  const pasteClipboard = async () => {
-    try {
-      const text = await navigator.clipboard.readText()
-      if (text) insert(text)
-    } catch {
-      // TV 剪贴板不可用时静默失败
+  // 遥控器删除键（KEYCODE_DEL=67 / Backspace=8）→ 删除字符；Esc=27 → 关闭键盘
+  const deleteCharRef = useRef(deleteChar)
+  deleteCharRef.current = deleteChar
+  const closeRef = useRef(close)
+  closeRef.current = close
+  useEffect(() => {
+    if (!tvMode || !target) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.keyCode === 8 || e.keyCode === 67) {
+        e.preventDefault()
+        e.stopPropagation()
+        deleteCharRef.current()
+      } else if (e.keyCode === 27) {
+        closeRef.current()
+      }
     }
-  }
-
-  const chars = page === 'lower' ? LOWERCASE : page === 'upper' ? UPPERCASE : SYMBOLS
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [tvMode, target])
 
   const Key = ({ label, onClick, wide = false }: { label: string; onClick: () => void; wide?: boolean }) => (
     <button
@@ -184,6 +196,33 @@ export default function TvKeyboard() {
         textAlign: 'center',
       }}
     >
+      {/* 键盘头部：说明 + 关闭按钮 */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 6,
+        }}
+      >
+        <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12 }}>遥控器键盘</span>
+        <button
+          data-tv-focus
+          tabIndex={-1}
+          onClick={close}
+          style={{
+            background: 'rgba(255,255,255,0.12)',
+            color: '#fff',
+            border: '1px solid rgba(255,255,255,0.25)',
+            borderRadius: 8,
+            padding: '6px 14px',
+            fontSize: 13,
+          }}
+        >
+          ✕ 关闭
+        </button>
+      </div>
+
       {/* 当前输入预览 */}
       <div
         style={{
@@ -203,21 +242,15 @@ export default function TvKeyboard() {
         {target.value || '\u00A0'}
       </div>
 
-      {/* 字符网格（每行 10 个） */}
+      {/* 字符网格（QWERTY 行排列） */}
       <div style={{ maxWidth: 1060, margin: '0 auto' }}>
-        {chars
-          .reduce<string[][]>((rows, c, i) => {
-            if (i % 10 === 0) rows.push([])
-            rows[rows.length - 1].push(c)
-            return rows
-          }, [])
-          .map((row, ri) => (
-            <div key={ri} style={{ display: 'flex', justifyContent: 'center' }}>
-              {row.map((c) => (
-                <Key key={c} label={c} onClick={() => insert(c)} />
-              ))}
-            </div>
-          ))}
+        {KEY_ROWS[page].map((row, ri) => (
+          <div key={ri} style={{ display: 'flex', justifyContent: 'center' }}>
+            {row.split('').map((c) => (
+              <Key key={c} label={c} onClick={() => insert(c)} />
+            ))}
+          </div>
+        ))}
 
         {/* 控制行 */}
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: 6 }}>
@@ -226,8 +259,7 @@ export default function TvKeyboard() {
             onClick={() => setPage(page === 'lower' ? 'upper' : page === 'upper' ? 'symbols' : 'lower')}
           />
           <Key label="空格" wide onClick={() => insert(SPACE)} />
-          <Key label="⌫" wide onClick={deleteChar} />
-          <Key label="粘贴" wide onClick={() => pasteClipboard()} />
+          <Key label="⌫ 删除" wide onClick={deleteChar} />
           <Key label="完成" wide onClick={close} />
         </div>
       </div>

@@ -41,7 +41,7 @@ class MainActivity : Activity() {
     companion object {
         private const val NODE_ASSETS_DIR = "nodejs-project"
         private const val PREF_TAG_KEY = "node_assets_version"
-        private const val ASSETS_VERSION = 4
+        private const val ASSETS_VERSION = 7
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
         // QQ 统一登录页（appid=716027609 为 QQ 音乐）：自带二维码，加载即出扫码登录，
@@ -119,6 +119,23 @@ class MainActivity : Activity() {
                 @android.webkit.JavascriptInterface
                 fun closeQQLogin() {
                     closeQQLoginWindow()
+                }
+
+                // 打开外部链接（TV 无浏览器窗口，交给系统浏览器应用）
+                @android.webkit.JavascriptInterface
+                fun openExternal(url: String) {
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    } catch (_: Exception) {}
+                }
+
+                // 设备识别码（TV 端设置页显示）
+                @android.webkit.JavascriptInterface
+                fun getDeviceId(): String {
+                    return android.provider.Settings.Secure.getString(
+                        contentResolver,
+                        android.provider.Settings.Secure.ANDROID_ID
+                    ) ?: "unknown"
                 }
             }, "WaveForgeNative")
         }

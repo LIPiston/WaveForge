@@ -25,6 +25,7 @@ export function installElectronShim(): void {
       setFullscreen: () => {},
       getHardwareAcceleration: async () => ({
         enabled: true,
+        actualEnabled: true,
         gpuFeatureStatus: { gpu_compositing: 'enabled' },
         gpuList: [],
       }),
@@ -49,6 +50,12 @@ export function installElectronShim(): void {
     mediaKeys: {
       setEnabled: async () => {},
       onControl: () => () => {},
+    },
+    config: {
+      getCachePath: async () => '本地存储（浏览器缓存）',
+      setCachePath: async () => ({ success: false, error: '当前环境不支持自定义缓存目录' }),
+      selectCachePath: async () => null,
+      resetCachePath: async () => '本地存储（浏览器缓存）',
     },
     developerMode: {
       set: () => {},

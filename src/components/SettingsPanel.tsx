@@ -7,6 +7,7 @@ import AudioQualitySettingsModal from './AudioQualitySettingsModal'
 import RemoteControlSettingsModal from './RemoteControlSettingsModal'
 import CacheClearModal from './CacheClearModal'
 import packageInfo from '../../package.json'
+import { isAndroid } from '../platform'
 import sponsorData from '../data/afdianSponsors.generated.json'
 import {
   loadPlaybackShortcutSettings,
@@ -320,6 +321,17 @@ function SettingsPanel({
   const [redeemMessage, setRedeemMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null)
 
   const loadDeviceState = async () => {
+    // TV：设备识别码 = Android 系统 ANDROID_ID（原生桥提供），无桌面端授权/兑换体系
+    const native = (window as any).WaveForgeNative
+    if (native?.getDeviceId) {
+      try {
+        const id = String(native.getDeviceId() || '')
+        setDeviceState({ status: 'ready', deviceId: id, grants: [] })
+      } catch {
+        setDeviceState({ status: 'error', deviceId: '', grants: [], message: '设备识别码读取失败' })
+      }
+      return
+    }
     const api = window.electron?.deviceLicense
     if (!api) {
       setDeviceState({ status: 'error', deviceId: '', grants: [], message: '当前环境不支持设备授权功能' })
@@ -345,6 +357,24 @@ function SettingsPanel({
   const copyDeviceId = async () => {
     setDeviceState(previous => ({ ...previous, status: 'loading', message: undefined }))
     try {
+      const native = (window as any).WaveForgeNative
+      if (native?.getDeviceId) {
+        // TV：用原生桥的 ANDROID_ID 作为识别码，直接复制到剪贴板
+        const id = deviceState.deviceId || String(native.getDeviceId() || '')
+        try {
+          await navigator.clipboard.writeText(id)
+        } catch {
+          // ignore
+        }
+        setDeviceState(previous => ({ ...previous, status: 'ready', deviceId: id }))
+        setDeviceIdForModal(id)
+        setShowDeviceIdModal(true)
+        setRedeemMessage(null)
+        window.dispatchEvent(new CustomEvent('showToast', {
+          detail: { message: '设备识别码已自动复制到剪贴板', type: 'success' },
+        }))
+        return
+      }
       const result = await window.electron?.deviceLicense?.copyDeviceId()
       if (!result) {
         throw new Error('Device license bridge is unavailable')
@@ -442,6 +472,16 @@ function SettingsPanel({
       console.error('兑换码验证失败:', error)
       setRedeemMessage({ type: 'error', text: '兑换码验证失败，请重试' })
     }
+  }
+
+  /** 打开外部链接：TV 走原生浏览器（ACTION_VIEW），桌面/网页用 window.open */
+  const openExternal = (url: string) => {
+    const native = (window as any).WaveForgeNative
+    if (native?.openExternal) {
+      native.openExternal(url)
+      return
+    }
+    window.open(url, '_blank')
   }
 
   const checkForUpdates = async () => {
@@ -1520,7 +1560,7 @@ function SettingsPanel({
                   </div>
                   
                   {/* 桌面歌词 */}
-                  <div>
+                  <div data-tv-hide="desktop">
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>桌面歌词</h3>
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
                       <div className="flex items-center justify-between gap-6">
@@ -1607,7 +1647,7 @@ function SettingsPanel({
                   </div>
 
                   {/* 桌面播放器 */}
-                  <div>
+                  <div data-tv-hide="desktop">
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>桌面播放器</h3>
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
                       <div className="flex items-center justify-between mb-2">
@@ -1683,8 +1723,8 @@ function SettingsPanel({
                     </div>
                   </div>
 
-                  {/* 全屏窗口模式设置 */}
-                  <div>
+                  {/* 全屏窗口模式设置（TV 端常驻全屏，无需设置） */}
+                  <div data-tv-hide="desktop">
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>窗口设置</h3>
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
                       <div className="mb-4">
@@ -2489,6 +2529,7 @@ function SettingsPanel({
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>性能优化</h3>
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`}>
+                      {!isAndroid() && (
                       <div className="flex items-center justify-between">
                         <div>
                           <div className={`${textPrimary} font-medium mb-1`}>GPU 硬件加速</div>
@@ -2504,19 +2545,26 @@ function SettingsPanel({
                           <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: gpuAcceleration ? accentColor : '' }}></div>
                         </label>
                       </div>
+                      )}
                       <div className={`${textTertiary} text-xs mt-3 p-3 rounded-lg`} style={{ backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
-                        <div>建议保持开启。动态壁纸、歌词动画和界面合成依赖 GPU；关闭后界面可能明显卡顿。仅建议在显卡驱动兼容故障时关闭，重启后生效。</div>
-                        {gpuStatus && (
-                          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
-                            <span>{gpuStatus.actualEnabled ? '当前已启用 GPU 合成' : '当前使用软件渲染'}</span>
-                            {gpuStatus.gpu && <span>{gpuStatus.gpu.deviceString || gpuStatus.gpu.vendorString || '已检测显卡'}{gpuStatus.gpu.driverVersion ? ` | 驱动 ${gpuStatus.gpu.driverVersion}` : ''}</span>}
-                            {gpuStatus.actualEnabled !== gpuAcceleration && <span className="text-amber-400">当前设置尚未生效，请重启软件</span>}
-                          </div>
+                        {isAndroid() ? (
+                          <div>TV 端渲染由系统 WebView 自动管理（GPU 合成），无需手动配置。当前状态：{gpuStatus?.actualEnabled ? 'GPU 合成已启用' : '未知'}</div>
+                        ) : (
+                          <>
+                            <div>建议保持开启。动态壁纸、歌词动画和界面合成依赖 GPU；关闭后界面可能明显卡顿。仅建议在显卡驱动兼容故障时关闭，重启后生效。</div>
+                            {gpuStatus && (
+                              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                                <span>{gpuStatus.actualEnabled ? '当前已启用 GPU 合成' : '当前使用软件渲染'}</span>
+                                {gpuStatus.gpu && <span>{gpuStatus.gpu.deviceString || gpuStatus.gpu.vendorString || '已检测显卡'}{gpuStatus.gpu.driverVersion ? ` | 驱动 ${gpuStatus.gpu.driverVersion}` : ''}</span>}
+                                {gpuStatus.actualEnabled !== gpuAcceleration && <span className="text-amber-400">当前设置尚未生效，请重启软件</span>}
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
 
-                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`}>
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`} data-tv-hide="desktop">
                       <div className="mb-3">
                         <div className={`${textPrimary} font-medium mb-1`}>显卡选择</div>
                         <div className={`${textSecondary} text-sm`}>优先使用哪块显卡进行加速渲染（切换后重启生效）</div>
@@ -2686,7 +2734,7 @@ function SettingsPanel({
                         </div>
                       </div>
                       <button
-                        onClick={() => window.open('https://www.afdian.com/a/Kirito666233', '_blank')}
+                        onClick={() => openExternal('https://www.afdian.com/a/Kirito666233')}
                         className="mt-3 w-full rounded-xl px-4 py-3 text-white font-semibold flex items-center justify-center gap-2 transition-all hover:-translate-y-0.5 hover:shadow-lg"
                         style={{ background: `linear-gradient(135deg, ${accentColor}, #ff5b9d)`, boxShadow: `0 10px 28px ${accentColor}24` }}
                       >
@@ -2701,10 +2749,10 @@ function SettingsPanel({
                           <p className={`text-sm ${textSecondary} mt-1`}>选择国内 Gitee 或 GitHub 仓库</p>
                         </div>
                         <div className="mt-3 grid grid-cols-2 gap-3 w-full">
-                          <button onClick={() => window.open('https://gitee.com/kirito666233/wave-forge', '_blank')} className={`rounded-xl border ${borderColor} ${hoverBg} ${textPrimary} px-4 py-3 flex items-center justify-center gap-2 transition-colors`}>
+                          <button onClick={() => openExternal('https://gitee.com/kirito666233/wave-forge')} className={`rounded-xl border ${borderColor} ${hoverBg} ${textPrimary} px-4 py-3 flex items-center justify-center gap-2 transition-colors`}>
                             <Code2 className="w-4 h-4" /><span className="text-sm font-medium">Gitee</span><ExternalLink className="w-3.5 h-3.5 opacity-60" />
                           </button>
-                          <button onClick={() => window.open('https://github.com/YoshinoRinn/WaveForge', '_blank')} className={`rounded-xl border ${borderColor} ${hoverBg} ${textPrimary} px-4 py-3 flex items-center justify-center gap-2 transition-colors`}>
+                          <button onClick={() => openExternal('https://github.com/YoshinoRinn/WaveForge')} className={`rounded-xl border ${borderColor} ${hoverBg} ${textPrimary} px-4 py-3 flex items-center justify-center gap-2 transition-colors`}>
                             <Github className="w-4 h-4" /><span className="text-sm font-medium">GitHub</span><ExternalLink className="w-3.5 h-3.5 opacity-60" />
                           </button>
                         </div>
@@ -2722,7 +2770,7 @@ function SettingsPanel({
                                 {updateCheck.downloadUrls?.length && window.electron?.update?.downloadAndInstall ? (
                                   <button onClick={() => void handleDownloadUpdate()} className="ml-2 rounded-lg px-3 py-1 text-sm font-medium text-white" style={{ backgroundColor: accentColor }}>下载并安装</button>
                                 ) : null}
-                                {updateCheck.url && <button onClick={() => window.open(updateCheck.url, '_blank')} className="ml-2 underline">查看发布页</button>}
+                                {updateCheck.url && <button onClick={() => openExternal(updateCheck.url || '')} className="ml-2 underline">查看发布页</button>}
                               </>
                             )}
                           </p>
@@ -2749,7 +2797,7 @@ function SettingsPanel({
                         <p className={`text-sm ${textSecondary} mt-1.5`}>感谢每一位支持 WaveForge 的朋友</p>
                       </div>
                       <button
-                        onClick={() => window.open('https://www.afdian.com/a/Kirito666233', '_blank')}
+                        onClick={() => openExternal('https://www.afdian.com/a/Kirito666233')}
                         className={`shrink-0 rounded-xl border ${borderColor} ${hoverBg} ${textPrimary} px-3 py-2 inline-flex items-center gap-2 transition-colors`}
                         title="前往爱发电"
                       >

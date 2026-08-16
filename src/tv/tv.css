@@ -24,6 +24,21 @@ html.tv-mode [data-tv-focus]:focus {
   opacity: 0;
 }
 
+/* data-tv-focus 元素（键盘按键/明确标注项）聚焦时的明显选中效果：
+   键盘悬浮层在 JS 焦点环之上，环被挡住，改用元素自身 outline + 发光 */
+html.tv-mode [data-tv-focus].tv-focused {
+  outline: 3px solid #4fc3f7;
+  outline-offset: 2px;
+  transform: scale(1.06);
+  filter: brightness(1.3);
+  box-shadow: 0 0 16px rgba(79, 195, 247, 0.55);
+}
+
+/* TV 端隐藏桌面专属设置板块（桌面歌词/桌面播放器/窗口设置/显卡选择等） */
+html.tv-mode [data-tv-hide='desktop'] {
+  display: none !important;
+}
+
 /* 通用 hover→focus 模拟：
    把"鼠标悬浮到列表项才显示的操作按钮"（Tailwind group-hover:opacity-100 等）
    改为"该项内部获得焦点时显示"。 */
