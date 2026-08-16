@@ -6,6 +6,7 @@ import {
   PLAYBACK_SHORTCUT_SETTINGS_EVENT,
   type PlaybackShortcutSettings,
 } from '../services/playbackShortcutSettings'
+import { useTvMode } from '../tv/tvCore'
 
 interface PlayerControlsProps {
   isPlaying: boolean
@@ -191,6 +192,9 @@ export default function PlayerControls({
 }: PlayerControlsProps) {
   const [isHovered, setIsHovered] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
+  // TV 遥控器模式：无鼠标，控件改为常驻显示（isHovered 视为恒真）。
+  const tvMode = useTvMode()
+  const effectiveHovered = tvMode || isHovered
   const [dragValue, setDragValue] = useState(0)
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
   const [isProgressBarExpanded, setIsProgressBarExpanded] = useState(false)
@@ -315,7 +319,7 @@ export default function PlayerControls({
   const currentVolume = volume ?? 1
   const isMuted = currentVolume === 0
   const isImmersive = backgroundEffect === 'immersive'
-  const isExpanded = isImmersive ? (isHovered || isDragging) : (!isPlaying || isHovered || isDragging)
+  const isExpanded = isImmersive ? (effectiveHovered || isDragging) : (!isPlaying || effectiveHovered || isDragging)
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -514,7 +518,7 @@ export default function PlayerControls({
           {formatTime(displayTime)}
         </span>
 
-        <div className={`relative ${sliderWidthClass} flex items-center`}>
+        <div className={`relative ${sliderWidthClass} flex items-center`} data-tv-arrows="seek">
           <input
             type="range"
             min="0"
@@ -576,10 +580,10 @@ export default function PlayerControls({
   // ---- 沉浸模式渲染：小白条 + 药丸弹出 ----
   const renderImmersiveLayout = () => {
     const inTransition = immersiveTransition && !immersiveReady
-    const showPill = isHovered || inTransition || pillExiting
+    const showPill = effectiveHovered || inTransition || pillExiting
     const secondsUntilTransition = transitionStartTime === null ? Number.POSITIVE_INFINITY : transitionStartTime - currentTime
     const isTransitionBarPreview = !showImmersiveBar && secondsUntilTransition > 0 && secondsUntilTransition <= 2
-    const showBar = immersiveReady && !isHovered && !pillExiting && (
+    const showBar = immersiveReady && !effectiveHovered && !pillExiting && (
       showImmersiveBar || isTransitionBarPreview || isTransitioning
     )
 
@@ -730,6 +734,7 @@ export default function PlayerControls({
                             {showVolumeSlider && (
                               <motion.div initial={{ opacity: 0, y: 8, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.95 }} transition={{ duration: 0.15 }}
                                 className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex items-center gap-2 px-3 py-2 rounded-full backdrop-blur-3xl whitespace-nowrap"
+                                data-tv-arrows="volume"
                                 style={{
                                   background: playerTheme === 'dark'
                                     ? 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.4) 100%)'
@@ -1097,6 +1102,7 @@ export default function PlayerControls({
                         exit={{ opacity: 0, y: 8, scale: 0.95 }}
                         transition={{ duration: 0.15 }}
                         className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex items-center gap-2 px-3 py-2 rounded-full backdrop-blur-3xl whitespace-nowrap"
+                        data-tv-arrows="volume"
                         style={{
                           background: playerTheme === 'dark'
                             ? backgroundEffect === 'transparent'

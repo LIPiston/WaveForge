@@ -136,8 +136,12 @@ export class TransitionRenderer {
     onProgress?.({ stage: 'analyzing', progress: 0.1 })
 
     // Step 1: Download audio files to local disk
+    const audioDownload = window.electron?.audioDownload
+    if (!audioDownload?.prepare) {
+      throw new Error('智能过渡需要桌面音频下载桥，当前环境不可用')
+    }
     debugLog('[TransitionRenderer] Downloading source audio...')
-    const sourceAudioPath = await window.electron!.audioDownload.prepare(
+    const sourceAudioPath = await audioDownload.prepare(
       sourceUrl,
       plan.sourceTrackKey
     )
@@ -149,7 +153,7 @@ export class TransitionRenderer {
     onProgress?.({ stage: 'analyzing', progress: 0.2 })
     
     debugLog('[TransitionRenderer] Downloading target audio...')
-    const targetAudioPath = await window.electron!.audioDownload.prepare(
+    const targetAudioPath = await audioDownload.prepare(
       targetUrl,
       plan.targetTrackKey
     )
@@ -158,8 +162,12 @@ export class TransitionRenderer {
     onProgress?.({ stage: 'stretching', progress: 0.3 })
 
     // Step 2: Call Python backend to render with time-stretching
+    const renderBridge = window.electron?.render
+    if (!renderBridge?.transition) {
+      throw new Error('智能过渡需要桌面渲染桥，当前环境不可用')
+    }
     debugLog('[TransitionRenderer] Calling Python render worker...')
-    const result = await window.electron!.render.transition(
+    const result = await renderBridge.transition(
       plan,
       sourceAudioPath,
       targetAudioPath
@@ -183,7 +191,10 @@ export class TransitionRenderer {
 
     // Step 3: Load the rendered audio file into AudioBuffer
     debugLog('[TransitionRenderer] Loading rendered audio from:', result.outputPath)
-    const renderApi = window.electron!.render
+    const renderApi = window.electron?.render
+    if (!renderApi) {
+      throw new Error('智能过渡需要桌面渲染桥，当前环境不可用')
+    }
     let arrayBuffer: ArrayBuffer
     if (renderApi.getAudioUrl) {
       try {

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Pause, Volume2, VolumeX, Maximize, Minimize } from 'lucide-react'
 import { getMVPlaybackInfo, getMVDetail } from '../services/musicApi'
+import { useTvMode, useTvBack } from '../tv/tvCore'
 
 interface MV {
   id: number | string
@@ -193,9 +194,23 @@ export default function VideoPlayer({ mvId, mvName, platform = 'netease', onClos
   }, [])
 
   // 鼠标移动时显示控件
+  const tvMode = useTvMode()
+  // TV 遥控器 BACK 关闭播放器
+  useTvBack(() => {
+    onClose()
+    return true
+  })
   const handleMouseMove = () => {
     setShowControls(true)
-    
+
+    // TV 遥控器模式：控件常驻（无鼠标移动事件，靠焦点导航到控件）。
+    if (tvMode) {
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current)
+      }
+      return
+    }
+
     // 清除之前的定时器
     if (controlsTimeoutRef.current) {
       clearTimeout(controlsTimeoutRef.current)
@@ -375,6 +390,7 @@ export default function VideoPlayer({ mvId, mvName, platform = 'netease', onClos
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-[90] bg-black/95 flex items-center justify-center"
+      data-tv-scope
       onMouseMove={handleMouseMove}
       onClick={(e) => {
         // 只有点击背景区域才关闭，点击视频播放器内部不关闭
@@ -486,7 +502,8 @@ export default function VideoPlayer({ mvId, mvName, platform = 'netease', onClos
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 20 }}
               transition={{ duration: 0.2 }}
-              className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/80 to-transparent p-4" 
+              className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/80 to-transparent p-4"
+              data-tv-arrows="seek volume"
               onClick={(e) => e.stopPropagation()}
               onMouseEnter={() => {
                 if (controlsTimeoutRef.current) {

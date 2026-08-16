@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { Edit3, Trash2, Star, StarOff, Share2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { useTvBack } from '../tv/tvCore'
 
 interface PlaylistContextMenuProps {
   show: boolean
@@ -34,6 +35,11 @@ export default function PlaylistContextMenu({
   canEdit = true
 }: PlaylistContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
+  // TV 遥控器 BACK 关闭菜单
+  useTvBack(() => {
+    onClose()
+    return true
+  })
   const [adjustedPosition, setAdjustedPosition] = useState({ x, y })
 
   // 计算菜单位置，确保不超出屏幕
@@ -124,6 +130,7 @@ export default function PlaylistContextMenu({
           exit={{ opacity: 0, scale: 0.9 }}
           transition={{ duration: 0.15 }}
           className="fixed z-[100] min-w-[180px] py-2 rounded-xl overflow-hidden"
+          data-tv-scope
           style={{
             left: adjustedPosition.x,
             top: adjustedPosition.y,
