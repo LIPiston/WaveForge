@@ -39,6 +39,9 @@ export function useTvMode(): boolean {
 }
 
 // ---------------- 焦点候选 ---------------- 
+// 除了原生可聚焦元素，还纳入本项目约定俗成的可点击项：
+//  - [class*="cursor-pointer"]：歌曲行/歌单卡片等 div + onClick 的容器（Tailwind 统一类）
+//  - [data-tv-focus]：组件手动标注的任意可聚焦元素
 const FOCUSABLE_SELECTOR = [
   'button:not([disabled])',
   'a[href]',
@@ -47,6 +50,7 @@ const FOCUSABLE_SELECTOR = [
   'textarea:not([disabled])',
   '[role="button"]',
   '[data-tv-focus]',
+  '[class*="cursor-pointer"]',
 ].join(', ')
 
 function isVisible(el: HTMLElement): boolean {
