@@ -1,5 +1,6 @@
 import { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useTvMode } from '../tv/tvCore'
 import { Play, Music, TrendingUp, Flame, Clock, LogOut, Crown, User, Heart, MonitorSmartphone, Search, Settings, History } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier, getSongUrl } from '../services/musicApi'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
@@ -308,6 +309,10 @@ function HomeView({
   const [showThemePanel, setShowThemePanel] = useState(false)
   const [themePanelSettled, setThemePanelSettled] = useState(false)
   const [isTopHovered, setIsTopHovered] = useState(false)
+  // TV 遥控器模式无鼠标：顶部/底部悬浮栏视为恒 hover，控件常驻可聚焦
+  const tvMode = useTvMode()
+  const topBarActive = tvMode || isTopHovered
+  const bottomBarActive = tvMode || isBottomBarHovered
   const [showUpArrowHint, setShowUpArrowHint] = useState(false)
 
   useEffect(() => {
@@ -1762,7 +1767,7 @@ function HomeView({
         }}
       >
         <AnimatePresence>
-          {(isTopHovered || showUpArrowHint) && !showThemePanel && (
+          {(topBarActive || showUpArrowHint) && !showThemePanel && (
             <motion.button
               aria-label="打开模式选择"
               initial={{ opacity: 0, y: -10 }}
@@ -2577,7 +2582,7 @@ function HomeView({
         onMouseLeave={() => setIsBottomBarHovered(false)}
       >
         <AnimatePresence mode="wait">
-          {!isBottomBarHovered ? (
+          {!bottomBarActive ? (
             // Collapsed bar
             <motion.div
               key="bar"
