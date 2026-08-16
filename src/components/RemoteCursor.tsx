@@ -156,8 +156,8 @@ export default function RemoteCursor() {
 
   useEffect(() => {
     const bridge = window.electron?.remote
-    if (!bridge) return
-    const off = bridge.onCursor((command) => {
+    // 命令来源：桌面走 Electron remote 桥；TV 端由 remoteBridge 转成 DOM 事件
+    const handle = (command: { cmd?: string; dx?: number; dy?: number }) => {
       switch (command.cmd) {
         case 'move': move(command.dx || 0, command.dy || 0); break
         case 'click': click(); break
@@ -167,8 +167,14 @@ export default function RemoteCursor() {
         case 'hold-complete': cancelHold(); rightClick(); break
         case 'scroll': scroll(command.dy || 0); break
       }
-    })
-    return off
+    }
+    const off = bridge?.onCursor(handle)
+    const onDom = (e: Event) => handle((e as CustomEvent<{ cmd?: string; dx?: number; dy?: number }>).detail || {})
+    window.addEventListener('waveforge:remote-cursor', onDom)
+    return () => {
+      off?.()
+      window.removeEventListener('waveforge:remote-cursor', onDom)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

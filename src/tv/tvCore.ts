@@ -38,6 +38,38 @@ export function useTvMode(): boolean {
   return useSyncExternalStore(subscribeTvMode, isTvMode)
 }
 
+// ---------------- 远程遥控光标模式（React 可订阅） ----------------
+// 手机遥控器连上 TV 后切换为"光标交互"：hover 驱动 UI（与 PC 一致），焦点环隐藏。
+let remoteCursorMode = false
+const remoteCursorListeners = new Set<() => void>()
+
+export function isRemoteCursorMode(): boolean {
+  return remoteCursorMode
+}
+
+export function setRemoteCursorMode(v: boolean): void {
+  if (remoteCursorMode === v) return
+  remoteCursorMode = v
+  if (v) {
+    // 光标模式下隐藏焦点环（用户在用手势/触摸板，不是方向键）
+    ensureRing().classList.add('tv-ring-idle')
+  } else {
+    ensureRing().classList.remove('tv-ring-idle')
+    updateRing()
+  }
+  remoteCursorListeners.forEach((fn) => fn())
+}
+
+function subscribeRemoteCursorMode(cb: () => void): () => void {
+  remoteCursorListeners.add(cb)
+  return () => remoteCursorListeners.delete(cb)
+}
+
+/** React Hook：手机遥控器是否处于连接（光标模式）。 */
+export function useRemoteCursorMode(): boolean {
+  return useSyncExternalStore(subscribeRemoteCursorMode, isRemoteCursorMode)
+}
+
 // ---------------- 焦点候选 ---------------- 
 // 除了原生可聚焦元素，还纳入本项目约定俗成的可点击项：
 //  - [class*="cursor-pointer"]：歌曲行/歌单卡片等 div + onClick 的容器（Tailwind 统一类）

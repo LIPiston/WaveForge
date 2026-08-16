@@ -6,7 +6,7 @@ import {
   PLAYBACK_SHORTCUT_SETTINGS_EVENT,
   type PlaybackShortcutSettings,
 } from '../services/playbackShortcutSettings'
-import { useTvMode } from '../tv/tvCore'
+import { useTvMode, useRemoteCursorMode } from '../tv/tvCore'
 
 interface PlayerControlsProps {
   isPlaying: boolean
@@ -192,9 +192,11 @@ export default function PlayerControls({
 }: PlayerControlsProps) {
   const [isHovered, setIsHovered] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
-  // TV 遥控器模式：无鼠标，控件改为常驻显示（isHovered 视为恒真）。
+  // TV 遥控器模式：无鼠标，控件常驻显示（isHovered 视为恒真）。
+  // 但手机遥控器连上（光标模式）时恢复真实 hover，让虚拟鼠标驱动展开，与 PC 一致。
   const tvMode = useTvMode()
-  const effectiveHovered = tvMode || isHovered
+  const remoteCursorMode = useRemoteCursorMode()
+  const effectiveHovered = (tvMode && !remoteCursorMode) || isHovered
   const [dragValue, setDragValue] = useState(0)
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
   const [isProgressBarExpanded, setIsProgressBarExpanded] = useState(false)

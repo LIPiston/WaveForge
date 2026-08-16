@@ -1,6 +1,6 @@
 import { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useTvMode } from '../tv/tvCore'
+import { useTvMode, useRemoteCursorMode } from '../tv/tvCore'
 import { Play, Music, TrendingUp, Flame, Clock, LogOut, Crown, User, Heart, MonitorSmartphone, Search, Settings, History } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier, getSongUrl } from '../services/musicApi'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
@@ -309,10 +309,12 @@ function HomeView({
   const [showThemePanel, setShowThemePanel] = useState(false)
   const [themePanelSettled, setThemePanelSettled] = useState(false)
   const [isTopHovered, setIsTopHovered] = useState(false)
-  // TV 遥控器模式无鼠标：顶部/底部悬浮栏视为恒 hover，控件常驻可聚焦
+  // TV 遥控器模式无鼠标：顶部/底部悬浮栏视为恒 hover，控件常驻可聚焦；
+  // 手机遥控器连上（光标模式）时恢复真实 hover，与 PC 一致。
   const tvMode = useTvMode()
-  const topBarActive = tvMode || isTopHovered
-  const bottomBarActive = tvMode || isBottomBarHovered
+  const remoteCursorMode = useRemoteCursorMode()
+  const topBarActive = (tvMode && !remoteCursorMode) || isTopHovered
+  const bottomBarActive = (tvMode && !remoteCursorMode) || isBottomBarHovered
   const [showUpArrowHint, setShowUpArrowHint] = useState(false)
 
   useEffect(() => {
@@ -2571,7 +2573,8 @@ function HomeView({
         currentSong={currentSong}
       />
 
-      {/* Bottom floating toolbar */}
+      {/* Bottom floating toolbar：仅主界面显示（歌单/模块详情打开时隐藏） */}
+      {!showPlaylistDetail && (
       <motion.div
         className="absolute bottom-0 left-1/2 -translate-x-1/2 z-50"
         style={{
@@ -2656,6 +2659,7 @@ function HomeView({
           )}
         </AnimatePresence>
       </motion.div>
+      )}
       {/* 右键菜单 */}
       {contextMenuSong && <SongContextMenu
         show={contextMenuVisible}

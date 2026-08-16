@@ -28,6 +28,15 @@ function getLanIPv4Addresses() {
       }
     }
   }
+  // 默认网卡排序：有线 > 无线 > 未识别 > 虚拟网卡（Tailscale / VMware / VirtualBox / Hyper-V / WSL / 蓝牙等）。
+  // 有线和无线都连着时优先选有线（稳定）；虚拟网卡排最后（基本不会用于局域网直连）。
+  const score = (name) => {
+    if (/tailscale|vmware|vmnet|virtualbox|vEthernet|hyper-?v|docker|wsl|loopback|bluetooth|蓝牙|zerotier|utun|tap-|tun|vm/i.test(name)) return 4
+    if (/wlan|wi-?fi|wireless|无线|wifi/i.test(name)) return 2
+    if (/ethernet|以太网|有线|eth\d|enp\d|本地连接/i.test(name)) return 1
+    return 3 // 未识别（按介于无线与虚拟之间处理）
+  }
+  result.sort((a, b) => score(a.name) - score(b.name))
   return result
 }
 
@@ -213,6 +222,17 @@ function createRemoteServer(options) {
         if (url.pathname === '/health') {
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ ok: true }))
+          return
+        }
+        // 设备发现：手机端扫描多个端口列出局域网内的 WaveForge 设备。
+        // 返回 name/port/token（与二维码同等的配对信息，仅限可信局域网使用）。
+        if (url.pathname === '/discover') {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({
+            name: options.getComputerName ? options.getComputerName() : 'WaveForge',
+            port,
+            token: nextToken() || (tokens[0] || ''),
+          }))
           return
         }
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })

@@ -46,6 +46,30 @@
     font-size: 13px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis;
     color: var(--text-2);
   }
+  .computer-wrap { position: relative; flex: 1 1 auto; display: flex; justify-content: center; min-width: 0; }
+  .computer-toggle {
+    display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+    background: none; border: none; cursor: pointer; color: inherit;
+    font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--text-2); padding: 6px 10px; border-radius: 999px;
+  }
+  .computer-toggle:hover { background: var(--panel); }
+  .chev { font-size: 10px; opacity: .7; flex: none; }
+  .device-list {
+    position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+    min-width: 220px; max-width: 86vw; max-height: 60vh; overflow-y: auto;
+    background: var(--panel); border: 1px solid var(--divider); border-radius: 14px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.45); padding: 6px; z-index: 100;
+  }
+  .device-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    width: 100%; padding: 10px 12px; border-radius: 10px; background: none; border: none;
+    color: var(--text); text-align: left; cursor: pointer; font-size: 13px;
+  }
+  .device-item:hover { background: var(--panel-2); }
+  .device-item .d-port { font-size: 11px; color: var(--text-2); opacity: .7; }
+  .device-item.current { color: var(--accent); }
+  .device-list .d-hint { padding: 10px 12px; font-size: 11px; color: var(--text-2); text-align: center; }
   .icon-btn {
     display: inline-flex; align-items: center; justify-content: center;
     width: 44px; height: 44px; border-radius: 50%;
@@ -153,7 +177,12 @@
   <div class="side left">
     <button class="icon-btn accent" id="muteBtn" title="静音 / 音量"></button>
   </div>
-  <div class="computer" id="computerName">WaveForge</div>
+  <div class="computer-wrap">
+    <button class="computer-toggle" id="deviceToggle" title="切换设备">
+      <span id="computerName">WaveForge</span><span class="chev" id="deviceChev">▾</span>
+    </button>
+    <div class="device-list" id="deviceList" hidden></div>
+  </div>
   <div class="side right">
     <button class="icon-btn" id="customBtn" title="自定义按钮"></button>
   </div>
@@ -247,7 +276,9 @@
     return '浏览器';
   }
 
-  var token = new URLSearchParams(location.search).get('t') || '';
+  var targetHostPort = location.host; // 当前连接目标（host:port），切换设备时更新
+  var targetToken = new URLSearchParams(location.search).get('t') || '';
+  var currentName = CFG.computerName || 'WaveForge';
   var ws = null;
   var connected = false;
   var state = { playing: false, volume: 0.5, muted: false, song: null, progress: 0 };
@@ -264,7 +295,7 @@
 
   function connect() {
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(proto + '://' + location.host + '/ws?t=' + token);
+    ws = new WebSocket(proto + '://' + targetHostPort + '/ws?t=' + targetToken);
     ws.onopen = function () {
       connected = true;
       send({ type: 'hello', name: getDeviceName() });
@@ -289,6 +320,70 @@
       }
     };
   }
+
+  // ---- 多设备切换：扫描局域网端口，列出 WaveForge 设备，点击切换 ----
+  var SCAN_PORTS = [25566, 25567, 25568];
+  var deviceList = document.getElementById('deviceList');
+  var deviceToggle = document.getElementById('deviceToggle');
+  var deviceChev = document.getElementById('deviceChev');
+
+  function scanDevices(cb) {
+    var host = location.hostname;
+    var ports = SCAN_PORTS.slice();
+    if (location.port && ports.indexOf(Number(location.port)) === -1) ports.unshift(Number(location.port));
+    var out = [];
+    var remaining = ports.length;
+    if (!remaining) { cb([]); return; }
+    ports.forEach(function (p) {
+      var ctrl = new AbortController();
+      var timer = setTimeout(function () { ctrl.abort(); done(); }, 1500);
+      fetch('http://' + host + ':' + p + '/discover', { signal: ctrl.signal })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d && d.name) { d.port = p; out.push(d); } done(); })
+        .catch(function () { done(); });
+      function done() { clearTimeout(timer); remaining -= 1; if (remaining <= 0) cb(out); }
+    });
+  }
+
+  function currentPort() { return Number(location.port) || 80; }
+
+  function renderDeviceList() {
+    deviceList.innerHTML = '<div class="d-hint">正在扫描局域网设备…</div>';
+    scanDevices(function (devices) {
+      if (!devices.length) { deviceList.innerHTML = '<div class="d-hint">未发现其他设备</div>'; return; }
+      deviceList.innerHTML = '';
+      devices.forEach(function (d) {
+        var row = document.createElement('button');
+        row.className = 'device-item' + (d.port === currentPort() ? ' current' : '');
+        row.innerHTML = '<span>' + escapeHtml(d.name) + '</span><span class="d-port">:' + d.port + '</span>';
+        row.addEventListener('click', function () { switchToDevice(d); });
+        deviceList.appendChild(row);
+      });
+    });
+  }
+
+  function switchToDevice(d) {
+    targetHostPort = location.hostname + ':' + d.port;
+    targetToken = d.token || '';
+    currentName = d.name || 'WaveForge';
+    document.getElementById('computerName').textContent = currentName;
+    deviceList.hidden = true;
+    deviceChev.textContent = '▾';
+    if (ws) { try { ws.close(); } catch (e) {} }
+    connect();
+    showStatus('已切换到 ' + currentName, 2000);
+  }
+
+  deviceToggle.addEventListener('click', function () {
+    if (deviceList.hidden) {
+      deviceList.hidden = false;
+      deviceChev.textContent = '▴';
+      renderDeviceList();
+    } else {
+      deviceList.hidden = true;
+      deviceChev.textContent = '▾';
+    }
+  });
 
   function renderState() {
     var np = document.getElementById('nowPlaying');

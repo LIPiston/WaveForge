@@ -8,7 +8,7 @@
 import { build as viteBuild } from 'vite'
 import { build as esbuildBuild } from 'esbuild'
 import { execSync } from 'child_process'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -76,6 +76,14 @@ function ensureDeviceNodeModules() {
   )
 }
 
+/** 手机遥控器页面：remote-server.cjs 运行时按 __dirname/remote-ui.html 读取，需随包携带。 */
+function copyRemoteUi() {
+  const src = join(ROOT, 'desktop', 'remote-ui.html')
+  const dest = join(ASSETS_DIR, 'remote-ui.html')
+  copyFileSync(src, dest)
+  console.log('  已复制 desktop/remote-ui.html → 设备资产')
+}
+
 function bumpAssetsVersion() {
   console.log('[3/3] 递增 MainActivity.kt ASSETS_VERSION ...')
   if (!existsSync(MAIN_ACTIVITY)) throw new Error(`找不到 ${MAIN_ACTIVITY}`)
@@ -91,6 +99,7 @@ async function main() {
   await buildFrontend()
   await buildServerBundle()
   ensureDeviceNodeModules()
+  copyRemoteUi()
   bumpAssetsVersion()
   console.log('\n完成。资产目录：', ASSETS_DIR)
 }

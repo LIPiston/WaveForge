@@ -31,17 +31,18 @@ localApp.use((req, res, next) => {
 })
 
 // ── TV 远程遥控器（复用 PC 端同一套 remote-server：手机控制页 + WS 命令） ──
-// 命令链路：手机 → remote-server(:25566) → broadcast → SPA 控制器(WebView 内 WS 客户端)
+// 命令链路：手机 → remote-server(:25567) → broadcast → SPA 控制器(WebView 内 WS 客户端)
 // → DOM 事件 waveforge:remote-control → App 的 desktopControlHandlerRef 执行。
+// 端口用 25567 而非 PC 端的 25566：同一局域网内 PC 与 TV 同时开遥控时不冲突。
 const tvRemoteServer = createRemoteServer({
   getComputerName: () => 'WaveForge TV',
   getSettings: () => ({ theme: 'dark' }),
   getState: () => ({}), // 播放状态由 SPA 侧自行维护，v1 不推送到手机页
   sendControl: () => {}, // 命令经 broadcast 直达 SPA 控制器
-  sendCursor: () => {}, // v1 不实现虚拟鼠标（TV 是焦点交互不是光标交互）
+  sendCursor: () => {}, // 光标命令同样经 broadcast 直达 SPA（remoteBridge → RemoteCursor）
   onClientsChange: () => {},
 })
-tvRemoteServer.start(25566).catch((err) => {
+tvRemoteServer.start(25567).catch((err) => {
   console.error('[WaveForge TV] 遥控器服务启动失败:', err?.message || err)
 })
 
@@ -52,4 +53,4 @@ localApp.get('/api/tv/remote-status', (req, res) => {
 })
 
 console.log('[WaveForge Android] API + SPA 已就绪: http://localhost:3001')
-console.log(`[WaveForge Android] 远程遥控器: http://0.0.0.0:25566（${getLanIPv4Addresses().length} 个网卡）`)
+console.log(`[WaveForge Android] 远程遥控器: http://0.0.0.0:25567（${getLanIPv4Addresses().length} 个网卡）`)

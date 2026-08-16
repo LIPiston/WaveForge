@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import { AudioLines, Captions, Home, Languages } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import QuickSettings from './QuickSettings'
-import { useTvMode } from '../tv/tvCore'
+import { useTvMode, useRemoteCursorMode } from '../tv/tvCore'
 
 interface ImmersiveControlsProps {
   onHomeClick: () => void
@@ -31,9 +31,10 @@ export default function ImmersiveControls({
 }: ImmersiveControlsProps) {
   const [isVisible, setIsVisible] = useState(true)
   const [isHovered, setIsHovered] = useState(false)
-  // TV 遥控器模式没有鼠标 hover，控件常驻显示（方向键可聚焦到其中的按钮）。
+  // TV 遥控器模式：控件常驻（方向键可聚焦）。手机遥控器连上（光标模式）时恢复真实 hover。
   const tvMode = useTvMode()
-  const effectiveHovered = tvMode || isHovered
+  const remoteCursorMode = useRemoteCursorMode()
+  const effectiveHovered = (tvMode && !remoteCursorMode) || isHovered
 
   const [accentColor, setAccentColor] = useState(() => {
     const saved = localStorage.getItem('accentColor')

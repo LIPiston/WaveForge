@@ -12,7 +12,7 @@ interface RemoteControlModalProps {
 
 export default function RemoteControlModal({ onClose, playerTheme }: RemoteControlModalProps) {
   const dark = playerTheme === 'dark'
-  const [status, setStatus] = useState<RemoteStatus>({ running: false, port: 25566, token: '', clientCount: 0, maxClients: 5, clients: [], ips: [] })
+  const [status, setStatus] = useState<RemoteStatus>({ running: false, port: 25567, token: '', clientCount: 0, maxClients: 5, clients: [], ips: [] })
   const [settings, setSettings] = useState<RemoteSettings>({ theme: 'dark', topRightAction: 'song', gestures: { doubleTap: true, swipe: true, twoFinger: true, twoFingerTap: true } })
   const [starting, setStarting] = useState(true)
   const [error, setError] = useState('')
@@ -55,7 +55,7 @@ export default function RemoteControlModal({ onClose, playerTheme }: RemoteContr
       if (bridge) {
         // 桌面：Electron 遥控服务
         const [st, stg] = await Promise.all([bridge.start(25566), bridge.getSettings()])
-        setStatus(st || { running: false, port: 25566, token: '', clientCount: 0, maxClients: 5, clients: [], ips: [] })
+        setStatus(st || { running: false, port: 25567, token: '', clientCount: 0, maxClients: 5, clients: [], ips: [] })
         setSettings(stg)
         if (st && !st.running && st.error) setError(st.error)
       } else {
@@ -64,7 +64,7 @@ export default function RemoteControlModal({ onClose, playerTheme }: RemoteContr
         const res = await fetch('http://localhost:3001/api/tv/remote-status', { cache: 'no-store' })
         if (res.ok) {
           const st = await res.json()
-          setStatus(st || { running: false, port: 25566, token: '', clientCount: 0, maxClients: 5, clients: [], ips: [] })
+          setStatus(st || { running: false, port: 25567, token: '', clientCount: 0, maxClients: 5, clients: [], ips: [] })
           if (st && !st.running) setError('遥控器服务未就绪')
         } else {
           setError('遥控器服务未就绪（当前环境未启动）')
@@ -86,7 +86,7 @@ export default function RemoteControlModal({ onClose, playerTheme }: RemoteContr
     const bridge = window.electron?.remote
     if (!bridge) return
     const st = await bridge.stop()
-    setStatus(st || { running: false, port: 25566, token: '', clientCount: 0, maxClients: 5, clients: [], ips: [] })
+    setStatus(st || { running: false, port: 25567, token: '', clientCount: 0, maxClients: 5, clients: [], ips: [] })
     setShowConnect(true)
   }, [])
 
