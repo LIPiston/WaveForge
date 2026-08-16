@@ -9187,12 +9187,14 @@ app.get('/api/qq/song/listen-also', async (req, res) => {
     const songs = merged.slice(0, 15).map((s) => {
       const track = s?.songInfo || s
       const album = track?.album || {}
+      const albumMid = album.mid || track.albummid || track.albumMid || ''
+      const cover = album.picUrl || album.picurl || track.cover || (albumMid ? qqAlbumCover(String(albumMid).replace(/_\d+$/, ''), 500) : '')
       return {
         id: Number(track.id || track.songid || 0),
         mid: track.mid || track.songmid || track.songMid || '',
         name: track.name || track.title || track.songname || '',
         artists: Array.isArray(track.singer) ? track.singer.map((a) => ({ name: a.name || a.title || '', mid: a.mid })) : [],
-        album: { name: album.name || '', picUrl: album.picUrl || album.picurl || '' },
+        album: { name: album.name || '', picUrl: cover },
         duration: Number(track.interval || 0) * 1000,
         platform: 'qq'
       }

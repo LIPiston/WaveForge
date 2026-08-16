@@ -54,6 +54,8 @@ export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetail
   const [showLyric, setShowLyric] = useState(false)
   // 换一批偏移
   const [likeAlsoOffset, setLikeAlsoOffset] = useState(0)
+  //「也在听」展开
+  const [listenAlsoExpanded, setListenAlsoExpanded] = useState(false)
   // 网易云「喜欢这首歌的人也爱听」10 首 + 「相关歌单」5 个
   const [neteaseSimi, setNeteaseSimi] = useState<Song[]>([])
   const [neteaseRelated, setNeteaseRelated] = useState<{ id: string; name: string; coverImgUrl: string; trackCount: number }[]>([])
@@ -303,6 +305,15 @@ export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetail
                   {feeLabel && <span className={`${textTertiary} text-xs`}>{feeLabel}</span>}
                 </div>
               </div>
+              {/* 查看歌词（横排最右，短按钮） */}
+              <button
+                type="button"
+                onClick={() => setShowLyric(true)}
+                className="shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-full text-sm transition-colors hover:brightness-110"
+                style={{ background: `${accentColor}33`, border: `1px solid ${accentColor}88`, color: '#fff' }}
+              >
+                <ScrollText className="w-4 h-4" /> 歌词
+              </button>
             </div>
           </div>
 
@@ -391,27 +402,8 @@ export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetail
               )}
             </div>
 
-            {/* 右列：查看歌词按钮 + 推荐 */}
+            {/* 右列：推荐 */}
             <div className="flex-1 min-w-0 overflow-y-auto">
-              <button
-                type="button"
-                onClick={() => setShowLyric(true)}
-                className="w-full flex items-center justify-between rounded-2xl px-4 py-3.5 hover:bg-white/5 transition-colors group mb-5"
-                style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${accentColor}26`, color: accentColor }}>
-                    <ScrollText className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <p className="text-white text-sm font-medium">查看歌词</p>
-                    <p className="text-white/45 text-xs mt-0.5">
-                      {lyricsLoading ? '加载中…' : lyrics.length > 0 ? `共 ${lyrics.length} 行 · 可复制 / 翻译 / 罗马音` : '暂无歌词'}
-                    </p>
-                  </div>
-                </div>
-                <Play className="w-4 h-4 text-white/40 group-hover:text-white transition-colors" fill="currentColor" />
-              </button>
 
               {/* QQ：听 [歌曲] 的也在听 */}
               {song.platform === 'qq' && (
@@ -426,7 +418,7 @@ export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetail
                     <p className={`${textSecondary} text-xs py-2`}>暂无推荐</p>
                   ) : (
                     <div className="space-y-1.5">
-                      {listenAlso.slice(0, 5).map((s, i) => (
+                      {listenAlso.slice(0, listenAlsoExpanded ? 15 : 5).map((s, i) => (
                         <div
                           key={`${s.mid || s.id || i}-${i}`}
                           className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/5 transition-colors cursor-pointer group"
@@ -443,6 +435,15 @@ export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetail
                           <Play className={`w-3.5 h-3.5 ${textTertiary} opacity-0 group-hover:opacity-100 transition-opacity`} fill="currentColor" />
                         </div>
                       ))}
+                      {listenAlso.length > 5 && (
+                        <button
+                          type="button"
+                          onClick={() => setListenAlsoExpanded(v => !v)}
+                          className="w-full mt-2 py-1.5 rounded-lg text-xs text-white/60 hover:text-white hover:bg-white/5 transition-colors"
+                        >
+                          {listenAlsoExpanded ? '收起' : `更多（${listenAlso.length} 首）`}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -478,7 +479,7 @@ export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetail
                   ) : (
                     <div className="grid grid-cols-3 gap-2.5">
                       {likeAlso.map((p, i) => (
-                        <div key={`${p.id}-${i}`} className="group cursor-pointer" onClick={() => { const w = (window as any).waveforge; if (w?.openExternal) void w.openExternal(`https://y.qq.com/n/ryqq_v2/playlist/${p.id}`) }}>
+                        <div key={`${p.id}-${i}`} className="group cursor-pointer" onClick={() => { const w = (window as any).waveforge; const url = `https://y.qq.com/n/ryqq_v2/playlist/${p.id}`; if (w?.openExternal) void w.openExternal(url); else window.open(url, '_blank') }}>
                           <div className="relative aspect-square rounded-lg overflow-hidden mb-1.5" style={{ background: 'rgba(255,255,255,0.08)' }}>
                             {p.coverImgUrl ? <img src={getProxiedImageUrl(p.coverImgUrl, 150)} alt={p.name} className="w-full h-full object-cover group-hover:scale-105 transition duration-300" /> : <Music className="w-6 h-6 m-auto text-white/30" />}
                           </div>
@@ -536,7 +537,7 @@ export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetail
                   ) : (
                     <div className="space-y-2">
                       {neteaseRelated.map((p, i) => (
-                        <div key={`${p.id}-${i}`} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/5 transition-colors cursor-pointer" onClick={() => { const w = (window as any).waveforge; if (w?.openExternal) void w.openExternal(`https://music.163.com/#/playlist?id=${p.id}`) }}>
+                        <div key={`${p.id}-${i}`} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/5 transition-colors cursor-pointer" onClick={() => { const w = (window as any).waveforge; const url = `https://music.163.com/#/playlist?id=${p.id}`; if (w?.openExternal) void w.openExternal(url); else window.open(url, '_blank') }}>
                           <div className="w-10 h-10 rounded-md overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.08)' }}>
                             {p.coverImgUrl ? <img src={getProxiedImageUrl(p.coverImgUrl, 100)} alt={p.name} className="w-full h-full object-cover" /> : <Music className="w-5 h-5 m-auto mt-2.5 text-white/30" />}
                           </div>

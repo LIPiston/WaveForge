@@ -20,14 +20,41 @@ export default function LyricModal({ songName, artistName, coverUrl, lyrics, onC
   const [showTrans, setShowTrans] = useState(false)
   const [showRoman, setShowRoman] = useState(false)
 
+  // Electron 渲染进程 navigator.clipboard 可能被拒，回退 execCommand
+  const copyText = (text: string): boolean => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).catch(() => {})
+        return true
+      }
+    } catch { /* 回退 */ }
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch { return false }
+  }
+
   const copyLine = (text: string) => {
-    void navigator.clipboard.writeText(text).then(() => showToast(`已复制：${text.slice(0, 20)}${text.length > 20 ? '…' : ''}`)).catch(() => {})
+    if (copyText(text)) showToast(`已复制：${text.slice(0, 20)}${text.length > 20 ? '…' : ''}`)
+    else showToast('复制失败，请手动选择复制', 'error')
   }
 
   const copyAll = () => {
     const full = lyrics.map(l => l.text).filter(Boolean).join('\n')
-    void navigator.clipboard.writeText(full).then(() => showToast(`已复制全部歌词（${lyrics.length} 行）`)).catch(() => {})
+    if (copyText(full)) showToast(`已复制全部歌词（${lyrics.length} 行）`)
+    else showToast('复制失败，请手动选择复制', 'error')
   }
+
+  // 是否有翻译 / 罗马音（无则不显示对应开关）
+  const hasTranslation = lyrics.some(l => l.translation)
+  const hasRoman = lyrics.some(l => l.roman)
 
   return (
     <motion.div
@@ -36,7 +63,7 @@ export default function LyricModal({ songName, artistName, coverUrl, lyrics, onC
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-[90] flex items-center justify-center p-4"
       style={{ backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(10px)' }}
-      onClick={onClose}
+      onClick={(e) => { e.stopPropagation(); onClose() }}
     >
       <motion.div
         initial={{ scale: 0.94, opacity: 0, y: 12 }}
@@ -84,23 +111,27 @@ export default function LyricModal({ songName, artistName, coverUrl, lyrics, onC
 
             {/* 开关：翻译 / 罗马音 */}
             <div className="flex items-center gap-4 mt-3">
-              <button
-                type="button"
-                onClick={() => setShowTrans(v => !v)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-colors ${showTrans ? 'text-white' : 'text-white/50 hover:text-white/80'}`}
-                style={showTrans ? { background: `${accentColor}55`, border: `1px solid ${accentColor}88` } : { background: 'rgba(255,255,255,0.08)' }}
-              >
-                <Languages className="w-3.5 h-3.5" /> 翻译
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowRoman(v => !v)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-colors ${showRoman ? 'text-white' : 'text-white/50 hover:text-white/80'}`}
-                style={showRoman ? { background: `${accentColor}55`, border: `1px solid ${accentColor}88` } : { background: 'rgba(255,255,255,0.08)' }}
-              >
-                <Mic2 className="w-3.5 h-3.5" /> 罗马音
-              </button>
-              <span className="text-white/35 text-xs">点击任意歌词可复制该行</span>
+              {hasTranslation && (
+                <button
+                  type="button"
+                  onClick={() => setShowTrans(v => !v)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-colors ${showTrans ? 'text-white' : 'text-white/50 hover:text-white/80'}`}
+                  style={showTrans ? { background: `${accentColor}55`, border: `1px solid ${accentColor}88` } : { background: 'rgba(255,255,255,0.08)' }}
+                >
+                  <Languages className="w-3.5 h-3.5" /> 翻译
+                </button>
+              )}
+              {hasRoman && (
+                <button
+                  type="button"
+                  onClick={() => setShowRoman(v => !v)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-colors ${showRoman ? 'text-white' : 'text-white/50 hover:text-white/80'}`}
+                  style={showRoman ? { background: `${accentColor}55`, border: `1px solid ${accentColor}88` } : { background: 'rgba(255,255,255,0.08)' }}
+                >
+                  <Mic2 className="w-3.5 h-3.5" /> 罗马音
+                </button>
+              )}
+              {(hasTranslation || hasRoman) && <span className="text-white/35 text-xs">点击任意歌词可复制该行</span>}
             </div>
           </div>
 
