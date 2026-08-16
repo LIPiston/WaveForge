@@ -355,10 +355,12 @@ export default function ModengPlayerPage({
         }
       `}</style>
 
-      {/* 律动背景：封面强模糊 + 纵向渐暗 + 节拍光晕（时间驱动脉冲） */}
-      {coverUrl ? (
+      {/* 律动背景：封面强模糊 + 纵向渐暗 + 节拍光晕（时间驱动脉冲）。
+          Apple 高置信命中时优先用 AM 高清封面做模糊源（与参考软件/Apple Music 动态封面一致），
+          否则用平台封面。 */}
+      {appleCoverUrl || coverUrl ? (
         <img
-          src={coverUrl}
+          src={appleCoverUrl || coverUrl}
           alt=""
           draggable={false}
           className="absolute inset-0 h-full w-full object-cover"
