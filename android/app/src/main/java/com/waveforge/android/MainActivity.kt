@@ -41,7 +41,7 @@ class MainActivity : Activity() {
     companion object {
         private const val NODE_ASSETS_DIR = "nodejs-project"
         private const val PREF_TAG_KEY = "node_assets_version"
-        private const val ASSETS_VERSION = 7
+        private const val ASSETS_VERSION = 10
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
         // QQ 统一登录页（appid=716027609 为 QQ 音乐）：自带二维码，加载即出扫码登录，
@@ -60,6 +60,9 @@ class MainActivity : Activity() {
     private var qqLoginWebView: WebView? = null
     private var qqLoginPolling: Thread? = null
     private val nodeStarted = AtomicBoolean(false)
+    // 焦点在滑块上时由 Web 层开启：音量键转发给页面做 +1/-1 调节，不再调系统音量
+    @Volatile
+    private var volumeKeyCapture = false
 
     init {
         System.loadLibrary("native-lib")
@@ -136,6 +139,12 @@ class MainActivity : Activity() {
                         contentResolver,
                         android.provider.Settings.Secure.ANDROID_ID
                     ) ?: "unknown"
+                }
+
+                // 滑块聚焦时开启音量键捕获（音量键改为调节滑块，而非系统音量）
+                @android.webkit.JavascriptInterface
+                fun setVolumeKeyCapture(v: Boolean) {
+                    volumeKeyCapture = v
                 }
             }, "WaveForgeNative")
         }
@@ -400,6 +409,14 @@ class MainActivity : Activity() {
     // ---------- 遥控器键位 ----------
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // 滑块聚焦（Web 层已开启捕获）：音量键转发给页面做 +1/-1，不再调系统音量
+        if (volumeKeyCapture && (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                forwardKeyToDom(event.keyCode)
+            }
+            return true
+        }
+
         // BACK：QQ 登录覆盖层打开时优先关闭它
         if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_DOWN) {
             if (qqLoginWebView != null) {

@@ -186,6 +186,16 @@ function createRemoteServer(options) {
       dispatchControl(msg.type, msg.action, msg.value)
       return
     }
+    if (msg.type === 'text-input') {
+      // 手机端输入完成 → 广播（TV 端 SPA 收到后写入输入框）
+      broadcast({ type: 'text-input', value: msg.value || '' })
+      return
+    }
+    if (msg.type === 'request-input') {
+      // TV 端请求文本输入（远程遥控连接时替代 TV 软键盘）→ 广播给手机端弹输入框
+      broadcast({ type: 'request-input' })
+      return
+    }
     if (msg.type === 'cursor') {
       const isMouse = msg.cmd === 'move' || msg.cmd === 'click' || msg.cmd === 'hold-start' || msg.cmd === 'hold-cancel' || msg.cmd === 'scroll'
       if (isMouse) {
@@ -233,6 +243,10 @@ function createRemoteServer(options) {
             port,
             token: nextToken() || (tokens[0] || ''),
           }))
+          return
+        }
+        // 扩展路由钩子（TV 端壁纸扫码上传等由调用方注册），返回 true 表示已处理
+        if (options.onHttpRequest && options.onHttpRequest(req, res, url)) {
           return
         }
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })

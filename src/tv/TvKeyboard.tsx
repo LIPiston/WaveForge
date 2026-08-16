@@ -9,7 +9,8 @@
  *  - BACK / 完成键关闭键盘并把焦点交还页面。
  */
 import { useEffect, useRef, useState } from 'react'
-import { useTvMode, setKeyboardActive, useTvBack, startTv } from './tvCore'
+import { useTvMode, useRemoteCursorMode, setKeyboardActive, useTvBack, startTv } from './tvCore'
+import { requestRemoteTextInput } from './remoteBridge'
 
 // 标准 QWERTY 布局（按真实键盘行排列），数字/符号页同理
 const KEY_ROWS: Record<Page, string[]> = {
@@ -29,10 +30,13 @@ type Page = 'lower' | 'upper' | 'symbols'
 
 export default function TvKeyboard() {
   const tvMode = useTvMode()
+  const remoteCursorMode = useRemoteCursorMode()
   const [target, setTarget] = useState<HTMLInputElement | HTMLTextAreaElement | null>(null)
   const [page, setPage] = useState<Page>('lower')
   const targetRef = useRef<typeof target>(null)
   const keyboardRef = useRef<HTMLDivElement>(null)
+  const remoteCursorModeRef = useRef(remoteCursorMode)
+  remoteCursorModeRef.current = remoteCursorMode
   targetRef.current = target
 
   useEffect(() => {
@@ -42,6 +46,12 @@ export default function TvKeyboard() {
     const onFocusIn = () => {
       const ae = document.activeElement
       if (isEditable(ae)) {
+        if (remoteCursorModeRef.current) {
+          // 远程遥控器连接中：不弹 TV 软键盘，改用手机端输入框（用户自己的键盘）
+          setKeyboardActive(false)
+          requestRemoteTextInput()
+          return
+        }
         setTarget(ae as HTMLInputElement | HTMLTextAreaElement)
         setPage('lower')
         setKeyboardActive(true)

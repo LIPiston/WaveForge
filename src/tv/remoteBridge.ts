@@ -92,6 +92,20 @@ async function connect(): Promise<void> {
       } else if (msg.type === 'cursor' && msg.cmd) {
         // 光标命令原样转给 RemoteCursor（虚拟鼠标 + hover 事件）
         window.dispatchEvent(new CustomEvent('waveforge:remote-cursor', { detail: msg }))
+      } else if (msg.type === 'text-input') {
+        // 手机端输入完成：写入当前聚焦的输入框（远程遥控连接时替代 TV 软键盘）
+        const ae = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null
+        if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) {
+          const proto =
+            ae instanceof HTMLTextAreaElement
+              ? window.HTMLTextAreaElement.prototype
+              : window.HTMLInputElement.prototype
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+          if (setter) {
+            setter.call(ae, String(msg.value ?? ''))
+            ae.dispatchEvent(new Event('input', { bubbles: true }))
+          }
+        }
       }
     } catch {
       // ignore
@@ -104,6 +118,13 @@ async function connect(): Promise<void> {
     } catch {
       // ignore
     }
+  }
+}
+
+/** 请求手机端弹输入框（远程遥控连接时替代 TV 软键盘）。 */
+export function requestRemoteTextInput(): void {
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'request-input' }))
   }
 }
 

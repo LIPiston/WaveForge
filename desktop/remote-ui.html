@@ -140,6 +140,15 @@
   .status { position: fixed; bottom: 84px; left: 0; right: 0; text-align: center; font-size: 12px; color: var(--text); opacity: 0; transition: opacity .3s; pointer-events: none; }
   .status .status-pill { display: inline-block; padding: 8px 16px; border-radius: 999px; background: rgba(7,16,24,.9); border: 1px solid rgba(49,230,139,.4); color: #31e68b; box-shadow: 0 6px 24px rgba(0,0,0,.4); }
   .status.show { opacity: 1; }
+  .input-modal { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.6); padding: 24px; }
+  .input-modal-card { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--divider); border-radius: 16px; padding: 20px; box-shadow: 0 16px 48px rgba(0,0,0,.5); }
+  .input-modal-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 12px; }
+  .input-modal-card input { width: 100%; box-sizing: border-box; font-size: 16px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--divider); background: var(--panel-2); color: var(--text); outline: none; }
+  .input-modal-card input:focus { border-color: var(--accent); }
+  .input-modal-btns { display: flex; gap: 10px; margin-top: 14px; }
+  .input-modal-btns button { flex: 1; padding: 12px; border-radius: 10px; border: none; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .input-cancel { background: var(--panel-2); color: var(--text-2); }
+  .input-ok { background: var(--accent); color: #fff; }
 
   /* 模式切换菜单 */
   .mode-menu {
@@ -212,6 +221,17 @@
 </div>
 
 <div class="status" id="status"></div>
+
+<div class="input-modal" id="inputModal" hidden>
+  <div class="input-modal-card">
+    <div class="input-modal-title">输入到电视</div>
+    <input type="text" id="inputField" placeholder="在此输入…" autocomplete="off">
+    <div class="input-modal-btns">
+      <button class="input-cancel" id="inputCancel">取消</button>
+      <button class="input-ok" id="inputOk">确定</button>
+    </div>
+  </div>
+</div>
 
 <div class="mode-menu" id="modeMenu">
   <div class="mode-menu-card">
@@ -317,9 +337,34 @@
         setCustomIcon();
       } else if (msg.type === 'control-blocked') {
         showStatus((msg.name || '其他设备') + ' 当前正在控制鼠标中', 2000);
+      } else if (msg.type === 'request-input') {
+        // 电视端请求文本输入：弹出输入框，用手机键盘输入后回传
+        openInputModal();
+      } else if (msg.type === 'text-input') {
+        // 其他设备回传的输入（忽略回声）
       }
     };
   }
+
+  // ---- 文本输入弹窗（远程遥控连接时替代 TV 软键盘） ----
+  var inputModal = document.getElementById('inputModal');
+  var inputField = document.getElementById('inputField');
+  var inputOk = document.getElementById('inputOk');
+  var inputCancel = document.getElementById('inputCancel');
+  function openInputModal() {
+    inputField.value = '';
+    inputModal.hidden = false;
+    setTimeout(function () { try { inputField.focus(); } catch (e) {} }, 100);
+  }
+  function closeInputModal() { inputModal.hidden = true; }
+  function submitInput() {
+    var v = inputField.value;
+    closeInputModal();
+    if (v !== '') send({ type: 'text-input', value: v });
+  }
+  inputOk.addEventListener('click', submitInput);
+  inputCancel.addEventListener('click', closeInputModal);
+  inputField.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitInput(); });
 
   // ---- 多设备切换：扫描局域网端口，列出 WaveForge 设备，点击切换 ----
   var SCAN_PORTS = [25566, 25567, 25568];

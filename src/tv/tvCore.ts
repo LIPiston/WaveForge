@@ -222,6 +222,23 @@ export function setTvFocus(el: HTMLElement | null): void {
   focusListeners.forEach((fn) => fn())
   updateRing()
   markRingActive()
+  updateVolumeKeyCapture()
+}
+
+/** 焦点在 range 滑块上时，让原生层把音量键转发给页面（用于 +1/-1 调节） */
+function updateVolumeKeyCapture(): void {
+  const capture =
+    focusedEl !== null &&
+    focusedEl.tagName === 'INPUT' &&
+    (focusedEl as HTMLInputElement).type === 'range'
+  const native = (window as any).WaveForgeNative
+  if (native?.setVolumeKeyCapture) {
+    try {
+      native.setVolumeKeyCapture(capture)
+    } catch {
+      // ignore
+    }
+  }
 }
 
 // ---------------- 空间导航 ----------------
@@ -354,6 +371,25 @@ function handleKeyDown(e: KeyboardEvent): void {
   const code = e.keyCode
   // 任何按键都视为活动：焦点环重新显示，3 秒无操作后渐隐
   markRingActive()
+
+  // 音量键（KEYCODE_VOLUME_UP=24 / DOWN=25，原生层在滑块聚焦时转发）：
+  // 焦点在 range 滑块上时 +1/-1 调节，而不是移走焦点
+  if (code === 24 || code === 25) {
+    const el = focusedEl
+    if (el && el.tagName === 'INPUT' && (el as HTMLInputElement).type === 'range') {
+      e.preventDefault()
+      const input = el as HTMLInputElement
+      try {
+        if (code === 24) input.stepUp()
+        else input.stepDown()
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        input.dispatchEvent(new Event('change', { bubbles: true }))
+      } catch {
+        // ignore
+      }
+    }
+    return
+  }
 
   // 软键盘激活：方向键在键盘网格内做空间导航，Enter 激活键位，BACK 关闭键盘
   if (keyboardActive) {
