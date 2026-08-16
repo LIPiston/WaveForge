@@ -516,7 +516,7 @@ export default function ExploreView({
     setLoading(true)
     setError('')
     try {
-      const result = await fetchExploreHome(platform, signal, { forceRefresh, enhanced: platformPreferences.enhancedApi })
+      const result = await fetchExploreHome(platform, signal, { forceRefresh })
       writeExploreCache(platform, result)
       setDataByPlatform(previous => ({ ...previous, [platform]: result }))
     } catch (requestError) {
