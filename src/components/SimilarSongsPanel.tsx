@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { X, Music, Play, ListPlus } from 'lucide-react'
 import type { Song } from '../services/musicApi'
@@ -13,7 +13,7 @@ interface SimilarSongsPanelProps {
   playerTheme: 'dark' | 'light'
 }
 
-export default function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme }: SimilarSongsPanelProps) {
+function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme }: SimilarSongsPanelProps) {
   const dark = playerTheme === 'dark'
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
   const [songs, setSongs] = useState<Song[]>([])
@@ -165,3 +165,6 @@ export default function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext
     </motion.div>
   )
 }
+
+// 弹窗在 App 全局挂载点常驻渲染，播放中 App 约 1Hz 重渲染时 props 稳定则跳过整棵弹窗子树重渲染
+export default memo(SimilarSongsPanel)

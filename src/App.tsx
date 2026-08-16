@@ -4052,6 +4052,10 @@ function App() {
   // 设置面板常驻挂载，关闭回调需稳定引用以配合 memo 跳过播放中的重渲染
   const closeSettings = useCallback(() => setShowSettings(false), [])
 
+  // 歌曲详情 / 相似歌曲弹窗关闭回调需稳定引用以配合 memo 跳过播放中的重渲染
+  const closeSongDetail = useCallback(() => setShowSongDetail(false), [])
+  const closeSimilarSongs = useCallback(() => setShowSimilarSongs(false), [])
+
   // 歌手/专辑弹窗选中歌曲需先清空导航栈（dismiss*），与 handleSongSelect 内部
   // 仅 setShow*Detail(false) 不同，不能直接复用 viewCallbacks.onSongSelect。
   // 经 handleSongSelectRef 取最新实现，避免 [] 依赖闭包捕获过期函数。
@@ -4086,18 +4090,18 @@ function App() {
           <Suspense fallback={null}>
             <LazySongDetailModal
               song={songDetailSong}
-              onClose={() => setShowSongDetail(false)}
+              onClose={closeSongDetail}
               playerTheme={playerTheme}
-              onPlayNow={(s) => { void handleSongSelect(s) }}
+              onPlayNow={viewCallbacks.onSongSelect}
             />
           </Suspense>
         )}
         {showSimilarSongs && similarSongsSource && (
           <SimilarSongsPanel
             song={similarSongsSource}
-            onClose={() => setShowSimilarSongs(false)}
-            onPlayNow={(s) => { void handleSongSelect(s) }}
-            onPlayNext={(s) => { handlePlayNext(s) }}
+            onClose={closeSimilarSongs}
+            onPlayNow={viewCallbacks.onSongSelect}
+            onPlayNext={viewCallbacks.onPlayNext}
             playerTheme={playerTheme}
           />
         )}

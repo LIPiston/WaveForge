@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { memo, useEffect, useState, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { X, Music, Disc3, Clock, BadgeCheck, Crown, Calendar, Video, CircleDollarSign, ListMusic, Mic2, ScrollText, BookOpen, RefreshCw, Play } from 'lucide-react'
 import type { Song } from '../services/musicApi'
@@ -35,7 +35,7 @@ const NETBASE_FEE_LABELS: Record<number, string> = {
   8: '免费（低音质）',
 }
 
-export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetailModalProps) {
+function SongDetailModal({ song, onClose, onPlayNow }: SongDetailModalProps) {
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
   const [extra, setExtra] = useState<{ publishTime?: number; mvId?: number; fee?: number; quality?: string } | null>(null)
   // QQ 歌曲详情的板块数据
@@ -568,3 +568,6 @@ export default function SongDetailModal({ song, onClose, onPlayNow }: SongDetail
     </motion.div>
   )
 }
+
+// 弹窗在 App 全局挂载点常驻渲染，播放中 App 约 1Hz 重渲染时 props 稳定则跳过整棵弹窗子树重渲染
+export default memo(SongDetailModal)

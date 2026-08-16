@@ -8832,6 +8832,7 @@ async function callQQRelationList(method, start, num, cookie) {
   }
   const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
     headers: { ...QQ_HEADERS, Cookie: cookie, 'Content-Type': 'application/json' },
+    timeout: 15000,
     validateStatus: () => true
   })
   return resp.data?.req_0 || resp.data
@@ -8895,6 +8896,7 @@ app.post('/api/qq/user/subscribe', async (req, res) => {
     }
     const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
       headers: { ...QQ_HEADERS, Cookie: cookie, 'Content-Type': 'application/json' },
+      timeout: 15000,
       validateStatus: () => true
     })
     const code = Number(resp.data?.req_0?.code ?? resp.data?.code)
@@ -8968,6 +8970,7 @@ app.get('/api/qq/user/favs', async (req, res) => {
     }
     const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
       headers: { ...QQ_HEADERS, Cookie: cookie, 'Content-Type': 'application/json' },
+      timeout: 15000,
       validateStatus: () => true
     })
     const d = resp.data?.req_0 || resp.data
@@ -8993,6 +8996,10 @@ app.get('/api/qq/user/profile', async (req, res) => {
     const musicId = String(parsedCookie.uin || '').replace(/\D/g, '')
     const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
     if (!musicId || !musicKey) throw new Error('QQ 登录凭证缺少 uin 或 qm_keyst，请重新登录')
+    // 每次进入用户主页需 3 次上游请求，按 EncUin + 登录账号缓存（防止跨账号数据互串）
+    const cacheKey = recommendCacheKeyWithCookie('qq:user-profile', encUin, cookie)
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const comm = {
       ct: 24, cv: 4747474, platform: 'yqq.json', uin: musicId, qq: musicId,
       authst: musicKey,
@@ -9004,6 +9011,7 @@ app.get('/api/qq/user/profile', async (req, res) => {
     const call = async (req0) => {
       const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', { comm, req_0: req0 }, {
         headers: { ...QQ_HEADERS, Cookie: cookie, 'Content-Type': 'application/json' },
+        timeout: 15000,
         validateStatus: () => true
       })
       return resp.data?.req_0 || resp.data
@@ -9017,7 +9025,7 @@ app.get('/api/qq/user/profile', async (req, res) => {
     // 粉丝列表（他人）
     const fansResult = await call({ module: 'music.concern.RelationList', method: 'GetFansList', param: { From: 0, Size: 30, HostUin: encUin } })
 
-    res.json({
+    const payload = {
       result: 100,
       data: {
         encUin,
@@ -9026,7 +9034,9 @@ app.get('/api/qq/user/profile', async (req, res) => {
         follows: followResult?.data?.List || [],
         fans: fansResult?.data?.List || [],
       }
-    })
+    }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[QQ用户主页] 获取失败:', error)
     res.status(502).json({ result: 500, error: error?.message || '获取用户主页失败' })
@@ -9037,13 +9047,59 @@ app.get('/api/qq/user/profile', async (req, res) => {
 // 补充：Banner/歌单分类/热门歌单/相似歌单/榜单/歌手分类（双平台）
 // ═══════════════════════════════════════════════════════════════
 
+// 歌曲详情侧栏/推荐类接口的进程级缓存：这些接口随每次打开歌曲详情弹窗被调用，
+// 数据本身短期稳定（相似歌曲/相关歌单/歌曲百科/所在歌单），缓存 Map + TTL + 上限
+// 防泄漏，参考既有 qqPlaybackMetadataCache / neteaseSongDetailCache 模式。
+const RECOMMEND_CACHE_MAX = 300
+const RECOMMEND_CACHE_TTL = 10 * 60 * 1000
+const recommendCache = new Map()
+
+function getRecommendCache(key) {
+  const cached = recommendCache.get(key)
+  if (!cached) return null
+  if (cached.expiresAt <= Date.now()) {
+    recommendCache.delete(key)
+    return null
+  }
+  // 简单 LRU：命中移到末尾，淘汰时删除最久未用的条目
+  recommendCache.delete(key)
+  recommendCache.set(key, cached)
+  return cached.value
+}
+
+function setRecommendCache(key, value) {
+  if (!key || value === undefined || value === null) return
+  recommendCache.set(key, { value, expiresAt: Date.now() + RECOMMEND_CACHE_TTL })
+  while (recommendCache.size > RECOMMEND_CACHE_MAX) {
+    const oldestKey = recommendCache.keys().next().value
+    if (oldestKey === undefined) break
+    recommendCache.delete(oldestKey)
+  }
+}
+
+// 登录态相关的缓存键叠加 cookie 短哈希，避免不同账号数据互串
+function recommendCacheKeyWithCookie(prefix, id, cookie) {
+  let hash = 7
+  const cookieStr = String(cookie || '')
+  for (let i = 0; i < cookieStr.length; i++) {
+    hash = (hash * 31 + cookieStr.charCodeAt(i)) | 0
+  }
+  return `${prefix}:${String(id)}:${hash}`
+}
+
+
 // 网易云首页 Banner
 app.get('/api/netease/banner', async (req, res) => {
   try {
     if (!NeteaseAPI || !NeteaseAPI.banner) return res.status(500).json({ error: 'API 未初始化' })
+    const cacheKey = 'ne:banner'
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await callNeteaseAPIWithRetry(NeteaseAPI.banner, { type: 2 })
     const body = result.body || result
-    res.json({ banners: Array.isArray(body.banners) ? body.banners : [] })
+    const payload = { banners: Array.isArray(body.banners) ? body.banners : [] }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[网易云Banner] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9199,9 +9255,14 @@ app.get('/api/netease/song/simi', async (req, res) => {
     if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
     if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
     if (!NeteaseAPI || !NeteaseAPI.simi_song) return res.status(500).json({ error: 'API 未初始化' })
+    const cacheKey = recommendCacheKeyWithCookie('ne:simi', id, cookie)
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await callNeteaseAPIWithRetry(NeteaseAPI.simi_song, { id: String(id), cookie: String(cookie) })
     const body = result.body || result
-    res.json({ songs: (Array.isArray(body.songs) ? body.songs : []).slice(0, Number(limit)) })
+    const payload = { songs: (Array.isArray(body.songs) ? body.songs : []).slice(0, Number(limit)) }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[网易云也爱听] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9215,9 +9276,14 @@ app.get('/api/netease/song/related-playlist', async (req, res) => {
     if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
     if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
     if (!NeteaseAPI || !NeteaseAPI.related_playlist) return res.status(500).json({ error: 'API 未初始化' })
+    const cacheKey = recommendCacheKeyWithCookie('ne:song-rel', id, cookie)
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await callNeteaseAPIWithRetry(NeteaseAPI.related_playlist, { id: String(id), cookie: String(cookie) })
     const body = result.body || result
-    res.json({ playlists: Array.isArray(body.playlists) ? body.playlists.slice(0, 5) : [] })
+    const payload = { playlists: Array.isArray(body.playlists) ? body.playlists.slice(0, 5) : [] }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[网易云相关歌单] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9231,13 +9297,18 @@ app.get('/api/netease/song/related-playlist', async (req, res) => {
 // QQ 首页 Banner
 app.get('/api/qq/banner', async (req, res) => {
   try {
+    const cacheKey = 'qq:banner'
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await qqMusicApi.api('recommend/banner')
     const banners = Array.isArray(result) ? result : (Array.isArray(result?.banner) ? result.banner : [])
-    res.json({ banners: banners.map((b) => ({
+    const payload = { banners: banners.map((b) => ({
       imageUrl: b.picUrl || b.pic || b.bannerUrl || '',
       url: b.h5Url || b.url || '',
       title: b.title || b.name || b.typeStr || '',
-    })).filter(b => b.imageUrl) })
+    })).filter(b => b.imageUrl) }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[QQ Banner] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9335,8 +9406,12 @@ app.get('/api/netease/song/wiki', async (req, res) => {
     const { id } = req.query
     if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
     if (!NeteaseAPI || !NeteaseAPI.song_wiki_summary) return res.status(500).json({ error: 'API 未初始化' })
+    const cacheKey = `ne:wiki:${String(id)}`
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await callNeteaseAPIWithRetry(NeteaseAPI.song_wiki_summary, { id: String(id) })
     const body = result.body || result
+    setRecommendCache(cacheKey, body)
     res.json(body)
   } catch (error) {
     console.error('[网易云歌曲百科] 获取失败:', error)
@@ -9349,8 +9424,13 @@ app.get('/api/qq/song/playlist', async (req, res) => {
   try {
     const { mid, limit = 10 } = req.query
     if (!mid) return res.status(400).json({ error: '请提供歌曲mid' })
+    const cacheKey = `qq:song-playlist:${String(mid)}:${Number(limit)}`
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const result = await qqMusicApi.api('song/playlist', { mid: String(mid), limit: Number(limit) })
-    res.json({ result: 100, data: result })
+    const payload = { result: 100, data: result }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[QQ歌曲所在歌单] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9362,7 +9442,9 @@ app.get('/api/qq/song/listen-also', async (req, res) => {
   try {
     const { songid, singermid } = req.query
     if (!songid) return res.status(400).json({ error: '请提供歌曲ID' })
-    useQQMusicCookie(req.query.cookie)
+    const cacheKey = `qq:listen-also:${String(songid)}:${String(singermid || '')}`
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     const sims = await qqMusicApi.api('song/similar', { id: String(songid) })
     const simList = Array.isArray(sims) ? sims : (Array.isArray(sims?.songInfoList) ? sims.songInfoList : [])
     const merged = [...simList]
@@ -9393,7 +9475,9 @@ app.get('/api/qq/song/listen-also', async (req, res) => {
         platform: 'qq'
       }
     }).filter(s => s.mid || s.id)
-    res.json({ result: 100, data: { songs } })
+    const payload = { result: 100, data: { songs } }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[QQ也在听] 获取失败:', error?.message || error)
     res.status(502).json({ result: 500, error: error?.message || '获取失败' })
@@ -9405,13 +9489,16 @@ app.get('/api/qq/song/like-also', async (req, res) => {
   try {
     const { songid, offset = 0 } = req.query
     if (!songid) return res.status(400).json({ error: '请提供歌曲ID' })
-    useQQMusicCookie(req.query.cookie)
+    // 每首歌 + offset 对应一批固定的歌单（换一批是切 offset，天然命中不同缓存项）
+    const off = Number(offset) || 0
+    const cacheKey = `qq:like-also:${String(songid)}:${off}`
+    const cached = getRecommendCache(cacheKey)
+    if (cached) return res.json(cached)
     // 相似歌曲（5 首）+ 当前歌，各自拉相关歌单合并；offset 换一批用不同种子顺序
     const sims = await qqMusicApi.api('song/similar', { id: String(songid) })
     const simList = Array.isArray(sims) ? sims : (Array.isArray(sims?.songInfoList) ? sims.songInfoList : [])
     const seedIds = [Number(songid), ...simList.map(s => Number(s?.id || s?.songid || 0))].filter(Boolean)
     // offset 轮转种子顺序（换一批）
-    const off = Number(offset) || 0
     const rotated = off === 0 ? seedIds : [...seedIds.slice(off % Math.max(seedIds.length, 1)), ...seedIds.slice(0, off % Math.max(seedIds.length, 1))]
     const seen = new Set()
     const playlists = []
@@ -9438,7 +9525,9 @@ app.get('/api/qq/song/like-also', async (req, res) => {
       } catch { /* 单首相关歌单失败忽略 */ }
       if (playlists.length >= 6) break
     }
-    res.json({ result: 100, data: { playlists: playlists.slice(0, 6) } })
+    const payload = { result: 100, data: { playlists: playlists.slice(0, 6) } }
+    setRecommendCache(cacheKey, payload)
+    res.json(payload)
   } catch (error) {
     console.error('[QQ也爱歌单] 获取失败:', error?.message || error)
     res.status(502).json({ result: 500, error: error?.message || '获取失败' })

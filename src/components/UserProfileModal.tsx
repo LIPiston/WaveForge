@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { X, User, Music, ListMusic, Users } from 'lucide-react'
 import { getUserDetail, getUserPlaylistList, getQQUserProfile, subscribeQQUser } from '../services/musicApi'
@@ -32,7 +32,7 @@ interface QqRelationItem {
   isSelf: boolean
 }
 
-export default function UserProfileModal({
+export default memo(function UserProfileModal({
   platform,
   userId,
   nickname: initialNickname,
@@ -262,4 +262,4 @@ export default function UserProfileModal({
       </motion.div>
     </motion.div>
   )
-}
+})

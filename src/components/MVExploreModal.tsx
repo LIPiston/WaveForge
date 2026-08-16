@@ -69,6 +69,9 @@ export default function MVExploreModal({ initialPlatform = 'netease', onClose, p
   const [searchKeyword, setSearchKeyword] = useState('')
   const [isSearchMode, setIsSearchMode] = useState(false)
   const [searchLoading, setSearchLoading] = useState(false)
+  // 上次 effect 生效时的搜索词——用于区分「输入框打字」与「提交搜索」，
+  // 避免浏览模式下每次击键都触发列表重载（重新请求 + 列表闪空白）
+  const prevSearchKeywordRef = useRef(searchKeyword)
 
   // QQ 分类加载
   useEffect(() => {
@@ -87,6 +90,10 @@ export default function MVExploreModal({ initialPlatform = 'netease', onClose, p
 
   // 平台切换/筛选变化时加载列表（搜索模式下按关键词搜索）
   useEffect(() => {
+    // 未进入搜索模式时，仅搜索词变化（输入框打字、未提交）不重载列表
+    const kwChanged = prevSearchKeywordRef.current !== searchKeyword
+    prevSearchKeywordRef.current = searchKeyword
+    if (!isSearchMode && kwChanged && searchKeyword !== '') return
     const seq = ++requestSeqRef.current
     setLoading(true)
     setError('')

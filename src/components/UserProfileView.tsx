@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { ArrowLeft, User, Music, ListMusic, Users, Heart } from 'lucide-react'
 import {
@@ -43,7 +43,7 @@ interface PlaylistItem {
 
 type TabKey = 'overview' | 'follows' | 'fans'
 
-export default function UserProfileView({
+export default memo(function UserProfileView({
   platform,
   userId,
   nickname: initialNickname,
@@ -382,4 +382,4 @@ export default function UserProfileView({
       </motion.div>
     </motion.div>
   )
-}
+})
