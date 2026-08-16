@@ -53,8 +53,12 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
       const electron = window.electron
       const native = (window as any).WaveForgeNative
       if (!electron?.openQQLoginWindow && !native?.openQQLogin) {
-        setQQError('当前环境不支持自动登录，请手动获取 Cookie 后粘贴')
+        // 纯浏览器（含 ?tv=1 模拟）：跨域限制下无法自动抓取 qq.com 的 cookie——
+        // 打开 y.qq.com 让用户登录，然后走"手动登录"粘贴 Cookie 流程。
+        setQQError('')
+        setQQManualMode(true)
         setLoading(false)
+        window.open('https://y.qq.com', '_blank')
         return
       }
 
