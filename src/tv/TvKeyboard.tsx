@@ -20,10 +20,19 @@ const KEY_ROWS: Record<Page, string[]> = {
 }
 const SPACE = ' '
 
+// 只有文本类输入才弹键盘：checkbox/range/radio/按钮等开关类不算（否则焦点到开关会误弹键盘）
+const TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number'])
+
 function isEditable(el: Element | null): boolean {
   if (!el) return false
-  const t = el.tagName
-  return t === 'INPUT' || t === 'TEXTAREA' || (el as HTMLElement).isContentEditable
+  const h = el as HTMLElement
+  if (h.isContentEditable) return true
+  if (el.tagName === 'TEXTAREA') return true
+  if (el.tagName === 'INPUT') {
+    const type = (el as HTMLInputElement).type || 'text'
+    return TEXT_INPUT_TYPES.has(type)
+  }
+  return false
 }
 
 type Page = 'lower' | 'upper' | 'symbols'
@@ -87,6 +96,24 @@ export default function TvKeyboard() {
     }
   }
 
+  // ★ hooks 必须全部在提前 return 之前（React 规则：hooks 不能条件化，否则 #310 白屏）
+  const deleteCharRef = useRef<() => void>(() => {})
+  const closeRef = useRef<() => void>(() => {})
+  useEffect(() => {
+    if (!tvMode || !target) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.keyCode === 8 || e.keyCode === 67) {
+        e.preventDefault()
+        e.stopPropagation()
+        deleteCharRef.current()
+      } else if (e.keyCode === 27) {
+        closeRef.current()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [tvMode, target])
+
   if (!tvMode || !target) return null
 
   const insert = (text: string) => {
@@ -142,25 +169,9 @@ export default function TvKeyboard() {
     }
   }
 
-  // 遥控器删除键（KEYCODE_DEL=67 / Backspace=8）→ 删除字符；Esc=27 → 关闭键盘
-  const deleteCharRef = useRef(deleteChar)
+  // 让键盘渲染阶段能取到最新 deleteChar/close（函数定义在 return 之后，hooks 已在上方声明）
   deleteCharRef.current = deleteChar
-  const closeRef = useRef(close)
   closeRef.current = close
-  useEffect(() => {
-    if (!tvMode || !target) return
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.keyCode === 8 || e.keyCode === 67) {
-        e.preventDefault()
-        e.stopPropagation()
-        deleteCharRef.current()
-      } else if (e.keyCode === 27) {
-        closeRef.current()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [tvMode, target])
 
   const Key = ({ label, onClick, wide = false }: { label: string; onClick: () => void; wide?: boolean }) => (
     <button

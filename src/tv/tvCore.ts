@@ -344,10 +344,19 @@ export function dispatchTvBack(): boolean {
 }
 
 // ---------------- 全局键监听 ----------------
+// 只有文本类输入才算"可编辑"：checkbox/range/radio 等开关不算（否则焦点到开关会被当文本处理）
+const TV_TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number'])
+
 function isEditable(el: Element | null): boolean {
   if (!el) return false
-  const t = el.tagName
-  return t === 'INPUT' || t === 'TEXTAREA' || (el as HTMLElement).isContentEditable
+  const h = el as HTMLElement
+  if (h.isContentEditable) return true
+  if (el.tagName === 'TEXTAREA') return true
+  if (el.tagName === 'INPUT') {
+    const type = (el as HTMLInputElement).type || 'text'
+    return TV_TEXT_INPUT_TYPES.has(type)
+  }
+  return false
 }
 
 function dirOf(code: number): Direction {
