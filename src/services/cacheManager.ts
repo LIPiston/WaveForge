@@ -5,6 +5,7 @@
 
 import { indexedDBCache } from './indexedDBCache'
 import { clearUserPlaylistsMemoryCache } from './playlistService'
+import { getCacheLimits } from '../tv/perfMode'
 
 interface CacheItem {
   data: any
@@ -146,9 +147,10 @@ class CacheManager {
     const key = `cover_${this.hashUrl(url)}`
     const size = new Blob([imageData]).size
     
-    const MAX_COVERS = 500 // 最多缓存 500 张封面
-    const MAX_SIZE = 2 * 1024 * 1024 * 1024 // 最大 2GB
-    const MAX_SINGLE_IMAGE_SIZE = 10 * 1024 * 1024 // 单张图片最大 10MB
+    const limits = getCacheLimits()
+    const MAX_COVERS = limits.coverCount // 最多缓存的封面数（TV 按性能模式动态）
+    const MAX_SIZE = limits.coverBytes // 封面总大小上限
+    const MAX_SINGLE_IMAGE_SIZE = limits.singleImage // 单张图片最大
     
     // 如果单张图片超过 10MB，直接跳过缓存
     if (size > MAX_SINGLE_IMAGE_SIZE) {

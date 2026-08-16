@@ -56,10 +56,24 @@ html.tv-mode [data-tv-focus]:focus-within [class*='opacity-0'] {
   opacity: 1 !important;
 }
 
-/* TV 无桌面模式：隐藏模式切换里的"桌面"卡片（桌面小组件/壁纸为 Windows 专属）。
-   App.tsx 另有防御性护栏，确保 TV 上 viewMode 永远不会是 desktop。 */
-html.tv-mode button[aria-label='切换到桌面模式'] {
+/* TV 无桌面模式：隐藏模式切换里的"桌面"卡片（效能档隐藏；普通/增强显示）。
+   App.tsx 另有防御性护栏，效能档下 viewMode 永远不会是 desktop。 */
+html.tv-mode.wf-perf-efficiency button[aria-label='切换到桌面模式'] {
   display: none !important;
+}
+
+/* ── TV 性能模式：效能/普通停掉昂贵的无限 CSS 动画（天气/光效等），保留基础过渡 ── */
+html.tv-mode.wf-perf-efficiency [class*='weather-'],
+html.tv-mode.wf-perf-normal [class*='weather-'] {
+  animation: none !important;
+}
+html.tv-mode.wf-perf-efficiency [class*='aurora'],
+html.tv-mode.wf-perf-normal [class*='aurora'] {
+  animation: none !important;
+}
+html.tv-mode.wf-perf-efficiency * {
+  animation-duration: 0.01s !important;
+  animation-iteration-count: 1 !important;
 }
 
 /* 桌面窗口按钮条（最小化/最大化/关闭）在 TV 上无意义，隐藏。

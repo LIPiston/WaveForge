@@ -2,11 +2,15 @@ package com.waveforge.android
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.os.StatFs
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -145,6 +149,30 @@ class MainActivity : Activity() {
                 @android.webkit.JavascriptInterface
                 fun setVolumeKeyCapture(v: Boolean) {
                     volumeKeyCapture = v
+                }
+
+                // 设备详情（配置检查面板用）：内存/存储/CPU/型号
+                @android.webkit.JavascriptInterface
+                fun getDeviceInfo(): String {
+                    return try {
+                        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                        val mi = ActivityManager.MemoryInfo()
+                        am.getMemoryInfo(mi)
+                        val stat = StatFs(Environment.getDataDirectory().path)
+                        org.json.JSONObject()
+                            .put("model", Build.MODEL)
+                            .put("manufacturer", Build.MANUFACTURER)
+                            .put("apiLevel", Build.VERSION.SDK_INT)
+                            .put("totalMem", mi.totalMem)
+                            .put("availMem", mi.availMem)
+                            .put("heapMax", Runtime.getRuntime().maxMemory())
+                            .put("storageTotal", stat.totalBytes)
+                            .put("storageFree", stat.availableBytes)
+                            .put("cpuCores", Runtime.getRuntime().availableProcessors())
+                            .toString()
+                    } catch (_: Exception) {
+                        "{}"
+                    }
                 }
             }, "WaveForgeNative")
         }

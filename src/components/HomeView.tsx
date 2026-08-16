@@ -1,6 +1,7 @@
 import { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTvMode, useRemoteCursorMode } from '../tv/tvCore'
+import { usePerfMode } from '../tv/perfMode'
 import { Play, Music, TrendingUp, Flame, Clock, LogOut, Crown, User, Heart, MonitorSmartphone, Search, Settings, History } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier, getSongUrl } from '../services/musicApi'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
@@ -313,6 +314,9 @@ function HomeView({
   // 手机遥控器连上（光标模式）时恢复真实 hover，与 PC 一致。
   const tvMode = useTvMode()
   const remoteCursorMode = useRemoteCursorMode()
+  const perfMode = usePerfMode()
+  // 昂贵的动态背景（渐变 + 光晕）：仅增强模式全开；普通/效能降级为静态背景省 CPU/内存
+  const showHeavyVisuals = perfMode === 'enhanced'
   const topBarActive = (tvMode && !remoteCursorMode) || isTopHovered
   const bottomBarActive = (tvMode && !remoteCursorMode) || isBottomBarHovered
   const [showUpArrowHint, setShowUpArrowHint] = useState(false)
@@ -1608,19 +1612,34 @@ function HomeView({
         <>
           <motion.div
             className="absolute inset-0"
-            animate={{
-              background: playerTheme === 'dark'
-                ? [
-                    'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)',
-                    'linear-gradient(135deg, #3d1b2d 0%, #2e0f1a 50%, #0a0a0a 100%)',
-                    'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)',
-                  ]
-                : [
-                    'linear-gradient(135deg, #f7f4ee 0%, #efe8e0 50%, #f3efe8 100%)',
-                    'linear-gradient(135deg, #f4eef0 0%, #e9e2e6 50%, #f2efe9 100%)',
-                    'linear-gradient(135deg, #f7f4ee 0%, #efe8e0 50%, #f3efe8 100%)',
-                  ]
-            }}
+            style={
+              showHeavyVisuals
+                ? undefined
+                : {
+                    background:
+                      playerTheme === 'dark'
+                        ? 'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)'
+                        : 'linear-gradient(135deg, #f7f4ee 0%, #efe8e0 50%, #f3efe8 100%)',
+                  }
+            }
+            animate={
+              showHeavyVisuals
+                ? {
+                    background:
+                      playerTheme === 'dark'
+                        ? [
+                            'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)',
+                            'linear-gradient(135deg, #3d1b2d 0%, #2e0f1a 50%, #0a0a0a 100%)',
+                            'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)',
+                          ]
+                        : [
+                            'linear-gradient(135deg, #f7f4ee 0%, #efe8e0 50%, #f3efe8 100%)',
+                            'linear-gradient(135deg, #f4eef0 0%, #e9e2e6 50%, #f2efe9 100%)',
+                            'linear-gradient(135deg, #f7f4ee 0%, #efe8e0 50%, #f3efe8 100%)',
+                          ],
+                  }
+                : undefined
+            }
             transition={{
               duration: 10,
               repeat: Infinity,
@@ -1628,7 +1647,8 @@ function HomeView({
             }}
           />
           
-          {/* Decorative background glow */}
+          {/* Decorative background glow（仅增强模式渲染，普通/效能为静态背景省资源） */}
+          {showHeavyVisuals && (<>
           <motion.div
             className="absolute w-[40vw] h-[40vw] max-w-[500px] max-h-[500px] rounded-full"
             style={{
@@ -1739,6 +1759,7 @@ function HomeView({
               ease: "easeInOut"
             }}
           />
+          </>)}
           
           {/* 减轻遮罩透明度 */}
           <div className={`absolute inset-0 ${playerTheme === 'dark' ? 'bg-black/10' : 'bg-white/20'}`} />

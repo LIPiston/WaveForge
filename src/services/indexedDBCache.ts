@@ -9,12 +9,15 @@ const DAY = 24 * 60 * 60 * 1000
 const COVER_TTL = 30 * DAY
 const PLAYLIST_TTL = 60 * 60 * 1000
 const LYRICS_TTL = 30 * DAY
-const MAX_COVERS = 500
-const MAX_COVER_BYTES = 256 * 1024 * 1024
-const MAX_PLAYLISTS = 100
-const MAX_PLAYLIST_BYTES = 50 * 1024 * 1024
-const MAX_LYRICS = 1000
-const MAX_LYRICS_BYTES = 128 * 1024 * 1024
+// 缓存上限按 TV 性能模式动态取值（TV 存储小严格限制；PC 维持原值）
+import { getCacheLimits } from '../tv/perfMode'
+const limits = getCacheLimits
+const MAX_COVERS = () => limits().coverCount
+const MAX_COVER_BYTES = () => limits().idbCoverBytes
+const MAX_PLAYLISTS = () => limits().playlistCount
+const MAX_PLAYLIST_BYTES = () => limits().playlistBytes
+const MAX_LYRICS = () => limits().lyricCount
+const MAX_LYRICS_BYTES = () => limits().lyricBytes
 
 interface CoverCacheItem {
   url: string
@@ -104,7 +107,7 @@ class IndexedDBCache {
     const readStore = await this.store(COVER_STORE, 'readonly')
     const existing = await this.request(readStore.get(url)) as CoverCacheItem | undefined
     if (existing && now - Math.max(existing.timestamp, existing.lastAccess || 0) <= COVER_TTL) return
-    await this.enforceLimit(COVER_STORE, MAX_COVERS - 1, MAX_COVER_BYTES - blob.size, COVER_TTL)
+    await this.enforceLimit(COVER_STORE, MAX_COVERS() - 1, MAX_COVER_BYTES() - blob.size, COVER_TTL)
     const writeStore = await this.store(COVER_STORE, 'readwrite')
     await this.request(writeStore.put({ url, data: blob, timestamp: now, size: blob.size, accessCount: 1, lastAccess: now } as CoverCacheItem))
   }
@@ -145,7 +148,7 @@ class IndexedDBCache {
   }
 
   async cachePlaylist(id: string, platform: 'netease' | 'qq', data: unknown): Promise<void> {
-    await this.cacheData(PLAYLIST_STORE, id, platform, data, MAX_PLAYLISTS, MAX_PLAYLIST_BYTES, PLAYLIST_TTL)
+    await this.cacheData(PLAYLIST_STORE, id, platform, data, MAX_PLAYLISTS(), MAX_PLAYLIST_BYTES(), PLAYLIST_TTL)
   }
 
   async getCachedPlaylist<T = unknown>(id: string, platform: 'netease' | 'qq'): Promise<T | null> {
@@ -158,7 +161,7 @@ class IndexedDBCache {
   }
 
   async cacheLyrics(id: string, platform: 'netease' | 'qq', data: unknown): Promise<void> {
-    await this.cacheData(LYRICS_STORE, id, platform, data, MAX_LYRICS, MAX_LYRICS_BYTES, LYRICS_TTL)
+    await this.cacheData(LYRICS_STORE, id, platform, data, MAX_LYRICS(), MAX_LYRICS_BYTES(), LYRICS_TTL)
   }
 
   async getCachedLyrics<T = unknown>(id: string, platform: 'netease' | 'qq'): Promise<T | null> {
@@ -239,9 +242,9 @@ class IndexedDBCache {
   }
 
   async cleanupExpired(): Promise<void> {
-    await this.enforceLimit(COVER_STORE, MAX_COVERS, MAX_COVER_BYTES, COVER_TTL, true)
-    await this.enforceLimit(PLAYLIST_STORE, MAX_PLAYLISTS, MAX_PLAYLIST_BYTES, PLAYLIST_TTL, true)
-    await this.enforceLimit(LYRICS_STORE, MAX_LYRICS, MAX_LYRICS_BYTES, LYRICS_TTL, true)
+    await this.enforceLimit(COVER_STORE, MAX_COVERS(), MAX_COVER_BYTES(), COVER_TTL, true)
+    await this.enforceLimit(PLAYLIST_STORE, MAX_PLAYLISTS(), MAX_PLAYLIST_BYTES(), PLAYLIST_TTL, true)
+    await this.enforceLimit(LYRICS_STORE, MAX_LYRICS(), MAX_LYRICS_BYTES(), LYRICS_TTL, true)
   }
 
   async getCacheStats(): Promise<IndexedDBCacheStats> {

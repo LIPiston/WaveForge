@@ -1,6 +1,7 @@
 import { debugLog, isVerboseLogEnabled } from './utils/debugLog'
 import { parseStoredBoolean } from './utils/storage'
 import { isTv } from './platform'
+import { isPerfModeEfficiency } from './tv/perfMode'
 import { lazy, memo, Suspense, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps } from 'react'
 import AlbumCoverPlayer from './components/AlbumCoverPlayer'
 import LyricsDisplay from './components/LyricsDisplay'
@@ -408,8 +409,8 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const saved = localStorage.getItem('viewMode')
     const mode = saved === 'explore' || saved === 'minimal' || saved === 'desktop' ? saved : 'minimal'
-    // TV 无桌面模式（桌面小组件/壁纸是 Windows 专属）：历史保存值也不会恢复成桌面
-    return isTv() && mode === 'desktop' ? 'minimal' : mode
+    // TV 效能档隐藏桌面模式（普通/增强显示）：历史保存值也不会恢复成桌面
+    return isTv() && isPerfModeEfficiency() && mode === 'desktop' ? 'minimal' : mode
   })
   const viewModeChangeRevisionRef = useRef(0)
   
@@ -1675,7 +1676,7 @@ function App() {
   const pulseActive = coverPulseEnabled && isPlaying
   const audioAnalyzer = useAudioAnalyzer(
     audioPlayer.analyserNode,
-    audioAnalyzerEnabled && pulseActive
+    audioAnalyzerEnabled && pulseActive && !isPerfModeEfficiency() // 效能档关闭音频可视化省资源
   )
   const audioPulseStore = useAudioPulseStore(audioAnalyzer, pulseActive, coverPulseMode)
   
@@ -1959,8 +1960,8 @@ function App() {
   // 监听视图模式变化
   useEffect(() => {
     const applyMode = (mode: 'explore' | 'minimal' | 'desktop') => {
-      // TV 无桌面模式：遥控器/远程/恢复路径都不可能进入桌面（模式卡片也已由 tv.css 隐藏）
-      if (isTv() && mode === 'desktop') mode = 'minimal'
+      // TV 效能档无桌面模式：遥控器/远程/恢复路径都不会进入桌面（模式卡片也已隐藏）
+      if (isTv() && isPerfModeEfficiency() && mode === 'desktop') mode = 'minimal'
       setViewMode(mode)
       setEnteredFromMode(mode)
       // 切换模式时清掉待恢复的歌单/搜索来源，避免切回后又自动打开上一次的歌单

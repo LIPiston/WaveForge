@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, Trash2, ChevronLeft, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone } from 'lucide-react'
 import LoginButton from './LoginButton'
 import HomeCustomizeModal from './HomeCustomizeModal'
+import DeviceInfoModal from './DeviceInfoModal'
 import AudioQualitySettingsModal from './AudioQualitySettingsModal'
 import RemoteControlSettingsModal from './RemoteControlSettingsModal'
 import CacheClearModal from './CacheClearModal'
@@ -313,6 +314,7 @@ function SettingsPanel({
   // 法律声明弹窗状态
   const [showLegalModal, setShowLegalModal] = useState(false)
   const [showDeviceIdModal, setShowDeviceIdModal] = useState(false)
+  const [showDeviceInfo, setShowDeviceInfo] = useState(false)
   const [showRedeemModal, setShowRedeemModal] = useState(false)
   const [deviceIdForModal, setDeviceIdForModal] = useState('')
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckState>({ status: 'idle' })
@@ -2007,6 +2009,25 @@ function SettingsPanel({
               {/* 高级标签页 */}
               {activeTab === 'advanced' && (
                 <div className="space-y-6">
+                  {/* TV 端：设备配置检查 + 性能模式（置顶） */}
+                  {isAndroid() && (
+                    <div className={`${bgCard} rounded-2xl border ${borderColor} p-4`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className={`${textPrimary} font-medium`}>设备配置检查</div>
+                          <div className={`${textSecondary} text-sm mt-0.5`}>查看 TV 内存/存储/CPU，选择性能模式</div>
+                        </div>
+                        <button
+                          onClick={() => setShowDeviceInfo(true)}
+                          className="shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                          style={{ backgroundColor: accentColor }}
+                        >
+                          配置检查
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* 播放过渡效果 */}
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>播放过渡</h3>
@@ -3019,6 +3040,9 @@ function SettingsPanel({
           </motion.div>
         </motion.div>
       )}
+
+      {/* 设备配置检查弹窗（TV 端性能模式选择） */}
+      <DeviceInfoModal show={showDeviceInfo} onClose={() => setShowDeviceInfo(false)} playerTheme={playerTheme} />
 
       {/* 设备识别码弹窗 */}
       {showDeviceIdModal && (
