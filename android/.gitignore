@@ -2,6 +2,9 @@
 /app/libnode/
 /app/src/main/assets/nodejs-project/
 
+# 壁纸扫码上传的运行时缓存
+/app/src/main/assets/waveforge-wallpapers/
+
 # 构建产物
 /app/build/
 /app/.cxx/
