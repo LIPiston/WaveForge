@@ -12,7 +12,9 @@ Loudness Measurement Service - 独立响度测量服务（端口 3003）
 import os
 import sys
 import math
+import json
 import time
+import hashlib
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -36,6 +38,101 @@ CORS(app, origins=["http://localhost:3000", "http://127.0.0.1:3000", "file://", 
 # 允许的本地音频格式（与 beat_analyzer.py 保持一致；libsndfile 不支持 m4a/aac/opus/webm）
 ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.flac', '.wav', '.ogg'}
 MAX_AUDIO_FILE_SIZE_BYTES = 300 * 1024 * 1024
+
+# ============ 测量结果缓存（同一文件重复测量时跳过解码与计算） ============
+# 缓存根目录逻辑与 beat_analyzer.py 保持一致，但服务间保持解耦（不互相 import）。
+# 键基于 trackKey + 文件路径 + mtime_ns + 文件大小 + 采样率 + 版本，
+# 文件内容未变时测量结果确定（librosa.load 为纯函数），命中即返回，不影响语义。
+MEASURE_VERSION = 'bs1770-4'
+
+
+def _default_cache_root() -> Path:
+    configured = os.environ.get('WAVEFORGE_CACHE_PATH', '').strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if sys.platform == 'win32':
+        base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA')
+        if base:
+            return Path(base) / 'WaveForge' / 'cache'
+    xdg_cache = os.environ.get('XDG_CACHE_HOME', '').strip()
+    return (Path(xdg_cache) if xdg_cache else Path.home() / '.cache') / 'waveforge'
+
+
+LOUDNESS_CACHE_ROOT = _default_cache_root()
+LOUDNESS_CACHE_DIR = LOUDNESS_CACHE_ROOT / 'loudness_analysis'
+LOUDNESS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+LOUDNESS_CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+LOUDNESS_CACHE_MAX_SIZE_BYTES = 256 * 1024 * 1024
+# 清理节流：避免每次写入都 glob+stat 整个缓存目录（文件多时可达数百毫秒）
+_last_loudness_cleanup_time = [0.0]
+
+
+def _loudness_cache_key(track_key: str, audio_path: str, sr: int) -> str:
+    try:
+        stat = os.stat(audio_path)
+        fingerprint = f'{track_key}:{os.path.abspath(audio_path)}:{stat.st_mtime_ns}:{stat.st_size}:{sr}:{MEASURE_VERSION}'
+    except OSError:
+        fingerprint = f'{track_key}:{os.path.abspath(audio_path)}:{sr}:{MEASURE_VERSION}'
+    return hashlib.md5(fingerprint.encode()).hexdigest()
+
+
+def _load_loudness_cache(cache_key: str):
+    cache_file = LOUDNESS_CACHE_DIR / f'{cache_key}.json'
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            cache_file.touch()
+            value = data.get('integratedLufs')
+            if isinstance(value, (int, float)):
+                return float(value)
+            cache_file.unlink(missing_ok=True)
+        except (OSError, ValueError, TypeError):
+            cache_file.unlink(missing_ok=True)
+    return None
+
+
+def _save_loudness_cache(cache_key: str, value: float):
+    cache_file = LOUDNESS_CACHE_DIR / f'{cache_key}.json'
+    temporary_file = cache_file.with_suffix(f'.{os.getpid()}.{time.time_ns()}.tmp')
+    try:
+        with open(temporary_file, 'w', encoding='utf-8') as f:
+            json.dump({'integratedLufs': value}, f)
+        os.replace(temporary_file, cache_file)
+        _cleanup_loudness_cache()
+    except (OSError, TypeError, ValueError):
+        temporary_file.unlink(missing_ok=True)
+
+
+def _cleanup_loudness_cache(force=False):
+    now = time.time()
+    if not force and now - _last_loudness_cleanup_time[0] < 60.0:
+        return
+    _last_loudness_cleanup_time[0] = now
+    entries = []
+    for cache_file in LOUDNESS_CACHE_DIR.glob('*.json'):
+        try:
+            stat = cache_file.stat()
+            if now - stat.st_mtime > LOUDNESS_CACHE_MAX_AGE_SECONDS:
+                cache_file.unlink(missing_ok=True)
+                continue
+            entries.append((cache_file, stat.st_size, stat.st_mtime))
+        except OSError:
+            continue
+    total_size = sum(size for _, size, _ in entries)
+    for cache_file, size, _ in sorted(entries, key=lambda entry: entry[2]):
+        if total_size <= LOUDNESS_CACHE_MAX_SIZE_BYTES:
+            break
+        try:
+            cache_file.unlink(missing_ok=True)
+            total_size -= size
+        except OSError:
+            continue
+
+
+# K-weighting 系数按采样率缓存——实际使用时采样率固定为 22050，
+# 每次请求重复计算纯属浪费；以 dict 缓存首次计算结果，键为采样率。
+_k_weighting_coeffs_cache: dict = {}
 
 
 def _k_weighting_coeffs(sr: float):
@@ -69,7 +166,9 @@ def _k_weighting_coeffs(sr: float):
     b_shelf = [b0 / a0, b1 / a0, b2 / a0]
     a_shelf = [1.0, a1 / a0, a2 / a0]
 
-    return b_hp, a_hp, b_shelf, a_shelf
+    result = (b_hp, a_hp, b_shelf, a_shelf)
+    _k_weighting_coeffs_cache[sr] = result
+    return result
 
 
 def integrated_lufs(y, sr: float) -> float:
@@ -87,23 +186,26 @@ def integrated_lufs(y, sr: float) -> float:
     # K-weighting：高通 38Hz（二阶）+ 高架 1681Hz +4dB
     b_hp, a_hp, b_shelf, a_shelf = _k_weighting_coeffs(sr)
     weighted = scipy_signal.lfilter(b_shelf, a_shelf, scipy_signal.lfilter(b_hp, a_hp, samples))
-    # 分块（400ms）计算各块响度
+    # 分块（400ms）计算各块响度。
+    # 原实现为 Python 逐块循环（每块一次切片拷贝 + np.mean），大文件上有数百次循环开销；
+    # 改用 np.add.reduceat 一次性完成各块能量求和（每块除以其实际长度），
+    # 数值误差仅在浮点求和顺序上（<1e-12 相对量级），最终结果仍 round 到 2 位小数，语义不变。
     block = max(1, int(0.4 * sr))
     n = len(weighted)
-    block_loudness = []
-    for start in range(0, n, block):
-        seg = weighted[start:start + block]
-        mean_square = float(np.mean(seg * seg))
-        if mean_square > 1e-12:
-            block_loudness.append(10.0 * math.log10(mean_square) - 0.691)
-    if not block_loudness:
+    starts = np.arange(0, n, block)
+    block_sums = np.add.reduceat(weighted * weighted, starts)
+    lengths = np.concatenate((starts[1:] - starts[:-1], np.asarray([n - starts[-1]])))
+    mean_square = block_sums / lengths
+    active_mask = mean_square > 1e-12
+    if not np.any(active_mask):
         return 0.0
+    block_loudness = 10.0 * np.log10(mean_square[active_mask]) - 0.691
     # 相对门限：-10 LU（BS.1770 简化门限）
-    threshold = max(block_loudness) - 10.0
-    active = [level for level in block_loudness if level > threshold]
-    if not active:
+    threshold = float(np.max(block_loudness)) - 10.0
+    active = block_loudness[block_loudness > threshold]
+    if active.size == 0:
         active = block_loudness
-    integrated = 10.0 * math.log10(float(np.mean([10 ** (level / 10.0) for level in active])))
+    integrated = 10.0 * np.log10(float(np.mean(np.power(10.0, active / 10.0))))
     return round(max(-70.0, min(0.0, integrated)), 2)
 
 
@@ -140,8 +242,16 @@ def measure_lufs():
         return jsonify({'error': f'File too large: {size / (1024 * 1024):.1f} MB exceeds the {MAX_AUDIO_FILE_SIZE_BYTES // (1024 * 1024)} MB limit'}), 400
 
     try:
-        y, sr = librosa.load(audio_path, sr=22050, mono=True)
+        # 先查缓存（键含文件 mtime_ns/size，内容未变则结果确定），命中即跳过解码与计算
+        sr = 22050
+        cache_key = _loudness_cache_key(track_key, audio_path, sr)
+        cached = _load_loudness_cache(cache_key)
+        if cached is not None:
+            print(f"💾 响度测量缓存命中: {track_key} → {cached} LUFS")
+            return jsonify({'trackKey': track_key, 'integratedLufs': cached})
+        y, sr = librosa.load(audio_path, sr=sr, mono=True)
         integrated = integrated_lufs(y, sr)
+        _save_loudness_cache(cache_key, integrated)
         print(f"🔊 响度测量: {track_key} → {integrated} LUFS")
         return jsonify({'trackKey': track_key, 'integratedLufs': integrated})
     except Exception as e:

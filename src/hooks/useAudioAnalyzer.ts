@@ -21,18 +21,29 @@ const EMPTY_ANALYSIS: AudioAnalyzerData = Object.freeze({
 const clamp = (value: number) => Math.min(1, Math.max(0, value))
 const logCompress = (value: number, amount = 6) => Math.log1p(amount * clamp(value)) / Math.log1p(amount)
 
-function createAnalyzerStore(): AudioAnalyzerStore & { publish: (value: AudioAnalyzerData) => void } {
+function createAnalyzerStore(): AudioAnalyzerStore & {
+  publish: (value: AudioAnalyzerData) => void
+  hasListeners: () => boolean
+  setStartCallback: (callback: (() => void) | null) => void
+} {
   let snapshot = EMPTY_ANALYSIS
   const listeners = new Set<() => void>()
+  // 有新订阅者出现时重启 rAF 循环（由 effect 注入当前的 start 函数）
+  let startCallback: (() => void) | null = null
   return {
     getSnapshot: () => snapshot,
     subscribe: listener => {
       listeners.add(listener)
+      startCallback?.()
       return () => listeners.delete(listener)
     },
     publish: value => {
       snapshot = value
       listeners.forEach(listener => listener())
+    },
+    hasListeners: () => listeners.size > 0,
+    setStartCallback: callback => {
+      startCallback = callback
     },
   }
 }
@@ -57,6 +68,14 @@ export function useAudioAnalyzer(analyser: AnalyserNode | null, enabled = true):
     let animationFrame = 0
     let lastUpdateTime = 0
     let disposed = false
+
+    // 取消待执行帧；后续由 start() 依据「有订阅者 + 窗口可见」决定是否续帧
+    const stop = () => {
+      if (animationFrame) {
+        cancelAnimationFrame(animationFrame)
+        animationFrame = 0
+      }
+    }
     let bassBaseline = 0
     let overallBaseline = 0
     let beatPulse = 0
@@ -87,7 +106,11 @@ export function useAudioAnalyzer(analyser: AnalyserNode | null, enabled = true):
     }
 
     const analyze = (now: number) => {
+      animationFrame = 0
       if (disposed) return
+      // 无消费者或窗口隐藏时进入空闲：不采样、不续帧，避免 Electron
+      // backgroundThrottling 关闭后 rAF 在后台仍全速空转。
+      if (document.visibilityState === 'hidden' || !store.hasListeners()) return
       if (now - lastUpdateTime >= updateInterval) {
         lastUpdateTime = now
         analyser.getByteFrequencyData(data)
@@ -155,14 +178,33 @@ export function useAudioAnalyzer(analyser: AnalyserNode | null, enabled = true):
           flux: logCompress(fluxOnset * 12, 4),
         })
       }
+      // 仅在有订阅者且窗口可见时续帧（无消费者 = 无脉冲组件挂载，如桌面模式/首页）
+      if (store.hasListeners() && document.visibilityState === 'visible') {
+        animationFrame = requestAnimationFrame(analyze)
+      }
+    }
+
+    const start = () => {
+      if (disposed) return
+      if (animationFrame || document.visibilityState === 'hidden' || !store.hasListeners()) return
       animationFrame = requestAnimationFrame(analyze)
     }
 
-    animationFrame = requestAnimationFrame(analyze)
+    // 窗口隐藏时停帧；回到可见且有订阅者时恢复（参考桌面频谱/WeatherMap 的门控）
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') stop()
+      else start()
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    store.setStartCallback(start)
+    start()
     return () => {
       disposed = true
-      cancelAnimationFrame(animationFrame)
-      store.publish(EMPTY_ANALYSIS)
+      stop()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      store.setStartCallback(null)
+      if (store.getSnapshot() !== EMPTY_ANALYSIS) store.publish(EMPTY_ANALYSIS)
     }
   }, [analyser, enabled])
 

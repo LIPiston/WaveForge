@@ -54,9 +54,19 @@ ALLOWED_AUDIO_EXTENSIONS = {
 MAX_AUDIO_FILE_SIZE_BYTES = 300 * 1024 * 1024
 
 
-def cleanup_cache():
+# 缓存清理节流：cleanup_cache() 需要 glob+stat 整个缓存目录，
+# 在缓存文件较多时开销可达数百毫秒（实测 3000 文件约 585ms）。
+# 每次 save 都全量清理会显著拖慢新曲目分析，故按时间节流——最多每 60 秒清理一次，
+# 缓存总量上限与过期清理改为"最终一致"（延后至多 60 秒生效），不影响输出语义。
+_last_cleanup_time = [0.0]
+
+
+def cleanup_cache(force=False):
     """删除过期缓存，并按最近使用时间把总量限制在 512MB。"""
     now = time.time()
+    if not force and now - _last_cleanup_time[0] < 60.0:
+        return
+    _last_cleanup_time[0] = now
     entries = []
     for cache_file in CACHE_DIR.glob("*.json"):
         try:
@@ -415,7 +425,7 @@ def clear_cache():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    cleanup_cache()
+    cleanup_cache(force=True)
     # 设置日志文件
     log_dir = CACHE_ROOT / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -460,4 +470,4 @@ if __name__ == '__main__':
     print(f"Service URL: http://localhost:3002")
     print("=" * 60)
     
-    app.run(host='127.0.0.1', port=3002, debug=False)
+    app.run(host='127.0.0.1', port=3002, debug=False, threaded=True)

@@ -1,5 +1,5 @@
 import { getQQUserDisplayName } from '../utils/qqUser'
-import { memo, useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { X, Music, Heart, List, User, Crown, Calendar, MapPin, RefreshCw, LogOut, Plus, MoreHorizontal, Play, History, Disc3, Radio, Mic2, Users, TrendingUp, ArrowLeft, Film } from 'lucide-react'
 import { Song, resolveSongAlbumIdentifier, getUserFollows, getUserFolloweds, getUserRecordRank, getQQFollows, getQQFans, getQQUserProfile, getQQUserFavs, subscribeQQUser, subscribeNeteaseUser, getSubscribedAlbums, getSubscribedArtists, getQQSubscribedAlbums, getQQSubscribedArtists, getNeteaseMvSublist, neteaseDailySignin } from '../services/musicApi'
@@ -84,6 +84,14 @@ const formatCount = (value?: number) => {
   return count ? String(count) : '0'
 }
 
+const formatRecentTime = (value?: number) => {
+  if (!value) return ''
+  const timestamp = value < 1e12 ? value * 1000 : value
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 interface RecentPlaybackItem {
   id: string
   type: RecentPlaybackType
@@ -95,6 +103,331 @@ interface RecentPlaybackItem {
   playlist?: Playlist
   albumId?: string
 }
+
+// ===== 列表行组件（模块级 memo）=====
+// 视图内部状态（滚动/关注/收藏/切 tab）变化时，行组件 props 引用不变则跳过重渲染，
+// 避免整表重建。回调均为 useCallback 稳定壳（内部经 ref 取最新 handler）。
+
+interface PlaylistGridCardProps {
+  playlist: Playlist
+  platform: 'netease' | 'qq'
+  accentColor: string
+  showCreator?: boolean
+  onOpen: (playlist: Playlist) => void
+  onContextMenu: (playlist: Playlist, event: React.MouseEvent) => void
+  onPlay: (playlist: Playlist, event: React.MouseEvent) => void
+}
+
+const PlaylistGridCard = memo(function PlaylistGridCard({
+  playlist,
+  platform,
+  accentColor,
+  showCreator = false,
+  onOpen,
+  onContextMenu,
+  onPlay,
+}: PlaylistGridCardProps) {
+  return (
+    <motion.div
+      whileHover={{ scale: 1.05 }}
+      onClick={() => onOpen(playlist)}
+      onContextMenu={(event) => onContextMenu(playlist, event)}
+      className="relative rounded-xl p-4 cursor-pointer transition-all overflow-hidden group"
+      style={{
+        background: 'rgba(255, 255, 255, 0.05)',
+        backdropFilter: 'blur(10px)',
+        WebkitBackdropFilter: 'blur(10px)',
+        border: '1px solid rgba(255, 255, 255, 0.1)',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'
+        e.currentTarget.style.borderColor = accentColor
+        e.currentTarget.style.boxShadow = `0 8px 25px ${accentColor}30`
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'
+        e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)'
+        e.currentTarget.style.boxShadow = 'none'
+      }}
+    >
+      <div className="absolute top-6 right-6 z-20 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          type="button"
+          onClick={(event) => onPlay(playlist, event)}
+          className="p-2 rounded-full bg-black/55 hover:bg-black/75 text-white transition-colors"
+          title="播放歌单"
+          aria-label="播放歌单"
+        >
+          <Play className="w-4 h-4" fill="currentColor" />
+        </button>
+        <button
+          type="button"
+          onClick={(event) => onContextMenu(playlist, event)}
+          className="p-2 rounded-full bg-black/55 hover:bg-black/75 text-white transition-colors"
+          title="歌单操作"
+          aria-label="歌单操作"
+        >
+          <MoreHorizontal className="w-4 h-4" />
+        </button>
+      </div>
+      <div className="relative w-full aspect-square rounded-lg overflow-hidden mb-3 bg-white/10">
+        {playlist.coverImgUrl ? (
+          <CachedImage
+            src={playlist.coverImgUrl}
+            alt={playlist.name}
+            className="w-full h-full object-cover"
+            fallback={
+              <div className="w-full h-full flex items-center justify-center">
+                <Music className="w-8 h-8 text-white/20" />
+              </div>
+            }
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <Music className="w-8 h-8 text-white/20" />
+          </div>
+        )}
+        {platform === 'qq' && playlist.isLike && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center" aria-hidden="true">
+            <Heart
+              className="h-[42%] w-[42%] fill-white/75 text-white/75"
+              strokeWidth={0}
+              style={{ filter: 'drop-shadow(0 4px 14px rgba(0, 0, 0, 0.28)) blur(0.7px)' }}
+            />
+          </div>
+        )}
+      </div>
+      <div className="text-white text-sm font-medium truncate mb-1">{playlist.name}</div>
+      <div className="text-white/50 text-xs">{playlist.trackCount} 首歌曲</div>
+      {showCreator && playlist.creator && (
+        <div className="text-white/40 text-xs mt-1">by {playlist.creator.nickname}</div>
+      )}
+    </motion.div>
+  )
+})
+
+interface RecentPlaybackCardProps {
+  item: RecentPlaybackItem
+  platform: 'netease' | 'qq'
+  accentColor: string
+  songItems: RecentPlaybackItem[]
+  onSongSelect: (song: Song, songs: Song[]) => void
+  onPlaylistOpen: (playlist: Playlist) => void
+  onPlaylistPlay: (playlist: Playlist, event: React.MouseEvent) => void
+  onAlbumOpen: (albumId: string, platform: 'netease' | 'qq') => void
+  onContextMenu: (song: Song, songs: Song[], event: React.MouseEvent) => void
+}
+
+const RecentPlaybackCard = memo(function RecentPlaybackCard({
+  item,
+  platform,
+  accentColor,
+  songItems,
+  onSongSelect,
+  onPlaylistOpen,
+  onPlaylistPlay,
+  onAlbumOpen,
+  onContextMenu,
+}: RecentPlaybackCardProps) {
+  const canOpen = item.type === 'song' || item.type === 'playlist' || item.type === 'album'
+  return (
+    <motion.div
+      whileHover={{ scale: 1.04, y: -3 }}
+      className={`relative rounded-xl p-3 overflow-hidden group transition-all ${canOpen ? 'cursor-pointer' : 'cursor-default'}`}
+      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+      onClick={() => {
+        if (item.type === 'song' && item.song) onSongSelect(item.song, songItems.map(entry => entry.song!))
+        else if (item.type === 'playlist' && item.playlist) onPlaylistOpen(item.playlist)
+        else if (item.type === 'album' && item.albumId) onAlbumOpen(item.albumId, platform)
+      }}
+      onContextMenu={(event) => {
+        if (item.type !== 'song' || !item.song) return
+        event.preventDefault()
+        event.stopPropagation()
+        onContextMenu(item.song, songItems.map(entry => entry.song!), event)
+      }}
+      onMouseEnter={(event) => {
+        event.currentTarget.style.background = 'rgba(255,255,255,0.1)'
+        event.currentTarget.style.borderColor = accentColor
+        event.currentTarget.style.boxShadow = `0 8px 25px ${accentColor}30`
+      }}
+      onMouseLeave={(event) => {
+        event.currentTarget.style.background = 'rgba(255,255,255,0.05)'
+        event.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'
+        event.currentTarget.style.boxShadow = 'none'
+      }}
+    >
+      <div className="relative w-full aspect-square rounded-lg overflow-hidden bg-white/10 mb-3">
+        {item.coverUrl ? <CachedImage src={item.coverUrl} alt={item.name} className="w-full h-full object-cover" fallback={<div className="w-full h-full flex items-center justify-center"><Music className="w-8 h-8 text-white/20" /></div>} /> : <div className="w-full h-full flex items-center justify-center"><Music className="w-8 h-8 text-white/20" /></div>}
+        {item.type === 'song' && item.song && <button type="button" onClick={(event) => { event.stopPropagation(); onSongSelect(item.song!, songItems.map(entry => entry.song!)) }} className="absolute bottom-2 right-2 p-3 rounded-full bg-black/60 hover:bg-black/80 text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg" aria-label="播放"><Play className="w-5 h-5" fill="currentColor" /></button>}
+        {item.type === 'playlist' && item.playlist && <button type="button" onClick={(event) => onPlaylistPlay(item.playlist!, event)} className="absolute bottom-2 right-2 p-3 rounded-full bg-black/60 hover:bg-black/80 text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg" aria-label="播放歌单"><Play className="w-5 h-5" fill="currentColor" /></button>}
+      </div>
+      <div className="text-white text-sm font-medium truncate mb-1" title={item.name}>{item.name}</div>
+      <div className="text-white/50 text-xs truncate">{item.subtitle || (platform === 'qq' ? 'QQ 音乐' : '网易云音乐')}</div>
+      {item.playTime ? <div className="text-white/35 text-[11px] mt-2 truncate">{formatRecentTime(item.playTime)}</div> : null}
+    </motion.div>
+  )
+})
+
+interface SocialUserItem {
+  userId: string
+  nickname: string
+  avatarUrl: string
+  signature: string
+  isFollow: boolean
+}
+
+interface SocialUserCardProps {
+  user: SocialUserItem
+  socialType: 'follows' | 'followeds'
+  accentColor: string
+  onOpen: (user: SocialUserItem) => void
+  onToggleFollow: (user: SocialUserItem) => void
+}
+
+const SocialUserCard = memo(function SocialUserCard({
+  user,
+  socialType,
+  accentColor,
+  onOpen,
+  onToggleFollow,
+}: SocialUserCardProps) {
+  return (
+    <div
+      className="rounded-xl p-4 transition-all cursor-pointer"
+      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+      onClick={() => onOpen(user)}
+      title="点击查看用户主页"
+    >
+      <div className="flex items-center gap-3">
+        <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 bg-white/10">
+          {user.avatarUrl ? <img src={user.avatarUrl} alt={user.nickname} className="w-full h-full object-cover" /> : <User className="w-6 h-6 m-auto mt-3 text-white/30" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-white text-sm font-medium truncate">{user.nickname}</p>
+          <p className="text-white/40 text-xs truncate mt-0.5">{user.signature || '这个人很懒，什么都没写'}</p>
+        </div>
+        {user.userId && (
+          <button
+            type="button"
+            className={`shrink-0 px-2.5 py-1 rounded-full text-xs transition-colors ${user.isFollow ? 'text-white/50 hover:text-white/80' : 'text-white'}`}
+            style={user.isFollow ? { background: 'rgba(255,255,255,0.1)' } : { background: `${accentColor}55`, border: `1px solid ${accentColor}88` }}
+            onClick={(event) => {
+              event.stopPropagation()
+              onToggleFollow(user)
+            }}
+          >
+            {user.isFollow ? '已关注' : (socialType === 'followeds' ? '回关' : '关注')}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+})
+
+interface QqSocialUserItem {
+  encUin: string
+  mid: string
+  name: string
+  desc: string
+  avatarUrl: string
+  isFollow: boolean
+  isSelf: boolean
+}
+
+interface QqSocialUserCardProps {
+  user: QqSocialUserItem
+  socialType: 'follows' | 'fans'
+  accentColor: string
+  onOpen: (user: QqSocialUserItem) => void
+  onToggleFollow: (user: QqSocialUserItem) => void
+}
+
+const QqSocialUserCard = memo(function QqSocialUserCard({
+  user,
+  socialType,
+  accentColor,
+  onOpen,
+  onToggleFollow,
+}: QqSocialUserCardProps) {
+  return (
+    <div
+      className="rounded-xl p-4 transition-all cursor-pointer"
+      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+      onClick={() => onOpen(user)}
+      title={user.mid ? '点击打开歌手详情' : '点击查看用户主页'}
+    >
+      <div className="flex items-center gap-3">
+        <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 bg-white/10">
+          {user.avatarUrl ? <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" /> : <Users className="w-6 h-6 m-auto mt-3 text-white/30" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-white text-sm font-medium truncate">{user.name}</p>
+          <p className="text-white/40 text-xs truncate mt-0.5">{user.desc || (user.mid ? '歌手' : '这个人很懒，什么都没写')}</p>
+        </div>
+        {/* 关注/回关按钮（仅用户；自己不显示；歌手关注走歌手详情内） */}
+        {!user.mid && !user.isSelf && user.encUin && (
+          <button
+            type="button"
+            className={`shrink-0 px-2.5 py-1 rounded-full text-xs transition-colors ${user.isFollow ? 'text-white/50 hover:text-white/80' : 'text-white'}`}
+            style={user.isFollow ? { background: 'rgba(255,255,255,0.1)' } : { background: `${accentColor}55`, border: `1px solid ${accentColor}88` }}
+            onClick={(event) => {
+              event.stopPropagation()
+              onToggleFollow(user)
+            }}
+          >
+            {/* 粉丝 tab 里未关注的是“回关”（对方已关注我）；关注 tab 里都是“已关注”；已关注再点取关 */}
+            {user.isFollow ? '已关注' : (socialType === 'fans' ? '回关' : '关注')}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+})
+
+interface RankSongRowProps {
+  song: Song
+  index: number
+  accentColor: string
+  songs: Song[]
+  onSelect: (song: Song, songs: Song[]) => void
+  onContextMenu: (song: Song, songs: Song[], event: React.MouseEvent) => void
+}
+
+const RankSongRow = memo(function RankSongRow({
+  song,
+  index,
+  accentColor,
+  songs,
+  onSelect,
+  onContextMenu,
+}: RankSongRowProps) {
+  return (
+    <div
+      className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-white/5 transition-colors group cursor-pointer"
+      onClick={() => onSelect(song, songs)}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        onContextMenu(song, songs, event)
+      }}
+    >
+      <span className={`w-8 text-center text-sm font-semibold shrink-0 ${index < 3 ? '' : 'text-white/40'}`} style={index < 3 ? { color: accentColor } : {}}>{index + 1}</span>
+      <div className="w-11 h-11 rounded-lg overflow-hidden shrink-0 bg-white/10">
+        {song.album?.picUrl ? <CachedImage src={song.album.picUrl} alt={song.name} className="w-full h-full object-cover" fallback={<div className="w-full h-full flex items-center justify-center"><Music className="w-5 h-5 text-white/20" /></div>} /> : <div className="w-full h-full flex items-center justify-center"><Music className="w-5 h-5 text-white/20" /></div>}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-white text-sm font-medium truncate">{song.name}</p>
+        <p className="text-white/45 text-xs truncate">{(song.artists || []).map(a => a.name).join(' / ') || '未知歌手'}</p>
+      </div>
+      {song.playCount ? (
+        <span className="text-white/40 text-[11px] shrink-0 mr-1">{formatCount(song.playCount)} 次</span>
+      ) : null}
+      <button type="button" onClick={(event) => { event.stopPropagation(); onSelect(song, songs) }} className="p-2 rounded-full bg-black/60 hover:bg-black/80 text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg" aria-label="播放">
+        <Play className="w-4 h-4" fill="currentColor" />
+      </button>
+    </div>
+  )
+})
 
 interface ProfileViewProps {
   initialPlatform: 'netease' | 'qq'  // 初始显示的平台
@@ -216,8 +549,8 @@ function ProfileView({
   // 查看他人时禁用歌单写操作与平台切换
   const isViewingOther = Boolean(viewTarget)
   
-  // 根据主题色生成渐变色
-  const generateGradientColors = (baseColor: string) => {
+  // 根据主题色生成渐变色（accentColor 为稳定 prop，避免每次渲染重复计算）
+  const generateGradientColors = useCallback((baseColor: string) => {
     // 将 hex 转换为 RGB
     const hexToRgb = (hex: string) => {
       const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
@@ -229,16 +562,16 @@ function ProfileView({
     }
 
     const rgb = hexToRgb(baseColor)
-    
+
     // 生成三种渐变色：主色、暗色、更暗的色
     const color1 = `${rgb.r}, ${rgb.g}, ${rgb.b}`
     const color2 = `${Math.max(0, rgb.r - 40)}, ${Math.max(0, rgb.g - 40)}, ${Math.max(0, rgb.b - 40)}`
     const color3 = `${Math.max(0, rgb.r - 60)}, ${Math.max(0, rgb.g - 60)}, ${Math.max(0, rgb.b - 60)}`
-    
-    return { color1, color2, color3, rgb }
-  }
 
-  const { color1, color2, color3, rgb } = generateGradientColors(accentColor)
+    return { color1, color2, color3, rgb }
+  }, [])
+
+  const { color1, color2, color3, rgb } = useMemo(() => generateGradientColors(accentColor), [generateGradientColors, accentColor])
   
   // 性别显示
   const getGenderText = (gender?: number) => {
@@ -757,14 +1090,6 @@ function ProfileView({
     }
   }
 
-  const formatRecentTime = (value?: number) => {
-    if (!value) return ''
-    const timestamp = value < 1e12 ? value * 1000 : value
-    const date = new Date(timestamp)
-    if (Number.isNaN(date.getTime())) return ''
-    return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-  }
-
   useEffect(() => {
     setActiveTab(initialTab)
   }, [initialTab])
@@ -1117,6 +1442,93 @@ function ProfileView({
     setLoading(false)
   }
 
+  // ===== 稳定回调（供列表行 memo 比较，latest-ref 模式）=====
+  // 行组件只接收原始数据 + 稳定回调；视图内状态变化时行组件引用不变即可跳过重渲染。
+  const recentSongItems = useMemo(
+    () => recentItems.filter(entry => entry.type === 'song' && entry.song),
+    [recentItems]
+  )
+
+  const openRecentSongContextMenu = useCallback((song: Song, songs: Song[], event: React.MouseEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setRecentSongContextMenu({ show: true, x: event.clientX, y: event.clientY, song, songs })
+  }, [])
+
+  const toggleNeteaseFollow = useCallback((user: SocialUserItem) => {
+    const next = !user.isFollow
+    // 乐观更新，失败时回滚
+    setSocialItems(prev => prev.map(item =>
+      item.userId === user.userId ? { ...item, isFollow: next } : item
+    ))
+    void subscribeNeteaseUser(user.userId, next).then((result) => {
+      if (!(result?.code === 200 || result?.result === 100)) {
+        setSocialItems(prev => prev.map(item =>
+          item.userId === user.userId ? { ...item, isFollow: user.isFollow } : item
+        ))
+      }
+    })
+  }, [])
+
+  const toggleQqFollow = useCallback((user: QqSocialUserItem) => {
+    const next = !user.isFollow
+    // 乐观更新，失败时回滚
+    setQqSocialItems(prev => prev.map(item =>
+      item.encUin === user.encUin ? { ...item, isFollow: next } : item
+    ))
+    void subscribeQQUser(user.encUin, next).then((result) => {
+      if (!(result?.result === 100 || result?.code === 200)) {
+        setQqSocialItems(prev => prev.map(item =>
+          item.encUin === user.encUin ? { ...item, isFollow: user.isFollow } : item
+        ))
+      }
+    })
+  }, [])
+
+  // 最新 handler 引用存放处：行组件稳定壳不随渲染变化，取最新值兜底。
+  const profileHandlersRef = useRef({
+    openPlaylist: handlePlaylistClick,
+    playlistContextMenu: handlePlaylistContextMenu,
+    playPlaylist: handlePlayPlaylist,
+    songSelect: handleSongSelection,
+    openUserProfile,
+    openAlbum: onOpenAlbum,
+    openQqSocialProfile: (user: QqSocialUserItem) => {
+      if (user.mid) {
+        if (onOpenArtist) onOpenArtist(user.mid, 'qq')
+        else if (user.encUin) openUserProfile('qq', user.encUin, user.name, user.avatarUrl)
+      } else if (user.encUin) {
+        openUserProfile('qq', user.encUin, user.name, user.avatarUrl)
+      }
+    },
+  })
+  profileHandlersRef.current = {
+    openPlaylist: handlePlaylistClick,
+    playlistContextMenu: handlePlaylistContextMenu,
+    playPlaylist: handlePlayPlaylist,
+    songSelect: handleSongSelection,
+    openUserProfile,
+    openAlbum: onOpenAlbum,
+    openQqSocialProfile: (user: QqSocialUserItem) => {
+      if (user.mid) {
+        if (onOpenArtist) onOpenArtist(user.mid, 'qq')
+        else if (user.encUin) openUserProfile('qq', user.encUin, user.name, user.avatarUrl)
+      } else if (user.encUin) {
+        openUserProfile('qq', user.encUin, user.name, user.avatarUrl)
+      }
+    },
+  }
+
+  const stableOpenPlaylist = useCallback((playlist: Playlist) => { void profileHandlersRef.current.openPlaylist(playlist) }, [])
+  const stablePlaylistContextMenu = useCallback((playlist: Playlist, event: React.MouseEvent) => { profileHandlersRef.current.playlistContextMenu(playlist, event) }, [])
+  const stablePlayPlaylist = useCallback((playlist: Playlist, event: React.MouseEvent) => { void profileHandlersRef.current.playPlaylist(playlist, event) }, [])
+  const stableSongSelect = useCallback((song: Song, songs?: Song[]) => { profileHandlersRef.current.songSelect(song, songs) }, [])
+  const stableOpenAlbum = useCallback((albumId: string, platform: 'netease' | 'qq') => { profileHandlersRef.current.openAlbum?.(albumId, platform) }, [])
+  const stableOpenQqSocialProfile = useCallback((user: QqSocialUserItem) => { profileHandlersRef.current.openQqSocialProfile(user) }, [])
+  const stableOpenNeteaseUser = useCallback((user: SocialUserItem) => {
+    if (user.userId) profileHandlersRef.current.openUserProfile('netease', user.userId, user.nickname, user.avatarUrl, user.signature)
+  }, [])
+
   return (
     <div className="profile-overlay-root fixed inset-0 w-full h-full overflow-hidden z-50">
       {/* ???????????????????????? */}
@@ -1399,80 +1811,15 @@ function ProfileView({
                 {activeTab === 'created' && !(viewTarget && platform === 'qq') && (
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                     {createdPlaylists.map((playlist, index) => (
-                      <motion.div
+                      <PlaylistGridCard
                         key={`created-${playlist.id || index}`}
-                        whileHover={{ scale: 1.05 }}
-                        onClick={() => handlePlaylistClick(playlist)}
-                        onContextMenu={(event) => handlePlaylistContextMenu(playlist, event)}
-                        className="relative rounded-xl p-4 cursor-pointer transition-all overflow-hidden group"
-                        style={{
-                          background: 'rgba(255, 255, 255, 0.05)',
-                          backdropFilter: 'blur(10px)',
-                          WebkitBackdropFilter: 'blur(10px)',
-                          border: '1px solid rgba(255, 255, 255, 0.1)',
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'
-                          e.currentTarget.style.borderColor = accentColor
-                          e.currentTarget.style.boxShadow = `0 8px 25px ${accentColor}30`
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'
-                          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)'
-                          e.currentTarget.style.boxShadow = 'none'
-                        }}
-                      >
-                        {(
-                          <div className="absolute top-6 right-6 z-20 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              type="button"
-                              onClick={(event) => handlePlayPlaylist(playlist, event)}
-                              className="p-2 rounded-full bg-black/55 hover:bg-black/75 text-white transition-colors"
-                              title="播放歌单"
-                              aria-label="播放歌单"
-                            >
-                              <Play className="w-4 h-4" fill="currentColor" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(event) => handlePlaylistContextMenu(playlist, event)}
-                              className="p-2 rounded-full bg-black/55 hover:bg-black/75 text-white transition-colors"
-                              title="歌单操作"
-                              aria-label="歌单操作"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                          </div>
-                        )}                        <div className="relative w-full aspect-square rounded-lg overflow-hidden mb-3 bg-white/10">
-                          {playlist.coverImgUrl ? (
-                            <CachedImage 
-                              src={playlist.coverImgUrl} 
-                              alt={playlist.name} 
-                              className="w-full h-full object-cover"
-                              fallback={
-                                <div className="w-full h-full flex items-center justify-center">
-                                  <Music className="w-8 h-8 text-white/20" />
-                                </div>
-                              }
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <Music className="w-8 h-8 text-white/20" />
-                            </div>
-                          )}
-                          {platform === 'qq' && playlist.isLike && (
-                            <div className="pointer-events-none absolute inset-0 flex items-center justify-center" aria-hidden="true">
-                              <Heart
-                                className="h-[42%] w-[42%] fill-white/75 text-white/75"
-                                strokeWidth={0}
-                                style={{ filter: 'drop-shadow(0 4px 14px rgba(0, 0, 0, 0.28)) blur(0.7px)' }}
-                              />
-                            </div>
-                          )}
-                        </div>
-                        <div className="text-white text-sm font-medium truncate mb-1">{playlist.name}</div>
-                        <div className="text-white/50 text-xs">{playlist.trackCount} 首歌曲</div>
-                      </motion.div>
+                        playlist={playlist}
+                        platform={platform}
+                        accentColor={accentColor}
+                        onOpen={stableOpenPlaylist}
+                        onContextMenu={stablePlaylistContextMenu}
+                        onPlay={stablePlayPlaylist}
+                      />
                     ))}
                   </div>
                 )}
@@ -1487,74 +1834,16 @@ function ProfileView({
                 {activeTab === 'subscribed' && !(viewTarget && platform === 'qq') && (
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                     {subscribedPlaylists.map((playlist, index) => (
-                      <motion.div
+                      <PlaylistGridCard
                         key={`subscribed-${playlist.id || index}`}
-                        whileHover={{ scale: 1.05 }}
-                        onClick={() => handlePlaylistClick(playlist)}
-                        onContextMenu={(event) => handlePlaylistContextMenu(playlist, event)}
-                        className="relative rounded-xl p-4 cursor-pointer transition-all overflow-hidden group"
-                        style={{
-                          background: 'rgba(255, 255, 255, 0.05)',
-                          backdropFilter: 'blur(10px)',
-                          WebkitBackdropFilter: 'blur(10px)',
-                          border: '1px solid rgba(255, 255, 255, 0.1)',
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'
-                          e.currentTarget.style.borderColor = accentColor
-                          e.currentTarget.style.boxShadow = `0 8px 25px ${accentColor}30`
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'
-                          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)'
-                          e.currentTarget.style.boxShadow = 'none'
-                        }}
-                      >
-                        {(
-                          <div className="absolute top-6 right-6 z-20 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              type="button"
-                              onClick={(event) => handlePlayPlaylist(playlist, event)}
-                              className="p-2 rounded-full bg-black/55 hover:bg-black/75 text-white transition-colors"
-                              title="播放歌单"
-                              aria-label="播放歌单"
-                            >
-                              <Play className="w-4 h-4" fill="currentColor" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(event) => handlePlaylistContextMenu(playlist, event)}
-                              className="p-2 rounded-full bg-black/55 hover:bg-black/75 text-white transition-colors"
-                              title="歌单操作"
-                              aria-label="歌单操作"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                          </div>
-                        )}                        <div className="w-full aspect-square rounded-lg overflow-hidden mb-3 bg-white/10">
-                          {playlist.coverImgUrl ? (
-                            <CachedImage 
-                              src={playlist.coverImgUrl} 
-                              alt={playlist.name} 
-                              className="w-full h-full object-cover"
-                              fallback={
-                                <div className="w-full h-full flex items-center justify-center">
-                                  <Music className="w-8 h-8 text-white/20" />
-                                </div>
-                              }
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <Music className="w-8 h-8 text-white/20" />
-                            </div>
-                          )}
-                        </div>
-                        <div className="text-white text-sm font-medium truncate mb-1">{playlist.name}</div>
-                        <div className="text-white/50 text-xs">{playlist.trackCount} 首歌曲</div>
-                        {playlist.creator && (
-                          <div className="text-white/40 text-xs mt-1">by {playlist.creator.nickname}</div>
-                        )}
-                      </motion.div>
+                        playlist={playlist}
+                        platform={platform}
+                        accentColor={accentColor}
+                        showCreator
+                        onOpen={stableOpenPlaylist}
+                        onContextMenu={stablePlaylistContextMenu}
+                        onPlay={stablePlayPlaylist}
+                      />
                     ))}
                   </div>
                 )}
@@ -1583,54 +1872,20 @@ function ProfileView({
                     {recentError && <div className="text-sm text-red-300 bg-red-400/10 border border-red-300/20 rounded-lg p-3">{recentError}</div>}
                     {recentLoading ? <div className="py-16 text-center text-white/55">正在读取平台最近播放…</div> : recentItems.length === 0 ? <div className="py-16 text-center text-white/45">暂无平台最近播放记录</div> : (
                       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                        {recentItems.map((item, index) => {
-                          const songItems = recentItems.filter(entry => entry.type === 'song' && entry.song)
-                          const canOpen = item.type === 'song' || item.type === 'playlist' || item.type === 'album'
-                          return (
-                            <motion.div
-                              key={`${item.type}-${item.id}-${index}`}
-                              whileHover={{ scale: 1.04, y: -3 }}
-                              className={`relative rounded-xl p-3 overflow-hidden group transition-all ${canOpen ? 'cursor-pointer' : 'cursor-default'}`}
-                              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
-                               onClick={() => {
-                                 if (item.type === 'song' && item.song) handleSongSelection(item.song, songItems.map(entry => entry.song!))
-                                 else if (item.type === 'playlist' && item.playlist) void handlePlaylistClick(item.playlist)
-                                 else if (item.type === 'album' && item.albumId) onOpenAlbum?.(item.albumId, platform)
-                               }}
-                               onContextMenu={(event) => {
-                                 if (item.type !== 'song' || !item.song) return
-                                 event.preventDefault()
-                                 event.stopPropagation()
-                                 setRecentSongContextMenu({
-                                   show: true,
-                                   x: event.clientX,
-                                   y: event.clientY,
-                                   song: item.song,
-                                   songs: songItems.map(entry => entry.song!),
-                                 })
-                               }}
-                              onMouseEnter={(event) => {
-                                event.currentTarget.style.background = 'rgba(255,255,255,0.1)'
-                                event.currentTarget.style.borderColor = accentColor
-                                event.currentTarget.style.boxShadow = `0 8px 25px ${accentColor}30`
-                              }}
-                              onMouseLeave={(event) => {
-                                event.currentTarget.style.background = 'rgba(255,255,255,0.05)'
-                                event.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'
-                                event.currentTarget.style.boxShadow = 'none'
-                              }}
-                            >
-                              <div className="relative w-full aspect-square rounded-lg overflow-hidden bg-white/10 mb-3">
-                                {item.coverUrl ? <CachedImage src={item.coverUrl} alt={item.name} className="w-full h-full object-cover" fallback={<div className="w-full h-full flex items-center justify-center"><Music className="w-8 h-8 text-white/20" /></div>} /> : <div className="w-full h-full flex items-center justify-center"><Music className="w-8 h-8 text-white/20" /></div>}
-                                {item.type === 'song' && item.song && <button type="button" onClick={(event) => { event.stopPropagation(); handleSongSelection(item.song!, songItems.map(entry => entry.song!)) }} className="absolute bottom-2 right-2 p-3 rounded-full bg-black/60 hover:bg-black/80 text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg" aria-label="播放"><Play className="w-5 h-5" fill="currentColor" /></button>}
-                                {item.type === 'playlist' && item.playlist && <button type="button" onClick={(event) => void handlePlayPlaylist(item.playlist!, event)} className="absolute bottom-2 right-2 p-3 rounded-full bg-black/60 hover:bg-black/80 text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg" aria-label="播放歌单"><Play className="w-5 h-5" fill="currentColor" /></button>}
-                              </div>
-                              <div className="text-white text-sm font-medium truncate mb-1" title={item.name}>{item.name}</div>
-                              <div className="text-white/50 text-xs truncate">{item.subtitle || (platform === 'qq' ? 'QQ 音乐' : '网易云音乐')}</div>
-                              {item.playTime ? <div className="text-white/35 text-[11px] mt-2 truncate">{formatRecentTime(item.playTime)}</div> : null}
-                            </motion.div>
-                          )
-                        })}
+                        {recentItems.map((item, index) => (
+                          <RecentPlaybackCard
+                            key={`${item.type}-${item.id}-${index}`}
+                            item={item}
+                            platform={platform}
+                            accentColor={accentColor}
+                            songItems={recentSongItems}
+                            onSongSelect={stableSongSelect}
+                            onPlaylistOpen={stableOpenPlaylist}
+                            onPlaylistPlay={stablePlayPlaylist}
+                            onAlbumOpen={stableOpenAlbum}
+                            onContextMenu={openRecentSongContextMenu}
+                          />
+                        ))}
                       </div>
                     )}
                   </div>
@@ -1649,47 +1904,14 @@ function ProfileView({
                       : (
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                           {socialItems.map((u, index) => (
-                            <div
+                            <SocialUserCard
                               key={`${u.userId}-${index}`}
-                              className="rounded-xl p-4 transition-all cursor-pointer"
-                              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
-                              onClick={() => { if (u.userId) openUserProfile('netease', u.userId, u.nickname, u.avatarUrl, u.signature) }}
-                              title="点击查看用户主页"
-                            >
-                              <div className="flex items-center gap-3">
-                                <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 bg-white/10">
-                                  {u.avatarUrl ? <img src={u.avatarUrl} alt={u.nickname} className="w-full h-full object-cover" /> : <User className="w-6 h-6 m-auto mt-3 text-white/30" />}
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <p className="text-white text-sm font-medium truncate">{u.nickname}</p>
-                                  <p className="text-white/40 text-xs truncate mt-0.5">{u.signature || '这个人很懒，什么都没写'}</p>
-                                </div>
-                                {/* 关注/回关/取关（网易云） */}
-                                {u.userId && (
-                                  <button
-                                    type="button"
-                                    className={`shrink-0 px-2.5 py-1 rounded-full text-xs transition-colors ${u.isFollow ? 'text-white/50 hover:text-white/80' : 'text-white'}`}
-                                    style={u.isFollow ? { background: 'rgba(255,255,255,0.1)' } : { background: `${accentColor}55`, border: `1px solid ${accentColor}88` }}
-                                    onClick={(event) => {
-                                      event.stopPropagation()
-                                      const next = !u.isFollow
-                                      setSocialItems(prev => prev.map(item =>
-                                        item.userId === u.userId ? { ...item, isFollow: next } : item
-                                      ))
-                                      void subscribeNeteaseUser(u.userId, next).then((result) => {
-                                        if (!(result?.code === 200 || result?.result === 100)) {
-                                          setSocialItems(prev => prev.map(item =>
-                                            item.userId === u.userId ? { ...item, isFollow: u.isFollow } : item
-                                          ))
-                                        }
-                                      })
-                                    }}
-                                  >
-                                    {u.isFollow ? '已关注' : (socialType === 'followeds' ? '回关' : '关注')}
-                                  </button>
-                                )}
-                              </div>
-                            </div>
+                              user={u}
+                              socialType={socialType}
+                              accentColor={accentColor}
+                              onOpen={stableOpenNeteaseUser}
+                              onToggleFollow={toggleNeteaseFollow}
+                            />
                           ))}
                         </div>
                       )}
@@ -1710,57 +1932,14 @@ function ProfileView({
                       : (
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                           {qqSocialItems.map((u, index) => (
-                            <div
+                            <QqSocialUserCard
                               key={`${u.encUin || u.mid}-${index}`}
-                              className="rounded-xl p-4 transition-all cursor-pointer"
-                              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
-                              onClick={() => {
-                                // 关注列表里有歌手的 mid → 应用内打开歌手详情
-                                if (u.mid) {
-                                  if (onOpenArtist) onOpenArtist(u.mid, 'qq')
-                                  else if (u.encUin) openUserProfile('qq', u.encUin, u.name, u.avatarUrl)
-                                } else if (u.encUin) {
-                                  openUserProfile('qq', u.encUin, u.name, u.avatarUrl)
-                                }
-                              }}
-                              title={u.mid ? '点击打开歌手详情' : '点击查看用户主页'}
-                            >
-                              <div className="flex items-center gap-3">
-                                <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 bg-white/10">
-                                  {u.avatarUrl ? <img src={u.avatarUrl} alt={u.name} className="w-full h-full object-cover" /> : <Users className="w-6 h-6 m-auto mt-3 text-white/30" />}
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <p className="text-white text-sm font-medium truncate">{u.name}</p>
-                                  <p className="text-white/40 text-xs truncate mt-0.5">{u.desc || (u.mid ? '歌手' : '这个人很懒，什么都没写')}</p>
-                                </div>
-                                {/* 关注/回关按钮（仅用户；自己不显示；歌手关注走歌手详情内） */}
-                                {!u.mid && !u.isSelf && u.encUin && (
-                                  <button
-                                    type="button"
-                                    className={`shrink-0 px-2.5 py-1 rounded-full text-xs transition-colors ${u.isFollow ? 'text-white/50 hover:text-white/80' : 'text-white'}`}
-                                    style={u.isFollow ? { background: 'rgba(255,255,255,0.1)' } : { background: `${accentColor}55`, border: `1px solid ${accentColor}88` }}
-                                    onClick={(event) => {
-                                      event.stopPropagation()
-                                      const next = !u.isFollow
-                                      // 乐观更新，失败时回滚
-                                      setQqSocialItems(prev => prev.map(item =>
-                                        item.encUin === u.encUin ? { ...item, isFollow: next } : item
-                                      ))
-                                      void subscribeQQUser(u.encUin, next).then((result) => {
-                                        if (!(result?.result === 100 || result?.code === 200)) {
-                                          setQqSocialItems(prev => prev.map(item =>
-                                            item.encUin === u.encUin ? { ...item, isFollow: u.isFollow } : item
-                                          ))
-                                        }
-                                      })
-                                    }}
-                                  >
-                                    {/* 粉丝 tab 里未关注的是“回关”（对方已关注我）；关注 tab 里都是“已关注”；已关注再点取关 */}
-                                    {u.isFollow ? '已关注' : (qqSocialType === 'fans' ? '回关' : '关注')}
-                                  </button>
-                                )}
-                              </div>
-                            </div>
+                              user={u}
+                              socialType={qqSocialType}
+                              accentColor={accentColor}
+                              onOpen={stableOpenQqSocialProfile}
+                              onToggleFollow={toggleQqFollow}
+                            />
                           ))}
                         </div>
                       )}
@@ -1891,30 +2070,15 @@ function ProfileView({
                       : (
                         <div className="space-y-1">
                           {rankItems.map((song, index) => (
-                            <div
+                            <RankSongRow
                               key={`${song.id}-${index}`}
-                              className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-white/5 transition-colors group cursor-pointer"
-                              onClick={() => handleSongSelection(song, rankItems)}
-                              onContextMenu={(event) => {
-                                event.preventDefault()
-                                setRecentSongContextMenu({ show: true, x: event.clientX, y: event.clientY, song, songs: rankItems })
-                              }}
-                            >
-                              <span className={`w-8 text-center text-sm font-semibold shrink-0 ${index < 3 ? '' : 'text-white/40'}`} style={index < 3 ? { color: accentColor } : {}}>{index + 1}</span>
-                              <div className="w-11 h-11 rounded-lg overflow-hidden shrink-0 bg-white/10">
-                                {song.album?.picUrl ? <CachedImage src={song.album.picUrl} alt={song.name} className="w-full h-full object-cover" fallback={<div className="w-full h-full flex items-center justify-center"><Music className="w-5 h-5 text-white/20" /></div>} /> : <div className="w-full h-full flex items-center justify-center"><Music className="w-5 h-5 text-white/20" /></div>}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <p className="text-white text-sm font-medium truncate">{song.name}</p>
-                                <p className="text-white/45 text-xs truncate">{(song.artists || []).map(a => a.name).join(' / ') || '未知歌手'}</p>
-                              </div>
-                              {song.playCount ? (
-                                <span className="text-white/40 text-[11px] shrink-0 mr-1">{formatCount(song.playCount)} 次</span>
-                              ) : null}
-                              <button type="button" onClick={(event) => { event.stopPropagation(); handleSongSelection(song, rankItems) }} className="p-2 rounded-full bg-black/60 hover:bg-black/80 text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg" aria-label="播放">
-                                <Play className="w-4 h-4" fill="currentColor" />
-                              </button>
-                            </div>
+                              song={song}
+                              index={index}
+                              accentColor={accentColor}
+                              songs={rankItems}
+                              onSelect={stableSongSelect}
+                              onContextMenu={openRecentSongContextMenu}
+                            />
                           ))}
                         </div>
                       )}
