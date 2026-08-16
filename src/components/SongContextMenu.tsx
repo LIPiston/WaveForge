@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { Play, ListPlus, Heart, HeartOff, MessageSquare, Disc, User, Copy, ChevronRight, Info, ListMusic } from 'lucide-react'
+import { Play, ListPlus, Heart, HeartOff, MessageSquare, Disc, User, Copy, ChevronRight, Info, ListMusic, ThumbsDown } from 'lucide-react'
 import { Song, getProxiedImageUrl } from '../services/musicApi'
 import { useEffect, useLayoutEffect, useState, useRef } from 'react'
 import CachedImage from './CachedImage'
@@ -27,6 +27,7 @@ interface SongContextMenuProps {
   onViewAlbum?: (song: Song) => void
   onViewArtist?: (song: Song) => void
   onCopyInfo?: (song: Song) => void
+  onDislike?: (song: Song) => void
   userPlaylists: any[]
   platform: 'netease' | 'qq'
   playerTheme?: 'light' | 'dark'
@@ -54,6 +55,7 @@ export default function SongContextMenu({
   onViewAlbum,
   onViewArtist,
   onCopyInfo,
+  onDislike,
   userPlaylists,
   platform,
   playerTheme = 'dark',
@@ -343,6 +345,14 @@ export default function SongContextMenu({
         onClose()
       }
     },
+    ...(onDislike && song?.platform === 'netease' ? [{
+      label: '不感兴趣',
+      icon: ThumbsDown,
+      onClick: () => {
+        onDislike(song)
+        onClose()
+      }
+    }] : []),
     ...(song?.platform === 'netease' || song?.platform === 'qq' ? [{
       label: '相似歌曲',
       icon: ListMusic,

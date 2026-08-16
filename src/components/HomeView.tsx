@@ -908,23 +908,34 @@ export default function HomeView({
     }
   }
 
-  // Share a playlist
-  const handleSharePlaylist = async (playlist: any) => {
+  // Share a playlist (copies the share link to the clipboard)
+  const handleSharePlaylist = (playlist: any) => {
     const url = platform === 'qq'
       ? `https://y.qq.com/n/ryqq/playlist/${playlist.id}`
       : `https://music.163.com/#/playlist?id=${playlist.id}`
     try {
-      if (navigator.share) {
-        await navigator.share({ title: playlist.name, url })
-      } else {
-        await navigator.clipboard.writeText(url)
-        showPlaylistToast('歌单链接已复制', 'success')
-      }
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError') {
-        showPlaylistToast('分享失败，请重试', 'error')
-      }
+      navigator.clipboard.writeText(url).catch(() => {
+        // Electron 中 clipboard API 可能被 CSP 限制，回退到 textarea 选择复制
+        const textarea = document.createElement('textarea')
+        textarea.value = url
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      })
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = url
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
     }
+    showPlaylistToast('歌单链接已复制', 'success')
   }
 
   // Remove a song from a playlist

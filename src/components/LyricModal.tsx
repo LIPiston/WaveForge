@@ -44,13 +44,23 @@ export default function LyricModal({ songName, artistName, coverUrl, lyrics, onC
     } catch { return false }
   }
 
-  const copyLine = (text: string) => {
-    if (copyText(text)) localToast(`已复制：${text.slice(0, 20)}${text.length > 20 ? '…' : ''}`)
+  const copyLine = (text: string, roman?: string, trans?: string) => {
+    const parts = [text]
+    if (showRoman && roman) parts.push(roman)
+    if (showTrans && trans) parts.push(trans)
+    const content = parts.filter(Boolean).join('\n')
+    if (copyText(content)) localToast(`已复制：${text.slice(0, 20)}${text.length > 20 ? '…' : ''}`)
     else localToast('复制失败')
   }
 
   const copyAll = () => {
-    const full = lyrics.map(l => l.text).filter(Boolean).join('\n')
+    const lines = lyrics.map(l => {
+      const parts = [l.text]
+      if (showRoman && l.roman) parts.push(l.roman)
+      if (showTrans && l.translation) parts.push(l.translation)
+      return parts.filter(Boolean).join('\n')
+    }).filter(Boolean)
+    const full = lines.join('\n')
     if (copyText(full)) localToast(`已复制全部歌词（${lyrics.length} 行）`)
     else localToast('复制失败')
   }
@@ -147,7 +157,7 @@ export default function LyricModal({ songName, artistName, coverUrl, lyrics, onC
                 <div
                   key={`${l.time}-${i}`}
                   className="rounded-lg px-3 py-1.5 hover:bg-white/5 transition-colors cursor-pointer group"
-                  onClick={() => { if (l.text) copyLine(l.text) }}
+                  onClick={() => { if (l.text) copyLine(l.text, l.roman, l.translation) }}
                   title="点击复制该行"
                 >
                   {l.text && <p className="text-white text-sm leading-6">{l.text}</p>}

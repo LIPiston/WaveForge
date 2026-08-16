@@ -2125,7 +2125,8 @@ function App() {
     setDetailPlaylistLoading(true)
     try {
       const data = await getPlaylistDetail(playlistId, platform)
-      setDetailPlaylist({ playlist: data?.playlist || { id: playlistId, platform, name: '歌单' }, songs: data?.songs || [] })
+      const songs = data?.songs || data?.songlist || data?.playlist?.tracks || []
+      setDetailPlaylist({ playlist: data?.playlist || { id: playlistId, platform, name: '歌单' }, songs })
     } catch {
       setDetailPlaylist(null)
     } finally {
@@ -3949,6 +3950,7 @@ function App() {
         {detailPlaylist && (
           <LazyPlaylistDetailPanel
             show
+            overlayZ={95}
             playerTheme={playerTheme}
             playlist={detailPlaylist.playlist}
             songs={detailPlaylist.songs}

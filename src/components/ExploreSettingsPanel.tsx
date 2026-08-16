@@ -14,6 +14,9 @@ export type ExploreSectionId = 'discover' | 'journey' | 'playlists' | 'charts' |
 export type ExploreDensity = 'comfortable' | 'compact'
 export type ExploreContentAmount = 'curated' | 'expanded'
 export type ExploreBackgroundIntensity = 'calm' | 'vivid'
+export type ExploreBackgroundMode = 'gradient' | 'coverWall'
+export type ExploreCoverWallStyle = 'tilted' | 'grid'
+export type ExploreCardOpacity = 'solid' | 'frosted' | 'glass'
 
 export interface ExplorePlatformPreferences {
   order: ExploreSectionId[]
@@ -22,6 +25,20 @@ export interface ExplorePlatformPreferences {
   contentAmount: ExploreContentAmount
   showDescriptions: boolean
   backgroundIntensity: ExploreBackgroundIntensity
+  // 背景模式：gradient=渐变 / coverWall=歌曲封面墙
+  backgroundMode: ExploreBackgroundMode
+  // 封面墙样式：tilted=错落倾斜 / grid=规整网格
+  coverWallStyle: ExploreCoverWallStyle
+  // 封面墙动画（缓慢漂移）开关
+  coverWallAnimated: boolean
+  // 封面墙模糊遮罩强度
+  coverWallBlur: 'soft' | 'medium' | 'strong'
+  // 卡片玻璃化程度
+  cardOpacity: ExploreCardOpacity
+  // 排行榜/新歌列表显示序号
+  showRankNumbers: boolean
+  // 启用平台增强 API（QQ 的 Skills 个性化推荐 / 网易云 VIP 音质等）
+  enhancedApi: boolean
 }
 
 export interface ExplorePreferences {
@@ -39,28 +56,36 @@ export const EXPLORE_SECTION_LABELS: Record<ExploreSectionId, string> = {
   channels: '声音与频道',
 }
 
-const BASE_ORDER: ExploreSectionId[] = ['discover', 'journey', 'playlists', 'charts', 'newSongs', 'albums', 'channels']
+const BASE_ORDER: ExploreSectionId[] = ['discover', 'journey', 'playlists', 'charts', 'newSongs', 'channels']
 const PLATFORM_ORDER: Record<ExplorePlatform, ExploreSectionId[]> = {
   netease: BASE_ORDER,
   qq: BASE_ORDER,
+}
+
+const DEFAULT_PLATFORM_PREFS = {
+  density: 'comfortable' as const,
+  contentAmount: 'curated' as const,
+  showDescriptions: true,
+  backgroundIntensity: 'vivid' as const,
+  backgroundMode: 'gradient' as const,
+  coverWallStyle: 'tilted' as const,
+  coverWallAnimated: true,
+  coverWallBlur: 'medium' as const,
+  cardOpacity: 'frosted' as const,
+  showRankNumbers: true,
+  enhancedApi: true,
 }
 
 export const createDefaultExplorePreferences = (): ExplorePreferences => ({
   netease: {
     order: [...PLATFORM_ORDER.netease],
     hidden: [],
-    density: 'comfortable',
-    contentAmount: 'curated',
-    showDescriptions: true,
-    backgroundIntensity: 'vivid',
+    ...DEFAULT_PLATFORM_PREFS,
   },
   qq: {
     order: [...PLATFORM_ORDER.qq],
     hidden: [],
-    density: 'comfortable',
-    contentAmount: 'curated',
-    showDescriptions: true,
-    backgroundIntensity: 'vivid',
+    ...DEFAULT_PLATFORM_PREFS,
   },
 })
 
@@ -91,6 +116,13 @@ export function normalizeExplorePreferences(input: unknown): ExplorePreferences 
       contentAmount: source.contentAmount === 'expanded' ? 'expanded' : 'curated',
       showDescriptions: source.showDescriptions !== false,
       backgroundIntensity: source.backgroundIntensity === 'calm' ? 'calm' : 'vivid',
+      backgroundMode: source.backgroundMode === 'coverWall' ? 'coverWall' : 'gradient',
+      coverWallStyle: source.coverWallStyle === 'grid' ? 'grid' : 'tilted',
+      coverWallAnimated: source.coverWallAnimated !== false,
+      coverWallBlur: source.coverWallBlur === 'soft' || source.coverWallBlur === 'strong' ? source.coverWallBlur : 'medium',
+      cardOpacity: source.cardOpacity === 'solid' || source.cardOpacity === 'glass' ? source.cardOpacity : 'frosted',
+      showRankNumbers: source.showRankNumbers !== false,
+      enhancedApi: source.enhancedApi !== false,
     }
   }
 
@@ -249,6 +281,58 @@ export default function ExploreSettingsPanel({
               </section>
 
               <section className="mb-7 space-y-4">
+                <h3 className={`text-sm font-semibold ${textPrimary}`}>背景与氛围</h3>
+                <SettingChoice
+                  label="背景模式"
+                  description="渐变=当前平台主题色；封面墙=用每日推荐/猜你喜欢的歌曲封面拼成动态海报墙。"
+                  value={current.backgroundMode}
+                  options={[['gradient', '渐变'], ['coverWall', '封面墙']]}
+                  accent={accent}
+                  isDark={isDark}
+                  onChange={value => updateCurrent({ backgroundMode: value as ExploreBackgroundMode })}
+                />
+                {current.backgroundMode === 'coverWall' && (
+                  <>
+                    <SettingChoice
+                      label="封面墙样式"
+                      description="错落倾斜更像实体海报墙；规整网格更清爽。"
+                      value={current.coverWallStyle}
+                      options={[['tilted', '错落倾斜'], ['grid', '规整网格']]}
+                      accent={accent}
+                      isDark={isDark}
+                      onChange={value => updateCurrent({ coverWallStyle: value as ExploreCoverWallStyle })}
+                    />
+                    <SettingChoice
+                      label="封面墙模糊"
+                      description="遮罩越强，前景内容越清晰。"
+                      value={current.coverWallBlur}
+                      options={[['soft', '轻微'], ['medium', '适中'], ['strong', '强烈']]}
+                      accent={accent}
+                      isDark={isDark}
+                      onChange={value => updateCurrent({ coverWallBlur: value as 'soft' | 'medium' | 'strong' })}
+                    />
+                    <ToggleRow
+                      label="封面墙动画"
+                      description="封面缓慢漂移，营造呼吸感。"
+                      checked={current.coverWallAnimated}
+                      accent={accent}
+                      isDark={isDark}
+                      onChange={value => updateCurrent({ coverWallAnimated: value })}
+                    />
+                  </>
+                )}
+                <SettingChoice
+                  label="背景氛围"
+                  description="控制平台主题色在背景中的强度。"
+                  value={current.backgroundIntensity}
+                  options={[['calm', '柔和'], ['vivid', '鲜明']]}
+                  accent={accent}
+                  isDark={isDark}
+                  onChange={value => updateCurrent({ backgroundIntensity: value as ExploreBackgroundIntensity })}
+                />
+              </section>
+
+              <section className="mb-7 space-y-4">
                 <h3 className={`text-sm font-semibold ${textPrimary}`}>内容与视觉</h3>
                 <SettingChoice
                   label="首页内容量"
@@ -269,27 +353,44 @@ export default function ExploreSettingsPanel({
                   onChange={value => updateCurrent({ density: value as ExploreDensity })}
                 />
                 <SettingChoice
-                  label="背景氛围"
-                  description="控制平台主题色在背景中的强度。"
-                  value={current.backgroundIntensity}
-                  options={[['calm', '柔和'], ['vivid', '鲜明']]}
+                  label="卡片质感"
+                  description="毛玻璃=半透明磨砂；高透=更通透；实心=更厚重。"
+                  value={current.cardOpacity}
+                  options={[['frosted', '毛玻璃'], ['glass', '高透'], ['solid', '实心']]}
                   accent={accent}
                   isDark={isDark}
-                  onChange={value => updateCurrent({ backgroundIntensity: value as ExploreBackgroundIntensity })}
+                  onChange={value => updateCurrent({ cardOpacity: value as ExploreCardOpacity })}
                 />
-                <label className={`flex cursor-pointer items-center justify-between rounded-2xl border p-4 ${borderSoft} ${cardBg}`}>
-                  <span>
-                    <span className={`block text-sm font-medium ${textPrimary}`}>显示板块说明</span>
-                    <span className={`mt-1 block text-xs ${textMuted}`}>保留标题下方的推荐逻辑和内容说明。</span>
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={current.showDescriptions}
-                    onChange={event => updateCurrent({ showDescriptions: event.target.checked })}
-                    className="h-4 w-4 accent-current"
-                    style={{ color: accent }}
-                  />
-                </label>
+                <ToggleRow
+                  label="显示板块说明"
+                  description="保留标题下方的推荐逻辑和内容说明。"
+                  checked={current.showDescriptions}
+                  accent={accent}
+                  isDark={isDark}
+                  onChange={value => updateCurrent({ showDescriptions: value })}
+                />
+                <ToggleRow
+                  label="显示排行序号"
+                  description="榜单与歌单卡片左侧显示 1/2/3 序号。"
+                  checked={current.showRankNumbers}
+                  accent={accent}
+                  isDark={isDark}
+                  onChange={value => updateCurrent({ showRankNumbers: value })}
+                />
+              </section>
+
+              <section className="mb-7 space-y-4">
+                <h3 className={`text-sm font-semibold ${textPrimary}`}>平台增强</h3>
+                <ToggleRow
+                  label={platform === 'qq' ? 'QQ 个性化推荐（Skills）' : '网易云个性化推荐'}
+                  description={platform === 'qq'
+                    ? '启用登录后的每日 30 首 / 猜你喜欢 / AI 歌单等增强推荐；关闭则只使用公开榜单与热门。'
+                    : '启用登录后的每日推荐 / 私人漫游等个性化内容。'}
+                  checked={current.enhancedApi}
+                  accent={accent}
+                  isDark={isDark}
+                  onChange={value => updateCurrent({ enhancedApi: value })}
+                />
               </section>
 
               <p className={`rounded-2xl border px-4 py-3 text-xs leading-relaxed ${borderSoft} ${cardBg} ${textMuted}`}>
@@ -345,5 +446,47 @@ function SettingChoice({
         ))}
       </div>
     </div>
+  )
+}
+
+function ToggleRow({
+  label,
+  description,
+  checked,
+  accent,
+  isDark,
+  onChange,
+}: {
+  label: string
+  description: string
+  checked: boolean
+  accent: string
+  isDark: boolean
+  onChange: (value: boolean) => void
+}) {
+  const borderSoft = isDark ? 'border-white/[0.08]' : 'border-black/[0.08]'
+  const cardBg = isDark ? 'bg-white/[0.035]' : 'bg-black/[0.04]'
+  const textPrimary = isDark ? 'text-white' : 'text-black/90'
+  const textMuted = isDark ? 'text-white/42' : 'text-black/50'
+  return (
+    <label className={`flex cursor-pointer items-center justify-between rounded-2xl border p-4 ${borderSoft} ${cardBg}`}>
+      <span className="pr-3">
+        <span className={`block text-sm font-medium ${textPrimary}`}>{label}</span>
+        <span className={`mt-1 block text-xs ${textMuted}`}>{description}</span>
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className="relative h-6 w-11 shrink-0 rounded-full transition"
+        style={{ background: checked ? accent : isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.14)' }}
+      >
+        <span
+          className="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all"
+          style={{ left: checked ? 22 : 2 }}
+        />
+      </button>
+    </label>
   )
 }

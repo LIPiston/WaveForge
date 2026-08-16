@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Music, Info, Loader, Heart } from 'lucide-react'
-import { getAlbumDetail, getAlbumSongs, Album, Song, getProxiedImageUrl, subscribeAlbum } from '../services/musicApi'
+import { getAlbumDetail, getAlbumSongs, Album, Song, getProxiedImageUrl, subscribeAlbum, isAlbumSubscribed } from '../services/musicApi'
 import CachedImage from './CachedImage'
 import ScrollToTop from './ScrollToTop'
 import ScrollToCurrentSong from './ScrollToCurrentSong'
@@ -78,6 +78,18 @@ export default function AlbumDetailModal({
       setSubscribing(false)
     }
   }
+
+  // 打开专辑详情时按当前账号是否已收藏初始化按钮状态（QQ 传 mid，网易云传数字 id）
+  useEffect(() => {
+    if (!album) return
+    let cancelled = false
+    const id = platform === 'qq' ? String(album.mid || album.id) : String(album.id)
+    setSubscribed(false)
+    void isAlbumSubscribed(id, platform).then((subscribedNow) => {
+      if (!cancelled) setSubscribed(subscribedNow)
+    })
+    return () => { cancelled = true }
+  }, [album, platform])
   
   // 滚动容器引用
   const scrollContainerRef = useRef<HTMLDivElement>(null)

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Music, Disc, Video, Info, Loader, ListMusic, Calendar, Eye, Users, Heart, UserPlus, UserCheck } from 'lucide-react'
-import { getArtistDetail, getArtistTopSongs, getArtistAllSongs, getArtistAlbums, getArtistMVs, Artist, Song, Album, getProxiedImageUrl, resolveSongAlbumIdentifier, subscribeArtist, getSimilarArtists } from '../services/musicApi'
+import { getArtistDetail, getArtistTopSongs, getArtistAllSongs, getArtistAlbums, getArtistMVs, Artist, Song, Album, getProxiedImageUrl, resolveSongAlbumIdentifier, subscribeArtist, getSimilarArtists, isArtistFollowed } from '../services/musicApi'
 import CachedImage from './CachedImage'
 import AlbumDetailModal from './AlbumDetailModal'
 import VideoPlayer from './VideoPlayer'
@@ -251,6 +251,19 @@ export default function ArtistDetailModal({
       setLoading(false)
     }
   }
+
+  // 打开歌手详情时按当前账号是否已关注初始化按钮状态（QQ 传 mid，网易云传数字 id）
+  useEffect(() => {
+    if (!artist) return
+    let cancelled = false
+    const id = platform === 'qq' ? String(artist.mid || artist.id) : String(artist.id)
+    setFollowing(false)
+    setFollowError('')
+    void isArtistFollowed(id, platform).then((followed) => {
+      if (!cancelled) setFollowing(followed)
+    })
+    return () => { cancelled = true }
+  }, [artist, platform])
 
   const loadAllSongs = async (reset: boolean = false) => {
     if (loadingAllSongs) return

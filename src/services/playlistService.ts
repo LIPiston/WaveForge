@@ -405,7 +405,7 @@ export async function getPlaylistDetail(
   const devMode = localStorage.getItem('developerMode') === 'true'
   const url = platform === 'netease'
     ? `http://localhost:3001/api/netease/playlist/detail?id=${encodeURIComponent(playlistId)}&cookie=${encodeURIComponent(localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || '')}`
-    : `http://localhost:3001/api/qq/playlist/detail?id=${playlistId}&devMode=${devMode}`
+    : `http://localhost:3001/api/qq/playlist/detail?id=${playlistId}&devMode=${devMode}&cookie=${encodeURIComponent(localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || '')}`
   
   const maxRetries = 3
   const retryDelay = 1000 // 1秒

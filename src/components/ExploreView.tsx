@@ -25,14 +25,13 @@ import {
   X,
 } from 'lucide-react'
 import type { Song } from '../services/musicApi'
-import { getNeteaseBanner, getQQBanner } from '../services/musicApi'
+import { getNeteaseBanner, getQQBanner, neteaseRecommendDislike, neteaseFmTrash } from '../services/musicApi'
 import {
   fetchExploreChannel,
   fetchExploreChart,
   fetchExploreHome,
   fetchExplorePlaylist,
   getExploreCookie,
-  type ExploreAlbum,
   type ExploreChannel,
   type ExploreChart,
   type ExploreDetail,
@@ -171,6 +170,81 @@ function Cover({ src, alt, className = '', iconClassName = 'w-8 h-8', eager = fa
       draggable={false}
       onError={() => setFailed(true)}
     />
+  )
+}
+
+// 封面墙背景：用歌曲封面拼成的动态海报墙（电影封面墙效果）。
+// 封面平铺 + 缓慢漂移 + 模糊遮罩，让前景内容清晰可读。
+function CoverWallBackground({
+  covers,
+  style,
+  animated,
+  blur,
+  accentRgb,
+}: {
+  covers: string[]
+  style: 'tilted' | 'grid'
+  animated: boolean
+  blur: 'soft' | 'medium' | 'strong'
+  accentRgb: string
+}) {
+  const urls = useMemo(() => {
+    const unique = Array.from(new Set(covers.filter(Boolean)))
+    // 扩充到足够铺满背景的封面数
+    const list: string[] = []
+    let i = 0
+    while (list.length < 28 && unique.length > 0) {
+      list.push(unique[i % unique.length])
+      i += 1
+    }
+    return list
+  }, [covers])
+
+  const blurMap = { soft: 'blur(18px)', medium: 'blur(32px)', strong: 'blur(56px)' } as const
+  const tiltValues = [-5, -3, 0, 3, 5, -2, 2, 4, -4, 1]
+
+  if (urls.length === 0) return null
+
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      {/* 封面墙主体：网格排列，动画时缓慢平移 */}
+      <div
+        className="absolute inset-[-20%]"
+        style={{
+          animation: animated ? 'coverWallDrift 90s linear infinite' : undefined,
+          display: 'grid',
+          gridTemplateColumns: 'repeat(7, 1fr)',
+          gridAutoRows: 'minmax(0, 1fr)',
+          gap: style === 'grid' ? 10 : 14,
+          transform: style === 'tilted' ? 'rotate(2deg) scale(1.06)' : undefined,
+        }}
+      >
+        {urls.map((url, index) => (
+          <div
+            key={`${url}-${index}`}
+            className="overflow-hidden rounded-2xl"
+            style={{
+              transform: style === 'tilted' ? `rotate(${tiltValues[index % tiltValues.length]}deg)` : undefined,
+              boxShadow: '0 4px 18px rgba(0,0,0,0.35)',
+              border: '1px solid rgba(255,255,255,0.08)',
+            }}
+          >
+            <img src={url} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" draggable={false} />
+          </div>
+        ))}
+      </div>
+      {/* 模糊遮罩：让前景清晰 */}
+      <div
+        className="absolute inset-0"
+        style={{
+          backdropFilter: blurMap[blur],
+          WebkitBackdropFilter: blurMap[blur],
+          background: `linear-gradient(160deg, rgba(${accentRgb},0.16) 0%, rgba(6,8,12,0.68) 45%, rgba(6,8,12,0.86) 100%)`,
+        }}
+      />
+      {/* 轻微暗角提升前景对比 */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_35%,rgba(0,0,0,0.5)_100%)]" />
+    </div>
   )
 }
 
@@ -446,6 +520,29 @@ export default function ExploreView({
     }
   }
 
+  // 网易云日推/FM 歌曲"不感兴趣"（每日推荐 → dislike；私人FM 来源 → fm_trash 不再播放）
+  const handleDislike = useCallback((song: Song) => {
+    const cookie = getExploreCookie('netease')
+    if (!cookie) {
+      onLoginClick?.('netease')
+      return
+    }
+    const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: { message, type } }))
+    }
+    const isFm = songContextMenu.continuous === true
+    const task = isFm
+      ? neteaseFmTrash(song.id, { cookie })
+      : neteaseRecommendDislike(song.id, { cookie })
+    void task.then((result) => {
+      const ok = result?.code === 200 || result?.data?.code === 200
+      showToast(
+        ok ? '已标记为不感兴趣' : '操作失败，请稍后重试',
+        ok ? 'success' : 'error',
+      )
+    })
+  }, [songContextMenu.continuous, onLoginClick])
+
   useEffect(() => {
     if (restorePlaybackOrigin?.surface !== 'explore-detail' || !restorePlaybackOrigin.detail) return
     setDetail(restorePlaybackOrigin.detail as ExploreDetail)
@@ -505,7 +602,7 @@ export default function ExploreView({
     setLoading(true)
     setError('')
     try {
-      const result = await fetchExploreHome(platform, signal, { forceRefresh })
+      const result = await fetchExploreHome(platform, signal, { forceRefresh, enhanced: platformPreferences.enhancedApi })
       writeExploreCache(platform, result)
       setDataByPlatform(previous => ({ ...previous, [platform]: result }))
     } catch (requestError) {
@@ -515,7 +612,7 @@ export default function ExploreView({
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [platform, qqLoggedIn, neteaseLoggedIn, authRevision])
+  }, [platform, qqLoggedIn, neteaseLoggedIn, authRevision, platformPreferences.enhancedApi])
 
   useEffect(() => {
     localStorage.setItem('explorePlatform', platform)
@@ -624,15 +721,6 @@ export default function ExploreView({
     event.stopPropagation()
     setSongContextMenu({ show: true, x: event.clientX, y: event.clientY, song, songs, continuous })
   }, [])
-
-  const openExploreAlbum = useCallback((album: ExploreAlbum) => {
-    const identifier = album.platform === 'qq' ? album.mid || album.id : album.id
-    if (!identifier) {
-      setError(`${album.name} 缺少有效的专辑标识，暂时无法打开`)
-      return
-    }
-    onOpenAlbum?.(String(identifier), album.platform)
-  }, [onOpenAlbum])
 
   const sectionOrder = useMemo(
     () => Object.fromEntries(platformPreferences.order.map((section, index) => [section, index])) as Record<ExploreSectionId, number>,
@@ -861,25 +949,7 @@ export default function ExploreView({
     }
 
     if (moreSection === 'albums') {
-      return (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
-          {payload.albums.map((album, index) => (
-            <button
-              key={`${album.platform}-${album.mid || album.id}-${index}`}
-              type="button"
-              onClick={() => openExploreAlbum(album)}
-              className="group min-w-0 text-left"
-            >
-              <span className="relative block aspect-square overflow-hidden rounded-[20px] border border-white/[0.08]">
-                <Cover src={album.coverUrl} alt={album.name} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
-                <span className="absolute bottom-2.5 left-2.5 rounded-full bg-black/50 px-2 py-1 text-[10px] text-white/70">{formatReleaseDate(album.publishTime)}</span>
-              </span>
-              <span className="mt-2.5 block truncate text-sm font-medium">{album.name}</span>
-              <span className="mt-1 block truncate text-xs text-white/36">{album.artist}</span>
-            </button>
-          ))}
-        </div>
-      )
+      return null
     }
 
     return (
@@ -935,6 +1005,16 @@ export default function ExploreView({
               : 'radial-gradient(circle at 10% 0%, rgba(164, 43, 72, 0.34), transparent 38%), radial-gradient(circle at 92% 15%, rgba(96, 50, 177, 0.3), transparent 34%), linear-gradient(145deg, #170c13 0%, #100c14 48%, #090b11 100%)',
         }}
       />
+      {/* 封面墙背景（从每日推荐/猜你喜欢的歌曲封面生成） */}
+      {platformPreferences.backgroundMode === 'coverWall' && heroSongs.length > 0 && (
+        <CoverWallBackground
+          covers={heroSongs.map(song => song.album?.picUrl || '')}
+          style={platformPreferences.coverWallStyle}
+          animated={platformPreferences.coverWallAnimated}
+          blur={platformPreferences.coverWallBlur}
+          accentRgb={accentRgb}
+        />
+      )}
       <div className="pointer-events-none absolute -left-28 top-40 h-80 w-80 rounded-full bg-[rgba(var(--explore-accent-rgb),0.13)] blur-[100px]" />
 
       <div
@@ -1556,37 +1636,6 @@ export default function ExploreView({
               </section>
               )}
 
-              {sectionVisible('albums') && (
-              <section style={sectionStyle('albums')}>
-                <SectionHeading
-                  icon={<Disc3 className="h-5 w-5" />}
-                  title="新碟上架"
-                  subtitle={showSectionDescriptions ? '完整作品，适合从头听到尾' : undefined}
-                  action={<MoreButton label="新碟" onClick={() => setMoreSection('albums')} />}
-                />
-                <div className={`grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 ${compactCards ? 'xl:grid-cols-8' : 'xl:grid-cols-6'}`}>
-                  {payload.albums.slice(0, expandedHome ? 12 : 6).map((album: ExploreAlbum, index) => (
-                    <motion.button
-                      key={`${album.platform}-${album.mid || album.id}-${index}`}
-                      type="button"
-                      whileHover={{ y: -4 }}
-                      onClick={() => openExploreAlbum(album)}
-                      className="group min-w-0 text-left"
-                    >
-                      <div className="relative aspect-square overflow-hidden rounded-[20px] border border-white/[0.08] bg-white/[0.05]">
-                        <Cover src={album.coverUrl} alt={album.name} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
-                        <span className="absolute bottom-2.5 left-2.5 rounded-full bg-black/45 px-2 py-1 text-[10px] text-white/70 backdrop-blur-md">
-                          {formatReleaseDate(album.publishTime)}
-                        </span>
-                      </div>
-                      <span className="mt-2.5 block truncate text-sm font-medium text-white/82">{album.name}</span>
-                      <span className="mt-1 block truncate text-xs text-white/36">{album.artist}</span>
-                    </motion.button>
-                  ))}
-                </div>
-              </section>
-              )}
-
               {sectionVisible('channels') && (
               <section style={sectionStyle('channels')}>
                 <SectionHeading
@@ -1789,6 +1838,7 @@ export default function ExploreView({
             if (identifier) onOpenArtist?.(String(identifier), song.platform || platform)
           }}
           onCopyInfo={onCopyInfo}
+          onDislike={handleDislike}
           userPlaylists={userPlaylists}
           platform={songContextMenu.song.platform || platform}
         />

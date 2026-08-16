@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { X, Music, Disc3, Clock, BadgeCheck, Crown, Calendar, Video, CircleDollarSign, ListMusic, Mic2, ScrollText, BookOpen, RefreshCw, Play } from 'lucide-react'
+import { X, Music, Disc3, Clock, BadgeCheck, Crown, Calendar, Video, CircleDollarSign, ListMusic, Mic2, ScrollText, BookOpen, RefreshCw, Play, Activity } from 'lucide-react'
 import type { Song } from '../services/musicApi'
-import { getLyrics, getNeteaseSongWiki, getQQSongPlaylist, getProxiedImageUrl, getQQListenAlso, getQQLikeAlso, getNeteaseSimiSong, getNeteaseRelatedPlaylist } from '../services/musicApi'
+import { getLyrics, getNeteaseSongWiki, getQQSongPlaylist, getProxiedImageUrl, getQQListenAlso, getQQLikeAlso, getNeteaseSimiSong, getNeteaseRelatedPlaylist, getNeteaseSongBlog } from '../services/musicApi'
 import LyricModal from './LyricModal'
+import VideoPlayer from './VideoPlayer'
 
 interface SongDetailModalProps {
   song: Song
@@ -38,7 +39,9 @@ const NETBASE_FEE_LABELS: Record<number, string> = {
 
 export default function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist }: SongDetailModalProps) {
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
-  const [extra, setExtra] = useState<{ publishTime?: number; mvId?: number; fee?: number; quality?: string } | null>(null)
+  const [extra, setExtra] = useState<{ publishTime?: number; mvId?: number; fee?: number; quality?: string; qualityLevels?: { key: string; label: string; br: number }[]; albumExtra?: { company?: string; subType?: string; type?: string }; publishDate?: string; bpm?: number; genreText?: string; languageText?: string; mvVid?: string } | null>(null)
+  // MV 播放
+  const [showMV, setShowMV] = useState(false)
   // QQ 歌曲详情的板块数据
   const [qqInfo, setQqInfo] = useState<any>(null)
   const [credits, setCredits] = useState<string[]>([])
@@ -60,6 +63,8 @@ export default function SongDetailModal({ song, onClose, onPlayNow, onOpenPlayli
   // 网易云「喜欢这首歌的人也爱听」10 首 + 「相关歌单」5 个
   const [neteaseSimi, setNeteaseSimi] = useState<Song[]>([])
   const [neteaseRelated, setNeteaseRelated] = useState<{ id: string; name: string; coverImgUrl: string; trackCount: number }[]>([])
+  // 网易云「相关博客」2 条
+  const [neteaseBlogs, setNeteaseBlogs] = useState<{ id: number | string; title: string; summary: string; author: string; time: number }[]>([])
 
   // 网易云推荐：喜欢这首歌的人也爱听 + 相关歌单
   useEffect(() => {
@@ -84,6 +89,27 @@ export default function SongDetailModal({ song, onClose, onPlayNow, onOpenPlayli
     }).catch(() => {})
     return () => { cancelled = true }
   }, [song.id, song.platform])
+
+  // 网易云「相关博客」：按歌曲所属专辑拉取（App 歌曲详情"相关博客"，含此歌曲的博客文章）
+  useEffect(() => {
+    if (song.platform !== 'netease') return
+    let cancelled = false
+    const albumId = song.album?.id
+    if (!albumId) return
+    void getNeteaseSongBlog(albumId).then((data) => {
+      if (cancelled || !data) return
+      const list = data?.data?.blogList || data?.data?.list || data?.data?.blogs || []
+      const blogs = (Array.isArray(list) ? list : []).slice(0, 2).map((b: any) => ({
+        id: b.blogId ?? b.id ?? 0,
+        title: b.title || b.name || '',
+        summary: b.summary || b.desc || b.content?.slice?.(0, 100) || '',
+        author: b.nickname || b.creator?.nickname || b.userId ? '' : '',
+        time: b.createTime || b.publishTime || b.time || 0,
+      }))
+      if (!cancelled) setNeteaseBlogs(blogs)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [song.id, song.platform, song.album?.id])
 
   // QQ 推荐：听 [歌曲] 的也在听 + 喜欢 [歌曲] 的人也爱它们
   useEffect(() => {
@@ -125,10 +151,18 @@ export default function SongDetailModal({ song, onClose, onPlayNow, onOpenPlayli
               mvId: data.song.mvId || data.song.mv,
               fee: data.song.fee,
               quality: data.song.vip ? '无损 / 高品质' : '标准',
+              qualityLevels: Array.isArray(data.song.qualityLevels) ? data.song.qualityLevels : [],
+              publishDate: data.song.publishDate,
+              bpm: data.song.bpm,
+              mvVid: data.song.mvVid,
             })
           }
           // 基础信息板块（语种/流派/唱片公司/发行时间/简介）
-          if (!cancelled && data?.detail?.info) setQqInfo(data.detail.info)
+          if (!cancelled && data?.detail?.info) {
+            setQqInfo(data.detail.info)
+            const info = data.detail.info
+            setExtra(prev => prev ? { ...prev, genreText: info.genre?.content?.[0]?.value || '', languageText: info.lan?.content?.[0]?.value || '' } : prev)
+          }
           // 歌词 + 幕后团队（歌词前几行的“词/曲/编曲/制作人”等）
           setLyricsLoading(true)
           const lyricLines = await getLyrics(mid, 'qq', song.name, Array.isArray(song.artists) ? song.artists.map(a => a.name).join(', ') : '', song.duration)
@@ -156,6 +190,8 @@ export default function SongDetailModal({ song, onClose, onPlayNow, onOpenPlayli
               mvId: detail.mv,
               fee: detail.fee,
               quality,
+              qualityLevels: Array.isArray(detail.qualityLevels) ? detail.qualityLevels : [],
+              albumExtra: detail.albumExtra || undefined,
             })
           }
           // 网易云歌词
@@ -303,7 +339,28 @@ export default function SongDetailModal({ song, onClose, onPlayNow, onOpenPlayli
                   )}
                   {publishDate && <span className={`${textTertiary} text-xs`}>发行 {publishDate}</span>}
                   <span className={`${textTertiary} text-xs`}>{formatDuration(song.duration)}</span>
-                  {feeLabel && <span className={`${textTertiary} text-xs`}>{feeLabel}</span>}
+                  {/* 音质等级标签（该歌曲支持的所有音质） */}
+                  {extra?.qualityLevels && extra.qualityLevels.length > 0 ? (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {extra.qualityLevels.map((q, i) => (
+                        <span
+                          key={`${q.key}-${i}`}
+                          className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+                          style={{
+                            color: '#fff',
+                            background: q.label.includes('无损') || q.label.includes('Hi-Res') || q.label.includes('杜比') || q.label.includes('臻品')
+                              ? `linear-gradient(135deg, ${accentColor}cc, ${accentColor}88)`
+                              : 'rgba(255,255,255,0.12)',
+                            border: '1px solid rgba(255,255,255,0.18)',
+                          }}
+                        >
+                          {q.label}
+                        </span>
+                      ))}
+                    </div>
+                  ) : feeLabel ? (
+                    <span className={`${textTertiary} text-xs`}>{feeLabel}</span>
+                  ) : null}
                 </div>
               </div>
               {/* 查看歌词（横排最右，短按钮） */}
@@ -326,8 +383,47 @@ export default function SongDetailModal({ song, onClose, onPlayNow, onOpenPlayli
                 {infoRow(<Disc3 className="w-4 h-4" />, '专辑', albumName)}
                 {infoRow(<Clock className="w-4 h-4" />, '时长', formatDuration(song.duration), true)}
                 {publishDate && infoRow(<Calendar className="w-4 h-4" />, '发行时间', publishDate, true)}
-                {extra?.mvId != null && infoRow(<Video className="w-4 h-4" />, 'MV', '有 MV 版本')}
-                {feeLabel && infoRow(<CircleDollarSign className="w-4 h-4" />, '音质', feeLabel)}
+                {extra?.bpm ? infoRow(<Activity className="w-4 h-4" />, 'BPM', String(extra.bpm), true) : null}
+                {extra?.genreText && infoRow(<Music className="w-4 h-4" />, '流派', extra.genreText)}
+                {extra?.languageText && infoRow(<Mic2 className="w-4 h-4" />, '语种', extra.languageText)}
+                {extra?.albumExtra?.company && infoRow(<Disc3 className="w-4 h-4" />, '唱片公司', extra.albumExtra.company)}
+                {extra?.albumExtra?.subType && infoRow(<Disc3 className="w-4 h-4" />, '专辑类型', extra.albumExtra.subType)}
+                {extra?.mvId != null && (
+                  <button
+                    type="button"
+                    onClick={() => setShowMV(true)}
+                    className="w-full flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-white/10 text-left"
+                    style={{ background: 'rgba(255,255,255,0.05)', border: `1px solid ${accentColor}55` }}
+                  >
+                    <span className="shrink-0" style={{ color: accentColor }}><Video className="w-4 h-4" /></span>
+                    <span className={`${textSecondary} text-sm shrink-0`}>MV</span>
+                    <span className={`flex-1 min-w-0 text-sm ${textPrimary} truncate text-right flex items-center justify-end gap-1.5`}>
+                      <Play className="w-3.5 h-3.5" fill="currentColor" /> 点击播放
+                    </span>
+                  </button>
+                )}
+                {extra?.qualityLevels && extra.qualityLevels.length > 0 && (
+                  <div className="flex items-center gap-3 rounded-xl px-3 py-2.5" style={{ background: 'rgba(255,255,255,0.05)' }}>
+                    <span className="shrink-0" style={{ color: accentColor }}><CircleDollarSign className="w-4 h-4" /></span>
+                    <span className={`${textSecondary} text-sm shrink-0`}>音质</span>
+                    <span className="flex-1 min-w-0 flex justify-end gap-1 flex-wrap">
+                      {extra.qualityLevels.map((q, i) => (
+                        <span
+                          key={`${q.key}-${i}`}
+                          className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium text-white"
+                          style={{
+                            background: q.label.includes('无损') || q.label.includes('Hi-Res') || q.label.includes('杜比') || q.label.includes('臻品')
+                              ? `linear-gradient(135deg, ${accentColor}cc, ${accentColor}88)`
+                              : 'rgba(255,255,255,0.12)',
+                            border: '1px solid rgba(255,255,255,0.18)',
+                          }}
+                        >
+                          {q.label}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                )}
                 {platformLabel && infoRow(<BadgeCheck className="w-4 h-4" />, '来源', platformLabel)}
                 {typeof song.commentCount === 'number' && infoRow(<Music className="w-4 h-4" />, '评论', song.commentCount.toLocaleString(), true)}
               </div>
@@ -552,6 +648,25 @@ export default function SongDetailModal({ song, onClose, onPlayNow, onOpenPlayli
                   )}
                 </div>
               )}
+
+              {/* 网易云：相关博客（包含此歌曲，最多 2 条） */}
+              {song.platform === 'netease' && neteaseBlogs.length > 0 && (
+                <div className="mt-6">
+                  <div className="flex items-center gap-2 mb-3">
+                    <BookOpen className="w-4 h-4" style={{ color: accentColor }} />
+                    <h4 className={`text-sm font-semibold ${textPrimary}`}>相关博客</h4>
+                  </div>
+                  <div className="space-y-2">
+                    {neteaseBlogs.map((b, i) => (
+                      <div key={`${b.id || i}-${i}`} className="rounded-lg px-3 py-2.5 cursor-pointer transition-colors hover:bg-white/5" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                        <p className={`${textPrimary} text-sm font-medium truncate`}>{b.title || '博客文章'}</p>
+                        {b.summary && <p className={`${textTertiary} text-xs mt-0.5 line-clamp-2`}>{b.summary}</p>}
+                        {b.author && <p className={`${textTertiary} text-[11px] mt-1`}>{b.author}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -565,6 +680,16 @@ export default function SongDetailModal({ song, onClose, onPlayNow, onOpenPlayli
           coverUrl={coverUrl}
           lyrics={lyrics}
           onClose={() => setShowLyric(false)}
+        />
+      )}
+
+      {/* MV 播放器（点击播放） */}
+      {showMV && extra?.mvId != null && (
+        <VideoPlayer
+          mvId={song.platform === 'qq' ? (extra.mvVid || String(extra.mvId)) : extra.mvId}
+          mvName={song.name || ''}
+          platform={song.platform === 'qq' ? 'qq' : 'netease'}
+          onClose={() => setShowMV(false)}
         />
       )}
     </motion.div>

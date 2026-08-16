@@ -2568,8 +2568,49 @@ app.get('/api/netease/song/detail', async (req, res) => {
     }
 
     const result = await NeteaseAPI.song_detail({ ids })
-    
-    res.json(result.body)
+
+    // 补充音质等级（song_music_detail）与专辑扩展信息（唱片公司/专辑类型）
+    const body = result.body || result
+    const song = body.songs?.[0]
+    if (song) {
+      try {
+        const qualityRes = await NeteaseAPI.song_music_detail({ id: String(song.id) })
+        const qd = qualityRes.body?.data || {}
+        const qualityLevels = []
+        const pushLevel = (key, label, br) => {
+          if (qd[key]) qualityLevels.push({ key, label, br: qd[key].br, size: qd[key].size, sr: qd[key].sr })
+        }
+        if (qd.hr) pushLevel('hr', 'Hi-Res 无损', qd.hr.br)
+        if (qd.sq) pushLevel('sq', '无损 FLAC', qd.sq.br)
+        if (qd.db) pushLevel('db', '杜比全景声', qd.db.br)
+        if (qd.jm) pushLevel('jm', '臻品母带', qd.jm.br)
+        if (qd.je) pushLevel('je', '臻品全景声', qd.je.br)
+        if (qd.h) pushLevel('h', '高品质', qd.h.br)
+        if (qd.m) pushLevel('m', '标准', qd.m.br)
+        if (qd.l) pushLevel('l', '普通', qd.l.br)
+        // 按码率从高到低排序，避免杜比/臻品顺序混乱
+        qualityLevels.sort((a, b) => (b.br || 0) - (a.br || 0))
+        song.qualityLevels = qualityLevels
+      } catch (qualityError) {
+        console.warn('[网易云音质详情] 获取失败:', qualityError?.message || qualityError)
+      }
+      try {
+        const albumRes = await NeteaseAPI.album({ id: String(song.al?.id || '') })
+        const alb = albumRes.body?.album || {}
+        if (alb.id) {
+          song.albumExtra = {
+            company: alb.company || '',
+            subType: alb.subType || '',
+            type: alb.type || '',
+            publishTime: alb.publishTime || song.publishTime,
+          }
+        }
+      } catch (albumError) {
+        console.warn('[网易云专辑信息] 获取失败:', albumError?.message || albumError)
+      }
+    }
+
+    res.json(body)
   } catch (error) {
     console.error('获取歌曲详情错误:', error)
     res.status(500).json({ error: error.message })
@@ -4287,7 +4328,15 @@ app.get('/api/netease/mv/url', async (req, res) => {
       console.error('[网易云MV播放地址] 获取失败:', result.body)
       return res.status(500).json({ error: '获取MV播放地址失败' })
     }
-    res.json(result.body)
+
+    // 网易云 MV 视频地址是 http；Electron file:// 页面下 http 会被混合内容策略拦截，
+    // 转成 https（网易云视频 CDN 支持 https）保证在打包版/开发版都能播放。
+    const body = JSON.parse(JSON.stringify(result.body || {}))
+    const mvUrl = body?.data?.url
+    if (typeof mvUrl === 'string' && mvUrl.startsWith('http://')) {
+      body.data.url = mvUrl.replace(/^http:\/\//, 'https://')
+    }
+    res.json(body)
   } catch (error) {
     console.error('[网易云MV播放地址] 错误:', error)
     res.status(500).json({ error: error.message })
@@ -4637,6 +4686,79 @@ app.get('/api/qq/mv/url', async (req, res) => {
   }
 })
 
+// QQ 歌曲关联 MV（GetSongRelatedMv）
+app.get('/api/qq/song/mv', async (req, res) => {
+  try {
+    const { id } = req.query
+    if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
+    const result = await qqMusicApi.api('song/mv', { id: String(id) })
+    res.json({ result: 100, data: result })
+  } catch (error) {
+    console.error('[QQ歌曲关联MV] 获取失败:', error?.message || error)
+    res.status(502).json({ result: 500, error: error?.message || '获取失败' })
+  }
+})
+
+// QQ MV 点赞/取消（mv/like，type=1 赞 type=0 取消）
+app.get('/api/qq/mv/like', async (req, res) => {
+  try {
+    const { id, type = 1, cookie } = req.query
+    if (!id) return res.status(400).json({ error: '请提供MV ID' })
+    useQQMusicCookie(cookie)
+    const result = await qqMusicApi.api('mv/like', { id: String(id), type: String(type), ownCookie: true })
+    res.json({ result: 100, data: result })
+  } catch (error) {
+    console.error('[QQ MV点赞] 操作失败:', error?.message || error)
+    res.status(502).json({ result: 500, error: error?.message || '操作失败' })
+  }
+})
+
+// QQ 批量获取歌曲播放链接（song/urls）
+app.get('/api/qq/song/urls', async (req, res) => {
+  try {
+    const { mids, quality = '128', cookie } = req.query
+    if (!mids) return res.status(400).json({ error: '请提供歌曲mid（逗号分隔）' })
+    useQQMusicCookie(cookie)
+    const midList = String(mids).split(',').filter(Boolean).slice(0, 20)
+    const results = await Promise.allSettled(midList.map(mid => qqMusicApi.api('song/url', { id: mid, type: String(quality), ownCookie: true })))
+    const map = {}
+    results.forEach((r, i) => {
+      const mid = midList[i]
+      map[mid] = r.status === 'fulfilled' && r.value?.url ? r.value.url : null
+    })
+    res.json({ result: 100, data: { urls: map } })
+  } catch (error) {
+    console.error('[QQ批量播放链接] 获取失败:', error?.message || error)
+    res.status(502).json({ result: 500, error: error?.message || '获取失败' })
+  }
+})
+
+// QQ 歌手分类（singer/category）
+app.get('/api/qq/artist/category', async (req, res) => {
+  try {
+    const result = await qqMusicApi.api('singer/category')
+    res.json({ result: 100, data: result })
+  } catch (error) {
+    console.error('[QQ歌手分类] 获取失败:', error?.message || error)
+    res.status(502).json({ result: 500, error: error?.message || '获取失败' })
+  }
+})
+
+// QQ 歌手列表（singer/list）
+app.get('/api/qq/artist/list', async (req, res) => {
+  try {
+    const { type = -100, area = -100, sex = -100, genre = -100, index = 0, pageNo = 1, pageSize = 20 } = req.query
+    const result = await qqMusicApi.api('singer/list', {
+      type: Number(type), area: Number(area), sex: Number(sex), genre: Number(genre),
+      index: Number(index), pageNo: Number(pageNo), pageSize: Number(pageSize)
+    })
+    res.json({ result: 100, data: result })
+  } catch (error) {
+    console.error('[QQ歌手列表] 获取失败:', error?.message || error)
+    res.status(502).json({ result: 500, error: error?.message || '获取失败' })
+  }
+})
+
 // QQ音乐 - 获取MV详情
 app.get('/api/qq/mv/detail', async (req, res) => {
   try {
@@ -4942,6 +5064,35 @@ app.get('/api/qq/song/detail', async (req, res) => {
     } catch (detailError) {
       console.warn('[QQ音乐详情] 板块获取失败:', detailError?.message || detailError)
     }
+
+    // 从 track_info.file 提取可用音质等级（size_* > 0 表示该音质可用）
+    const ti = detail?.track_info
+    if (ti?.file) {
+      const f = ti.file
+      const qualityLevels = []
+      const pushLevel = (key, label, br) => {
+        if (Number(f[key]) > 0) qualityLevels.push({ key, label, br })
+      }
+      pushLevel('size_hires', 'Hi-Res 无损', 9216)
+      pushLevel('size_flac', '无损 FLAC', 1024)
+      pushLevel('size_dolby', '杜比全景声', 1536)
+      pushLevel('size_320mp3', '高品质 320k', 320)
+      pushLevel('size_192aac', '192k AAC', 192)
+      pushLevel('size_128mp3', '标准 128k', 128)
+      pushLevel('size_96aac', '96k AAC', 96)
+      pushLevel('size_48aac', '48k AAC', 48)
+      qualityLevels.sort((a, b) => (b.br || 0) - (a.br || 0))
+      ti.qualityLevels = qualityLevels
+      // 发行日期 / MV / BPM
+      song.qualityLevels = qualityLevels
+      if (ti.time_public) song.publishDate = ti.time_public
+      if (ti.bpm) song.bpm = Number(ti.bpm)
+      if (ti.genre != null) song.genreId = Number(ti.genre)
+      if (ti.language != null) song.languageId = Number(ti.language)
+      if (ti.mv?.vid) song.mvVid = ti.mv.vid
+      if (ti.mv?.id) song.mvId = ti.mv.id
+    }
+
     res.json({ song, detail })
   } catch (error) {
     console.error('[QQ音乐详情] 获取错误:', error.message)
@@ -6272,7 +6423,6 @@ app.get('/api/explore/qq', async (req, res) => {
         qqMusicApi.api('recommend/playlist', { id, pageNo: 1, pageSize: 20 })
       )),
       qqMusicApi.api('new/songs', { type: 0 }),
-      Promise.all([1, 2, 3, 4, 5, 6].map(type => qqMusicApi.api('new/album', { type, num: 30 }))),
       qqMusicApi.api('radio/category'),
       // QQ 电台 99 就是客户端里的“猜你喜欢”。旧实现只取了电台分类，
       // 没有真正请求歌曲，所以探索页主推荐一直由每日推荐或新歌代替。
@@ -6291,7 +6441,6 @@ app.get('/api/explore/qq', async (req, res) => {
       hotPlaylistResult,
       categoryPlaylistResult,
       newSongResult,
-      albumResult,
       radioResult,
       personalizedRadioResult,
       skillDailyResult,
@@ -6308,9 +6457,6 @@ app.get('/api/explore/qq', async (req, res) => {
     )
     const newSongPayload = settledExploreValue(newSongResult, { list: [] }) || {}
     const publicNewSongs = newSongPayload.list || newSongPayload.data?.list || newSongPayload.songlist || []
-    const albumGroups = settledExploreValue(albumResult, []) || []
-    const newAlbums = (Array.isArray(albumGroups) ? albumGroups : [albumGroups])
-      .flatMap(group => group?.list || group?.data?.list || [])
     const radioGroups = settledExploreValue(radioResult, []) || []
     const personalizedRadio = settledExploreValue(personalizedRadioResult, null)
     const skillDaily = settledExploreValue(skillDailyResult, null)
@@ -6489,15 +6635,6 @@ app.get('/api/explore/qq', async (req, res) => {
       newSongs: publicNewSongs.map(item => normalizeQQExploreSong(item)).filter(Boolean).slice(0, 50),
       playlists,
       charts: charts.slice(0, 30),
-      albums: newAlbums.map(album => ({
-        id: Number(album.id) || 0,
-        mid: album.mid || '',
-        name: album.name || '新专辑',
-        artist: (album.singers || []).map(singer => singer.name).filter(Boolean).join(' / ') || '未知歌手',
-        coverUrl: album.mid ? qqAlbumCover(album.mid, 500) : normalizeQQImageUrl(album.picUrl),
-        publishTime: album.release_time || '',
-        platform: 'qq'
-      })).filter((album, index, items) => items.findIndex(candidate => String(candidate.mid || candidate.id) === String(album.mid || album.id)) === index),
       channels,
       meta: {
         source: officialEnhanced ? 'qqmusic-skills + QQMusicApi' : 'QQMusicApi',
@@ -6528,8 +6665,6 @@ app.get('/api/explore/netease', async (req, res) => {
       NeteaseAPI.personalized_newsong({ limit: 30 }),
       NeteaseAPI.top_song({ type: 0 }),
       NeteaseAPI.toplist_detail(),
-      NeteaseAPI.album_newest(),
-      NeteaseAPI.album_new({ area: 'ALL', limit: 50, offset: 0 }),
       NeteaseAPI.personalized_djprogram(),
       NeteaseAPI.dj_personalize_recommend({ limit: 30 }),
       NeteaseAPI.dj_program_toplist({ limit: 30, offset: 0 }),
@@ -6543,8 +6678,6 @@ app.get('/api/explore/netease', async (req, res) => {
       newSongResult,
       topSongResult,
       chartResult,
-      albumResult,
-      albumMoreResult,
       channelResult,
       channelRecommendResult,
       channelToplistResult,
@@ -6631,16 +6764,6 @@ app.get('/api/explore/netease', async (req, res) => {
       }
     }))
 
-    const albumBody = settledExploreValue(albumResult, { body: {} })?.body || {}
-    const albumMoreBody = settledExploreValue(albumMoreResult, { body: {} })?.body || {}
-    const albumIds = new Set()
-    const albumCandidates = [...(albumBody.albums || []), ...(albumMoreBody.albums || [])]
-      .filter(album => {
-        const id = String(album.id || '')
-        if (!id || albumIds.has(id)) return false
-        albumIds.add(id)
-        return true
-      })
     const channelBody = settledExploreValue(channelResult, { body: {} })?.body || {}
     const channelRecommendBody = settledExploreValue(channelRecommendResult, { body: {} })?.body || {}
     const channelToplistBody = settledExploreValue(channelToplistResult, { body: {} })?.body || {}
@@ -6681,14 +6804,6 @@ app.get('/api/explore/netease', async (req, res) => {
       newSongs,
       playlists,
       charts,
-      albums: albumCandidates.map(album => ({
-        id: Number(album.id) || 0,
-        name: album.name || '新专辑',
-        artist: album.artist?.name || (album.artists || []).map(artist => artist.name).filter(Boolean).join(' / ') || '未知歌手',
-        coverUrl: album.picUrl || album.blurPicUrl || '',
-        publishTime: Number(album.publishTime || 0),
-        platform: 'netease'
-      })).slice(0, 50),
       channels,
       meta: {
         source: 'NeteaseCloudMusicApiEnhanced',
@@ -7811,7 +7926,9 @@ app.get('/api/netease/comment/music', async (req, res) => {
 
     // sortType: 99=推荐排序, 2=热度排序, 3=时间排序
     const parsedSortType = parseInt(sortType)
-    const resourceType = [0, 2].includes(parseInt(type)) ? parseInt(type) : 0
+    // 网易云评论资源类型：0=歌曲 1=MV 2=歌单 3=专辑 4=电台 5=视频 6=动态
+    const VALID_COMMENT_TYPES = [0, 1, 2, 3, 4, 5, 6]
+    const resourceType = VALID_COMMENT_TYPES.includes(parseInt(type)) ? parseInt(type) : 0
     const pageSize = parseInt(limit)
     const pageNo = Math.floor(parseInt(offset) / pageSize) + 1
     
@@ -8020,7 +8137,7 @@ app.get('/api/netease/comment/floor', async (req, res) => {
     const result = await NeteaseAPI.comment_floor({
       id,
       parentCommentId,
-      type: [0, 2].includes(parseInt(type)) ? parseInt(type) : 0,
+      type: [0, 1, 2, 3, 4, 5, 6].includes(parseInt(type)) ? parseInt(type) : 0,
       cookie,
       limit: parseInt(limit),
       time: parseInt(time)
@@ -8125,7 +8242,7 @@ app.post('/api/netease/comment/add', async (req, res) => {
       id,
       content,
       t: 1, // 1=发布评论
-      type: [0, 2].includes(parseInt(type)) ? parseInt(type) : 0,
+      type: [0, 1, 2, 3, 4, 5, 6].includes(parseInt(type)) ? parseInt(type) : 0,
       cookie
     })
 
@@ -8160,7 +8277,7 @@ app.post('/api/netease/comment/reply', async (req, res) => {
       content,
       commentId,
       t: 2, // 2=回复评论
-      type: [0, 2].includes(parseInt(type)) ? parseInt(type) : 0,
+      type: [0, 1, 2, 3, 4, 5, 6].includes(parseInt(type)) ? parseInt(type) : 0,
       cookie
     })
 
@@ -8194,7 +8311,7 @@ app.post('/api/netease/comment/delete', async (req, res) => {
       id,
       commentId,
       t: 0, // 0=删除评论
-      type: [0, 2].includes(parseInt(type)) ? parseInt(type) : 0,
+      type: [0, 1, 2, 3, 4, 5, 6].includes(parseInt(type)) ? parseInt(type) : 0,
       cookie
     })
 
@@ -8228,7 +8345,7 @@ app.post('/api/netease/comment/like', async (req, res) => {
       id,
       cid: commentId,
       t: like ? 1 : 0, // 1=点赞, 0=取消点赞
-      type: [0, 2].includes(parseInt(type)) ? parseInt(type) : 0,
+      type: [0, 1, 2, 3, 4, 5, 6].includes(parseInt(type)) ? parseInt(type) : 0,
       cookie
     })
 
@@ -8340,8 +8457,9 @@ app.get('/api/netease/album/sublist', async (req, res) => {
     if (!NeteaseAPI || !NeteaseAPI.album_sublist) {
       return res.status(500).json({ code: 500, error: 'API 未初始化' })
     }
+    // 需要判断"是否已收藏某专辑"时一次拉全量（最多 1000），避免 25 条截断
     const result = await callNeteaseAPIWithRetry(NeteaseAPI.album_sublist, {
-      limit: Number(limit), offset: Number(offset), cookie: String(cookie)
+      limit: Math.max(Number(limit), 1000), offset: Number(offset), cookie: String(cookie)
     })
     const body = result.body || result
     res.json(body)
@@ -8486,8 +8604,9 @@ app.get('/api/netease/artist/sublist', async (req, res) => {
     if (!NeteaseAPI || !NeteaseAPI.artist_sublist) {
       return res.status(500).json({ code: 500, error: 'API 未初始化' })
     }
+    // 需要判断"是否已关注某个歌手"时一次拉全量（最多 1000），避免 25 条截断
     const result = await callNeteaseAPIWithRetry(NeteaseAPI.artist_sublist, {
-      limit: Number(limit), offset: Number(offset), cookie: String(cookie)
+      limit: Math.max(Number(limit), 1000), offset: Number(offset), cookie: String(cookie)
     })
     const body = result.body || result
     res.json(body)
@@ -8641,6 +8760,38 @@ async function callQQRelationList(method, start, num, cookie) {
   return resp.data?.req_0 || resp.data
 }
 
+// QQ 每日签到（music.musichallSignIn.SignIn，需登录 cookie）
+app.get('/api/qq/signin', async (req, res) => {
+  try {
+    const { cookie } = req.query
+    if (!cookie) return res.status(401).json({ result: 500, error: '请先登录 QQ 音乐' })
+    const parsedCookie = parseQQCookie(cookie)
+    const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || '').replace(/\D/g, '')
+    const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
+    if (!musicId || !musicKey) throw new Error('QQ 登录凭证缺少 uin 或 qm_keyst，请重新登录')
+
+    const payload = {
+      comm: {
+        ct: 24, cv: 4747474, platform: 'yqq.json', uin: musicId, qq: musicId,
+        authst: musicKey,
+        tmeLoginType: Number(parsedCookie.tmeLoginType) || Number(parsedCookie.login_type) || undefined,
+        g_tk: qqHash33(musicKey), format: 'json', inCharset: 'utf-8', outCharset: 'utf-8',
+        notice: 0, need_new_code: 1
+      },
+      req_0: { module: 'music.musichallSignIn.SignIn', method: 'MusicSignIn', param: { signinId: 1, force: '0' } }
+    }
+    const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
+      headers: { ...QQ_HEADERS, Cookie: cookie, 'Content-Type': 'application/json' },
+      validateStatus: () => true
+    })
+    const d = resp.data?.req_0 || resp.data
+    res.json({ result: Number(d.code) === 0 ? 100 : Number(d.code), data: d, error: d?.message || d?.submsg || (Number(d.code) !== 0 ? `签到失败（代码 ${d.code}）` : undefined) })
+  } catch (error) {
+    console.error('[QQ每日签到] 操作失败:', error?.message || error)
+    res.status(502).json({ result: 500, error: error?.message || '签到失败' })
+  }
+})
+
 // QQ 关注用户列表
 app.get('/api/qq/user/follows', async (req, res) => {
   try {
@@ -8721,8 +8872,15 @@ app.get('/api/qq/album/sublist', async (req, res) => {
     const parsedCookie = parseQQCookie(cookie)
     const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || '').replace(/\D/g, '')
     if (!musicId) throw new Error('缺少 uin')
-    const result = await qqMusicApi.api('user/collect/album', { id: musicId, pageNo: 1, pageSize: 50 })
-    res.json({ result: 100, data: { list: result?.list || [] } })
+    // 判断"是否已收藏某专辑"时需要全量，分页拉取最多 500 条
+    const all = []
+    for (let page = 1; page <= 10; page++) {
+      const result = await qqMusicApi.api('user/collect/album', { id: musicId, pageNo: page, pageSize: 50 })
+      const list = result?.list || []
+      all.push(...list)
+      if (list.length < 50) break
+    }
+    res.json({ result: 100, data: { list: all } })
   } catch (error) {
     console.error('[QQ收藏专辑列表] 获取失败:', error?.message || error)
     res.status(502).json({ result: 500, error: error?.message || '获取收藏专辑列表失败' })
@@ -8734,9 +8892,15 @@ app.get('/api/qq/artist/sublist2', async (req, res) => {
   try {
     const { cookie } = req.query
     if (!requireQQLogin(res, cookie)) return
-    const result = await callQQRelationList('GetFollowList', 0, 100, cookie)
-    const list = result?.data?.List || []
-    const singers = list.filter((item) => item.MID).map((item) => ({
+    // RelationList 单次最多约 100 条，分页拉取 500 个关注项再过滤歌手
+    const all = []
+    for (let start = 0; start < 500; start += 100) {
+      const result = await callQQRelationList('GetFollowList', start, 100, cookie)
+      const list = result?.data?.List || []
+      all.push(...list)
+      if (!result?.data?.HasMore || list.length < 100) break
+    }
+    const singers = all.filter((item) => item.MID).map((item) => ({
       id: item.MID,
       mid: item.MID,
       name: item.Name || '',
@@ -8996,14 +9160,13 @@ app.get('/api/qq/songlist/list', async (req, res) => {
   }
 })
 
-// 网易云「喜欢这首歌的人也爱听」（相似歌曲，需登录）
+// 网易云「喜欢这首歌的人也爱听」（相似歌曲，公开无需登录）
 app.get('/api/netease/song/simi', async (req, res) => {
   try {
     const { id, cookie, limit = 10 } = req.query
     if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
-    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
     if (!NeteaseAPI || !NeteaseAPI.simi_song) return res.status(500).json({ error: 'API 未初始化' })
-    const result = await callNeteaseAPIWithRetry(NeteaseAPI.simi_song, { id: String(id), cookie: String(cookie) })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.simi_song, { id: String(id), cookie: String(cookie || '') })
     const body = result.body || result
     res.json({ songs: (Array.isArray(body.songs) ? body.songs : []).slice(0, Number(limit)) })
   } catch (error) {
@@ -9012,14 +9175,15 @@ app.get('/api/netease/song/simi', async (req, res) => {
   }
 })
 
-// 网易云「相关歌单」（包含此歌曲的歌单，需登录）
+// 网易云「相关歌单」（包含此歌曲的歌单，simi_playlist 正规接口，公开无需登录）
 app.get('/api/netease/song/related-playlist', async (req, res) => {
   try {
     const { id, cookie } = req.query
     if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
-    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
-    if (!NeteaseAPI || !NeteaseAPI.related_playlist) return res.status(500).json({ error: 'API 未初始化' })
-    const result = await callNeteaseAPIWithRetry(NeteaseAPI.related_playlist, { id: String(id), cookie: String(cookie) })
+    if (!NeteaseAPI || !NeteaseAPI.simi_playlist) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.simi_playlist, {
+      id: String(id), limit: 5, offset: 0, cookie: String(cookie || '')
+    })
     const body = result.body || result
     res.json({ playlists: Array.isArray(body.playlists) ? body.playlists.slice(0, 5) : [] })
   } catch (error) {
@@ -9037,11 +9201,21 @@ app.get('/api/qq/banner', async (req, res) => {
   try {
     const result = await qqMusicApi.api('recommend/banner')
     const banners = Array.isArray(result) ? result : (Array.isArray(result?.banner) ? result.banner : [])
-    res.json({ banners: banners.map((b) => ({
-      imageUrl: b.picUrl || b.pic || b.bannerUrl || '',
-      url: b.h5Url || b.url || '',
-      title: b.title || b.name || b.typeStr || '',
-    })).filter(b => b.imageUrl) })
+    // 过滤专辑推广轮播（recommend/banner 常返回整屏 album 广告，左下角标 album）
+    res.json({ banners: banners
+      .filter((b) => {
+        const rawUrl = String(b.h5Url || b.url || '')
+        const title = String(b.title || b.name || b.typeStr || '').toLowerCase()
+        if (title === 'album') return false
+        if (/album\/detail|albumid=|album\.html|albumid/i.test(rawUrl)) return false
+        return true
+      })
+      .map((b) => ({
+        imageUrl: b.picUrl || b.pic || b.bannerUrl || '',
+        url: b.h5Url || b.url || '',
+        title: b.title || b.name || b.typeStr || '',
+      }))
+      .filter(b => b.imageUrl) })
   } catch (error) {
     console.error('[QQ Banner] 获取失败:', error)
     res.status(502).json({ error: error.message })
@@ -9057,6 +9231,41 @@ app.get('/api/netease/dj/recommend', async (req, res) => {
     res.json({ programs: Array.isArray(body.programs) ? body.programs : [], djRadios: Array.isArray(body.djRadios) ? body.djRadios : [] })
   } catch (error) {
     console.error('[网易云电台推荐] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云订阅/取消订阅电台（dj_sub：rid 电台id，t=1 订阅 t=0 取消）
+app.post('/api/netease/dj/subscribe', async (req, res) => {
+  try {
+    const { rid, subscribe = true, cookie } = { ...req.query, ...(req.body || {}) }
+    if (!rid) return res.status(400).json({ error: '请提供电台ID' })
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.dj_sub) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.dj_sub, {
+      rid: String(rid), t: subscribe ? 1 : 0, cookie: String(cookie)
+    })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云电台订阅] 操作失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云订阅电台列表
+app.get('/api/netease/dj/sublist', async (req, res) => {
+  try {
+    const { cookie, limit = 30, offset = 0 } = req.query
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.dj_sublist) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.dj_sublist, {
+      limit: Number(limit), offset: Number(offset), cookie: String(cookie)
+    })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云订阅电台列表] 获取失败:', error)
     res.status(502).json({ error: error.message })
   }
 })
@@ -9129,6 +9338,100 @@ app.get('/api/netease/daily/signin', async (req, res) => {
     res.json(body)
   } catch (error) {
     console.error('[网易云每日签到] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云相关博客（网易云 App 歌曲详情"相关博客"，原生 POST 表单 + cookie 过风控）
+app.get('/api/netease/song/blog', async (req, res) => {
+  try {
+    const { albumId, page = 1, count = 5, cookie } = req.query
+    if (!albumId) return res.status(400).json({ code: 400, error: '请提供专辑ID' })
+    const body = new URLSearchParams({ albumId: String(albumId), page: String(page), count: String(count), csrf_token: '' })
+    const resp = await fetch('https://music.163.com/api/album/blog', {
+      method: 'POST',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Referer': 'https://music.163.com/',
+        ...(cookie ? { Cookie: String(cookie) } : {}),
+      },
+      body: body.toString(),
+      signal: AbortSignal.timeout(15000),
+    })
+    const data = await resp.json()
+    res.json(data)
+  } catch (error) {
+    console.error('[网易云相关博客] 获取失败:', error?.message || error)
+    res.status(502).json({ code: 502, error: error?.message || '获取相关博客失败' })
+  }
+})
+
+// 网易云关注动态（关注的人的最新动态）
+app.get('/api/netease/event/following', async (req, res) => {
+  try {
+    const { pagesize = 20, lasttime = -1, cookie } = req.query
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.event) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.event, {
+      pagesize: Number(pagesize), lasttime: Number(lasttime), cookie: String(cookie)
+    })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云关注动态] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云用户动态
+app.get('/api/netease/event/user', async (req, res) => {
+  try {
+    const { uid, lasttime = -1, limit = 30, cookie } = req.query
+    if (!uid) return res.status(400).json({ error: '请提供用户ID' })
+    if (!NeteaseAPI || !NeteaseAPI.user_event) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.user_event, {
+      uid: String(uid), lasttime: Number(lasttime), limit: Number(limit), cookie: String(cookie || '')
+    })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云用户动态] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云通知消息（@我 / 回复 / 通知）
+app.get('/api/netease/msg/notices', async (req, res) => {
+  try {
+    const { limit = 30, lasttime = -1, cookie } = req.query
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.msg_notices) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.msg_notices, {
+      limit: Number(limit), lasttime: Number(lasttime), cookie: String(cookie)
+    })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云通知消息] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云评论消息（@ 我的评论回复）
+app.get('/api/netease/msg/comments', async (req, res) => {
+  try {
+    const { uid, limit = 30, before = -1, cookie } = req.query
+    if (!uid) return res.status(400).json({ error: '请提供用户ID' })
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.msg_comments) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.msg_comments, {
+      uid: String(uid), limit: Number(limit), before: Number(before), cookie: String(cookie)
+    })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云评论消息] 获取失败:', error)
     res.status(502).json({ error: error.message })
   }
 })
@@ -9261,6 +9564,63 @@ app.get('/api/qq/song/like-also', async (req, res) => {
   }
 })
 
+// 网易云云盘歌曲列表
+app.get('/api/netease/cloud/list', async (req, res) => {
+  try {
+    const { cookie, limit = 30, offset = 0 } = req.query
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.user_cloud) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.user_cloud, {
+      limit: Number(limit), offset: Number(offset), cookie: String(cookie)
+    })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云云盘列表] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云云盘歌曲下载链接
+app.get('/api/netease/cloud/url', async (req, res) => {
+  try {
+    const { id, cookie } = req.query
+    if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.song_cloud_download) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.song_cloud_download, {
+      id: String(id), cookie: String(cookie)
+    })
+    const body = result.body || result
+    // 云盘下载地址是 http，转 https 避免 file:// 下混合内容拦截
+    if (body?.data?.url && body.data.url.startsWith('http://')) {
+      body.data.url = body.data.url.replace(/^http:\/\//, 'https://')
+    }
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云云盘下载] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云云盘歌曲删除
+app.post('/api/netease/cloud/delete', async (req, res) => {
+  try {
+    const { id, cookie } = { ...req.query, ...(req.body || {}) }
+    if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.user_cloud_del) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.user_cloud_del, {
+      id: String(id), cookie: String(cookie)
+    })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云云盘删除] 操作失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
 // 网易云收藏的 MV
 app.get('/api/netease/mv/sublist', async (req, res) => {
   try {
@@ -9272,6 +9632,145 @@ app.get('/api/netease/mv/sublist', async (req, res) => {
     res.json(body)
   } catch (error) {
     console.error('[网易云收藏MV] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云收藏/取消收藏 MV（mv_sub：t=1 收藏，t=0 取消）
+app.post('/api/netease/mv/subscribe', async (req, res) => {
+  try {
+    const { mvid, subscribe = true, cookie } = { ...req.query, ...(req.body || {}) }
+    if (!mvid) return res.status(400).json({ code: 400, error: '请提供MV ID' })
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.mv_sub) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.mv_sub, {
+      mvid: String(mvid), t: subscribe ? 1 : 0, cookie: String(cookie)
+    })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云收藏MV] 操作失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云完整排行榜列表（toplist_detail：所有榜单 + 每榜前几条）
+app.get('/api/netease/toplist/detail', async (req, res) => {
+  try {
+    if (!NeteaseAPI || !NeteaseAPI.toplist_detail) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.toplist_detail, {})
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云排行榜列表] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云指定榜单完整详情（榜单即歌单，用歌单详情取完整可播放列表）
+app.get('/api/netease/toplist/songs', async (req, res) => {
+  try {
+    const { id, cookie } = req.query
+    if (!id) return res.status(400).json({ error: '请提供榜单ID' })
+    if (!NeteaseAPI || !NeteaseAPI.playlist_detail) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.playlist_detail, { id: String(id), cookie: String(cookie || '') })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云榜单歌曲] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云私人FM 不再播放（垃圾桶）
+app.post('/api/netease/fm/trash', async (req, res) => {
+  try {
+    const { id, cookie } = { ...req.query, ...(req.body || {}) }
+    if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.fm_trash) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.fm_trash, { id: String(id), cookie: String(cookie) })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云FM垃圾桶] 操作失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云每日推荐不感兴趣
+app.post('/api/netease/recommend/dislike', async (req, res) => {
+  try {
+    const { id, cookie } = { ...req.query, ...(req.body || {}) }
+    if (!id) return res.status(400).json({ error: '请提供歌曲ID' })
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.recommend_songs_dislike) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.recommend_songs_dislike, { id: String(id), cookie: String(cookie) })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云日推不感兴趣] 操作失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云 VIP 信息
+app.get('/api/netease/vip/info', async (req, res) => {
+  try {
+    const { cookie } = req.query
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.vip_info_v2) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.vip_info_v2, { cookie: String(cookie) })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云VIP信息] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云黑胶乐签打卡（VIP 每日签到）
+app.post('/api/netease/vip/sign', async (req, res) => {
+  try {
+    const { cookie } = { ...req.query, ...(req.body || {}) }
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.vip_sign) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.vip_sign, { cookie: String(cookie) })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云黑胶乐签] 操作失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云黑胶乐签签到信息
+app.get('/api/netease/vip/sign-info', async (req, res) => {
+  try {
+    const { cookie } = req.query
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.vip_sign_info) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.vip_sign_info, { cookie: String(cookie) })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云黑胶乐签信息] 获取失败:', error)
+    res.status(502).json({ error: error.message })
+  }
+})
+
+// 网易云歌曲收藏状态批量查询（song_like_check：trackIds 用逗号分隔）
+app.get('/api/netease/song/like-check', async (req, res) => {
+  try {
+    const { ids, cookie } = req.query
+    if (!ids) return res.status(400).json({ error: '请提供歌曲ID' })
+    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
+    if (!NeteaseAPI || !NeteaseAPI.song_like_check) return res.status(500).json({ error: 'API 未初始化' })
+    const result = await callNeteaseAPIWithRetry(NeteaseAPI.song_like_check, { ids: String(ids), cookie: String(cookie) })
+    const body = result.body || result
+    res.json(body)
+  } catch (error) {
+    console.error('[网易云收藏状态查询] 获取失败:', error)
     res.status(502).json({ error: error.message })
   }
 })
@@ -9402,6 +9901,26 @@ app.get('/api/netease/record/rank/:type', async (req, res) => {
   } catch (error) {
     console.error('[网易云听歌排行] 获取失败:', error)
     res.status(502).json({ error: error.message || '获取听歌排行失败' })
+  }
+})
+
+// ── Apple Music 目录代理（营销工具 RSS 无 CORS 头，浏览器直连会被拦截）──
+app.get('/api/apple/rss', async (req, res) => {
+  const rawPath = String(req.query.path || '')
+  const country = String(req.query.country || 'cn').toLowerCase()
+  const safePath = rawPath.replace(/[^a-zA-Z0-9/._-]/g, '')
+  if (!safePath) return res.status(400).json({ error: '缺少 path 参数' })
+  const url = `https://rss.marketingtools.apple.com/api/v2/${encodeURIComponent(country)}/${safePath}`
+  try {
+    const response = await axios.get(url, {
+      timeout: 15000,
+      headers: { 'User-Agent': 'WaveForge/0.1 (compatible)', Accept: 'application/json' },
+      responseType: 'json',
+    })
+    res.json(response.data)
+  } catch (error) {
+    console.error('[Apple RSS] 代理失败:', error.message || error)
+    res.status(502).json({ error: error.message || 'Apple RSS 获取失败' })
   }
 })
 

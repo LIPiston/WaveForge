@@ -1,8 +1,8 @@
 import { getQQUserDisplayName } from '../utils/qqUser'
 import { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { X, Music, Heart, List, User, Crown, Calendar, MapPin, RefreshCw, LogOut, Plus, MoreHorizontal, Play, History, Disc3, Radio, Mic2, Users, TrendingUp, ArrowLeft, Film } from 'lucide-react'
-import { Song, resolveSongAlbumIdentifier, getUserFollows, getUserFolloweds, getUserRecordRank, getQQFollows, getQQFans, getQQUserProfile, getQQUserFavs, subscribeQQUser, subscribeNeteaseUser, getSubscribedAlbums, getSubscribedArtists, getQQSubscribedAlbums, getQQSubscribedArtists, getNeteaseMvSublist, neteaseDailySignin } from '../services/musicApi'
+import { X, Music, Heart, List, User, Crown, Calendar, MapPin, RefreshCw, LogOut, Plus, MoreHorizontal, Play, History, Disc3, Radio, Mic2, Users, TrendingUp, ArrowLeft, Film, Cloud } from 'lucide-react'
+import { Song, resolveSongAlbumIdentifier, getUserFollows, getUserFolloweds, getUserRecordRank, getQQFollows, getQQFans, getQQUserProfile, getQQUserFavs, subscribeQQUser, subscribeNeteaseUser, getSubscribedAlbums, getSubscribedArtists, getQQSubscribedAlbums, getQQSubscribedArtists, getNeteaseMvSublist, neteaseDailySignin, subscribeNeteaseMV, getNeteaseFollowingEvents, getNeteaseNotices, getNeteaseCommentMessages, neteaseVipSign, qqDailySignin, getNeteaseCloudSongs } from '../services/musicApi'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
 import CachedImage from './CachedImage'
 import PlaylistContextMenu from './PlaylistContextMenu'
@@ -74,7 +74,7 @@ interface UserDetail {
   listenLevel?: string    // 听歌等级图标
 }
 
-type ProfileTab = 'created' | 'subscribed' | 'detail' | 'recent' | 'social' | 'rank' | 'favs' | 'collections'
+type ProfileTab = 'created' | 'subscribed' | 'detail' | 'recent' | 'social' | 'rank' | 'favs' | 'collections' | 'cloud'
 type RecentPlaybackType = 'song' | 'playlist' | 'album' | 'dj' | 'voice'
 
 const formatCount = (value?: number) => {
@@ -152,10 +152,19 @@ export default function ProfileView({
     controller: null,
   })
   // 社交（关注/粉丝）状态 —— 仅网易云
-  const [socialType, setSocialType] = useState<'follows' | 'followeds'>('follows')
+  const [socialType, setSocialType] = useState<'follows' | 'followeds' | 'events' | 'messages'>('follows')
   const [socialItems, setSocialItems] = useState<{ userId: string; nickname: string; avatarUrl: string; signature: string; isFollow: boolean }[]>([])
   const [socialLoading, setSocialLoading] = useState(false)
   const [socialError, setSocialError] = useState('')
+  // 网易云关注动态
+  const [socialEvents, setSocialEvents] = useState<any[]>([])
+  // 网易云通知/评论消息
+  const [socialNotices, setSocialNotices] = useState<any[]>([])
+  const [socialComments, setSocialComments] = useState<any[]>([])
+  // 网易云云盘
+  const [cloudSongs, setCloudSongs] = useState<any[]>([])
+  const [cloudLoading, setCloudLoading] = useState(false)
+  const [cloudError, setCloudError] = useState('')
   // QQ 社交状态（关注用户/粉丝列表）
   const [qqSocialType, setQqSocialType] = useState<'follows' | 'fans'>('follows')
   const [qqSocialItems, setQqSocialItems] = useState<{ encUin: string; mid: string; name: string; desc: string; avatarUrl: string; isFollow: boolean; isSelf: boolean }[]>([])
@@ -413,20 +422,33 @@ export default function ProfileView({
     }
   }
 
-  const handleSharePlaylist = async (playlist: Playlist) => {
+  const handleSharePlaylist = (playlist: Playlist) => {
     const url = platform === 'qq'
       ? `https://y.qq.com/n/ryqq/playlist/${playlist.id}`
       : `https://music.163.com/#/playlist?id=${playlist.id}`
     try {
-      if (navigator.share) {
-        await navigator.share({ title: playlist.name, url })
-      } else {
-        await navigator.clipboard.writeText(url)
-        showPlaylistToast('歌单链接已复制', 'success')
-      }
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError') showPlaylistToast('分享失败，请重试', 'error')
+      navigator.clipboard.writeText(url).catch(() => {
+        // Electron 中 clipboard API 可能被 CSP 限制，回退到 textarea 选择复制
+        const textarea = document.createElement('textarea')
+        textarea.value = url
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      })
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = url
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
     }
+    showPlaylistToast('歌单链接已复制', 'success')
   }
 
   const handlePlayPlaylist = async (playlist: Playlist, event: React.MouseEvent) => {
@@ -790,6 +812,47 @@ export default function ProfileView({
     let cancelled = false
     setSocialLoading(true)
     setSocialError('')
+    if (socialType === 'events') {
+      // 关注动态（仅自己的个人中心）
+      if (viewTarget) {
+        setSocialEvents([])
+        setSocialLoading(false)
+        return
+      }
+      getNeteaseFollowingEvents({ cookie }).then((data) => {
+        if (cancelled) return
+        setSocialEvents(Array.isArray(data?.events) ? data.events : [])
+        setSocialLoading(false)
+      }).catch(() => {
+        if (cancelled) return
+        setSocialError('获取动态失败，请确认已登录网易云')
+        setSocialLoading(false)
+      })
+      return () => { cancelled = true }
+    }
+    if (socialType === 'messages') {
+      // 通知 + 评论消息（仅自己的个人中心）
+      if (viewTarget) {
+        setSocialNotices([])
+        setSocialComments([])
+        setSocialLoading(false)
+        return
+      }
+      void Promise.all([
+        getNeteaseNotices({ cookie }),
+        getNeteaseCommentMessages(userId, { cookie }),
+      ]).then(([noticesData, commentsData]) => {
+        if (cancelled) return
+        setSocialNotices(Array.isArray(noticesData?.notices) ? noticesData.notices : [])
+        setSocialComments(Array.isArray(commentsData?.comments) ? commentsData.comments : [])
+        setSocialLoading(false)
+      }).catch(() => {
+        if (cancelled) return
+        setSocialError('获取消息失败，请确认已登录网易云')
+        setSocialLoading(false)
+      })
+      return () => { cancelled = true }
+    }
     const task = socialType === 'follows'
       ? getUserFollows(activeUserId, { cookie })
       : getUserFolloweds(activeUserId, { cookie })
@@ -811,7 +874,7 @@ export default function ProfileView({
       setSocialLoading(false)
     })
     return () => { cancelled = true }
-  }, [activeTab, socialType, platform, activeUserId, cookie])
+  }, [activeTab, socialType, platform, activeUserId, cookie, viewTarget])
 
   // QQ 关注用户/粉丝列表数据获取（查看他人时用 RelationList HostUin=EncUin）
   useEffect(() => {
@@ -850,6 +913,24 @@ export default function ProfileView({
     setViewStack(prev => [...prev, { platform: targetPlatform, userId: targetUserId, nickname, avatarUrl, signature, returnTab: activeTab }])
     setActiveTab('created')
   }
+
+  // 网易云云盘歌曲列表
+  useEffect(() => {
+    if (activeTab !== 'cloud' || platform !== 'netease' || viewTarget) return
+    let cancelled = false
+    setCloudLoading(true)
+    setCloudError('')
+    getNeteaseCloudSongs({ cookie }).then((data) => {
+      if (cancelled) return
+      setCloudSongs(Array.isArray(data?.data) ? data.data : [])
+      setCloudLoading(false)
+    }).catch(() => {
+      if (cancelled) return
+      setCloudError('获取云盘失败，请确认已登录网易云')
+      setCloudLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [activeTab, platform, viewTarget, cookie])
 
   // QQ 他人“我喜欢”数据获取（music.favor_system_read/get_favor_list_byid）
   useEffect(() => {
@@ -1198,10 +1279,62 @@ export default function ProfileView({
                   whileTap={{ scale: 0.92 }}
                   onClick={() => {
                     void neteaseDailySignin(1).then((result) => {
-                      if (result?.code === 200 || result?.message?.includes('签到')) {
+                      const code = result?.code ?? result?.web?.code ?? result?.android?.code
+                      const msg = result?.msg || result?.message || result?.web?.msg || result?.android?.msg || ''
+                      if (code === 200) {
                         window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '每日签到成功', type: 'success' } }))
+                      } else if (code === -2 || msg.includes('重复签到') || msg.includes('已签到')) {
+                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '今日已签到', type: 'info' } }))
+                      } else if (code === 301 || msg.includes('未登录')) {
+                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '请先登录网易云音乐', type: 'error' } }))
                       } else {
-                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: result?.message || '今日已签到或签到失败', type: 'info' } }))
+                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: msg || '签到失败，请稍后重试', type: 'error' } }))
+                      }
+                    })
+                  }}
+                  className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                  title="每日签到"
+                  aria-label="每日签到"
+                >
+                  <Calendar className="w-5 h-5 text-white/70" />
+                </motion.button>
+              )}
+              {currentPlatform === 'netease' && !viewTarget && (
+                <motion.button
+                  whileHover={{ scale: 1.08 }}
+                  whileTap={{ scale: 0.92 }}
+                  onClick={() => {
+                    void neteaseVipSign({ cookie }).then((result) => {
+                      const msg = result?.message || ''
+                      const signed = result?.signed === true || result?.taskSign?.code === 200
+                      if (signed) {
+                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: msg || '黑胶乐签打卡成功', type: 'success' } }))
+                      } else {
+                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: result?.code === 301 ? '请先登录网易云音乐' : (msg || '今日已打卡或打卡失败'), type: 'info' } }))
+                      }
+                    })
+                  }}
+                  className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                  title="黑胶乐签打卡"
+                  aria-label="黑胶乐签打卡"
+                >
+                  <Crown className="w-5 h-5 text-white/70" />
+                </motion.button>
+              )}
+              {currentPlatform === 'qq' && !viewTarget && (
+                <motion.button
+                  whileHover={{ scale: 1.08 }}
+                  whileTap={{ scale: 0.92 }}
+                  onClick={() => {
+                    void qqDailySignin({ cookie }).then((result) => {
+                      const ok = result?.result === 100
+                      const msg = result?.error || ''
+                      if (ok) {
+                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '每日签到成功', type: 'success' } }))
+                      } else if (result?.result === 500 && msg.includes('登录')) {
+                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '请先登录 QQ 音乐', type: 'error' } }))
+                      } else {
+                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: msg || '今日已签到或签到失败', type: 'info' } }))
                       }
                     })
                   }}
@@ -1354,6 +1487,18 @@ export default function ProfileView({
               >
                 <TrendingUp className="w-5 h-5" />
                 听歌排行
+              </button>
+            )}
+            {currentPlatform === 'netease' && !viewTarget && (
+              <button
+                onClick={() => setActiveTab('cloud')}
+                className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
+                  activeTab === 'cloud' ? 'text-white bg-white/10' : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+                style={activeTab === 'cloud' ? { borderBottom: `2px solid ${accentColor}` } : {}}
+              >
+                <Cloud className="w-5 h-5" />
+                云盘
               </button>
             )}
             <button
@@ -1637,12 +1782,101 @@ export default function ProfileView({
                 )}                {activeTab === 'social' && platform === 'netease' && (
                   <div className="space-y-5">
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <h3 className="text-xl font-semibold text-white">社交关系</h3>
+                      <h3 className="text-xl font-semibold text-white">{socialType === 'events' ? '关注动态' : socialType === 'messages' ? '我的消息' : '社交关系'}</h3>
                       <div className="flex rounded-lg bg-white/5 p-0.5">
+                        {!viewTarget && (
+                          <button onClick={() => setSocialType('messages')} className={`px-3 py-1.5 rounded-md text-sm transition-colors ${socialType === 'messages' ? 'text-white' : 'text-white/55 hover:text-white'}`} style={socialType === 'messages' ? { background: `${accentColor}55` } : {}}>消息</button>
+                        )}
+                        {!viewTarget && (
+                          <button onClick={() => setSocialType('events')} className={`px-3 py-1.5 rounded-md text-sm transition-colors ${socialType === 'events' ? 'text-white' : 'text-white/55 hover:text-white'}`} style={socialType === 'events' ? { background: `${accentColor}55` } : {}}>动态</button>
+                        )}
                         <button onClick={() => setSocialType('follows')} className={`px-3 py-1.5 rounded-md text-sm transition-colors ${socialType === 'follows' ? 'text-white' : 'text-white/55 hover:text-white'}`} style={socialType === 'follows' ? { background: `${accentColor}55` } : {}}>关注</button>
                         <button onClick={() => setSocialType('followeds')} className={`px-3 py-1.5 rounded-md text-sm transition-colors ${socialType === 'followeds' ? 'text-white' : 'text-white/55 hover:text-white'}`} style={socialType === 'followeds' ? { background: `${accentColor}55` } : {}}>粉丝</button>
                       </div>
                     </div>
+                    {socialType === 'messages' ? (
+                      <>
+                        {socialError && <div className="text-sm text-red-300 bg-red-400/10 border border-red-300/20 rounded-lg p-3">{socialError}</div>}
+                        {socialLoading ? <div className="py-16 text-center text-white/55">正在加载消息…</div>
+                          : socialNotices.length === 0 && socialComments.length === 0 ? <div className="py-16 text-center text-white/45">暂无消息</div>
+                          : (
+                            <div className="space-y-5">
+                              {socialComments.length > 0 && (
+                                <div>
+                                  <h4 className="text-sm font-medium text-white/70 mb-2">评论回复（{socialComments.length}）</h4>
+                                  <div className="space-y-2.5">
+                                    {socialComments.slice(0, 20).map((c, index) => (
+                                      <div key={`${c.commentId || c.id || index}`} className="rounded-xl px-3 py-2.5" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                                        <div className="flex items-center gap-2 mb-1">
+                                          <div className="w-6 h-6 rounded-full overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.1)' }}>
+                                            {c.user?.avatarUrl ? <img src={c.user.avatarUrl} alt="" className="w-full h-full object-cover" /> : <User className="w-3 h-3 m-auto mt-1.5 text-white/30" />}
+                                          </div>
+                                          <p className="text-white/85 text-xs font-medium truncate">{c.user?.nickname || '用户'}</p>
+                                        </div>
+                                        <p className="text-white/60 text-xs line-clamp-2">{String(c.content || c.comment || '')}</p>
+                                        {c.beReplied?.[0]?.content && <p className="text-white/40 text-[11px] mt-1 line-clamp-2">回复：{String(c.beReplied[0].content)}</p>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {socialNotices.length > 0 && (
+                                <div>
+                                  <h4 className="text-sm font-medium text-white/70 mb-2">通知（{socialNotices.length}）</h4>
+                                  <div className="space-y-2.5">
+                                    {socialNotices.slice(0, 20).map((n, index) => (
+                                      <div key={`${n.id || index}`} className="rounded-xl px-3 py-2.5" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                                        <p className="text-white/70 text-xs line-clamp-2">{String(n.content || n.msg || '')}</p>
+                                        {n.time && <p className="text-white/35 text-[11px] mt-1">{formatRecentTime(Number(n.time))}</p>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                      </>
+                    ) : socialType === 'events' ? (
+                      <>
+                        {socialError && <div className="text-sm text-red-300 bg-red-400/10 border border-red-300/20 rounded-lg p-3">{socialError}</div>}
+                        {socialLoading ? <div className="py-16 text-center text-white/55">正在加载动态…</div>
+                          : socialEvents.length === 0 ? <div className="py-16 text-center text-white/45">暂无动态</div>
+                          : (
+                            <div className="space-y-3">
+                              {socialEvents.map((ev, index) => {
+                                const user = ev.user || ev.json?.user || {}
+                                const json = ev.json || {}
+                                const song = ev.song || json.song
+                                const actName = ({ 18: '分享单曲', 19: '分享歌单', 17: '创建歌单', 35: '收藏歌单', 28: '新歌发布', 13: '发表评论', 23: '分享专辑', 22: '分享视频' } as Record<number, string>)[Number(ev.type)] || '动态'
+                                return (
+                                  <div key={`${ev.id || index}`} className="rounded-xl p-4" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                                    <div className="flex items-center gap-3 mb-2">
+                                      <div className="w-9 h-9 rounded-full overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.1)' }}>
+                                        {user.avatarUrl ? <img src={user.avatarUrl} alt={user.nickname || ''} className="w-full h-full object-cover" /> : <User className="w-4 h-4 m-auto mt-2.5 text-white/30" />}
+                                      </div>
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-white text-sm font-medium truncate">{user.nickname || '用户'}</p>
+                                        <p className="text-white/40 text-[11px]">{actName}</p>
+                                      </div>
+                                    </div>
+                                    {(song || json.msg) && (
+                                      <div className="rounded-lg px-3 py-2 mt-1" style={{ background: 'rgba(255,255,255,0.04)' }}>
+                                        {song && (
+                                          <p className="text-white/85 text-sm truncate">
+                                            <span className="text-white/50">{song.artists?.[0]?.name || ''} - </span>{song.name || ''}
+                                          </p>
+                                        )}
+                                        {json.msg && <p className="text-white/70 text-xs mt-1 line-clamp-3 whitespace-pre-line">{String(json.msg)}</p>}
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+                      </>
+                    ) : (
+                      <>
                     {socialError && <div className="text-sm text-red-300 bg-red-400/10 border border-red-300/20 rounded-lg p-3">{socialError}</div>}
                     {socialLoading ? <div className="py-16 text-center text-white/55">正在加载{socialType === 'follows' ? '关注' : '粉丝'}列表…</div>
                       : socialItems.length === 0 ? <div className="py-16 text-center text-white/45">暂无{socialType === 'follows' ? '关注' : '粉丝'}</div>
@@ -1693,6 +1927,8 @@ export default function ProfileView({
                           ))}
                         </div>
                       )}
+                      </>
+                    )}
                   </div>
                 )}
                 {activeTab === 'social' && platform === 'qq' && (
@@ -1860,8 +2096,29 @@ export default function ProfileView({
                                 const mvName = mv.name || mv.title || '未知 MV'
                                 const cover = mv.cover || mv.picUrl || mv.imgurl16v9 || ''
                                 return (
-                                  <div key={`${mv.id || index}-${index}`} className="rounded-xl p-2.5 transition-all cursor-pointer" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+                                  <div key={`${mv.id || index}-${index}`} className="rounded-xl p-2.5 transition-all cursor-pointer relative group" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
                                     onClick={() => { if (mv.id) window.dispatchEvent(new CustomEvent('play-mv', { detail: { id: mv.id, name: mvName, platform: 'netease' } })) }} title="点击播放 MV">
+                                    {/* 取消收藏 */}
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        if (!mv.id) return
+                                        void subscribeNeteaseMV(mv.id, false, { cookie }).then((result) => {
+                                          if (result?.code === 200) {
+                                            setCollectedMvs(prev => prev.filter(m => String(m.id) !== String(mv.id)))
+                                            window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '已取消收藏', type: 'success' } }))
+                                          } else {
+                                            window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '取消收藏失败', type: 'error' } }))
+                                          }
+                                        })
+                                      }}
+                                      className="absolute top-2 right-2 z-10 w-6 h-6 flex items-center justify-center rounded-full bg-black/60 text-white/70 opacity-0 group-hover:opacity-100 hover:bg-red-500/70 hover:text-white transition-all"
+                                      title="取消收藏"
+                                      aria-label="取消收藏MV"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
                                     <div className="relative w-full aspect-video rounded-lg overflow-hidden mb-2" style={{ background: 'rgba(255,255,255,0.08)' }}>
                                       {cover ? <img src={cover} alt={mvName} className="w-full h-full object-cover" /> : <Film className="w-8 h-8 m-auto text-white/20" />}
                                     </div>
@@ -1916,6 +2173,51 @@ export default function ProfileView({
                               </button>
                             </div>
                           ))}
+                        </div>
+                      )}
+                  </div>
+                )}
+                {activeTab === 'cloud' && currentPlatform === 'netease' && (
+                  <div className="space-y-5">
+                    <h3 className="text-xl font-semibold text-white">我的云盘</h3>
+                    {cloudError && <div className="text-sm text-red-300 bg-red-400/10 border border-red-300/20 rounded-lg p-3">{cloudError}</div>}
+                    {cloudLoading ? <div className="py-16 text-center text-white/55">正在加载云盘…</div>
+                      : cloudSongs.length === 0 ? <div className="py-16 text-center text-white/45">云盘暂无歌曲</div>
+                      : (
+                        <div className="space-y-1">
+                          {cloudSongs.map((item, index) => {
+                            const song = item.simpleSong || item.song || item
+                            const songName = song.name || song.fileName || '未知歌曲'
+                            const artists = (song.ar || song.artists || []).map((a: any) => a.name).filter(Boolean).join(' / ')
+                            const cover = song.al?.picUrl || song.album?.picUrl || ''
+                            return (
+                              <div
+                                key={`${song.id || song.songId || index}-${index}`}
+                                className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-white/5 transition-colors group cursor-pointer"
+                                onClick={() => {
+                                  const playable: Song = {
+                                    id: song.id,
+                                    name: songName,
+                                    artists: (song.ar || song.artists || []).map((a: any) => ({ name: a.name })),
+                                    album: { name: song.al?.name || '', picUrl: cover },
+                                    duration: song.dt || 0,
+                                    platform: 'netease',
+                                  }
+                                  handleSongSelection(playable)
+                                }}
+                              >
+                                <span className="w-5 text-center text-xs text-white/40">{index + 1}</span>
+                                <div className="w-9 h-9 rounded-md overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                                  {cover ? <img src={cover} alt="" className="w-full h-full object-cover" /> : <Music className="w-4 h-4 m-auto mt-2.5 text-white/30" />}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-white text-sm truncate">{songName}</p>
+                                  <p className="text-white/40 text-xs truncate">{artists || '云盘歌曲'}</p>
+                                </div>
+                                <Play className="w-3.5 h-3.5 text-white/40 opacity-0 group-hover:opacity-100 transition-opacity" fill="currentColor" />
+                              </div>
+                            )
+                          })}
                         </div>
                       )}
                   </div>

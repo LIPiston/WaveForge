@@ -252,7 +252,7 @@ async function syncQQExploreCookie(cookie: string, signal?: AbortSignal): Promis
 export async function fetchExploreHome(
   platform: ExplorePlatform,
   signal?: AbortSignal,
-  options: { forceRefresh?: boolean } = {}
+  options: { forceRefresh?: boolean; enhanced?: boolean } = {}
 ): Promise<ExplorePayload> {
   const cacheKey = getExploreHomeCacheKey(platform)
   if (!options.forceRefresh) {
@@ -263,7 +263,8 @@ export async function fetchExploreHome(
   }
 
   const request = (async () => {
-  const cookie = getExploreCookie(platform)
+  // enhanced=false：关闭平台增强（不传 cookie，后端只返回公开榜单/热门，不请求个性化推荐）
+  const cookie = options.enhanced === false ? '' : getExploreCookie(platform)
   if (platform === 'qq') {
     await syncQQExploreCookie(cookie)
   }

@@ -17,6 +17,7 @@ const DETAIL_OVERSCAN = 8
 
 interface PlaylistDetailPanelProps {
   show: boolean
+  overlayZ?: number // 弹窗层级（默认 40/50；跨弹窗打开时传更高值置于其上）
   playlist: {
     id: number | string
     dirId?: number | string
@@ -58,6 +59,7 @@ interface PlaylistDetailPanelProps {
 
 export default function PlaylistDetailPanel({
   show,
+  overlayZ,
   playlist,
   songs,
   loading,
@@ -382,7 +384,8 @@ export default function PlaylistDetailPanel({
             exit={{ opacity: 0 }}
             transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
             onClick={onClose}
-            className={`fixed inset-0 backdrop-blur-sm z-40 ${playerTheme === 'dark' ? 'bg-black/60' : 'bg-white/40'}`}
+            className={`fixed inset-0 backdrop-blur-sm ${playerTheme === 'dark' ? 'bg-black/60' : 'bg-white/40'}`}
+            style={{ zIndex: overlayZ ? overlayZ - 10 : 40 }}
           />
 
           {/* 歌单详情面板 */}
@@ -400,10 +403,11 @@ export default function PlaylistDetailPanel({
                 mass: 0.8
               },
             }}
-            className="fixed inset-x-0 bottom-0 z-50 flex justify-center"
+            className="fixed inset-x-0 bottom-0 flex justify-center"
             onClick={onClose}
             style={{
               height: `${heightVh}vh`,
+              zIndex: overlayZ || 50,
               transition: 'height 0.2s ease-out'
             }}
           >

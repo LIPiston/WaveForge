@@ -2,6 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, Edit3, Lock, Globe, ImagePlus } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { preparePlaylistCover } from '../utils/playlistCover'
+import { getProxiedImageUrl } from '../services/musicApi'
 
 interface EditPlaylistModalProps {
   show: boolean
@@ -18,6 +19,7 @@ export default function EditPlaylistModal({
   playlist,
   loading = false
 }: EditPlaylistModalProps) {
+  const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [privacy, setPrivacy] = useState<'public' | 'private'>('public')
@@ -25,6 +27,15 @@ export default function EditPlaylistModal({
   const [coverDataUrl, setCoverDataUrl] = useState('')
   const [coverError, setCoverError] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const handleAccent = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail) setAccentColor(detail)
+    }
+    window.addEventListener('accentColorChanged', handleAccent)
+    return () => window.removeEventListener('accentColorChanged', handleAccent)
+  }, [])
 
   useEffect(() => {
     if (playlist && show) {
@@ -70,56 +81,61 @@ export default function EditPlaylistModal({
   return (
     <AnimatePresence>
       {show && (
-        <>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(10px)' }}
+          onClick={handleClose}
+        >
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={handleClose}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200]"
-          />
-
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.9, y: 20 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[201] w-full max-w-lg"
+            initial={{ scale: 0.94, opacity: 0, y: 12 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.94, opacity: 0, y: 12 }}
+            transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden rounded-3xl shadow-2xl relative"
           >
-            <div 
-              className="rounded-2xl overflow-hidden"
-              style={{
-                background: 'rgba(30, 30, 40, 0.95)',
-                backdropFilter: 'blur(40px)',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)'
-              }}
-            >
-              <div className="flex items-center justify-between p-6 border-b border-white/10">
-                <div className="flex items-center gap-3">
-                  <Edit3 className="w-6 h-6 text-blue-400" />
-                  <h2 className="text-xl font-bold text-white">编辑歌单</h2>
+            {/* 液态玻璃背景 */}
+            <div className="absolute inset-0 rounded-3xl overflow-hidden">
+              {coverPreview && (
+                <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${getProxiedImageUrl(coverPreview)})`, filter: 'blur(40px) brightness(0.6)' }} />
+              )}
+              <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg, rgba(0,0,0,0.3) 0%, rgba(20,20,30,0.5) 50%, rgba(0,0,0,0.4) 100%)', backdropFilter: 'blur(80px) saturate(200%)', WebkitBackdropFilter: 'blur(80px) saturate(200%)' }} />
+              <div className="absolute inset-0 rounded-3xl" style={{ border: '1px solid rgba(255,255,255,0.2)', boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.15)', pointerEvents: 'none' }} />
+            </div>
+
+            <div className="relative z-10 flex flex-col h-full min-h-0">
+              {/* 头部 */}
+              <div className="p-5 border-b flex-shrink-0" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ backgroundColor: `${accentColor}26`, color: accentColor }}>
+                      <Edit3 className="w-4.5 h-4.5" />
+                    </div>
+                    <div>
+                      <h2 className="text-base font-semibold text-white">编辑歌单</h2>
+                      <div className="text-white/50 text-[11px] -mt-0.5">修改歌单信息</div>
+                    </div>
+                  </div>
+                  <button type="button" onClick={handleClose} className="p-2 rounded-full transition-colors hover:bg-white/15">
+                    <X className="w-5 h-5 text-white/60" />
+                  </button>
                 </div>
-                <motion.button
-                  whileHover={{ scale: 1.1, rotate: 90 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={handleClose}
-                  className="p-2 hover:bg-white/10 rounded-full transition-colors"
-                >
-                  <X className="w-5 h-5 text-white/60" />
-                </motion.button>
               </div>
 
-              <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[72vh] overflow-y-auto">
+              <form onSubmit={handleSubmit} className="p-5 space-y-5 overflow-y-auto">
                 <div>
                   <label className="block text-sm font-medium text-white/80 mb-2">歌单封面</label>
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="group relative w-28 h-28 rounded-xl overflow-hidden bg-white/5 border border-white/10 hover:border-blue-400/60 transition-all"
+                    className="group relative w-28 h-28 rounded-xl overflow-hidden transition-all"
+                    style={{ background: 'rgba(255,255,255,0.06)', border: `1px solid ${coverPreview ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.1)'}`, boxShadow: '0 4px 16px rgba(0,0,0,0.3)' }}
                   >
                     {coverPreview ? (
-                      <img src={coverPreview} alt="歌单封面预览" className="w-full h-full object-cover" />
+                      <img src={getProxiedImageUrl(coverPreview)} alt="歌单封面预览" className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-white/50">
                         <ImagePlus className="w-7 h-7" />
@@ -145,7 +161,10 @@ export default function EditPlaylistModal({
                     placeholder="歌单名称"
                     maxLength={40}
                     autoFocus
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-white/30 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all"
+                    className="w-full px-4 py-3 text-white placeholder-white/30 focus:outline-none rounded-xl transition-all"
+                    style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
+                    onFocus={(e) => { e.currentTarget.style.borderColor = `${accentColor}88`; e.currentTarget.style.boxShadow = `0 0 0 1px ${accentColor}55` }}
+                    onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; e.currentTarget.style.boxShadow = 'none' }}
                   />
                 </div>
 
@@ -159,7 +178,10 @@ export default function EditPlaylistModal({
                     placeholder="描述一下这个歌单..."
                     maxLength={980}
                     rows={5}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-white/30 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all resize-none"
+                    className="w-full px-4 py-3 text-white placeholder-white/30 focus:outline-none rounded-xl transition-all resize-none"
+                    style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
+                    onFocus={(e) => { e.currentTarget.style.borderColor = `${accentColor}88`; e.currentTarget.style.boxShadow = `0 0 0 1px ${accentColor}55` }}
+                    onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; e.currentTarget.style.boxShadow = 'none' }}
                   />
                 </div>
 
@@ -171,11 +193,8 @@ export default function EditPlaylistModal({
                     <button
                       type="button"
                       onClick={() => setPrivacy('public')}
-                      className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl border transition-all ${
-                        privacy === 'public'
-                          ? 'bg-blue-500/20 border-blue-500/50 text-blue-400'
-                          : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
-                      }`}
+                      className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl transition-all ${privacy === 'public' ? 'text-white' : 'text-white/60 hover:bg-white/10'}`}
+                      style={privacy === 'public' ? { background: `${accentColor}33`, border: `1px solid ${accentColor}88` } : { background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
                     >
                       <Globe className="w-4 h-4" />
                       <span>公开</span>
@@ -183,11 +202,8 @@ export default function EditPlaylistModal({
                     <button
                       type="button"
                       onClick={() => setPrivacy('private')}
-                      className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl border transition-all ${
-                        privacy === 'private'
-                          ? 'bg-blue-500/20 border-blue-500/50 text-blue-400'
-                          : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10'
-                      }`}
+                      className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl transition-all ${privacy === 'private' ? 'text-white' : 'text-white/60 hover:bg-white/10'}`}
+                      style={privacy === 'private' ? { background: `${accentColor}33`, border: `1px solid ${accentColor}88` } : { background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
                     >
                       <Lock className="w-4 h-4" />
                       <span>私密</span>
@@ -199,18 +215,18 @@ export default function EditPlaylistModal({
                   <button
                     type="button"
                     onClick={handleClose}
-                    className="flex-1 py-3 px-4 bg-white/5 hover:bg-white/10 text-white/80 rounded-xl transition-colors"
+                    className="flex-1 py-3 px-4 text-white/80 rounded-xl transition-colors hover:bg-white/10"
+                    style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
                   >
                     取消
                   </button>
                   <button
                     type="submit"
                     disabled={!name.trim() || loading}
-                    className={`flex-1 py-3 px-4 rounded-xl font-medium transition-all ${
-                      name.trim() && !loading
-                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                        : 'bg-white/10 text-white/30 cursor-not-allowed'
-                    }`}
+                    className={`flex-1 py-3 px-4 rounded-xl font-medium transition-all ${name.trim() && !loading ? 'text-white' : 'text-white/30 cursor-not-allowed'}`}
+                    style={name.trim() && !loading
+                      ? { background: `linear-gradient(135deg, ${accentColor}, ${accentColor}cc)`, boxShadow: `0 4px 16px ${accentColor}44` }
+                      : { background: 'rgba(255,255,255,0.08)' }}
                   >
                     {loading ? '保存中...' : '保存'}
                   </button>
@@ -218,7 +234,7 @@ export default function EditPlaylistModal({
               </form>
             </div>
           </motion.div>
-        </>
+        </motion.div>
       )}
     </AnimatePresence>
   )

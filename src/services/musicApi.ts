@@ -2250,6 +2250,33 @@ export async function getSubscribedAlbums(platform: 'netease' = 'netease', optio
   }
 }
 
+/**
+ * 查询当前账号是否已收藏某专辑。
+ * QQ 传 mid，网易云传数字 id。
+ */
+export async function isAlbumSubscribed(
+  albumId: string | number,
+  platform: 'netease' | 'qq'
+): Promise<boolean> {
+  try {
+    const id = String(albumId)
+    const data = platform === 'qq'
+      ? await getQQSubscribedAlbums()
+      : await getSubscribedAlbums('netease')
+    if (!data) return false
+    const list = data?.data?.list || data?.data?.data || data?.list || data?.data || []
+    if (!Array.isArray(list)) return false
+    return list.some((a: any) => {
+      const mid = a.mid || a.album_mid || a.MID || ''
+      const rawId = a.id || a.album_id || a.ID || ''
+      return String(mid) === id || String(rawId) === id
+    })
+  } catch (error) {
+    console.error('查询专辑收藏状态失败:', error)
+    return false
+  }
+}
+
 /** 获取网易云热门评论 */
 export async function getHotComments(
   id: string,
@@ -2384,6 +2411,33 @@ export async function getQQSubscribedArtists(options: { cookie?: string } = {}):
   }
 }
 
+/**
+ * 查询当前账号是否已关注某歌手（拉取已关注列表后按 id/mid 匹配）。
+ * QQ 传 mid，网易云传数字 id。
+ */
+export async function isArtistFollowed(
+  artistId: string | number,
+  platform: 'netease' | 'qq'
+): Promise<boolean> {
+  try {
+    const id = String(artistId)
+    const data = platform === 'qq'
+      ? await getQQSubscribedArtists()
+      : await getSubscribedArtists('netease')
+    if (!data) return false
+    const list = data?.data?.list || data?.data?.data || data?.list || data?.data || []
+    if (!Array.isArray(list)) return false
+    return list.some((a: any) => {
+      const mid = a.mid || a.singer_mid || a.MID || ''
+      const rawId = a.id || a.singer_id || a.ID || ''
+      return String(mid) === id || String(rawId) === id
+    })
+  } catch (error) {
+    console.error('查询歌手关注状态失败:', error)
+    return false
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
 // 第三批：MV分类浏览 + 用户关注/粉丝 + 听歌排行
 // ══════════════════════════════════════════════════════════════
@@ -2460,8 +2514,7 @@ export async function searchMVs(keywords: string, platform: 'netease' | 'qq' = '
   }
 }
 
-/** 搜索歌单（网易云 type=1000，QQ t=2） */
-export async function searchPlaylists(keywords: string, platform: 'netease' | 'qq' = 'netease', limit: number = 20): Promise<any> {
+/** 搜索歌单（网易云 type=1000，QQ t=2） */export async function searchPlaylists(keywords: string, platform: 'netease' | 'qq' = 'netease', limit: number = 20): Promise<any> {
   try {
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&limit=${limit}&type=playlist`)
@@ -2478,6 +2531,26 @@ export async function searchPlaylists(keywords: string, platform: 'netease' | 'q
   } catch (error) {
     console.error('歌单搜索失败:', error)
     return null
+  }
+}
+
+/** 搜索用户（网易云 type=1002） */
+export async function searchUsers(keywords: string, limit: number = 20): Promise<{ userId: number; nickname: string; signature: string; avatarUrl: string }[]> {
+  try {
+    const cookie = getPlatformCookie('netease')
+    const params = new URLSearchParams({ keywords, limit: String(limit), type: '1002', cookie })
+    const response = await fetch(`${API_BASE}/netease/search?${params}`)
+    const data = await response.json()
+    if (!response.ok) throw new Error(data?.error || '用户搜索失败')
+    return (data?.result?.userprofiles || []).map((u: any) => ({
+      userId: u.userId,
+      nickname: u.nickname || '未知用户',
+      signature: u.signature || '',
+      avatarUrl: u.avatarUrl || '',
+    }))
+  } catch (error) {
+    console.error('用户搜索失败:', error)
+    return []
   }
 }
 
@@ -2621,6 +2694,19 @@ export async function neteaseDailySignin(type: 0 | 1 = 1): Promise<any> {
   }
 }
 
+/** QQ 每日签到 */
+export async function qqDailySignin(options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('qq', options.cookie)
+    const response = await fetch(`${API_BASE}/qq/signin?cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('QQ每日签到失败:', error)
+    return null
+  }
+}
+
 /** 网易云歌曲百科 */
 export async function getNeteaseSongWiki(id: number | string): Promise<any> {
   try {
@@ -2629,6 +2715,23 @@ export async function getNeteaseSongWiki(id: number | string): Promise<any> {
     return data?.summary || null
   } catch (error) {
     console.error('歌曲百科获取失败:', error)
+    return null
+  }
+}
+
+/** 网易云相关博客（歌曲所属专辑的博客文章，App 歌曲详情"相关博客"） */
+export async function getNeteaseSongBlog(albumId: number | string, options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/song/blog?albumId=${encodeURIComponent(String(albumId))}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    if (data?.code !== 200) {
+      console.warn('相关博客获取失败:', data?.msg || data?.error || `code ${data?.code}`)
+      return null
+    }
+    return data
+  } catch (error) {
+    console.error('相关博客获取失败:', error)
     return null
   }
 }
@@ -2667,6 +2770,289 @@ export async function getNeteaseMvSublist(options: { cookie?: string } = {}): Pr
   } catch (error) {
     console.error('收藏MV获取失败:', error)
     return []
+  }
+}
+
+/** 网易云收藏/取消收藏 MV */
+export async function subscribeNeteaseMV(mvid: number | string, subscribe: boolean = true, options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/mv/subscribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mvid: String(mvid), subscribe, cookie })
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data?.error || '收藏MV失败')
+    return data
+  } catch (error) {
+    console.error('收藏MV失败:', error)
+    throw error
+  }
+}
+
+/** 网易云全部排行榜列表 */
+export async function getNeteaseToplistDetail(): Promise<any> {
+  try {
+    const response = await fetch(`${API_BASE}/netease/toplist/detail`)
+    const data = await response.json()
+    return data?.list || []
+  } catch (error) {
+    console.error('排行榜列表获取失败:', error)
+    return []
+  }
+}
+
+/** 网易云指定榜单完整歌曲（榜单即歌单） */
+export async function getNeteaseToplistSongs(id: number | string, options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/toplist/songs?id=${encodeURIComponent(String(id))}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('榜单歌曲获取失败:', error)
+    return null
+  }
+}
+
+/** 网易云私人FM 不再播放（垃圾桶） */
+export async function neteaseFmTrash(id: number | string, options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/fm/trash`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: String(id), cookie })
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data?.error || '操作失败')
+    return data
+  } catch (error) {
+    console.error('FM垃圾桶操作失败:', error)
+    return null
+  }
+}
+
+/** 网易云每日推荐不感兴趣 */
+export async function neteaseRecommendDislike(id: number | string, options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/recommend/dislike`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: String(id), cookie })
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data?.error || '操作失败')
+    return data
+  } catch (error) {
+    console.error('日推不感兴趣失败:', error)
+    return null
+  }
+}
+
+/** 网易云 VIP 信息 */
+export async function getNeteaseVipInfo(options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/vip/info?cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('VIP信息获取失败:', error)
+    return null
+  }
+}
+
+/** 网易云黑胶乐签打卡（VIP 每日签到） */
+export async function neteaseVipSign(options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/vip/sign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cookie })
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data?.error || '打卡失败')
+    return data
+  } catch (error) {
+    console.error('黑胶乐签打卡失败:', error)
+    return null
+  }
+}
+
+/** 网易云黑胶乐签签到信息 */
+export async function getNeteaseVipSignInfo(options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/vip/sign-info?cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('黑胶乐签信息获取失败:', error)
+    return null
+  }
+}
+
+/** 网易云关注动态 */
+export async function getNeteaseFollowingEvents(options: { cookie?: string; pagesize?: number; lasttime?: number } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/event/following?pagesize=${Number(options.pagesize) || 20}&lasttime=${Number(options.lasttime) || -1}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('关注动态获取失败:', error)
+    return null
+  }
+}
+
+/** 网易云用户动态 */
+export async function getNeteaseUserEvents(uid: number | string, options: { cookie?: string; lasttime?: number; limit?: number } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/event/user?uid=${encodeURIComponent(String(uid))}&lasttime=${Number(options.lasttime) || -1}&limit=${Number(options.limit) || 30}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('用户动态获取失败:', error)
+    return null
+  }
+}
+
+/** 网易云通知消息 */
+export async function getNeteaseNotices(options: { cookie?: string; limit?: number; lasttime?: number } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/msg/notices?limit=${Number(options.limit) || 30}&lasttime=${Number(options.lasttime) || -1}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('通知消息获取失败:', error)
+    return null
+  }
+}
+
+/** 网易云评论消息 */
+export async function getNeteaseCommentMessages(uid: number | string, options: { cookie?: string; limit?: number; before?: number } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/msg/comments?uid=${encodeURIComponent(String(uid))}&limit=${Number(options.limit) || 30}&before=${Number(options.before) || -1}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('评论消息获取失败:', error)
+    return null
+  }
+}
+
+/** 网易云云盘歌曲列表 */
+export async function getNeteaseCloudSongs(options: { cookie?: string; limit?: number; offset?: number } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/cloud/list?limit=${Number(options.limit) || 30}&offset=${Number(options.offset) || 0}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('云盘列表获取失败:', error)
+    return null
+  }
+}
+
+/** 网易云云盘歌曲播放链接 */
+export async function getNeteaseCloudSongUrl(id: number | string, options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/cloud/url?id=${encodeURIComponent(String(id))}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('云盘歌曲链接获取失败:', error)
+    return null
+  }
+}
+
+/** 网易云订阅/取消订阅电台 */
+export async function subscribeNeteaseDj(rid: number | string, subscribe: boolean = true, options: { cookie?: string } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/dj/subscribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rid: String(rid), subscribe, cookie })
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data?.error || '订阅电台失败')
+    return data
+  } catch (error) {
+    console.error('订阅电台失败:', error)
+    return null
+  }
+}
+
+/** 网易云订阅电台列表 */
+export async function getNeteaseDjSublist(options: { cookie?: string; limit?: number; offset?: number } = {}): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('netease', options.cookie)
+    const response = await fetch(`${API_BASE}/netease/dj/sublist?limit=${Number(options.limit) || 30}&offset=${Number(options.offset) || 0}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('订阅电台列表获取失败:', error)
+    return null
+  }
+}
+
+/** QQ 歌曲关联 MV */
+export async function getQQSongMV(songId: number | string): Promise<any> {
+  try {
+    const response = await fetch(`${API_BASE}/qq/song/mv?id=${encodeURIComponent(String(songId))}`)
+    const data = await response.json()
+    return data?.data || null
+  } catch (error) {
+    console.error('QQ歌曲关联MV获取失败:', error)
+    return null
+  }
+}
+
+/** QQ MV 点赞/取消 */
+export async function likeQQMV(id: number | string, like: boolean = true): Promise<any> {
+  try {
+    const cookie = getPlatformCookie('qq')
+    const response = await fetch(`${API_BASE}/qq/mv/like?id=${encodeURIComponent(String(id))}&type=${like ? 1 : 0}&cookie=${encodeURIComponent(cookie)}`)
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('QQ MV点赞失败:', error)
+    return null
+  }
+}
+
+/** QQ 歌手分类 */
+export async function getQQArtistCategory(): Promise<any> {
+  try {
+    const response = await fetch(`${API_BASE}/qq/artist/category`)
+    const data = await response.json()
+    return data?.data || null
+  } catch (error) {
+    console.error('QQ歌手分类获取失败:', error)
+    return null
+  }
+}
+
+/** QQ 歌手列表 */
+export async function getQQArtistList(params: { type?: number; area?: number; sex?: number; genre?: number; pageNo?: number; pageSize?: number } = {}): Promise<any> {
+  try {
+    const q = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => { if (v != null) q.set(k, String(v)) })
+    const response = await fetch(`${API_BASE}/qq/artist/list?${q}`)
+    const data = await response.json()
+    return data?.data || null
+  } catch (error) {
+    console.error('QQ歌手列表获取失败:', error)
+    return null
   }
 }
 
