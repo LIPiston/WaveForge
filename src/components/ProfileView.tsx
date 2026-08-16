@@ -1,5 +1,5 @@
 import { getQQUserDisplayName } from '../utils/qqUser'
-import { useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { X, Music, Heart, List, User, Crown, Calendar, MapPin, RefreshCw, LogOut, Plus, MoreHorizontal, Play, History, Disc3, Radio, Mic2, Users, TrendingUp, ArrowLeft, Film } from 'lucide-react'
 import { Song, resolveSongAlbumIdentifier, getUserFollows, getUserFolloweds, getUserRecordRank, getQQFollows, getQQFans, getQQUserProfile, getQQUserFavs, subscribeQQUser, subscribeNeteaseUser, getSubscribedAlbums, getSubscribedArtists, getQQSubscribedAlbums, getQQSubscribedArtists, getNeteaseMvSublist, neteaseDailySignin } from '../services/musicApi'
@@ -119,7 +119,7 @@ interface ProfileViewProps {
   onCopyInfo?: (song: Song) => void
 }
 
-export default function ProfileView({ 
+function ProfileView({ 
   initialPlatform,
   initialTab = 'created',
   canSwitchPlatform,
@@ -2247,6 +2247,8 @@ export default function ProfileView({
     </div>
   )
 }
+
+export default memo(ProfileView)
 
 
 

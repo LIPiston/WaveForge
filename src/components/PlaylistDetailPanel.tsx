@@ -2,7 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Music, Play, Clock, Crown, Heart, Info, Radio } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier } from '../services/musicApi'
 import { subscribePlaylist } from '../services/playlistService'
-import { useState, useRef, useEffect, useCallback, useMemo, type UIEvent } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, memo, type UIEvent } from 'react'
 import CachedImage from './CachedImage'
 import { imageCache } from '../utils/imageCache'
 import SongContextMenu from './SongContextMenu'
@@ -56,7 +56,7 @@ interface PlaylistDetailPanelProps {
   accentColor?: string
 }
 
-export default function PlaylistDetailPanel({
+function PlaylistDetailPanel({
   show,
   playlist,
   songs,
@@ -913,6 +913,8 @@ export default function PlaylistDetailPanel({
     </AnimatePresence>
   )
 }
+
+export default memo(PlaylistDetailPanel)
 
 
 

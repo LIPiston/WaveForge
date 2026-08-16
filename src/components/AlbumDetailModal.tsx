@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Music, Info, Loader, Heart } from 'lucide-react'
 import { getAlbumDetail, getAlbumSongs, Album, Song, getProxiedImageUrl, subscribeAlbum } from '../services/musicApi'
@@ -31,7 +31,7 @@ interface AlbumDetailModalProps {
 
 type TabType = 'songs' | 'info'
 
-export default function AlbumDetailModal({
+function AlbumDetailModal({
   albumId,
   platform,
   onClose,
@@ -621,3 +621,5 @@ export default function AlbumDetailModal({
     </>
   )
 }
+
+export default memo(AlbumDetailModal)

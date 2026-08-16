@@ -50,6 +50,10 @@ function serializedSize(value: unknown): number {
 class IndexedDBCache {
   private db: IDBDatabase | null = null
   private initPromise: Promise<void> | null = null
+  // 修剪节流：全量扫描（游标遍历 + 排序）只在节流间隔内首次触发或数量超限时执行，
+  // 避免每次写入都 O(n log n) 遍历整个 store。cleanupExpired/超限时强制立即修剪。
+  private readonly ENFORCE_LIMIT_INTERVAL = 60 * 1000
+  private lastEnforceLimitAt: Record<string, number> = {}
 
   async init(): Promise<void> {
     if (this.db) return
@@ -94,10 +98,15 @@ class IndexedDBCache {
     url = url.trim()
     if (!url) throw new Error('封面 URL 不能为空')
     if (blob.size > 10 * 1024 * 1024) return
-    await this.enforceLimit(COVER_STORE, MAX_COVERS - 1, MAX_COVER_BYTES - blob.size, COVER_TTL)
     const now = Date.now()
-    const store = await this.store(COVER_STORE, 'readwrite')
-    await this.request(store.put({ url, data: blob, timestamp: now, size: blob.size, accessCount: 1, lastAccess: now } as CoverCacheItem))
+    // 去重：同一 URL 已有未过期缓存时跳过写入。切歌/并发加载对同一封面重复
+    // 命中这里时直接返回，避免每次切歌都对同一封面重复执行写事务与空间修剪。
+    const readStore = await this.store(COVER_STORE, 'readonly')
+    const existing = await this.request(readStore.get(url)) as CoverCacheItem | undefined
+    if (existing && now - Math.max(existing.timestamp, existing.lastAccess || 0) <= COVER_TTL) return
+    await this.enforceLimit(COVER_STORE, MAX_COVERS - 1, MAX_COVER_BYTES - blob.size, COVER_TTL)
+    const writeStore = await this.store(COVER_STORE, 'readwrite')
+    await this.request(writeStore.put({ url, data: blob, timestamp: now, size: blob.size, accessCount: 1, lastAccess: now } as CoverCacheItem))
   }
 
   /**
@@ -202,8 +211,17 @@ class IndexedDBCache {
     })
   }
 
-  private async enforceLimit(storeName: string, maxCount: number, maxBytes: number, ttl: number): Promise<void> {
+  private async enforceLimit(storeName: string, maxCount: number, maxBytes: number, ttl: number, force = false): Promise<void> {
     const now = Date.now()
+    const lastRun = this.lastEnforceLimitAt[storeName] || 0
+    // 节流窗口内：先用 O(1) 的 count() 快速判断。数量未超限则不执行全量扫描，
+    // 避免每次 set 都遍历整个 store（游标 + JSON 反序列化 + 排序）。
+    if (!force && now - lastRun < this.ENFORCE_LIMIT_INTERVAL) {
+      const countStore = await this.store(storeName, 'readonly')
+      const count = await this.request(countStore.count())
+      if (count <= maxCount) return
+    }
+    this.lastEnforceLimitAt[storeName] = now
     const items = await this.readItems(storeName)
     const remove = new Set<IDBValidKey>(items.filter(item => now - Math.max(item.timestamp, item.lastAccess) > ttl).map(item => item.key))
     let remaining = items.filter(item => !remove.has(item.key)).sort((a, b) => a.lastAccess - b.lastAccess)
@@ -221,9 +239,9 @@ class IndexedDBCache {
   }
 
   async cleanupExpired(): Promise<void> {
-    await this.enforceLimit(COVER_STORE, MAX_COVERS, MAX_COVER_BYTES, COVER_TTL)
-    await this.enforceLimit(PLAYLIST_STORE, MAX_PLAYLISTS, MAX_PLAYLIST_BYTES, PLAYLIST_TTL)
-    await this.enforceLimit(LYRICS_STORE, MAX_LYRICS, MAX_LYRICS_BYTES, LYRICS_TTL)
+    await this.enforceLimit(COVER_STORE, MAX_COVERS, MAX_COVER_BYTES, COVER_TTL, true)
+    await this.enforceLimit(PLAYLIST_STORE, MAX_PLAYLISTS, MAX_PLAYLIST_BYTES, PLAYLIST_TTL, true)
+    await this.enforceLimit(LYRICS_STORE, MAX_LYRICS, MAX_LYRICS_BYTES, LYRICS_TTL, true)
   }
 
   async getCacheStats(): Promise<IndexedDBCacheStats> {

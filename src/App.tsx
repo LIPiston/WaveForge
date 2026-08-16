@@ -4068,6 +4068,45 @@ function App() {
     void handleSongSelectRef.current(song, playlist)
   }, [])
 
+  // ===== 弹窗稳定回调（latest-ref 模式）=====
+  // ProfileView/AlbumDetailModal/PlaylistPanel 已包 memo；这些回调若每次渲染新建会击穿
+  // memo 导致 1Hz 无关重渲染。这里用 latest-ref 暴露一次性创建的稳定引用，行为与内联等价。
+  const closeProfileRef = useRef<() => void>(() => undefined)
+  const closeAlbumDetailRef = useRef<() => void>(() => undefined)
+  const closePlaylistRef = useRef<() => void>(() => undefined)
+  const profileSwitchPlatformRef = useRef<() => void>(() => undefined)
+  const profileLogoutRef = useRef<(platform: 'netease' | 'qq') => void>(() => undefined)
+  const smartReorderRef = useRef<() => void>(() => undefined)
+  const playlistSongSelectRef = useRef<(index: number) => void>(() => undefined)
+  closeProfileRef.current = () => setShowProfile(false)
+  closeAlbumDetailRef.current = () => closeAlbumDetail()
+  closePlaylistRef.current = () => setShowPlaylist(false)
+  profileSwitchPlatformRef.current = () => setProfileInitialPlatform(prev => prev === 'netease' ? 'qq' : 'netease')
+  profileLogoutRef.current = (platform) => {
+    if (platform === 'netease') handleNeteaseLogout()
+    else handleQQLogout()
+  }
+  smartReorderRef.current = () => { void handleSmartReorder() }
+  playlistSongSelectRef.current = (index) => {
+    const song = playlistRef.current[index]
+    if (!song) return
+    audioPlayer.cancelTransition('playlist song selected', false)
+    bumpQueueRevision()
+    currentIndexRef.current = index
+    setCurrentIndex(index)
+    void loadAndPlaySong(song, index, playlistRef.current)
+    setShowPlaylist(false)
+  }
+  const stableDialogCallbacks = useMemo(() => ({
+    closeProfile: () => closeProfileRef.current(),
+    closeAlbumDetail: () => closeAlbumDetailRef.current(),
+    closePlaylist: () => closePlaylistRef.current(),
+    switchProfilePlatform: () => profileSwitchPlatformRef.current(),
+    logout: (platform: 'netease' | 'qq') => profileLogoutRef.current(platform),
+    smartReorder: () => smartReorderRef.current(),
+    playlistSongSelect: (index: number) => playlistSongSelectRef.current(index),
+  }), [])
+
   return (
     <>
       {/* 自定义窗口标题栏 */}
@@ -5141,22 +5180,13 @@ function App() {
           <LazyPlaylistPanel
             show={true}
             playerTheme={playerTheme}
-            onClose={() => setShowPlaylist(false)}
+            onClose={stableDialogCallbacks.closePlaylist}
             playlist={playlist}
             currentIndex={currentIndex}
-            onSmartReorder={handleSmartReorder}
+            onSmartReorder={stableDialogCallbacks.smartReorder}
             isSmartReordering={isSmartReordering}
             smartReorderProgress={smartReorderProgress}
-            onSongSelect={(index) => {
-              const song = playlist[index]
-              if (!song) return
-              audioPlayer.cancelTransition('playlist song selected', false)
-              bumpQueueRevision()
-              currentIndexRef.current = index
-              setCurrentIndex(index)
-              loadAndPlaySong(song, index)
-              setShowPlaylist(false)
-            }}
+            onSongSelect={stableDialogCallbacks.playlistSongSelect}
             neteaseVip={neteaseVip}
             qqVip={qqVip}
             currentPlatform={currentSong?.platform === 'qq' ? 'qq' : 'netease'}
@@ -5278,7 +5308,7 @@ function App() {
             key={'album-' + selectedAlbumId}
             albumId={selectedAlbumId}
             platform={selectedAlbumPlatform}
-            onClose={closeAlbumDetail}
+            onClose={stableDialogCallbacks.closeAlbumDetail}
             onSongSelect={handleAlbumDetailSongSelect}
             accentColor={dominantColor || '#3B82F6'}
             playerTheme={playerTheme}
@@ -5320,13 +5350,10 @@ function App() {
             canSwitchPlatform={neteaseLoggedIn && qqLoggedIn}
             userId={profileInitialPlatform === 'netease' ? neteaseUserId : qqUserId}
             cookie={profileInitialPlatform === 'netease' ? _neteaseCookie : _qqCookie}
-            onClose={() => setShowProfile(false)}
+            onClose={stableDialogCallbacks.closeProfile}
             onSongSelect={viewCallbacks.onSongSelect}
-            handleSwitchPlatform={() => setProfileInitialPlatform(prev => prev === 'netease' ? 'qq' : 'netease')}
-            onLogout={(platform) => {
-              if (platform === 'netease') handleNeteaseLogout()
-              else handleQQLogout()
-            }}
+            handleSwitchPlatform={stableDialogCallbacks.switchProfilePlatform}
+            onLogout={stableDialogCallbacks.logout}
             currentSong={currentSong}
             playerTheme={playerTheme}
             onOpenArtist={viewCallbacks.onOpenArtist}

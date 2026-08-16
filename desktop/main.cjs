@@ -3161,8 +3161,17 @@ app.whenReady().then(() => {
   // 否则渲染进程请求 localhost:3001 全部失败，应用只剩空壳 UI。
   startLocalBackend()
   
-  // 传入缓存路径给 analysis runtime
-  analysisRuntime = createAnalysisRuntime(app, ipcMain, () => mainWindow, cachePath)
+  // 传入缓存路径给 analysis runtime。
+  // 延迟到 setImmediate 初始化：createAnalysisRuntime 内部 AudioDownloadService 构造时会
+  // 同步读取并逐条 statSync 校验音频缓存索引，末尾还会同步 readdirSync 扫描全部缓存目录
+  // 执行清理（缓存文件多时可达数十到数百毫秒）。这些工作与窗口显示无关，先创建 splash/
+  // 主窗口与 loadFile 让界面尽早出现，再执行分析运行时初始化。渲染进程的 analysis:* /
+  // audio-download:* IPC 只在用户实际操作（切歌分析/下载/清理缓存）时才调用，必然晚于
+  // setImmediate 回调，因此 handler 注册顺序不受影响；启动失败也只会让分析功能降级，
+  // 不影响窗口显示与后端服务。
+  setImmediate(() => {
+    analysisRuntime = createAnalysisRuntime(app, ipcMain, () => mainWindow, cachePath)
+  })
   
   // Setup render runtime IPC handlers
   setupRenderIPC(ipcMain, configManager.getCachePath(), toMediaUrl)
