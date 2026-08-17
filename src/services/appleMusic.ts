@@ -33,7 +33,8 @@ export interface AppleMusicSettings {
 }
 
 const DEFAULT_SETTINGS: AppleMusicSettings = {
-  enabled: true,
+  // 默认禁用 AM 歌词：未登录/未主动开启时不请求 Apple 官方接口，也不替换平台歌词
+  enabled: false,
   developerToken: '',
   mediaUserToken: '',
   storefront: 'cn',

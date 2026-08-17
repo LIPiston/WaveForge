@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Crown,
   Disc3,
+  Droplets,
   Film,
   Headphones,
   Loader2,
@@ -192,13 +193,13 @@ function CoverWallBackground({
   covers,
   style,
   animated,
-  blur,
+  blurPx,
   accentRgb,
 }: {
   covers: string[]
   style: 'tilted' | 'grid'
   animated: boolean
-  blur: 'soft' | 'medium' | 'strong'
+  blurPx: number
   accentRgb: string
 }) {
   const urls = useMemo(() => {
@@ -213,7 +214,7 @@ function CoverWallBackground({
     return list
   }, [covers])
 
-  const blurMap = { soft: 'blur(18px)', medium: 'blur(32px)', strong: 'blur(56px)' } as const
+  const blurValue = `blur(${blurPx}px)`
   const tiltValues = [-5, -3, 0, 3, 5, -2, 2, 4, -4, 1]
 
   if (urls.length === 0) return null
@@ -250,8 +251,8 @@ function CoverWallBackground({
       <div
         className="absolute inset-0"
         style={{
-          backdropFilter: blurMap[blur],
-          WebkitBackdropFilter: blurMap[blur],
+          backdropFilter: blurValue,
+          WebkitBackdropFilter: blurValue,
           background: `linear-gradient(160deg, rgba(${accentRgb},0.16) 0%, rgba(6,8,12,0.68) 45%, rgba(6,8,12,0.86) 100%)`,
         }}
       />
@@ -516,6 +517,17 @@ function ExploreView({
   const [showModePanel, setShowModePanel] = useState(false)
   const [showMVExplore, setShowMVExplore] = useState(false)
   const [fmLoading, setFmLoading] = useState(false)
+  // 封面墙模糊度（可调按钮 + 拖拉条；本地持久化，默认 32px）
+  const [coverBlurPx, setCoverBlurPx] = useState(() => {
+    try {
+      const saved = localStorage.getItem('exploreCoverBlur')
+      if (saved !== null) return Math.max(0, Math.min(80, parseInt(saved) || 32))
+    } catch {
+      // ignore
+    }
+    return 32
+  })
+  const [showBlurControl, setShowBlurControl] = useState(false)
   // 网易云首页 Banner 轮播
   const [banners, setBanners] = useState<ExploreBannerItem[]>([])
 
@@ -1082,7 +1094,7 @@ function ExploreView({
           covers={heroSongs.map(song => song.album?.picUrl || '')}
           style={platformPreferences.coverWallStyle}
           animated={platformPreferences.coverWallAnimated}
-          blur={platformPreferences.coverWallBlur}
+          blurPx={coverBlurPx}
           accentRgb={accentRgb}
         />
       )}
@@ -1120,6 +1132,53 @@ function ExploreView({
                 <path d="M19 9l-7 7-7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
               </motion.svg>
             </motion.button>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* 封面墙模糊度调节（右上角按钮 + 展开拖拉条） */}
+      <div className="fixed right-4 top-0 z-[90] flex flex-col items-end">
+        <button
+          type="button"
+          aria-label="封面墙模糊度"
+          data-tv-focus
+          tabIndex={-1}
+          onClick={() => setShowBlurControl((v) => !v)}
+          className="flex h-8 w-8 items-center justify-center rounded-b-2xl border border-t-0 border-white/20 bg-white/10 text-white backdrop-blur-md transition hover:bg-white/20"
+        >
+          <Droplets className="h-4 w-4" />
+        </button>
+        <AnimatePresence>
+          {showBlurControl && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.18 }}
+              className="mt-1 rounded-2xl border border-white/15 bg-[#0b1017]/92 p-3 backdrop-blur-xl"
+            >
+              <div className="mb-1.5 flex items-center justify-between gap-4">
+                <span className="text-xs text-white/70">封面墙模糊</span>
+                <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-white/90">{coverBlurPx}px</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={80}
+                value={coverBlurPx}
+                onChange={(e) => {
+                  const value = Number(e.target.value)
+                  setCoverBlurPx(value)
+                  try {
+                    localStorage.setItem('exploreCoverBlur', String(value))
+                  } catch {
+                    // ignore
+                  }
+                }}
+                className="w-44 accent-[#4fc3f7]"
+                aria-label="封面墙模糊度"
+              />
+            </motion.div>
           )}
         </AnimatePresence>
       </div>

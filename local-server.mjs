@@ -900,11 +900,14 @@ function normalizeQQPlaylistDetail(detail, fallbackId) {
 // gzip 压缩（放在所有路由与 body 解析之前）：/api/explore/* 等聚合响应可达数百 KB，
 // 本地回环下压缩能显著减小序列化/传输开销。图片/视频/音频等媒体流一律跳过——
 // 它们已接近不可压缩且需要保留 Content-Length / Range 语义，压缩缓冲会破坏流式播放。
-// 过滤逻辑：按响应 Content-Type 排除媒体类型；SSE（text/event-stream）由
-// compression 内置的 Cache-Control: no-transform 规则自动跳过。
+// 过滤逻辑：按响应 Content-Type 排除媒体类型；SSE（QQ AI 解读/听歌报告等
+// text/event-stream）也跳过——gzip 会缓冲小 chunk 不 flush，导致前端一直"连接中"
+// 直到超时才收到整段（或断开），必须原样透传。
 app.use(compression({
   threshold: 1024,
-  filter: (_req, res) => {
+  filter: (req, res) => {
+    // SSE 流式接口（AI 解读/听歌报告）：逐字输出的增量必须即时到达，禁用压缩
+    if (req.path.startsWith('/api/explore/qq/skills/')) return false
     const contentType = res.getHeader('Content-Type')
     const type = Array.isArray(contentType) ? contentType[0] : contentType
     if (typeof type === 'string') {
