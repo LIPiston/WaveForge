@@ -50,6 +50,7 @@ import ExploreSettingsPanel, {
   normalizeExplorePreferences,
   type ExplorePreferences,
   type ExploreSectionId,
+  type ExploreCardOpacity,
 } from './ExploreSettingsPanel'
 import SongContextMenu from './SongContextMenu'
 import MVExploreModal from './MVExploreModal'
@@ -802,6 +803,17 @@ function ExploreView({
   const showSectionDescriptions = platformPreferences.showDescriptions
   const expandedHome = platformPreferences.contentAmount === 'expanded'
   const compactCards = platformPreferences.density === 'compact'
+  // 卡片质感：solid/frosted/glass 预设 + custom 自定义不透明度（0-100% → 白底 alpha 0.02-0.32）
+  const cardBgOf = (opacity: ExploreCardOpacity, custom: number): string => {
+    const alphaMap: Record<string, number> = { solid: 0.02, frosted: 0.05, glass: 0.14 }
+    const alpha =
+      opacity === 'custom'
+        ? Math.min(0.32, 0.02 + (custom / 100) * 0.3)
+        : (alphaMap[opacity] ?? 0.05)
+    return `rgba(255,255,255,${alpha})`
+  }
+  const exploreCardBg = cardBgOf(platformPreferences.cardOpacity, platformPreferences.cardOpacityCustom ?? 40)
+  const showRankNumbers = platformPreferences.showRankNumbers
 
   const switchMode = (mode: ViewMode) => {
     localStorage.setItem('viewMode', mode)
@@ -1273,7 +1285,7 @@ function ExploreView({
             />
           </main>
         ) : (
-        <main className="mx-auto max-w-[1680px] px-5 pb-40 pt-7 md:px-8 lg:px-10">
+        <main className="mx-auto max-w-[1680px] px-5 pb-8 pt-7 md:px-8 lg:px-10">
           <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
             <div>
               <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.2em] text-white/36">
@@ -1564,7 +1576,7 @@ function ExploreView({
                       className="group min-w-0 cursor-pointer"
                       onClick={() => void handlePlaylist(playlist)}
                     >
-                      <div className="relative aspect-square overflow-hidden rounded-[22px] border border-white/[0.08] bg-white/[0.05] shadow-xl shadow-black/10">
+                      <div className="relative aspect-square overflow-hidden rounded-[22px] border border-white/[0.08] shadow-xl shadow-black/10" style={{ backgroundColor: exploreCardBg }}>
                         <Cover src={playlist.coverUrl} alt={playlist.name} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
                         <div className="absolute inset-0 bg-black/0 transition group-hover:bg-black/20" />
                         {playlist.source === 'qqmusic-skills' && (
@@ -1607,12 +1619,15 @@ function ExploreView({
                   action={<MoreButton label="排行榜" onClick={() => setMoreSection('charts')} />}
                 />
                 <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-                  {payload.charts.slice(0, expandedHome ? 12 : 8).map((chart, chartIndex) => (
+                  {payload.charts
+                    .slice(0, expandedHome ? 12 : (typeof window !== 'undefined' && window.innerWidth >= 1536 ? 3 : 2) * 4)
+                    .map((chart, chartIndex) => (
                     <motion.div
                       key={`${chart.platform}-${chart.id}-${chartIndex}`}
                       whileHover={{ y: -3 }}
                       onClick={() => void handleChart(chart)}
-                      className="group flex min-h-44 cursor-pointer gap-4 overflow-hidden rounded-[24px] border border-white/[0.08] bg-white/[0.045] p-3 transition hover:bg-white/[0.065]"
+                      className="group flex min-h-44 cursor-pointer gap-4 overflow-hidden rounded-[24px] border border-white/[0.08] p-3 transition"
+                      style={{ backgroundColor: exploreCardBg }}
                     >
                       <div className="relative aspect-square h-full min-h-36 w-36 shrink-0 overflow-hidden rounded-[18px]">
                         <Cover src={chart.coverUrl} alt={chart.name} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
@@ -1642,12 +1657,14 @@ function ExploreView({
                         <div className="space-y-2.5">
                           {chart.songs.slice(0, 3).map((song, index) => (
                             <div key={`${song.name}-${index}`} className="flex min-w-0 items-center gap-2 text-xs">
-                              <span
-                                className="w-4 shrink-0 font-semibold"
-                                style={{ color: index === 0 ? accent : 'rgba(255,255,255,0.3)' }}
-                              >
-                                {song.rank || index + 1}
-                              </span>
+                              {showRankNumbers && (
+                                <span
+                                  className="w-4 shrink-0 font-semibold"
+                                  style={{ color: index === 0 ? accent : 'rgba(255,255,255,0.3)' }}
+                                >
+                                  {song.rank || index + 1}
+                                </span>
+                              )}
                               <span className="min-w-0 flex-1 truncate text-white/72">{song.name}</span>
                               <span className="max-w-24 truncate text-white/30">{song.artist}</span>
                             </div>
@@ -1678,7 +1695,9 @@ function ExploreView({
                       onContextMenu={event => openSongContextMenu(event, song, payload.newSongs)}
                       className="group flex min-w-0 items-center gap-3 rounded-2xl border border-transparent p-2 text-left transition hover:border-white/[0.07] hover:bg-white/[0.055]"
                     >
-                      <span className="w-5 shrink-0 text-center text-xs text-white/24">{String(index + 1).padStart(2, '0')}</span>
+                      {showRankNumbers && (
+                        <span className="w-5 shrink-0 text-center text-xs text-white/24">{String(index + 1).padStart(2, '0')}</span>
+                      )}
                       <Cover src={song.album.picUrl} alt={song.name} className="h-12 w-12 shrink-0 rounded-xl object-cover" iconClassName="h-4 w-4" />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium text-white/82">{song.name}</span>

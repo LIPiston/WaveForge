@@ -17,7 +17,7 @@ export type ExploreContentAmount = 'curated' | 'expanded'
 export type ExploreBackgroundIntensity = 'calm' | 'vivid'
 export type ExploreBackgroundMode = 'gradient' | 'coverWall'
 export type ExploreCoverWallStyle = 'tilted' | 'grid'
-export type ExploreCardOpacity = 'solid' | 'frosted' | 'glass'
+export type ExploreCardOpacity = 'solid' | 'frosted' | 'glass' | 'custom'
 
 export interface ExplorePlatformPreferences {
   order: ExploreSectionId[]
@@ -36,8 +36,10 @@ export interface ExplorePlatformPreferences {
   coverWallBlur: 'soft' | 'medium' | 'strong' | 'custom'
   // 封面墙自定义模糊像素（0-80），coverWallBlur === 'custom' 时生效
   coverWallBlurCustom: number
-  // 卡片玻璃化程度
+  // 卡片玻璃化程度（custom=自定义，用 cardOpacityCustom 的百分比）
   cardOpacity: ExploreCardOpacity
+  // 卡片自定义不透明度（0-100），cardOpacity === 'custom' 时生效
+  cardOpacityCustom: number
   // 排行榜/新歌列表显示序号
   showRankNumbers: boolean
   // 启用平台增强 API（QQ 的 Skills 个性化推荐 / 网易云 VIP 音质等）
@@ -79,6 +81,7 @@ const DEFAULT_PLATFORM_PREFS = {
   coverWallBlur: 'medium' as const,
   coverWallBlurCustom: 40,
   cardOpacity: 'frosted' as const,
+  cardOpacityCustom: 40,
   showRankNumbers: true,
   enhancedApi: true,
 }
@@ -136,7 +139,11 @@ export function normalizeExplorePreferences(input: unknown): ExplorePreferences 
           ? source.coverWallBlur
           : 'medium',
       coverWallBlurCustom: Math.max(0, Math.min(80, Number(source.coverWallBlurCustom) || 40)),
-      cardOpacity: source.cardOpacity === 'solid' || source.cardOpacity === 'glass' ? source.cardOpacity : 'frosted',
+      cardOpacity:
+        source.cardOpacity === 'solid' || source.cardOpacity === 'glass' || source.cardOpacity === 'custom'
+          ? source.cardOpacity
+          : 'frosted',
+      cardOpacityCustom: Math.max(0, Math.min(100, Number(source.cardOpacityCustom) || 40)),
       showRankNumbers: source.showRankNumbers !== false,
       enhancedApi: source.enhancedApi !== false,
     }
@@ -227,6 +234,12 @@ export default function ExploreSettingsPanel({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
+            onWheel={event => {
+              // 遮罩拦截了滚轮：转发给探索页滚动容器，让用户边设置边滚动看实时效果
+              event.stopPropagation()
+              const container = document.querySelector<HTMLElement>('.explore-scrollbar')
+              if (container) container.scrollBy(0, event.deltaY)
+            }}
             className="pointer-events-auto absolute inset-0 bg-transparent"
           />
           <motion.aside
@@ -354,15 +367,17 @@ export default function ExploreSettingsPanel({
                     />
                   </>
                 )}
-                <SettingChoice
-                  label="背景氛围"
-                  description="控制平台主题色在背景中的强度。"
-                  value={current.backgroundIntensity}
-                  options={[['calm', '柔和'], ['vivid', '鲜明']]}
-                  accent={accent}
-                  isDark={isDark}
-                  onChange={value => updateCurrent({ backgroundIntensity: value as ExploreBackgroundIntensity })}
-                />
+                {current.backgroundMode !== 'coverWall' && (
+                  <SettingChoice
+                    label="背景氛围"
+                    description="控制平台主题色在背景中的强度（封面墙模式使用封面墙背景，无需此选项）。"
+                    value={current.backgroundIntensity}
+                    options={[['calm', '柔和'], ['vivid', '鲜明']]}
+                    accent={accent}
+                    isDark={isDark}
+                    onChange={value => updateCurrent({ backgroundIntensity: value as ExploreBackgroundIntensity })}
+                  />
+                )}
               </section>
 
               <section className="mb-7 space-y-4">
@@ -387,13 +402,30 @@ export default function ExploreSettingsPanel({
                 />
                 <SettingChoice
                   label="卡片质感"
-                  description="毛玻璃=半透明磨砂；高透=更通透；实心=更厚重。"
+                  description="毛玻璃=半透明磨砂；高透=更通透；实心=更厚重；选择「自定义」可精确调节不透明度。"
                   value={current.cardOpacity}
-                  options={[['frosted', '毛玻璃'], ['glass', '高透'], ['solid', '实心']]}
+                  options={[['frosted', '毛玻璃'], ['glass', '高透'], ['solid', '实心'], ['custom', '自定义']]}
                   accent={accent}
                   isDark={isDark}
                   onChange={value => updateCurrent({ cardOpacity: value as ExploreCardOpacity })}
-                />
+                >
+                  {current.cardOpacity === 'custom' && (
+                    <div className={`mt-3 flex items-center gap-3 rounded-2xl border p-3 ${borderSoft}`}>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={current.cardOpacityCustom}
+                        onChange={e => updateCurrent({ cardOpacityCustom: Number(e.target.value) })}
+                        className="flex-1 accent-[#4fc3f7]"
+                        aria-label="卡片质感自定义不透明度"
+                      />
+                      <span className={`w-12 shrink-0 text-right text-xs font-semibold ${textPrimary}`}>
+                        {current.cardOpacityCustom}%
+                      </span>
+                    </div>
+                  )}
+                </SettingChoice>
                 <ToggleRow
                   label="显示板块说明"
                   description="保留标题下方的推荐逻辑和内容说明。"
@@ -404,7 +436,7 @@ export default function ExploreSettingsPanel({
                 />
                 <ToggleRow
                   label="显示排行序号"
-                  description="榜单与歌单卡片左侧显示 1/2/3 序号。"
+                  description="排行榜与最新音乐列表左侧显示 1/2/3 序号。"
                   checked={current.showRankNumbers}
                   accent={accent}
                   isDark={isDark}
