@@ -9,8 +9,9 @@
  * 所有路径（壁纸目录）由调用方传入。
  */
 import { createRemoteServer, getLanIPv4Addresses } from './desktop/remote-server.cjs'
-import { createReadStream, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { createReadStream, existsSync, mkdirSync, readdirSync, statSync, writeFileSync, readFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { verifyCode } from './desktop/device-license.cjs'
 
 // ── TV 壁纸扫码上传：手机浏览器 → 25567 上传页 → 存本地/设备存储 ──
 // 手机上传的图片由 SPA 从 /api/tv/wallpapers 拉回并导入 wallpaperManager（IndexedDB）。
@@ -190,6 +191,68 @@ export function installTvExtensions({
       res.json({ lines: serverLogs.slice(-100), total: serverLogs.length })
     })
   }
+
+  // ── TV 设备识别码 / 隐藏功能兑换（复用桌面端 RSA 公钥签名校验） ──
+  // 识别码 = Android ANDROID_ID（前端从 WaveForgeNative.getDeviceId() 取，随请求带上；
+  // 浏览器 ?tv=1 调试时前端用本地模拟 ID）。
+  // 兑换码由开发者用 license-private-key.pem 生成（payload.deviceHash = sha256(识别码)），
+  // 本端点用 license-public-key.pem 验证后把已兑换码存入 tv-license.json（应用更新不清空）。
+  const tvLicenseFile = join(dirname(wallpapersDir), 'tv-license.json')
+  const readTvLicense = () => {
+    try {
+      return JSON.parse(readFileSync(tvLicenseFile, 'utf8'))
+    } catch {
+      return {}
+    }
+  }
+  const writeTvLicense = (partial) => {
+    const next = { ...readTvLicense(), ...partial }
+    mkdirSync(dirname(tvLicenseFile), { recursive: true })
+    writeFileSync(tvLicenseFile, JSON.stringify(next, null, 2))
+  }
+  const collectTvGrants = (deviceId) => {
+    const codes = Array.isArray(readTvLicense().redeemedCodes) ? readTvLicense().redeemedCodes : []
+    const grants = []
+    for (const code of codes) {
+      try {
+        grants.push(verifyCode(code, deviceId))
+      } catch {
+        // 过期/失效码静默跳过
+      }
+    }
+    return grants
+  }
+  app.get('/api/tv/license/status', (req, res) => {
+    const deviceId = String(req.query.deviceId || '').trim()
+    if (!deviceId) {
+      res.json({ ok: false, error: '缺少设备识别码' })
+      return
+    }
+    res.json({ ok: true, deviceId, grants: collectTvGrants(deviceId) })
+  })
+  app.post('/api/tv/license/redeem', (req, res) => {
+    const deviceId = String(req.body?.deviceId || '').trim()
+    const code = String(req.body?.code || '').trim()
+    if (!deviceId) {
+      res.json({ ok: false, error: '缺少设备识别码' })
+      return
+    }
+    try {
+      const grant = verifyCode(code, deviceId)
+      const stored = readTvLicense()
+      const codes = Array.isArray(stored.redeemedCodes) ? stored.redeemedCodes : []
+      if (!codes.includes(code)) codes.push(code)
+      writeTvLicense({ redeemedCodes: codes.slice(-50) })
+      res.json({
+        ok: true,
+        message: `已解锁：${grant.label}`,
+        grant,
+        grants: collectTvGrants(deviceId),
+      })
+    } catch (err) {
+      res.json({ ok: false, error: err?.message || '兑换失败' })
+    }
+  })
 
   return tvRemoteServer
 }

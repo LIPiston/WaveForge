@@ -45,7 +45,7 @@ class MainActivity : Activity() {
     companion object {
         private const val NODE_ASSETS_DIR = "nodejs-project"
         private const val PREF_TAG_KEY = "node_assets_version"
-        private const val ASSETS_VERSION = 12
+        private const val ASSETS_VERSION = 13
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
         // QQ 统一登录页（appid=716027609 为 QQ 音乐）：自带二维码，加载即出扫码登录，
@@ -61,6 +61,7 @@ class MainActivity : Activity() {
 
     private lateinit var webView: WebView
     private lateinit var rootView: FrameLayout
+    private var splashView: SplashView? = null
     private var qqLoginWebView: WebView? = null
     private var qqLoginPolling: Thread? = null
     private val nodeStarted = AtomicBoolean(false)
@@ -85,13 +86,16 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#0a0f14"))
         }
 
-        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleLarge).apply {
+        // TV 全屏启动动画（涟漪 + logo + 音波条），后端就绪后淡出
+        val appVersion = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }
+            .getOrNull() ?: ""
+        splashView = SplashView(this, appVersion).apply {
             layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { gravity = Gravity.CENTER }
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
-        rootView.addView(progress)
+        rootView.addView(splashView)
 
         webView = WebView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -235,11 +239,16 @@ class MainActivity : Activity() {
                 if (!ready) Thread.sleep(250)
             }
             runOnUiThread {
-                webView.visibility = View.VISIBLE
-                webView.requestFocus()
-                webView.loadUrl(SERVER_URL)
-                // 应用内更新检查（后台拉清单，有新版弹窗，不影响启动）
-                UpdateChecker.check(this)
+                // 启动动画淡出后再展示应用（避免生硬切换）
+                splashView?.animate()?.alpha(0f)?.setDuration(450)?.withEndAction {
+                    rootView.removeView(splashView)
+                    splashView = null
+                    webView.visibility = View.VISIBLE
+                    webView.requestFocus()
+                    webView.loadUrl(SERVER_URL)
+                    // 应用内更新检查（后台拉清单，有新版弹窗，不影响启动）
+                    UpdateChecker.check(this@MainActivity)
+                }
             }
         }.start()
     }
@@ -461,7 +470,11 @@ class MainActivity : Activity() {
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
                 KeyEvent.KEYCODE_MEDIA_STOP,
                 KeyEvent.KEYCODE_MEDIA_NEXT,
-                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                KeyEvent.KEYCODE_MEDIA_REWIND,
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+                KeyEvent.KEYCODE_MENU,
+                KeyEvent.KEYCODE_SEARCH -> {
                     if (event.action == KeyEvent.ACTION_DOWN) {
                         forwardKeyToDom(event.keyCode)
                     }

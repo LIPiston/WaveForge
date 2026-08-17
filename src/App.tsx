@@ -1,6 +1,6 @@
 import { debugLog, isVerboseLogEnabled } from './utils/debugLog'
 import { parseStoredBoolean } from './utils/storage'
-import { isTv } from './platform'
+import { isTv, isTvModeActive } from './platform'
 import { isPerfModeEfficiency } from './tv/perfMode'
 import { lazy, memo, Suspense, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps } from 'react'
 import AlbumCoverPlayer from './components/AlbumCoverPlayer'
@@ -3378,8 +3378,48 @@ function App() {
     } else if (action === 'set-lyric-mode') {
       const mode = String(payload) as LyricDisplayMode
       if (ALL_LYRIC_MODES.includes(mode)) handleLyricDisplayModeChange(mode)
+    } else if (action === 'stop') {
+      // 停止：暂停并回到开头（主流遥控器停止键）
+      const audio = audioPlayer.getAudioElement()
+      audioPlayerRef.current.seek(0)
+      if (isPlayingRef.current && !(audio?.paused ?? true)) audioPlayer.togglePlay()
+    } else if (action === 'rewind') {
+      const audio = audioPlayer.getAudioElement()
+      const t = audio?.currentTime || 0
+      audioPlayerRef.current.seek(Math.max(0, t - 10))
+    } else if (action === 'fast-forward') {
+      const audio = audioPlayer.getAudioElement()
+      const t = audio?.currentTime || 0
+      const d = audio?.duration || 0
+      audioPlayerRef.current.seek(Math.min(d || t + 10, t + 10))
+    } else if (action === 'open-search') {
+      setShowSearch(true)
+    } else if (action === 'open-settings') {
+      setShowSettings(true)
+    } else if (action === 'menu') {
+      // 菜单键：打开当前歌曲详情/操作
+      const current = playlistRef.current[currentIndexRef.current]
+      if (current) {
+        setSongDetailSong(current)
+        setShowSongDetail(true)
+      }
     }
   }
+
+  // TV：每次启动自动打开远程遥控器配对界面（TV设置里可关，默认关）
+  useEffect(() => {
+    if (!isTvModeActive()) return
+    try {
+      if (localStorage.getItem('tvAutoOpenRemote') !== '1') return
+    } catch {
+      return
+    }
+    // 等首帧渲染与交互层就绪后再弹出配对二维码
+    const t = window.setTimeout(() => {
+      setShowRemote(true)
+    }, 1500)
+    return () => window.clearTimeout(t)
+  }, [])
 
   const handleSongSelectRef = useRef(handleSongSelect)
   handleSongSelectRef.current = handleSongSelect
@@ -4607,6 +4647,7 @@ function App() {
           <LazySettingsPanel {...({
           show: showSettings,
           onClose: closeSettings,
+          onOpenRemote: () => setShowRemote(true),
           neteaseLoggedIn,
           neteaseUsername,
           onNeteaseLogin: viewCallbacks.onNeteaseLogin,

@@ -1,11 +1,12 @@
 import React, { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, Trash2, ChevronLeft, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone } from 'lucide-react'
+import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, Trash2, ChevronLeft, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone, Gamepad2 } from 'lucide-react'
 import LoginButton from './LoginButton'
 import HomeCustomizeModal from './HomeCustomizeModal'
 import DeviceInfoModal from './DeviceInfoModal'
 import AudioQualitySettingsModal from './AudioQualitySettingsModal'
 import RemoteControlSettingsModal from './RemoteControlSettingsModal'
+import RemoteControlGuideModal from './RemoteControlGuideModal'
 import CacheClearModal from './CacheClearModal'
 import packageInfo from '../../package.json'
 import { getVersionDisplay } from '../services/versionInfo'
@@ -67,6 +68,8 @@ const compareVersions = (left: string, right: string) => {
 interface SettingsPanelProps {
   show: boolean
   onClose: () => void
+  // TV 设置：打开远程遥控器配对弹窗（App 层控制 RemoteControlModal）
+  onOpenRemote?: () => void
   // 登录状态
   neteaseLoggedIn: boolean
   neteaseUsername: string
@@ -84,6 +87,7 @@ interface SettingsPanelProps {
 function SettingsPanel({
   show,
   onClose,
+  onOpenRemote,
   neteaseLoggedIn,
   neteaseUsername,
   onNeteaseLogin,
@@ -96,9 +100,9 @@ function SettingsPanel({
   onQQLogout,
   playerTheme = 'dark',
 }: SettingsPanelProps) {
-  const [activeTab, setActiveTab] = useState<'account' | 'advanced' | 'personalization' | 'about'>('account')
+  const [activeTab, setActiveTab] = useState<'tv' | 'account' | 'advanced' | 'personalization' | 'about'>('account')
   const contentScrollRef = useRef<HTMLDivElement>(null)
-  const switchTab = (tab: 'account' | 'advanced' | 'personalization' | 'about') => {
+  const switchTab = (tab: 'tv' | 'account' | 'advanced' | 'personalization' | 'about') => {
     setActiveTab(tab)
     requestAnimationFrame(() => contentScrollRef.current?.scrollTo({ top: 0, behavior: 'auto' }))
   }
@@ -144,6 +148,20 @@ function SettingsPanel({
   })
   // 远程遥控器设置（二级菜单弹窗）
   const [showRemoteSettings, setShowRemoteSettings] = useState(false)
+  // TV：遥控器可视化教学弹窗
+  const [showRemoteGuide, setShowRemoteGuide] = useState(false)
+  // TV：每次启动自动打开远程遥控器配对界面（默认关闭）
+  const [tvAutoOpenRemote, setTvAutoOpenRemote] = useState(() => {
+    try {
+      return localStorage.getItem('tvAutoOpenRemote') === '1'
+    } catch {
+      return false
+    }
+  })
+  // TV：识别码 + 兑换码
+  const [tvRedeemCode, setTvRedeemCode] = useState('')
+  const [tvRedeemState, setTvRedeemState] = useState<{ status: 'idle' | 'redeeming'; message: string | null }>({ status: 'idle', message: null })
+  const [tvLicense, setTvLicense] = useState<{ deviceId: string; grants: Array<{ feature: string; label: string; expiresAt?: number }> }>({ deviceId: '', grants: [] })
   const [playbackShortcutSettings, setPlaybackShortcutSettings] = useState(loadPlaybackShortcutSettings)
   
   // 第三方歌词源设置
@@ -414,6 +432,83 @@ function SettingsPanel({
       }))
     }
   }
+
+  // ── TV：识别码 + 兑换码（走设备内置 Node 后端，RSA 公钥签名验证） ──
+  // 识别码：真机为 Android ANDROID_ID（原生桥）；浏览器 ?tv=1 调试用本地模拟 ID。
+  const getTvDeviceId = () => {
+    const native = (window as any).WaveForgeNative
+    if (native?.getDeviceId) {
+      try {
+        const id = String(native.getDeviceId() || '')
+        if (id) return id
+      } catch {
+        // fallthrough
+      }
+    }
+    try {
+      let id = localStorage.getItem('tvDebugDeviceId')
+      if (!id) {
+        id = `WF-TV-${Math.random().toString(36).slice(2, 10).toUpperCase()}`
+        localStorage.setItem('tvDebugDeviceId', id)
+      }
+      return id
+    } catch {
+      return 'WF-TV-DEBUG'
+    }
+  }
+  const loadTvLicense = async () => {
+    const deviceId = getTvDeviceId()
+    try {
+      const res = await fetch(
+        `http://localhost:3001/api/tv/license/status?deviceId=${encodeURIComponent(deviceId)}`,
+        { cache: 'no-store' }
+      )
+      if (res.ok) {
+        const data = await res.json()
+        setTvLicense({ deviceId: data.deviceId || '', grants: data.grants || [] })
+      }
+    } catch {
+      // ignore
+    }
+  }
+  const tvRedeem = async () => {
+    const code = tvRedeemCode.trim()
+    if (!code) {
+      setTvRedeemState({ status: 'idle', message: '请输入兑换码' })
+      return
+    }
+    setTvRedeemState({ status: 'redeeming', message: null })
+    try {
+      const res = await fetch('http://localhost:3001/api/tv/license/redeem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, deviceId: getTvDeviceId() }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setTvLicense({ deviceId: data.deviceId || tvLicense.deviceId, grants: data.grants || [] })
+        setTvRedeemState({ status: 'idle', message: data.message || '兑换成功' })
+        setTvRedeemCode('')
+      } else {
+        setTvRedeemState({ status: 'idle', message: data.error || '兑换失败' })
+      }
+    } catch {
+      setTvRedeemState({ status: 'idle', message: '兑换失败，请重试' })
+    }
+  }
+  const toggleTvAutoOpenRemote = (enabled: boolean) => {
+    setTvAutoOpenRemote(enabled)
+    try {
+      localStorage.setItem('tvAutoOpenRemote', enabled ? '1' : '0')
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    if (show && activeTab === 'tv' && isTvModeActive()) void loadTvLicense()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show, activeTab])
 
   const pasteRedeemCode = async () => {
     setRedeemMessage(null)
@@ -1090,6 +1185,31 @@ function SettingsPanel({
 
             {/* Tabs：激活项下方为蓝色指示条（layoutId 共享布局动画，切换时丝滑滑到选中 tab 下方） */}
             <div className={`relative flex border-b ${playerTheme === 'dark' ? 'border-white/10' : 'border-black/10'}`}>
+              {isTvModeActive() && (
+                <button
+                  onClick={() => switchTab('tv')}
+                  className={`relative flex-1 py-4 px-4 flex items-center justify-center gap-2 transition-colors ${
+                    activeTab === 'tv'
+                      ? playerTheme === 'dark'
+                        ? 'text-white'
+                        : 'text-black'
+                      : playerTheme === 'dark'
+                      ? 'text-white/60 hover:text-white/80'
+                      : 'text-black/60 hover:text-black/80'
+                  }`}
+                >
+                  <MonitorSmartphone className="w-5 h-5" />
+                  TV设置
+                  {activeTab === 'tv' && (
+                    <motion.div
+                      layoutId="settings-tab-indicator"
+                      className="absolute bottom-0 left-1/4 right-1/4 h-[3px] rounded-full"
+                      style={{ backgroundColor: accentColor, boxShadow: `0 0 8px ${accentColor}66` }}
+                      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                    />
+                  )}
+                </button>
+              )}
               <button
                 onClick={() => switchTab('account')}
                 className={`relative flex-1 py-4 px-4 flex items-center justify-center gap-2 transition-colors ${
@@ -1186,6 +1306,175 @@ function SettingsPanel({
 
             {/* Content area */}
             <div ref={contentScrollRef} className="p-6 overflow-y-auto h-[calc(100vh-140px)]">
+              {activeTab === 'tv' && (
+                <div className="space-y-6">
+                  {/* 远程遥控器 */}
+                  <div>
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>远程遥控器</h3>
+                    <div className="space-y-3">
+                      {/* 扫码配对（打开 App 层的 RemoteControlModal） */}
+                      <button
+                        onClick={() => onOpenRemote?.()}
+                        className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} ${hoverBg} transition-all flex items-center justify-between group`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${accentColor}20` }}>
+                            <MonitorSmartphone className="w-5 h-5" style={{ color: accentColor }} />
+                          </div>
+                          <div className="text-left min-w-0">
+                            <div className={`${textPrimary} font-medium`}>扫码配对手机遥控</div>
+                            <div className={`${textSecondary} text-sm truncate`}>手机扫码，用手机遥控 TV</div>
+                          </div>
+                        </div>
+                        <ChevronRight className={`w-5 h-5 ${textTertiary} flex-shrink-0 group-hover:translate-x-1 transition-transform`} />
+                      </button>
+
+                      {/* 遥控器个性化（外观/右上角按钮/手势） */}
+                      <button
+                        onClick={() => setShowRemoteSettings(true)}
+                        className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} ${hoverBg} transition-all flex items-center justify-between group`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${accentColor}20` }}>
+                            <SettingsIcon className="w-5 h-5" style={{ color: accentColor }} />
+                          </div>
+                          <div className="text-left min-w-0">
+                            <div className={`${textPrimary} font-medium`}>遥控器个性化</div>
+                            <div className={`${textSecondary} text-sm truncate`}>外观 · 右上角按钮 · 触摸板手势</div>
+                          </div>
+                        </div>
+                        <ChevronRight className={`w-5 h-5 ${textTertiary} flex-shrink-0 group-hover:translate-x-1 transition-transform`} />
+                      </button>
+
+                      {/* 每次启动自动打开远程遥控器 */}
+                      <label className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} flex items-center justify-between gap-6 cursor-pointer`}>
+                        <div className="min-w-0">
+                          <div className={`${textPrimary} font-medium`}>每次启动自动打开远程遥控器</div>
+                          <div className={`${textSecondary} text-sm mt-0.5`}>开机后自动弹出手机配对二维码，免去先用遥控器进入</div>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={tvAutoOpenRemote}
+                            onChange={(event) => toggleTvAutoOpenRemote(event.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)]`} style={{ backgroundColor: tvAutoOpenRemote ? accentColor : '' }} />
+                        </label>
+                      </label>
+
+                      {/* 遥控器可视化（按键教学） */}
+                      <button
+                        onClick={() => setShowRemoteGuide(true)}
+                        className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} ${hoverBg} transition-all flex items-center justify-between group`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${accentColor}20` }}>
+                            <Gamepad2 className="w-5 h-5" style={{ color: accentColor }} />
+                          </div>
+                          <div className="text-left min-w-0">
+                            <div className={`${textPrimary} font-medium`}>遥控器可视化</div>
+                            <div className={`${textSecondary} text-sm truncate`}>认识遥控器按键 · 逐个动画演示</div>
+                          </div>
+                        </div>
+                        <ChevronRight className={`w-5 h-5 ${textTertiary} flex-shrink-0 group-hover:translate-x-1 transition-transform`} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 设备配置检查 + 性能模式 */}
+                  <div>
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>性能与设备</h3>
+                    <div className={`${bgCard} rounded-2xl border ${borderColor} p-4`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className={`${textPrimary} font-medium`}>设备配置检查</div>
+                          <div className={`${textSecondary} text-sm mt-0.5`}>查看 TV 内存/存储/CPU，选择性能模式</div>
+                        </div>
+                        <button
+                          onClick={() => setShowDeviceInfo(true)}
+                          className="shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                          style={{ backgroundColor: accentColor }}
+                        >
+                          配置检查
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 设备识别码与兑换 */}
+                  <div>
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>设备识别码与功能兑换</h3>
+                    <div className={`${bgCard} rounded-2xl border ${borderColor} p-4`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className={`${textPrimary} font-medium`}>本机识别码</div>
+                          <div className={`${textSecondary} text-sm mt-0.5 break-all`}>{tvLicense.deviceId || '加载中…'}</div>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(tvLicense.deviceId)
+                              window.dispatchEvent(new CustomEvent('showToast', {
+                                detail: { message: '识别码已复制', type: 'success' },
+                              }))
+                            } catch {
+                              // ignore
+                            }
+                          }}
+                          className="shrink-0 rounded-xl px-3 py-2 text-sm font-medium transition-colors border flex items-center gap-1.5"
+                          style={{ borderColor: borderColor }}
+                        >
+                          <Copy className="w-4 h-4" />
+                          复制
+                        </button>
+                      </div>
+
+                      <div className="mt-4 pt-4 border-t" style={{ borderColor: borderColor }}>
+                        <div className={`${textPrimary} text-sm font-medium mb-1`}>兑换隐藏功能</div>
+                        <div className={`${textSecondary} text-xs mb-3`}>输入兑换码解锁 TV 端专属功能（向开发者获取）</div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={tvRedeemCode}
+                            onChange={(event) => setTvRedeemCode(event.target.value)}
+                            placeholder="输入兑换码（WF1.…）"
+                            className="flex-1 min-w-0 rounded-xl border px-3 py-2 text-sm outline-none bg-transparent"
+                            style={{ borderColor: borderColor, color: playerTheme === 'dark' ? '#fff' : '#000' }}
+                          />
+                          <button
+                            onClick={() => void tvRedeem()}
+                            disabled={tvRedeemState.status === 'redeeming'}
+                            className="shrink-0 rounded-xl px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                            style={{ backgroundColor: accentColor }}
+                          >
+                            {tvRedeemState.status === 'redeeming' ? '兑换中…' : '兑换'}
+                          </button>
+                        </div>
+                        {tvRedeemState.message && (
+                          <div className={`mt-2 text-xs ${tvRedeemState.message.includes('成功') ? 'text-green-400' : 'text-red-400'}`}>
+                            {tvRedeemState.message}
+                          </div>
+                        )}
+                        {tvLicense.grants.length > 0 && (
+                          <div className="mt-3 space-y-1.5">
+                            {tvLicense.grants.map((grant) => (
+                              <div key={grant.feature} className="flex items-center gap-2 text-sm">
+                                <BadgeCheck className="w-4 h-4 flex-shrink-0" style={{ color: accentColor }} />
+                                <span className={`${textPrimary}`}>{grant.label}</span>
+                                {grant.expiresAt && (
+                                  <span className={`${textTertiary} text-xs`}>有效期至 {new Date(grant.expiresAt).toLocaleDateString('zh-CN')}</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {activeTab === 'account' && (
                 <div className="space-y-6">
                   <div>
@@ -1986,7 +2275,8 @@ function SettingsPanel({
                     </div>
                   </div>
 
-                  {/* 远程遥控器设置（卡片 → 二级菜单弹窗） */}
+                  {/* 远程遥控器设置（卡片 → 二级菜单弹窗；TV 模式已移至「TV设置」tab） */}
+                  {!isTvModeActive() && (
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>远程遥控器</h3>
                     <button
@@ -2005,31 +2295,13 @@ function SettingsPanel({
                       <ChevronRight className={`w-5 h-5 ${textTertiary} flex-shrink-0 group-hover:translate-x-1 transition-transform`} />
                     </button>
                   </div>
+                  )}
                 </div>
               )}
 
               {/* 高级标签页 */}
               {activeTab === 'advanced' && (
                 <div className="space-y-6">
-                  {/* TV 端：设备配置检查 + 性能模式（置顶，tv-mode 激活时显示，浏览器 ?tv=1 可测） */}
-                  {isTvModeActive() && (
-                    <div className={`${bgCard} rounded-2xl border ${borderColor} p-4`}>
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className={`${textPrimary} font-medium`}>设备配置检查</div>
-                          <div className={`${textSecondary} text-sm mt-0.5`}>查看 TV 内存/存储/CPU，选择性能模式</div>
-                        </div>
-                        <button
-                          onClick={() => setShowDeviceInfo(true)}
-                          className="shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
-                          style={{ backgroundColor: accentColor }}
-                        >
-                          配置检查
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
                   {/* 播放过渡效果 */}
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>播放过渡</h3>
@@ -3073,6 +3345,11 @@ function SettingsPanel({
 
       {/* 设备配置检查弹窗（TV 端性能模式选择） */}
       <DeviceInfoModal show={showDeviceInfo} onClose={() => setShowDeviceInfo(false)} playerTheme={playerTheme} />
+
+      {/* TV：遥控器可视化教学弹窗 */}
+      {showRemoteGuide && (
+        <RemoteControlGuideModal onClose={() => setShowRemoteGuide(false)} playerTheme={playerTheme} />
+      )}
 
       {/* 设备识别码弹窗 */}
       {showDeviceIdModal && (

@@ -34,6 +34,9 @@ logs/
 # TV 壁纸扫码上传（dev-tv-server.mjs 存项目根，运行时生成不入库）
 waveforge-wallpapers/
 
+# TV 端兑换授权记录（dev 时存项目根，运行时生成不入库）
+tv-license.json
+
 # 根目录文档：仅保留 4 个核心 md（AGENTS/README/HANDOVER/CONTEXT），其余本地文档不入库
 /*.md
 !/AGENTS.md

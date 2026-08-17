@@ -136,6 +136,10 @@
   .footer .icon-btn { width: 60px; height: 60px; }
   .footer .icon-btn svg { width: 26px; height: 26px; }
   .footer .primary { background: var(--accent); border-color: transparent; color: #06291a; }
+  .media-row { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 10px 18px 0; }
+  .media-row .icon-btn { width: 46px; height: 46px; }
+  .media-row .icon-btn svg { width: 19px; height: 19px; }
+  .media-row .stop { color: #ff6b81; }
 
   .status { position: fixed; bottom: 84px; left: 0; right: 0; text-align: center; font-size: 12px; color: var(--text); opacity: 0; transition: opacity .3s; pointer-events: none; }
   .status .status-pill { display: inline-block; padding: 8px 16px; border-radius: 999px; background: rgba(7,16,24,.9); border: 1px solid rgba(49,230,139,.4); color: #31e68b; box-shadow: 0 6px 24px rgba(0,0,0,.4); }
@@ -215,6 +219,14 @@
   </div>
 </div>
 
+<div class="media-row">
+  <button class="icon-btn" id="prevBtn" title="上一首"></button>
+  <button class="icon-btn" id="rewindBtn" title="快退 10 秒"></button>
+  <button class="icon-btn stop" id="stopBtn" title="停止"></button>
+  <button class="icon-btn" id="forwardBtn" title="快进 10 秒"></button>
+  <button class="icon-btn" id="nextBtn" title="下一首"></button>
+</div>
+
 <div class="footer">
   <button class="icon-btn primary" id="playBtn" title="播放 / 暂停"></button>
   <button class="icon-btn" id="backBtn" title="返回"></button>
@@ -270,7 +282,12 @@
     play: '<polygon points="6 3 20 12 6 21 6 3"/>',
     pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
     back: '<polyline points="15 18 9 12 15 6"/>',
-    home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>'
+    home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+    prev: '<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>',
+    next: '<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/>',
+    rewind: '<path d="M11 19l-8-7 8-7v14z"/><path d="M19 19l-8-7 8-7v14z"/>',
+    forward: '<path d="m13 19 8-7-8-7v14z"/><path d="m5 19 8-7-8-7v14z"/>',
+    stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>'
   };
   function setIcon(btn, name) { btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (ICONS[name] || '') + '</svg>'; }
   function setCustomIcon() { customBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + top.icon + '</svg>'; customBtn.title = top.label; }
@@ -280,11 +297,21 @@
   var playBtn = document.getElementById('playBtn');
   var backBtn = document.getElementById('backBtn');
   var homeBtn = document.getElementById('homeBtn');
+  var prevBtn = document.getElementById('prevBtn');
+  var rewindBtn = document.getElementById('rewindBtn');
+  var stopBtn = document.getElementById('stopBtn');
+  var forwardBtn = document.getElementById('forwardBtn');
+  var nextBtn = document.getElementById('nextBtn');
   setIcon(muteBtn, 'mute');
   setCustomIcon();
   setIcon(playBtn, 'play');
   setIcon(backBtn, 'back');
   setIcon(homeBtn, 'home');
+  setIcon(prevBtn, 'prev');
+  setIcon(rewindBtn, 'rewind');
+  setIcon(stopBtn, 'stop');
+  setIcon(forwardBtn, 'forward');
+  setIcon(nextBtn, 'next');
 
   // 设备名（用于主窗口显示连接设备）
   function getDeviceName() {
@@ -508,6 +535,11 @@
     if (top.action === 'mode-switch') { openModeMenu(); return; }
     send({ type: 'control', action: top.action });
   });
+  prevBtn.addEventListener('click', function () { send({ type: 'control', action: 'prev' }); });
+  rewindBtn.addEventListener('click', function () { send({ type: 'control', action: 'rewind' }); });
+  stopBtn.addEventListener('click', function () { send({ type: 'control', action: 'stop' }); });
+  forwardBtn.addEventListener('click', function () { send({ type: 'control', action: 'fast-forward' }); });
+  nextBtn.addEventListener('click', function () { send({ type: 'control', action: 'next' }); });
 
   // 触摸板
   var pad = document.getElementById('trackpad');
