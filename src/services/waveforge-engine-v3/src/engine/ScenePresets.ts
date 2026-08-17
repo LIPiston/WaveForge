@@ -158,7 +158,7 @@ export const SCENE_PRESETS: ScenePreset[] = [
     setCompressor(p, { thresholdDb: -22, ratio: 5, kneeDb: 4, attackMs: 5, releaseMs: 120, makeupDb: 13 })
     disableReverb(p)
     setBass(p, { cutoffHz: 85, harmonicType: 'odd', harmonicGain: 0.6, mix: 0.5 })
-    setDeesser(p, { centerHz: 5800, thresholdDb: -28 })
+    // 齿音抑制默认关闭：摇滚高频本就锐利，去齿音会削掉吉他泛音与镲片亮度
     const sc = finish(p, 'rock')
     sc.name = '摇滚'
     sc.description = '摇滚现场感：中频凹陷 + 强压缩 + 低频冲击（干声）'

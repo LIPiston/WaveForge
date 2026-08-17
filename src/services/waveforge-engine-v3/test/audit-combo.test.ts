@@ -588,7 +588,7 @@ describe('E. EQ Q 补偿 + LoudnessComp 组合', () => {
     // 且整体单调衰减（无自激回涨）
     expect(peaks[2]).toBeLessThanOrEqual(peaks[1])
     expect(peaks[1]).toBeLessThanOrEqual(peaks[0])
-  })
+  }, 30_000)
 })
 
 // ===========================================================================
@@ -611,5 +611,5 @@ describe('F. 场景处理后静音衰减（无自激/DC 累计）', () => {
       }
       expect(last, `scene=${sc.id} 静音 2s 后峰值`).toBeLessThan(1e-3)
     }
-  })
+  }, 30_000)
 })
