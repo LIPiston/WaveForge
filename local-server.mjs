@@ -53,6 +53,9 @@ const PORT = Number(process.env.PORT) || 3001
 const ALLOWED_RENDERER_ORIGINS = new Set([
   'http://localhost:3000',
   'http://127.0.0.1:3000',
+  // TV 真机：WebView 页面源与 API 同源（localhost:3001），fetch POST 会带 Origin，必须放行
+  'http://localhost:3001',
+  'http://127.0.0.1:3001',
   'file://',
   'null',
 ])

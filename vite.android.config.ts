@@ -30,6 +30,9 @@ export default defineConfig({
     outDir: 'android/app/src/main/assets/nodejs-project/dist',
     emptyOutDir: true,
     chunkSizeWarningLimit: 2000,
+    // Android 电视盒子 WebView 可能停留在 Chromium 51~76：把现代语法（??/?./可选链等）
+    // 全部转译到 ES2017，避免老内核解析失败整页白屏。
+    target: 'es2017',
     rollupOptions: {
       input: path.resolve(__dirname, 'index.html'),
     },

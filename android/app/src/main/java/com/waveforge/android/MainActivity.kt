@@ -48,6 +48,10 @@ class MainActivity : Activity() {
         private const val ASSETS_VERSION = 13
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
+        // Node 启动标记：必须进程级唯一（nodejs-mobile 不支持重启、每次进程只允许一个）。
+        // 实例字段会导致 Activity 重建（BACK 退出后从启动器再开）时重复解压 + 重复 node::Start，
+        // 旧 node 仍持有 3001 端口，新实例 EADDRINUSE 且每个实例泄漏上百 MB。
+        private val nodeStarted = java.util.concurrent.atomic.AtomicBoolean(false)
         // QQ 统一登录页（appid=716027609 为 QQ 音乐）：自带二维码，加载即出扫码登录，
         // 手机 QQ 扫后跳回 s_url（y.qq.com），音乐 cookie 随之写入，轮询即可捕获。
         // 比加载 y.qq.com 再模拟点击"登录"更可靠（电视无鼠标，无需任何网页操作）。
@@ -64,7 +68,8 @@ class MainActivity : Activity() {
     private var splashView: SplashView? = null
     private var qqLoginWebView: WebView? = null
     private var qqLoginPolling: Thread? = null
-    private val nodeStarted = AtomicBoolean(false)
+    // BACK 键：JS 消费（useTvBack 逐级关闭）后上报，原生不再执行默认返回
+    private val backConsumed = java.util.concurrent.atomic.AtomicBoolean(false)
     // 焦点在滑块上时由 Web 层开启：音量键转发给页面做 +1/-1 调节，不再调系统音量
     @Volatile
     private var volumeKeyCapture = false
@@ -119,6 +124,12 @@ class MainActivity : Activity() {
                 @android.webkit.JavascriptInterface
                 fun checkForUpdates() {
                     UpdateChecker.check(this@MainActivity, force = true)
+                }
+
+                // 页面（useTvBack）消费了 BACK 键后上报，原生不再执行默认返回/退出
+                @android.webkit.JavascriptInterface
+                fun reportBackConsumed() {
+                    backConsumed.set(true)
                 }
 
                 // 应用内 QQ 扫码登录（电视上没有 Electron 登录窗口）
@@ -460,6 +471,16 @@ class MainActivity : Activity() {
                 closeQQLoginWindow()
                 return true
             }
+            // 派发给页面（useTvBack 逐级关闭弹窗/软键盘），JS 消费后上报；
+            // 未消费（页面无弹窗）时再走默认返回/退到桌面，避免真机上 BACK 直接退应用。
+            backConsumed.set(false)
+            forwardKeyToDom(KeyEvent.KEYCODE_BACK)
+            rootView.postDelayed({
+                if (!backConsumed.get() && !isDestroyed && !isFinishing) {
+                    handleBackDefault()
+                }
+            }, 120)
+            return true
         }
 
         // 媒体键通常不会作为 DOM 事件到达 WebView，这里显式转发给页面（页面侧有对应 keydown 处理）。
@@ -485,6 +506,15 @@ class MainActivity : Activity() {
         return super.dispatchKeyEvent(event)
     }
 
+    /** JS 消费了 BACK（useTvBack 返回 true）后上报，避免原生再执行默认返回。 */
+    private fun handleBackDefault() {
+        if (webView.visibility == View.VISIBLE && webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            finish()
+        }
+    }
+
     private fun forwardKeyToDom(keyCode: Int) {
         webView.post {
             webView.evaluateJavascript(
@@ -502,12 +532,9 @@ class MainActivity : Activity() {
             closeQQLoginWindow()
             return
         }
-        // BACK：优先返回页面历史，否则退到桌面。
-        if (webView.visibility == View.VISIBLE && webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
-        }
+        // dispatchKeyEvent 已把 BACK 派发给页面并等待 JS 消费上报；
+        // 这里作为兜底（例如系统直接回调），走默认返回/退出。
+        handleBackDefault()
     }
 
     override fun onDestroy() {

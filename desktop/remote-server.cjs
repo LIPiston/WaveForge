@@ -197,7 +197,7 @@ function createRemoteServer(options) {
       return
     }
     if (msg.type === 'cursor') {
-      const isMouse = msg.cmd === 'move' || msg.cmd === 'click' || msg.cmd === 'hold-start' || msg.cmd === 'hold-cancel' || msg.cmd === 'scroll'
+      const isMouse = msg.cmd === 'move' || msg.cmd === 'click' || msg.cmd === 'hold-start' || msg.cmd === 'hold-cancel' || msg.cmd === 'scroll' || msg.cmd === 'right-click'
       if (isMouse) {
         const res = acquireMouse(client)
         if (res && res.blocked) {
@@ -206,6 +206,9 @@ function createRemoteServer(options) {
         }
       }
       options.sendCursor && options.sendCursor(msg.cmd, msg)
+      // 广播给所有客户端：TV 端 WebView 内的 SPA（remoteBridge → waveforge:remote-cursor）
+      // 靠这条广播接收光标命令；桌面端手机页会忽略这条回声，行为不变。
+      broadcast({ type: 'cursor', cmd: msg.cmd, x: msg.x, y: msg.y, kind: msg.kind, buttons: msg.buttons })
     }
   }
 
