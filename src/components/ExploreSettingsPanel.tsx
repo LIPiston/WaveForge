@@ -1,4 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
+import type { ReactNode } from 'react'
 import {
   ArrowDown,
   ArrowUp,
@@ -325,23 +326,24 @@ export default function ExploreSettingsPanel({
                       accent={accent}
                       isDark={isDark}
                       onChange={value => updateCurrent({ coverWallBlur: value as 'soft' | 'medium' | 'strong' | 'custom' })}
-                    />
-                    {current.coverWallBlur === 'custom' && (
-                      <div className={`flex items-center gap-3 rounded-2xl border p-3 ${panelBorder}`}>
-                        <input
-                          type="range"
-                          min={0}
-                          max={80}
-                          value={current.coverWallBlurCustom}
-                          onChange={e => updateCurrent({ coverWallBlurCustom: Number(e.target.value) })}
-                          className="flex-1 accent-[#4fc3f7]"
-                          aria-label="封面墙自定义模糊"
-                        />
-                        <span className={`w-12 shrink-0 text-right text-xs font-semibold ${textPrimary}`}>
-                          {current.coverWallBlurCustom}px
-                        </span>
-                      </div>
-                    )}
+                    >
+                      {current.coverWallBlur === 'custom' && (
+                        <div className={`mt-3 flex items-center gap-3 rounded-2xl border p-3 ${borderSoft}`}>
+                          <input
+                            type="range"
+                            min={0}
+                            max={80}
+                            value={current.coverWallBlurCustom}
+                            onChange={e => updateCurrent({ coverWallBlurCustom: Number(e.target.value) })}
+                            className="flex-1 accent-[#4fc3f7]"
+                            aria-label="封面墙自定义模糊"
+                          />
+                          <span className={`w-12 shrink-0 text-right text-xs font-semibold ${textPrimary}`}>
+                            {current.coverWallBlurCustom}px
+                          </span>
+                        </div>
+                      )}
+                    </SettingChoice>
                     <ToggleRow
                       label="封面墙动画"
                       description="封面缓慢漂移，营造呼吸感。"
@@ -443,6 +445,7 @@ function SettingChoice({
   accent,
   isDark,
   onChange,
+  children,
 }: {
   label: string
   description: string
@@ -451,6 +454,7 @@ function SettingChoice({
   accent: string
   isDark: boolean
   onChange: (value: string) => void
+  children?: ReactNode
 }) {
   const borderSoft = isDark ? 'border-white/[0.08]' : 'border-black/[0.08]'
   const cardBg = isDark ? 'bg-white/[0.035]' : 'bg-black/[0.04]'
@@ -476,6 +480,7 @@ function SettingChoice({
           </button>
         ))}
       </div>
+      {children}
     </div>
   )
 }

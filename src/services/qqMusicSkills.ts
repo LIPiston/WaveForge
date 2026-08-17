@@ -92,6 +92,9 @@ const extractSseText = (payload: string) => {
       parsed.answer,
       parsed.response,
       parsed.message,
+      parsed.reply,
+      parsed.result,
+      parsed.output,
       parsed.delta?.content,
       parsed.choices?.[0]?.delta?.content,
       parsed.data?.text,
@@ -99,8 +102,10 @@ const extractSseText = (payload: string) => {
       parsed.data?.answer,
       parsed.data?.response,
       parsed.data?.delta?.content,
+      parsed.data?.reply,
+      parsed.data?.result,
     ]
-    return String(candidates.find(value => typeof value === 'string') || '')
+    return String(candidates.find(value => typeof value === 'string' && value.trim()) || '')
   } catch {
     return trimmed
   }

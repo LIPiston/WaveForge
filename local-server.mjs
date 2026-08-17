@@ -7170,12 +7170,33 @@ app.post('/api/explore/qq/skills/interpretation', async (req, res) => {
     if (!upstream.ok || !upstream.body) {
       throw new Error(`QQ 音乐 AI 解读 HTTP ${upstream.status}`)
     }
+    // 诊断日志：确认上游返回类型（SSE 或 JSON），便于排查"正在连接后无内容"类问题
+    const upstreamType = upstream.headers.get('content-type') || ''
+    console.log(`[QQ AI 解读] upstream=${upstream.status} type=${upstreamType}`)
     res.status(200)
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache, no-transform')
     res.setHeader('Connection', 'keep-alive')
     res.flushHeaders?.()
-    for await (const chunk of upstream.body) res.write(chunk)
+    if (upstreamType.includes('text/event-stream')) {
+      // 上游是标准 SSE：原样透传
+      for await (const chunk of upstream.body) res.write(chunk)
+    } else {
+      // 上游返回 JSON（整包）：解析后提取文本，以 SSE data 事件转发，前端才能增量显示
+      const json = await upstream.json().catch(() => null)
+      if (json) {
+        const text =
+          json.text || json.content || json.answer || json.reply || json.response ||
+          json.data?.text || json.data?.content || json.data?.answer || json.data?.reply || json.data?.response || ''
+        if (text) {
+          res.write(`data: ${JSON.stringify({ text })}\n\n`)
+        } else if (json.code && json.code !== 0) {
+          res.write(`\nevent: error\ndata: ${JSON.stringify({ message: json.msg || json.message || 'QQ 音乐 AI 解读失败' })}\n\n`)
+        } else {
+          res.write(`\nevent: error\ndata: ${JSON.stringify({ message: 'QQ 音乐 AI 未返回有效内容' })}\n\n`)
+        }
+      }
+    }
     res.end()
   } catch (error) {
     if (res.headersSent) {
