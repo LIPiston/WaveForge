@@ -55,6 +55,9 @@ export default function TvKeyboard() {
     const onFocusIn = () => {
       const ae = document.activeElement
       if (isEditable(ae)) {
+        // 不可见的输入框（隐藏搜索框/弹层关闭后的残留焦点）不弹键盘也不请求远程输入
+        const el = ae as HTMLElement
+        if (el.offsetParent === null && el.getClientRects().length === 0) return
         if (remoteCursorModeRef.current) {
           // 远程遥控器连接中：不弹 TV 软键盘，改用手机端输入框（用户自己的键盘）
           setKeyboardActive(false)

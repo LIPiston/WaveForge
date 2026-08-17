@@ -141,6 +141,7 @@
   .status .status-pill { display: inline-block; padding: 8px 16px; border-radius: 999px; background: rgba(7,16,24,.9); border: 1px solid rgba(49,230,139,.4); color: #31e68b; box-shadow: 0 6px 24px rgba(0,0,0,.4); }
   .status.show { opacity: 1; }
   .input-modal { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.6); padding: 24px; }
+  .input-modal[hidden] { display: none; } /* hidden 属性必须生效：display:flex 会覆盖它，导致弹窗常驻、取消/确定都关不掉 */
   .input-modal-card { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--divider); border-radius: 16px; padding: 20px; box-shadow: 0 16px 48px rgba(0,0,0,.5); }
   .input-modal-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 12px; }
   .input-modal-card input { width: 100%; box-sizing: border-box; font-size: 16px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--divider); background: var(--panel-2); color: var(--text); outline: none; }
@@ -354,6 +355,8 @@
   function openInputModal() {
     inputField.value = '';
     inputModal.hidden = false;
+    // 提醒用户注意电视端正在请求输入（部分手机浏览器需用户手势后才允许震动，静默忽略即可）
+    try { if (navigator.vibrate) navigator.vibrate(200); } catch (e) {}
     setTimeout(function () { try { inputField.focus(); } catch (e) {} }, 100);
   }
   function closeInputModal() { inputModal.hidden = true; }
