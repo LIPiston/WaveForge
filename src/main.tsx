@@ -21,18 +21,20 @@ initPlatformUI()
 installElectronShim()
 
 // TV DPI 适配：Android TV 系统 density 因设备而异（4K 投影可能报高 density，
-// 导致 CSS 视口过小、整个 UI 被放大、内容显示极少）。统一以 1920 CSS 宽为
-// 设计基准缩放（1080p/2K/4K/8K 视觉一致），仅 TV 模式生效。
+// 导致 CSS 视口过小、整个 UI 被放大）。统一以 1920 CSS 宽为设计基准缩放。
+// 注意：zoom 会改变 innerWidth 并触发 resize，必须只应用一次（applied 防振荡）。
+let tvDpiApplied = false
 function applyTvDpiScale(): void {
+  if (tvDpiApplied) return
   if (!document.documentElement.classList.contains('tv-mode')) return
   const innerW = window.innerWidth
   if (!innerW) return
+  tvDpiApplied = true
+  if (innerW >= 1920) return // 视口已 ≥ 1920（density 正常），无需缩放
   const scale = 1920 / innerW
-  if (Math.abs(scale - 1) < 0.02) return
   ;(document.documentElement.style as unknown as { zoom: string }).zoom = String(scale)
 }
 applyTvDpiScale()
-window.addEventListener('resize', applyTvDpiScale)
 
 // TV 遥控器交互层（仅 html.tv-mode 生效）：空间导航/焦点环/软键盘。
 // 组件挂载后再调用一次（见 TvKeyboard），确保 React 首帧渲染完就有候选可聚焦。

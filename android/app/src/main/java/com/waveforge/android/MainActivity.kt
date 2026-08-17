@@ -47,7 +47,7 @@ class MainActivity : Activity() {
         private const val TAG = "WaveForgeMain"
         private const val NODE_ASSETS_DIR = "nodejs-project"
         private const val PREF_TAG_KEY = "node_assets_version"
-        private const val ASSETS_VERSION = 16
+        private const val ASSETS_VERSION = 28
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
         // Node 启动标记：必须进程级唯一（nodejs-mobile 不支持重启、每次进程只允许一个）。
@@ -193,7 +193,7 @@ class MainActivity : Activity() {
                     volumeKeyCapture = v
                 }
 
-                // 设备详情（配置检查面板用）：内存/存储/CPU/型号
+                // 设备详情（配置检查面板 + 关于本机用）：内存/存储/CPU/温度/分辨率/电池等
                 @android.webkit.JavascriptInterface
                 fun getDeviceInfo(): String {
                     return try {
@@ -201,19 +201,53 @@ class MainActivity : Activity() {
                         val mi = ActivityManager.MemoryInfo()
                         am.getMemoryInfo(mi)
                         val stat = StatFs(Environment.getDataDirectory().path)
+                        val metrics = resources.displayMetrics
+                        val realSize = android.graphics.Point().also { windowManager.defaultDisplay.getRealSize(it) }
+                        val bm = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+                        val webViewVersion = try {
+                            android.webkit.WebView.getCurrentWebViewPackage()?.versionName ?: ""
+                        } catch (_: Exception) { "" }
                         org.json.JSONObject()
                             .put("model", Build.MODEL)
                             .put("manufacturer", Build.MANUFACTURER)
+                            .put("androidVersion", Build.VERSION.RELEASE)
+                            .put("buildDisplay", Build.DISPLAY)
                             .put("apiLevel", Build.VERSION.SDK_INT)
+                            .put("screenPx", "${realSize.x}x${realSize.y}")
+                            .put("density", metrics.density.toString())
+                            .put("densityDpi", metrics.densityDpi)
+                            .put("webViewVersion", webViewVersion)
                             .put("totalMem", mi.totalMem)
                             .put("availMem", mi.availMem)
                             .put("heapMax", Runtime.getRuntime().maxMemory())
                             .put("storageTotal", stat.totalBytes)
                             .put("storageFree", stat.availableBytes)
                             .put("cpuCores", Runtime.getRuntime().availableProcessors())
+                            .put("cpuTempC", readCpuTemp())
+                            .put("batteryPercent", bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY))
+                            .put("batteryCharging", bm.isCharging)
                             .toString()
                     } catch (_: Exception) {
                         "{}"
+                    }
+                }
+
+                /** 读取 CPU 温度（℃）：遍历 thermal_zone 取最大值。 */
+                fun readCpuTemp(): Double {
+                    return try {
+                        val dir = java.io.File("/sys/class/thermal")
+                        val zones = dir.listFiles()?.filter { it.name.startsWith("thermal_zone") } ?: return -1.0
+                        var max = -1.0
+                        for (z in zones) {
+                            val f = java.io.File(z, "temp")
+                            if (!f.exists()) continue
+                            val v = f.readText().trim().toDoubleOrNull() ?: continue
+                            val t = if (v > 1000) v / 1000.0 else v
+                            if (t > max) max = t
+                        }
+                        max
+                    } catch (_: Exception) {
+                        -1.0
                     }
                 }
             }, "WaveForgeNative")

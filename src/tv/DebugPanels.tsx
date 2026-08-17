@@ -92,6 +92,25 @@ export default function DebugPanels() {
     }
   }, [debug])
 
+  // 设备温度（从原生桥定期读取，性能面板详细模式展示）
+  const [deviceTemp, setDeviceTemp] = useState<number | null>(null)
+  useEffect(() => {
+    if (!debug || !showPerf) return
+    const readTemp = () => {
+      try {
+        const native = (window as any).WaveForgeNative
+        if (!native?.getDeviceInfo) return
+        const info = JSON.parse(String(native.getDeviceInfo()))
+        setDeviceTemp(typeof info.cpuTempC === 'number' ? info.cpuTempC : null)
+      } catch {
+        setDeviceTemp(null)
+      }
+    }
+    readTemp()
+    const timer = window.setInterval(readTemp, 5000)
+    return () => window.clearInterval(timer)
+  }, [debug, showPerf])
+
   if (!debug) return null
 
   const fmtMB = (b: number) => `${(b / 1024 / 1024).toFixed(1)}MB`
@@ -189,6 +208,7 @@ export default function DebugPanels() {
               <div>内存: {fmtMB(perf.heapUsed)} / {fmtMB(perf.heapTotal)}</div>
               <div>设备内存: {fmtGB(perf.deviceMemory)} · CPU {perf.cores} 核</div>
               <div>DOM 节点: {perf.domNodes}</div>
+              {deviceTemp != null && <div>CPU 温度: {deviceTemp > 0 ? `${deviceTemp.toFixed(1)} ℃` : '不可读'}</div>}
             </>
           ) : (
             <div>⚡ {perf.fps} FPS · {fmtMB(perf.heapUsed)}</div>

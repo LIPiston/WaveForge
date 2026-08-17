@@ -12,13 +12,22 @@ import { getPerfMode, setPerfMode, type PerfMode } from '../tv/perfMode'
 interface DeviceInfo {
   model?: string
   manufacturer?: string
+  androidVersion?: string
+  buildDisplay?: string
   apiLevel?: number
+  screenPx?: string
+  density?: string
+  densityDpi?: number
+  webViewVersion?: string
   totalMem?: number
   availMem?: number
   heapMax?: number
   storageTotal?: number
   storageFree?: number
   cpuCores?: number
+  cpuTempC?: number
+  batteryPercent?: number
+  batteryCharging?: boolean
 }
 
 function fmtBytes(n?: number): string {
@@ -90,13 +99,21 @@ export default function DeviceInfoModal({ show, onClose, playerTheme = 'dark' }:
 
   const rows: Array<[string, string]> = [
     ['设备', info?.model ? `${info.manufacturer || ''} ${info.model}`.trim() : '检测中…'],
-    ['Android 版本', info?.apiLevel ? `API ${info.apiLevel}` : '—'],
+    ['Android 版本', info?.androidVersion ? `Android ${info.androidVersion}（API ${info.apiLevel ?? '?'}）` : info?.apiLevel ? `API ${info.apiLevel}` : '—'],
+    ['系统版本', info?.buildDisplay || '—'],
+    ['屏幕分辨率', info?.screenPx || '—'],
+    ['屏幕密度', info?.density ? `${info.density}（${info.densityDpi ?? '?'} dpi）` : '—'],
+    ['WebView 版本', info?.webViewVersion || '—'],
+    ['页面视口', `${window.innerWidth}×${window.innerHeight}（DPR ${window.devicePixelRatio}）`],
+    ['页面缩放', `${(document.documentElement.style as unknown as { zoom?: string }).zoom || '1'}`],
     ['内存总量', fmtBytes(info?.totalMem)],
     ['可用内存', fmtBytes(info?.availMem)],
     ['应用堆上限', fmtBytes(info?.heapMax)],
     ['存储总量', fmtBytes(info?.storageTotal)],
     ['可用存储', fmtBytes(info?.storageFree)],
     ['CPU 核心', info?.cpuCores ? `${info.cpuCores} 核` : '—'],
+    ['CPU 温度', info?.cpuTempC && info.cpuTempC > 0 ? `${info.cpuTempC.toFixed(1)} ℃` : '—'],
+    ['电池', info?.batteryPercent != null ? `${info.batteryPercent}%${info.batteryCharging ? '（充电中）' : ''}` : '—'],
   ]
 
   const handleMode = (m: PerfMode) => {
