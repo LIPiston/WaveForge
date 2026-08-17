@@ -30,14 +30,17 @@ function applyTvDpiScale(): void {
   const innerW = window.innerWidth
   if (!innerW) return
   tvDpiApplied = true
-  // CSS zoom: 小于 1 缩小（视口 640 时缩小 1/3，等效 1920 设计宽度，UI 恢复正常大小）
-  const scale = innerW / 1920
-  if (Math.abs(scale - 1) < 0.02) {
+  if (innerW >= 1920) {
     console.log(`[TV DPI] innerWidth=${innerW} 视口已达标，不缩放`)
     return
   }
-  ;(document.documentElement.style as unknown as { zoom: string }).zoom = String(scale)
-  console.log(`[TV DPI] innerWidth=${innerW} → zoom=${scale.toFixed(3)}（目标视口 1920）`)
+  // 用 viewport width=1920（布局视口 = 设计宽度，浏览器自动缩放），
+  // 不用 CSS zoom：zoom 在 Android WebView 渲染有 bug（下半黑屏/不重绘）。
+  const vp = document.querySelector<HTMLMetaElement>('meta[name="viewport"]')
+  if (vp) {
+    vp.setAttribute('content', 'width=1920, initial-scale=1')
+    console.log(`[TV DPI] innerWidth=${innerW} → viewport width=1920`)
+  }
 }
 
 // TV 遥控器交互层（仅 html.tv-mode 生效）：空间导航/焦点环/软键盘。
