@@ -85,15 +85,46 @@ const FOCUSABLE_SELECTOR = [
   '[class*="cursor-pointer"]',
 ].join(', ')
 
-function isVisible(el: HTMLElement): boolean {
+/** 开关（checkbox/radio）在设置页用 sr-only 写法（1x1px），导航/焦点环改用其 label 区域。 */
+function focusRectOf(el: HTMLElement): DOMRect {
+  const r = el.getBoundingClientRect()
+  if (
+    r.width < 2 &&
+    r.height < 2 &&
+    el.tagName === 'INPUT' &&
+    ((el as HTMLInputElement).type === 'checkbox' || (el as HTMLInputElement).type === 'radio')
+  ) {
+    const label = el.closest('label')
+    if (label) {
+      const lr = label.getBoundingClientRect()
+      if (lr.width >= 2 && lr.height >= 2) return lr
+    }
+  }
+  return r
+}
+
+/** 基本可见性：display/visibility/透明度/尺寸/视口内（不含滚动容器裁剪）。 */
+function isBasicallyVisible(el: HTMLElement): boolean {
   if (!el.isConnected) return false
   const style = getComputedStyle(el)
   if (style.visibility === 'hidden' || style.display === 'none') return false
   if (Number(style.opacity) === 0) return false
   const r = el.getBoundingClientRect()
-  if (r.width < 2 || r.height < 2) return false
-  if (r.bottom < 0 || r.top > window.innerHeight) return false
-  if (r.right < 0 || r.left > window.innerWidth) return false
+  // 开关（checkbox/radio）是 sr-only 1px，用 label 区域判定，否则设置页开关永远不可聚焦
+  if (r.width < 2 || r.height < 2) {
+    const isSwitch =
+      el.tagName === 'INPUT' && ((el as HTMLInputElement).type === 'checkbox' || (el as HTMLInputElement).type === 'radio')
+    if (!isSwitch) return false
+  }
+  const vr = focusRectOf(el)
+  if (vr.width < 2 || vr.height < 2) return false
+  if (vr.bottom < 0 || vr.top > window.innerHeight) return false
+  if (vr.right < 0 || vr.left > window.innerWidth) return false
+  return true
+}
+
+function isVisible(el: HTMLElement): boolean {
+  if (!isBasicallyVisible(el)) return false
   // 滚动容器裁剪判定：被可滚动/裁剪祖先挡住（滚出可视区）的元素不算候选——
   // 否则滚到页面底部按"上"会跳到容器外/不可见的元素（如设置页跳标签栏）。
   if (isClippedByScroll(el)) return false
@@ -102,7 +133,7 @@ function isVisible(el: HTMLElement): boolean {
 
 /** 元素是否被某个滚动/裁剪祖先排除在可视区之外（rect 不相交）。 */
 function isClippedByScroll(el: HTMLElement): boolean {
-  const r = el.getBoundingClientRect()
+  const r = focusRectOf(el)
   let node: HTMLElement | null = el.parentElement
   while (node) {
     const style = getComputedStyle(node)
@@ -138,10 +169,14 @@ function scrollParentOf(el: HTMLElement): HTMLElement | null {
  * 从而被自动排除在导航候选之外——无需给每个模态框都标记 data-tv-scope 也能避免焦点"穿墙"。
  */
 function isHitTestable(el: HTMLElement): boolean {
-  const r = el.getBoundingClientRect()
+  const r = focusRectOf(el)
   const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
   if (!hit) return false
-  return hit === el || el.contains(hit)
+  if (hit === el || el.contains(hit)) return true
+  // sr-only 开关：命中 label 区域即视为可点（视觉开关 div 在 label 内，中心点可能落在它上面）
+  const label = el.closest('label')
+  if (label && (hit === label || label.contains(hit))) return true
+  return false
 }
 
 // ---------------- 聚焦域（scope） ----------------
@@ -156,11 +191,26 @@ function currentScope(): HTMLElement | Document {
   return document
 }
 
-function candidates(): HTMLElement[] {
+function candidates(from: HTMLElement | null = null, dir: Direction | null = null): HTMLElement[] {
   const scope = currentScope()
   const root = scope instanceof Document ? document : scope
   const list = Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR)) as HTMLElement[]
-  return list.filter((el) => !el.closest('[data-tv-skip]') && isVisible(el) && isHitTestable(el))
+  return list.filter((el) => {
+    if (el.closest('[data-tv-skip]')) return false
+    if (!isBasicallyVisible(el)) return false
+    if (isClippedByScroll(el)) {
+      // 同滚动容器内被裁剪的项仍保留为候选：上下导航选中后 scrollIntoView 自动滚回，
+      // 避免"按上跳过紧邻的上一项直接跳到标签栏"；跨容器裁剪项仍排除。
+      if (from && dir && (dir === 'up' || dir === 'down')) {
+        const curScroll = scrollParentOf(from)
+        const candScroll = scrollParentOf(el)
+        if (curScroll && candScroll === curScroll) return true
+      }
+      return false
+    }
+    if (!isHitTestable(el)) return false
+    return true
+  })
 }
 
 // ---------------- 焦点状态与焦点环 ----------------
@@ -201,7 +251,7 @@ function updateRing(): void {
     ring.style.display = 'none'
     return
   }
-  const r = focusedEl.getBoundingClientRect()
+  const r = focusRectOf(focusedEl)
   ring.style.display = 'block'
   ring.style.left = `${r.left - 5}px`
   ring.style.top = `${r.top - 5}px`
@@ -280,15 +330,15 @@ function updateVolumeKeyCapture(): void {
 type Direction = 'up' | 'down' | 'left' | 'right'
 
 function bestNeighbor(current: HTMLElement, dir: Direction): HTMLElement | null {
-  const list = candidates()
-  const cur = current.getBoundingClientRect()
+  const list = candidates(current, dir)
+  const cur = focusRectOf(current)
   const cx = cur.left + cur.width / 2
   const cy = cur.top + cur.height / 2
   let best: HTMLElement | null = null
   let bestScore = Infinity
   for (const el of list) {
     if (el === current) continue
-    const r = el.getBoundingClientRect()
+    const r = focusRectOf(el)
     const ecx = r.left + r.width / 2
     const ecy = r.top + r.height / 2
     const dx = ecx - cx
@@ -309,6 +359,8 @@ function bestNeighbor(current: HTMLElement, dir: Direction): HTMLElement | null 
       const curScroll = scrollParentOf(current)
       const candScroll = scrollParentOf(el)
       if (curScroll && candScroll !== curScroll) score += 400
+      // 同容器内滚出可视区的项（可自动滚动回去）也小惩，优先选当前可见的紧邻项
+      else if (curScroll && candScroll === curScroll && isClippedByScroll(el)) score += 60
     }
     if (score < bestScore) {
       bestScore = score
