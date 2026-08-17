@@ -47,7 +47,7 @@ class MainActivity : Activity() {
         private const val TAG = "WaveForgeMain"
         private const val NODE_ASSETS_DIR = "nodejs-project"
         private const val PREF_TAG_KEY = "node_assets_version"
-        private const val ASSETS_VERSION = 28
+        private const val ASSETS_VERSION = 33
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
         // Node 启动标记：必须进程级唯一（nodejs-mobile 不支持重启、每次进程只允许一个）。
@@ -115,6 +115,10 @@ class MainActivity : Activity() {
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
+            // 支持 viewport meta 的 width（配合前端 viewport width=1920 做 TV 缩放）：
+            // 默认 useWideViewPort=false 会忽略 meta width，布局恒为设备宽 → UI 巨大
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = true
             // 页面源是 http://localhost:3001，加载 http 的网易云 CDN 音频不属于混合内容；
             // 这里仍放开兜底，避免个别 https 页面加载 http 资源时被拦。
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW

@@ -35,11 +35,20 @@ function applyTvDpiScale(): void {
     return
   }
   // 用 viewport width=1920（布局视口 = 设计宽度，浏览器自动缩放），
-  // 不用 CSS zoom：zoom 在 Android WebView 渲染有 bug（下半黑屏/不重绘）。
+  // 不用 CSS zoom（Android WebView 渲染有 bug）。
+  // 注意：WebView 运行时改 viewport meta 不重新布局，需 reload 一次让 meta 生效
+  // （原生已开 useWideViewPort，reload 后 meta width=1920 才会真正采用）。
   const vp = document.querySelector<HTMLMetaElement>('meta[name="viewport"]')
-  if (vp) {
-    vp.setAttribute('content', 'width=1920, initial-scale=1')
-    console.log(`[TV DPI] innerWidth=${innerW} → viewport width=1920`)
+  if (!vp) return
+  vp.setAttribute('content', 'width=1920, initial-scale=1')
+  console.log(`[TV DPI] innerWidth=${innerW} → viewport width=1920，reload 生效`)
+  try {
+    if (!sessionStorage.getItem('wf-dpi-reloaded')) {
+      sessionStorage.setItem('wf-dpi-reloaded', '1')
+      window.location.reload()
+    }
+  } catch {
+    // ignore
   }
 }
 
