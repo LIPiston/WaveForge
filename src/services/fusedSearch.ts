@@ -1,6 +1,7 @@
 import type { Album, Artist, Song } from './musicApi'
+import type { MusicPlatform } from './platforms'
 
-export type MusicPlatform = 'netease' | 'qq'
+export type { MusicPlatform } from './platforms'
 export type FusedSearchIntent = 'artist' | 'album' | 'song' | 'mixed'
 
 export interface PlatformEntitlement {
@@ -26,7 +27,9 @@ export interface FusedSearchOutput {
   intentConfidence: number
 }
 
-const platformOf = (item: { platform?: MusicPlatform }): MusicPlatform => item.platform === 'qq' ? 'qq' : 'netease'
+const platformOf = (item: { platform?: MusicPlatform }): MusicPlatform => (
+  item.platform === 'qq' ? 'qq' : item.platform === 'apple' ? 'apple' : 'netease'
+)
 
 /** NFKC lets full-width/half-width text match; punctuation and spacing should not affect equality. */
 export const normalizeSearchText = (value = '') => value

@@ -1,3 +1,4 @@
+import type { MusicPlatform } from './platforms'
 ﻿export type AudioQualityPreference =
   | 'auto'
   | 'standard'
@@ -61,12 +62,15 @@ export function saveAudioQualitySettings(patch: Partial<AudioQualitySettings>): 
   return next
 }
 
-export function getAudioQualityPreference(platform: 'netease' | 'qq'): AudioQualityPreference {
-  return loadAudioQualitySettings()[platform]
+export function getAudioQualityPreference(platform: MusicPlatform): AudioQualityPreference {
+  // Apple 无独立音质（播放走载体平台），返回中性默认值
+  const settings = loadAudioQualitySettings()
+  return platform === 'apple' ? settings.netease : settings[platform]
 }
 
-export function getPlatformVipState(platform: 'netease' | 'qq'): boolean {
+export function getPlatformVipState(platform: MusicPlatform): boolean {
   if (typeof localStorage === 'undefined') return false
+  if (platform === 'apple') return false
   return localStorage.getItem(platform === 'netease' ? 'netease_vip' : 'qq_vip') === 'true'
 }
 
@@ -74,7 +78,7 @@ export function getPlatformVipState(platform: 'netease' | 'qq'): boolean {
  * 返回会传给本地 API 的设置快照。服务端仍会按实际接口返回结果逐级降级，
  * 这里的 VIP 状态只用于选择合理的候选顺序，避免反复请求明显不可用的音质。
  */
-export function getAudioQualityRequest(platform: 'netease' | 'qq'): {
+export function getAudioQualityRequest(platform: MusicPlatform): {
   preference: AudioQualityPreference
   isVip: boolean
 } {

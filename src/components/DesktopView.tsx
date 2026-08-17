@@ -9,6 +9,9 @@ import LyricsDisplay from './LyricsDisplay'
 import DesktopWidgetZone from './DesktopWidgetZone'
 import DesktopFocusAlarmOverlay from './DesktopFocusAlarmOverlay'
 import { Song, LyricLine } from '../services/musicApi'
+import type { MusicPlatform } from '../services/platforms'
+import { getVisiblePlatforms } from '../services/platforms'
+import { getAppleLibraryPlaylists, getAppleRecentPlayed, appleLibraryTrackToSong, getApplePlaylistTracks, getAppleCatalogPlaylistTracks, appleSongToSong, removeAppleTracksFromPlaylist } from '../services/appleCatalog'
 import { desktopWallpaperManager, DesktopLiveWallpaperSource, toWallpaperUrl } from '../services/desktopWallpaperManager'
 import { getUserPlaylists, removeSongFromPlaylist, streamNeteasePlaylistTracks } from '../services/playlistService'
 import { useColorThief } from '../hooks/useColorThief'
@@ -63,6 +66,10 @@ interface DesktopViewProps {
   qqLoggedIn: boolean
   qqUserId: string
   qqUsername?: string
+  appleLoggedIn?: boolean
+  appleUsername?: string
+  onAppleLoginClick?: () => void
+  onAppleLogout?: () => void
   
   // VIP状态
   neteaseVip: boolean
@@ -77,8 +84,8 @@ interface DesktopViewProps {
   onRemoveFromFavorites?: (song: Song) => void | Promise<unknown>
   onAddToPlaylist?: (song: Song, playlistId: string) => void
   onViewComments?: (song: Song) => void
-  onOpenArtist?: (artistId: string, platform: 'netease' | 'qq') => void
-  onOpenAlbum?: (albumId: string, platform: 'netease' | 'qq') => void
+  onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
+  onOpenAlbum?: (albumId: string, platform: MusicPlatform) => void
   onCopyInfo?: (song: Song) => void
   
   // 其他
@@ -95,7 +102,7 @@ interface Playlist {
   description?: string
   dirId?: string | number
   userId?: string | number
-  platform?: 'netease' | 'qq'
+  platform?: MusicPlatform
   isLike?: boolean
   isCollected?: boolean
   isRecent?: boolean
@@ -145,6 +152,9 @@ function DesktopView({
   qqLoggedIn,
   qqUserId,
   qqUsername,
+  appleLoggedIn = false,
+  appleUsername = '',
+  onAppleLoginClick,
   neteaseVip,
   qqVip,
   onNeteaseLogin,
@@ -161,9 +171,12 @@ function DesktopView({
   onRemoteClick,
 }: DesktopViewProps) {
   // 当前平台（桌面模式独立）- 记住用户选择
-  const [currentPlatform, setCurrentPlatform] = useState<'netease' | 'qq'>(() => {
+  const [currentPlatform, setCurrentPlatform] = useState<MusicPlatform>(() => {
     const saved = localStorage.getItem('desktopModePlatform')
-    return (saved as 'netease' | 'qq') || 'netease'
+    if (saved === 'qq' || saved === 'apple') {
+      return getVisiblePlatforms().includes(saved) ? saved : 'netease'
+    }
+    return 'netease'
   })
   
   // 歌单列表
@@ -730,10 +743,12 @@ function DesktopView({
 
   // 加载用户歌单
   useEffect(() => {
-    const activeUserId = currentPlatform === 'netease' ? neteaseUserId : qqUserId
+    const activeUserId = currentPlatform === 'netease' ? neteaseUserId : currentPlatform === 'qq' ? qqUserId : ''
     const isPlatformLoggedIn = currentPlatform === 'netease'
       ? Boolean(neteaseLoggedIn && neteaseUserId)
-      : Boolean(qqLoggedIn && qqUserId)
+      : currentPlatform === 'qq'
+        ? Boolean(qqLoggedIn && qqUserId)
+        : Boolean(appleLoggedIn)
     const loadSignature = `${currentPlatform}:${isPlatformLoggedIn ? activeUserId : 'logged-out'}:${authRevision}`
 
     if (playlistLoadSignatureRef.current === loadSignature) {
@@ -752,6 +767,20 @@ function DesktopView({
       setPlaylists([]) // 清空旧数据
       
       try {
+        // Apple：资料库歌单（amp-api）
+        if (currentPlatform === 'apple') {
+          const data = await getAppleLibraryPlaylists(100)
+          const playlistData = data.map(p => ({
+            id: p.id,
+            name: p.name,
+            coverImgUrl: p.artworkUrl || '',
+            trackCount: p.trackCount || 0,
+            playCount: 0,
+            platform: 'apple' as const,
+          }))
+          setPlaylists(playlistData)
+          return
+        }
         if (currentPlatform === 'netease') {
           console.log(`🔄 桌面模式加载网易云歌单...`)
           const data = await getUserPlaylists('netease', neteaseUserId, neteaseUsername)
@@ -790,12 +819,14 @@ function DesktopView({
     }
     
     loadPlaylists()
-  }, [currentPlatform, neteaseLoggedIn, qqLoggedIn, neteaseUserId, qqUserId, neteaseUsername, qqUsername, authRevision])
+  }, [currentPlatform, neteaseLoggedIn, qqLoggedIn, appleLoggedIn, neteaseUserId, qqUserId, neteaseUsername, qqUsername, authRevision])
   // 加载最近播放歌曲（桌面模式仅显示歌曲，与简约模式同源）
   useEffect(() => {
     const isPlatformLoggedIn = currentPlatform === 'netease'
       ? Boolean(neteaseLoggedIn && neteaseUserId)
-      : Boolean(qqLoggedIn && qqUserId)
+      : currentPlatform === 'qq'
+        ? Boolean(qqLoggedIn && qqUserId)
+        : Boolean(appleLoggedIn)
     const loadSignature = `${currentPlatform}:${isPlatformLoggedIn ? 'in' : 'out'}:${authRevision}`
     if (recentLoadSignatureRef.current === loadSignature) return
     recentLoadSignatureRef.current = loadSignature
@@ -822,6 +853,17 @@ function DesktopView({
 
     const loadRecent = async () => {
       try {
+        // Apple：最近播放走 amp-api（需登录 token）
+        if (currentPlatform === 'apple') {
+          const tracks = await getAppleRecentPlayed(100)
+          const songs = tracks.map(track => appleLibraryTrackToSong(track))
+          if (controller.signal.aborted) return
+          setRecentSongs(songs)
+          setRecentCovers(songs.map(song => song.album.picUrl || '').filter(Boolean))
+          recentSongsRef.current = songs
+          recentCoversRef.current = songs.map(song => song.album.picUrl || '').filter(Boolean)
+          return
+        }
         const cookie = currentPlatform === 'qq'
           ? localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
           : localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
@@ -1195,9 +1237,10 @@ function DesktopView({
 
   // 切换平台
   const handlePlatformSwitch = () => {
-    const newPlatform = currentPlatform === 'netease' ? 'qq' : 'netease'
-    setCurrentPlatform(newPlatform)
-    localStorage.setItem('desktopModePlatform', newPlatform)
+    const order = getVisiblePlatforms()
+    const next = order[(order.indexOf(currentPlatform) + 1) % order.length]
+    setCurrentPlatform(next)
+    localStorage.setItem('desktopModePlatform', next)
   }
 
   const closePlaylistDetail = useCallback(() => {
@@ -1318,7 +1361,17 @@ function DesktopView({
     }
     
     try {
-      if (currentPlatform === 'netease') {
+      if (currentPlatform === 'apple') {
+        // Apple：目录歌单（pl. 前缀）走 catalog，资料库歌单走 me/library
+        const storefront = localStorage.getItem('appleStorefront') || 'cn'
+        const playlistId = String(playlist.id || '')
+        const tracks = playlistId.startsWith('pl.')
+          ? await getAppleCatalogPlaylistTracks(playlistId, storefront)
+          : await getApplePlaylistTracks(playlistId)
+        if (playlistLoadController.signal.aborted || playlistLoadControllerRef.current !== playlistLoadController) return
+        const songs = tracks.map(track => appleSongToSong(track, storefront))
+        setPlaylistSongs(songs)
+      } else if (currentPlatform === 'netease') {
         await streamNeteasePlaylistTracks(playlist.id, {
           signal: playlistLoadController.signal,
           firstPageSize: 120,
@@ -1404,7 +1457,22 @@ function DesktopView({
       return
     }
 
-    const userId = currentPlatform === 'netease' ? neteaseUserId : qqUserId
+    const userId = currentPlatform === 'netease' ? neteaseUserId : currentPlatform === 'qq' ? qqUserId : ''
+    // Apple：从资料库歌单移除曲目（amp-api）
+    if (currentPlatform === 'apple') {
+      try {
+        const appleSongId = song.appleId || String(song.id)
+        const ok = await removeAppleTracksFromPlaylist(String(selectedPlaylist.dirId || selectedPlaylist.id || ''), [appleSongId])
+        if (!ok) throw new Error('从 Apple 歌单移除歌曲失败，请检查登录状态')
+        removeSongFromVisiblePlaylist(song)
+        showToastNotification('已从 Apple 歌单移除歌曲', 'success')
+      } catch (error) {
+        console.error('Desktop Apple playlist song removal failed:', error)
+        showToastNotification(error instanceof Error ? error.message : '从歌单移除歌曲失败，请重试', 'error')
+        throw error
+      }
+      return
+    }
     const playlistOwnerId = selectedPlaylist.userId == null ? '' : String(selectedPlaylist.userId)
     if (selectedPlaylist.isCollected || (playlistOwnerId && playlistOwnerId !== String(userId || ''))) return
 
@@ -1530,7 +1598,7 @@ function DesktopView({
   const handleWidgetRemoveQueueItem = useCallback((index: number) => widgetHandlersRef.current.onRemoveQueueItem(index), [])
   const handleWidgetMoveQueueItem = useCallback((from: number, to: number) => widgetHandlersRef.current.onMoveQueueItem(from, to), [])
   const handleWidgetPlaylistSelect = useCallback((playlist: DesktopMusicWidgetContext['playlists'][number]) => { void widgetHandlersRef.current.onPlaylistSelect(playlist as Playlist) }, [])
-  const handleWidgetOpenArtist = useCallback((artistId: string, platform: 'netease' | 'qq') => widgetHandlersRef.current.onOpenArtist?.(artistId, platform), [])
+  const handleWidgetOpenArtist = useCallback((artistId: string, platform: MusicPlatform) => widgetHandlersRef.current.onOpenArtist?.(artistId, platform), [])
 
   const desktopMusicWidgetContext = useMemo<DesktopMusicWidgetContext>(() => ({
     currentSong,
@@ -1891,7 +1959,20 @@ function DesktopView({
                     </motion.button>
                   </>
                 )}
-                {((currentPlatform === 'netease' && neteaseLoggedIn) || (currentPlatform === 'qq' && qqLoggedIn)) && (
+                {currentPlatform === 'apple' && !appleLoggedIn && (
+                  <>
+                    <p className="text-white/60 mb-2">请先登录 Apple Music</p>
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => onAppleLoginClick?.()}
+                      className="px-6 py-2 rounded-full bg-pink-600/90 hover:bg-pink-600 text-white transition-all"
+                    >
+                      登录 Apple Music
+                    </motion.button>
+                  </>
+                )}
+                {((currentPlatform === 'netease' && neteaseLoggedIn) || (currentPlatform === 'qq' && qqLoggedIn) || (currentPlatform === 'apple' && appleLoggedIn)) && (
                   <p className="text-white/60">暂无歌单</p>
                 )}
               </div>
@@ -1955,11 +2036,19 @@ function DesktopView({
                     className="w-6 h-6"
                     style={{ objectFit: 'contain' }}
                   />
-                ) : (
+                ) : currentPlatform === 'qq' ? (
                   // QQ音乐 logo
                   <img 
                     src="https://y.qq.com/favicon.ico" 
                     alt="QQ音乐"
+                    className="w-6 h-6"
+                    style={{ objectFit: 'contain' }}
+                  />
+                ) : (
+                  // Apple Music logo
+                  <img 
+                    src="https://www.apple.com/favicon.ico" 
+                    alt="Apple Music"
                     className="w-6 h-6"
                     style={{ objectFit: 'contain' }}
                   />

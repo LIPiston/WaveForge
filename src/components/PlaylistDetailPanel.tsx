@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Music, Play, Clock, Crown, Heart, Info, Radio } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier } from '../services/musicApi'
+import type { MusicPlatform } from '../services/platforms'
 import { subscribePlaylist } from '../services/playlistService'
 import { useState, useRef, useEffect, useCallback, useMemo, memo, type UIEvent } from 'react'
 import CachedImage from './CachedImage'
@@ -30,7 +31,7 @@ interface PlaylistDetailPanelProps {
     tags?: string[]
     createTime?: number
     commentCount?: number
-    platform?: 'netease' | 'qq'
+    platform?: MusicPlatform
     userId?: number | string
     isLike?: boolean
     isCollected?: boolean
@@ -41,9 +42,9 @@ interface PlaylistDetailPanelProps {
   onSongSelect: (song: Song, playlist: Song[]) => void
   neteaseVip?: boolean
   qqVip?: boolean
-  currentPlatform?: 'netease' | 'qq'
-  onOpenArtist?: (artistId: string, platform: 'netease' | 'qq') => void
-  onOpenAlbum?: (albumId: string, platform: 'netease' | 'qq') => void
+  currentPlatform?: MusicPlatform
+  onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
+  onOpenAlbum?: (albumId: string, platform: MusicPlatform) => void
   onPlayNext?: (song: Song) => void
   onAddToFavorites?: (song: Song) => void
   onAddToPlaylist?: (song: Song, playlistId: string) => void
@@ -597,6 +598,7 @@ function PlaylistDetailPanel({
                           智能播放
                         </motion.button>
                       )}
+                      {currentPlatform !== 'apple' && playlist.platform !== 'apple' && (
                       <motion.button
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
@@ -611,6 +613,7 @@ function PlaylistDetailPanel({
                         <Heart className={`w-3.5 h-3.5 ${collected ? 'fill-current' : ''}`} />
                         {collected ? '已收藏' : '收藏'}
                       </motion.button>
+                      )}
                     </div>
                   </div>
 

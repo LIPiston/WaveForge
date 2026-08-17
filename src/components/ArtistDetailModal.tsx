@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Music, Disc, Video, Info, Loader, ListMusic, Calendar, Eye, Users, Heart, UserPlus, UserCheck } from 'lucide-react'
 import { List, type ListImperativeAPI, type RowComponentProps } from 'react-window'
 import { getArtistDetail, getArtistTopSongs, getArtistAllSongs, getArtistAlbums, getArtistMVs, Artist, Song, Album, getProxiedImageUrl, resolveSongAlbumIdentifier, subscribeArtist, getSimilarArtists, isArtistFollowed } from '../services/musicApi'
+import type { MusicPlatform } from '../services/platforms'
+import { getAppleArtistDetail, appleSongToSong, getAppleLibraryPlaylists } from '../services/appleCatalog'
 import CachedImage from './CachedImage'
 import AlbumDetailModal from './AlbumDetailModal'
 import VideoPlayer from './VideoPlayer'
@@ -369,7 +371,7 @@ const ArtistMvCard = memo(function ArtistMvCard({ mv, index, playerTheme, onOpen
 
 interface ArtistDetailModalProps {
   artistId: string | number
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   onClose: () => void
   onSongSelect?: (song: Song, playlist?: Song[]) => void
   playerTheme?: 'light' | 'dark'
@@ -386,8 +388,8 @@ interface ArtistDetailModalProps {
   onRemoveFromFavorites?: (song: Song) => void | Promise<unknown>
   onAddToPlaylist?: (song: Song, playlistId: string) => void
   onViewComments?: (song: Song) => void
-  onOpenArtist?: (artistId: string, platform: 'netease' | 'qq') => void
-  onOpenAlbum?: (albumId: string, platform: 'netease' | 'qq') => void
+  onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
+  onOpenAlbum?: (albumId: string, platform: MusicPlatform) => void
   onCopyInfo?: (song: Song) => void
 }
 
@@ -496,7 +498,7 @@ export default function ArtistDetailModal({
   useEffect(() => {
     let cancelled = false
     const fetch = async () => {
-      if (!artist) return
+      if (!artist || platform === 'apple') return
       try {
         const id = platform === 'qq' ? String(artist.mid || artist.id) : String(artist.id)
         const data = await getSimilarArtists(id, platform)
@@ -529,6 +531,13 @@ export default function ArtistDetailModal({
   }
 
   useEffect(() => {
+    // Apple：右键菜单歌单用资料库歌单（amp-api）
+    if (platform === 'apple') {
+      void getAppleLibraryPlaylists(100)
+        .then(setUserPlaylists)
+        .catch(() => setUserPlaylists([]))
+      return
+    }
     const userId = platform === 'qq'
       ? localStorage.getItem('qq_user_id') || ''
       : localStorage.getItem('netease_user_id') || ''
@@ -596,6 +605,24 @@ export default function ArtistDetailModal({
     setLoading(true)
     setHotSongsError(null) // 清除之前的错误
     try {
+      // Apple：iTunes Lookup 返回艺人信息 + 热门歌曲（免 token）
+      if (platform === 'apple') {
+        const storefront = localStorage.getItem('appleStorefront') || 'cn'
+        const detail = await getAppleArtistDetail(String(artistId), storefront)
+        if (detail) {
+          setArtist({
+            id: Number(detail.artist.id) || 0,
+            name: detail.artist.name,
+            picUrl: detail.artist.artworkUrl || '',
+            platform: 'apple',
+          })
+          setHotSongs(detail.topSongs.map(song => appleSongToSong(song, storefront)))
+        } else {
+          setHotSongsError('未找到该 Apple 艺人')
+        }
+        setLoading(false)
+        return
+      }
       const [artistData, songsData] = await Promise.all([
         getArtistDetail(artistId, platform),
         getArtistTopSongs(artistId, platform)
@@ -623,7 +650,7 @@ export default function ArtistDetailModal({
 
   // 打开歌手详情时按当前账号是否已关注初始化按钮状态（QQ 传 mid，网易云传数字 id）
   useEffect(() => {
-    if (!artist) return
+    if (!artist || platform === 'apple') return
     let cancelled = false
     const id = platform === 'qq' ? String(artist.mid || artist.id) : String(artist.id)
     setFollowing(false)
@@ -1043,6 +1070,7 @@ export default function ArtistDetailModal({
                         <Play className="w-4 h-4" fill="currentColor" />
                         播放全部
                       </button>
+                      {platform !== 'apple' && (
                       <button
                         onClick={handleFollow}
                         disabled={followingLoading}
@@ -1056,6 +1084,7 @@ export default function ArtistDetailModal({
                         {following ? <UserCheck className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
                         {following ? '已关注' : '关注'}
                       </button>
+                      )}
                     </div>
                     
                     {/* 粉丝数徽章 */}
@@ -1121,6 +1150,7 @@ export default function ArtistDetailModal({
                 />
               )}
             </button>
+            {platform !== 'apple' && (
             <button
               onClick={() => setActiveTab('albums')}
               className={`pb-3 px-3 font-medium transition-all relative text-sm ${
@@ -1139,6 +1169,8 @@ export default function ArtistDetailModal({
                 />
               )}
             </button>
+            )}
+            {platform !== 'apple' && (
             <button
               onClick={() => setActiveTab('videos')}
               className={`pb-3 px-3 font-medium transition-all relative text-sm ${
@@ -1157,6 +1189,8 @@ export default function ArtistDetailModal({
                 />
               )}
             </button>
+            )}
+            {platform !== 'apple' && (
             <button
               onClick={() => setActiveTab('allSongs')}
               className={`pb-3 px-3 font-medium transition-all relative text-sm ${
@@ -1175,9 +1209,10 @@ export default function ArtistDetailModal({
                 />
               )}
             </button>
-            
+            )}
+
             {/* 相似歌手 — 仅在获取到相似歌手后显示 */}
-            {similarArtists.length > 0 && (
+            {similarArtists.length > 0 && platform !== 'apple' && (
               <button
                 onClick={() => setActiveTab('similarArtists')}
                 className={`pb-3 px-3 font-medium transition-all relative text-sm ${

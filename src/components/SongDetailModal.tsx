@@ -141,6 +141,20 @@ function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist }: SongDetai
     let cancelled = false
     const fetchDetail = async () => {
       try {
+        // Apple：无网易云/QQ 详情接口；歌词走融合链路（Apple 官方/AMLL/Lrclib）
+        if (song.platform === 'apple') {
+          setLyricsLoading(true)
+          const lyricLines = await getLyrics(
+            String(song.id),
+            'apple',
+            song.name,
+            Array.isArray(song.artists) ? song.artists.map(a => a.name).join(', ') : '',
+            song.duration
+          )
+          if (!cancelled && Array.isArray(lyricLines)) setLyrics(lyricLines)
+          if (!cancelled) setLyricsLoading(false)
+          return
+        }
         if (song.platform === 'qq') {
           const mid = String(song.mid || song.id)
           const res = await fetch(`http://localhost:3001/api/qq/song/detail?mid=${encodeURIComponent(mid)}`)

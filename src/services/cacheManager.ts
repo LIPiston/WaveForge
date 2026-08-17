@@ -1,3 +1,4 @@
+import type { MusicPlatform } from './platforms'
 /**
  * 缓存管理服务
  * 用于管理歌单封面、歌单列表等数据的本地缓存
@@ -90,7 +91,7 @@ class CacheManager {
   /**
    * 缓存歌单列表
    */
-  async cachePlaylist(userId: string, platform: 'netease' | 'qq', playlists: any[]) {
+  async cachePlaylist(userId: string, platform: MusicPlatform, playlists: any[]) {
     userId = userId.trim()
     if (!userId) throw new Error('缓存用户 ID 不能为空')
     const key = `playlist_${platform}_${userId}`
@@ -110,7 +111,7 @@ class CacheManager {
   /**
    * 获取缓存的歌单列表
    */
-  async getCachedPlaylist(userId: string, platform: 'netease' | 'qq'): Promise<any[] | null> {
+  async getCachedPlaylist(userId: string, platform: MusicPlatform): Promise<any[] | null> {
     userId = userId.trim()
     if (!userId) return null
     const key = `playlist_${platform}_${userId}`

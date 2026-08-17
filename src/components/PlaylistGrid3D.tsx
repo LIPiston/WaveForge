@@ -1,3 +1,4 @@
+import type { MusicPlatform } from '../services/platforms'
 import { useState, useEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent } from 'react'
 import { motion } from 'framer-motion'
 import { Play, Clock } from 'lucide-react'
@@ -14,7 +15,7 @@ interface PlaylistGrid3DProps {
   loading: boolean
   onPlaySong: (song: Song, queue: Song[]) => void
   formatDuration: (ms: number) => string
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   neteaseVip: boolean
   qqVip: boolean
   currentSong?: Song | null
@@ -24,8 +25,8 @@ interface PlaylistGrid3DProps {
   onAddToPlaylist?: (song: Song, playlistId: string) => void
   onRemoveFromPlaylist?: (song: Song) => void | Promise<unknown>
   onViewComments?: (song: Song) => void
-  onOpenAlbum?: (albumId: string, platform: 'netease' | 'qq') => void
-  onOpenArtist?: (artistId: string, platform: 'netease' | 'qq') => void
+  onOpenAlbum?: (albumId: string, platform: MusicPlatform) => void
+  onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
   onCopyInfo?: (song: Song) => void
   userPlaylists?: any[]
   currentPlaylistId?: string

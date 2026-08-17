@@ -1,3 +1,4 @@
+import type { MusicPlatform } from './platforms'
 import type { ViewMode } from '../types/playbackNavigation'
 import { loadDesktopCustomization } from './desktopCustomization'
 import { prefetchExploreHome } from './exploreApi'
@@ -32,10 +33,10 @@ const rememberCompleted = (identity: string): void => {
   }
 }
 
-const getStoredUserId = (platform: 'netease' | 'qq') =>
+const getStoredUserId = (platform: MusicPlatform) =>
   localStorage.getItem(platform === 'qq' ? 'qq_user_id' : 'netease_user_id') || ''
 
-const getAccountIdentity = (platform: 'netease' | 'qq') =>
+const getAccountIdentity = (platform: MusicPlatform) =>
   `${platform}:${getStoredUserId(platform) || 'guest'}`
 
 const getConfiguredWeather = () => {
@@ -77,13 +78,13 @@ const runJobs = async (jobs: PrefetchJob[]) => {
   }
 }
 
-const createExploreJob = (platform: 'netease' | 'qq'): PrefetchJob => ({
+const createExploreJob = (platform: MusicPlatform): PrefetchJob => ({
   label: `${platform === 'qq' ? 'QQ音乐' : '网易云'}探索与推荐`,
   run: () => prefetchExploreHome(platform)
 })
 
 const createPlaylistJob = (
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   loggedIn: boolean
 ): PrefetchJob | null => {
   const userId = getStoredUserId(platform)

@@ -1,3 +1,4 @@
+import type { MusicPlatform } from '../services/platforms'
 import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion, useMotionValue, animate } from 'framer-motion'
 import { Heart, History } from 'lucide-react'
@@ -17,7 +18,7 @@ interface Playlist {
 interface PlaylistCarousel3DProps {
   playlists: Playlist[]
   onPlaylistSelect: (playlist: Playlist) => void
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   initialFocusedIndex?: number
 }
 
@@ -354,7 +355,7 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
 // 单个歌单卡片组件
 interface PlaylistCardProps {
   playlist: Playlist
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   index: number
   isActive: boolean
   scale: number

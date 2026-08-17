@@ -8,6 +8,7 @@ import {
   SkipForward, Speaker, Trash2, Volume1, Volume2, VolumeX, WandSparkles, X,
 } from 'lucide-react'
 import type { DesktopWidgetType } from '../services/desktopCustomization'
+import type { MusicPlatform } from '../services/platforms'
 import type { Song } from '../services/musicApi'
 import { fetchExploreHome, fetchExploreRecommendationBatch } from '../services/exploreApi'
 import { getNeteasePlaylistTrackPage, getPlaylistDetail } from '../services/playlistService'
@@ -33,7 +34,7 @@ export interface DesktopMusicWidgetContext {
   queue: Song[]
   currentIndex: number
   playlists: DesktopWidgetPlaylist[]
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   volume: number
   onVolumeChange: (volume: number) => void
   onPlayPause: () => void
@@ -42,7 +43,7 @@ export interface DesktopMusicWidgetContext {
   onRemoveQueueItem: (index: number) => void
   onMoveQueueItem: (from: number, to: number) => void
   onPlaylistSelect: (playlist: DesktopWidgetPlaylist) => void
-  onOpenArtist?: (artistId: string, platform: 'netease' | 'qq') => void
+  onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
 }
 
 interface LauncherItem {
@@ -135,7 +136,7 @@ const formatBytes = (bytes: number) => {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
 }
 
-function normalizePlaylistSongs(data: any, platform: 'netease' | 'qq'): Song[] {
+function normalizePlaylistSongs(data: any, platform: MusicPlatform): Song[] {
   const raw = platform === 'qq' ? data?.songlist || data?.playlist?.tracks || [] : data?.playlist?.tracks || data?.songs || []
   return raw.map((item: any) => platform === 'qq' ? {
     id: Number(item.id || item.songid || 0), mid: item.mid || item.songmid, name: item.name || item.songname || '未知歌曲',
@@ -209,7 +210,7 @@ function useActivity(kind: DesktopWidgetType) {
   }, [activity, enabled, kind])
   return activity
 }
-function useRecommendations(platform: 'netease' | 'qq', enabled: boolean) {
+function useRecommendations(platform: MusicPlatform, enabled: boolean) {
   const [songs, setSongs] = useState<Song[]>([])
   const [loading, setLoading] = useState(false)
   const [batch, setBatch] = useState(1)
@@ -351,6 +352,8 @@ export default function DesktopExtraWidget({ type, cardBlurAmount, accentColor, 
     if (type !== 'favoriteSongs') return
     const liked = context.playlists.find(playlist => playlist.isLike) || context.playlists[0]
     if (!liked) { setFavoriteSongs([]); return }
+    // Apple 无"我喜欢"歌单接口（喜欢=音乐库，走 amp-api），组件留空
+    if (context.platform === 'apple') { setFavoriteSongs([]); setFavoritesLoading(false); return }
     let active = true
     setFavoritesLoading(true)
     const request = context.platform === 'netease'
@@ -400,7 +403,7 @@ export default function DesktopExtraWidget({ type, cardBlurAmount, accentColor, 
   const today = activity.days[todayKey] || { listenedSeconds: 0, songStarts: 0 }
   const weekSeconds = Object.values(activity.days).filter(day => Date.now() - new Date(`${day.date}T00:00:00`).getTime() < 7 * 86400000).reduce((sum, day) => sum + day.listenedSeconds, 0)
   const topArtists = useMemo(() => {
-    const scores = new Map<string, { name: string; id?: number; platform: 'netease' | 'qq'; score: number }>()
+    const scores = new Map<string, { name: string; id?: number; platform: MusicPlatform; score: number }>()
     activity.history.forEach(entry => entry.song.artists.forEach(artist => { const key = `${entry.song.platform}:${artist.id || artist.name}`; const current = scores.get(key); scores.set(key, { name: artist.name, id: artist.id, platform: entry.song.platform || 'netease', score: (current?.score || 0) + entry.playCount }) }))
     return [...scores.values()].sort((a, b) => b.score - a.score)
   }, [activity.history])

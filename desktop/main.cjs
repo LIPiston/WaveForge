@@ -2247,6 +2247,875 @@ ipcMain.handle('open-qq-login-window', async () => {
   }
 })
 
+// 渲染进程日志桥：把前端（校验/登录流程）的诊断输出到主进程控制台（后台窗口可见）
+ipcMain.on('app-log', (event, message) => {
+  console.log('[渲染进程]', message)
+})
+
+// ── Apple Music amp-api 代理（Cider mkv3 同款思路）──────────────────────────
+// 渲染进程浏览器直连 amp-api.music.apple.com 会被 CORS 拦截（Failed to fetch）。
+// 改为渲染进程请求主进程 → 主进程 fetch（无 CORS）→ 返回 JSON。登录/资料库/目录全部走这里。
+ipcMain.handle('apple-api', async (event, payload) => {
+  const { path, method = 'GET', developerToken, mediaUserToken, body } = payload || {}
+  if (!path || !developerToken) return { ok: false, status: 0, error: '缺少请求参数' }
+  // 路径归一化：appleAuth 传 /me/...（无 /v1），appleCatalog 传 /v1/...，统一补成带 /v1 的完整路径
+  const apiPath = String(path).startsWith('/v1') ? String(path) : `/v1${String(path)}`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+  try {
+    const headers = {
+      Authorization: `Bearer ${developerToken}`,
+      Origin: 'https://music.apple.com',
+      Referer: 'https://music.apple.com/',
+      Accept: 'application/json',
+    }
+    if (mediaUserToken) headers['Media-User-Token'] = mediaUserToken
+    if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json'
+    const response = await fetch(`https://amp-api.music.apple.com${apiPath}`, {
+      method,
+      headers,
+      body: body !== undefined && body !== null ? body : undefined,
+      signal: controller.signal,
+    })
+    const text = await response.text()
+    let data = null
+    try {
+      data = text ? JSON.parse(text) : null
+    } catch {
+      data = text
+    }
+    return { ok: response.ok, status: response.status, data }
+  } catch (error) {
+    return { ok: false, status: 0, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
+// ── Apple 账号信息（buy.itunes 账号接口，Cider 同款：凭登录窗口抓取的 itunes cookie）──
+ipcMain.handle('apple-account-info', async (event, cookies) => {
+  if (!cookies) return { ok: false, status: 0, error: '缺少账号 cookie' }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+  try {
+    const headers = {
+      'User-Agent': APPLE_SAFARI_UA,
+      Cookie: String(cookies),
+      Accept: 'application/json',
+    }
+    // 从 cookie 串里补 Media-User-Token 请求头（buy.itunes 账号接口需要）
+    const mediaTokenMatch = String(cookies).match(/(?:^|;\s*)media-user-token=([^;]+)/)
+    if (mediaTokenMatch) headers['Media-User-Token'] = decodeURIComponent(mediaTokenMatch[1])
+    const response = await fetch('https://buy.itunes.apple.com/account/web/info', {
+      headers,
+      signal: controller.signal,
+    })
+    const text = await response.text()
+    let data = null
+    try {
+      data = text ? JSON.parse(text) : null
+    } catch {
+      data = text
+    }
+    console.log(`[Apple账号] buy.itunes HTTP ${response.status}，响应长度 ${text.length}`)
+    return { ok: response.ok, status: response.status, data }
+  } catch (error) {
+    return { ok: false, status: 0, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
+// ── Apple 个人资料页（解析 og:image 头像，需主进程避免 CORS）──
+ipcMain.handle('apple-fetch-profile', async (event, profileUrl) => {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+  try {
+    const response = await fetch(String(profileUrl || 'https://music.apple.com/profile'), {
+      headers: { 'User-Agent': APPLE_SAFARI_UA, Accept: 'text/html' },
+      redirect: 'follow',
+      signal: controller.signal,
+    })
+    const text = await response.text()
+    return { ok: response.ok, status: response.status, html: text }
+  } catch (error) {
+    return { ok: false, status: 0, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
+// ── Apple 账号页面（Apple ID / Apple Account，带全量会话 cookie 解析名字与头像）──
+ipcMain.handle('apple-fetch-account', async (event, cookies) => {
+  if (!cookies) return { ok: false, status: 0, error: '缺少账号 cookie' }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+  try {
+    // 依次尝试 Apple 账号页面（新的 Apple Account 与旧版 Apple ID）
+    const urls = [
+      'https://account.apple.com/account/manage',
+      'https://appleid.apple.com/account/manage',
+    ]
+    for (const url of urls) {
+      try {
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': APPLE_SAFARI_UA,
+            Cookie: String(cookies),
+            Accept: 'text/html,application/json',
+          },
+          redirect: 'follow',
+          signal: controller.signal,
+        })
+        const text = await response.text()
+        console.log(`[Apple账号] 资料页 ${url} HTTP ${response.status}，长度 ${text.length}`)
+        // 登录后页面：200 且有一定内容即返回（SPA 壳可能偏小，放宽判定）
+        if (response.ok && text.length > 500) {
+          return { ok: true, status: response.status, html: text }
+        }
+      } catch (e) {
+        console.log(`[Apple账号] 资料页 ${url} 请求失败：${e && e.message ? e.message : e}`)
+        // 继续尝试下一个
+      }
+    }
+    return { ok: false, status: 0, error: '未能访问 Apple 账号资料页' }
+  } catch (error) {
+    return { ok: false, status: 0, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
+// ── Apple Music 网页一键登录（内置窗口登录 Apple ID，自动抓取凭据）────────────────
+// 用户无需自行获取 Developer Token / Media-User-Token：
+//  - Media-User-Token：登录 music.apple.com 后从会话 Cookie 抓取（同 QQ 登录模式）
+//  - Developer Token：拦截登录窗口发往 amp-api.music.apple.com 的 Authorization 请求头
+const APPLE_LOGIN_PARTITION = 'waveforge-apple-login'
+// 标准 Chrome/Windows UA（无 Electron 标记）。Safari UA 在 Windows 上可能触发
+// Apple 页面的兼容性重定向，改用 Chrome 最稳。
+const APPLE_SAFARI_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+let appleLoginWindow = null
+// 捕获到的 Apple Developer Token（页面 fetch/XHR 补丁 + webRequest 拦截 + localStorage 扫描）
+let appleDevTokenCapture = ''
+// 本地加载动画页（先展示，避免 Apple 页面加载期间纯黑）
+const APPLE_SPINNER_HTML = 'data:text/html;charset=utf-8,' + encodeURIComponent(
+  '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+  'html,body{height:100%;margin:0;background:#0a0a0a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#fff;font:500 14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}' +
+  '.spinner{width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.18);border-top-color:#fa2d48;animation:spin .9s linear infinite}' +
+  '@keyframes spin{to{transform:rotate(360deg)}}' +
+  '</style></head><body><div class="spinner"></div><div style="opacity:.65">正在打开 Apple Music 登录…</div></body></html>'
+)
+let appleNavigateTimer = null
+let appleOverlayTimer = null
+
+// 预加载脚本上报 Developer Token（页面上下文补丁最可靠，Service Worker 也拦得住）
+ipcMain.on('apple-login-token', (event, token) => {
+  if (!token || appleDevTokenCapture) return
+  if (appleLoginWindow && event.sender === appleLoginWindow.webContents) {
+    appleDevTokenCapture = String(token).trim()
+  }
+})
+
+function isAppleDomain(url) {
+  try {
+    const hostname = new URL(String(url || '')).hostname.toLowerCase()
+    return hostname === 'apple.com' || hostname.endsWith('.apple.com')
+  } catch {
+    return false
+  }
+}
+
+// 登录窗口内允许的域：apple.com 全家 + iCloud（登录后静默提取昵称/头像用，SSO 自动登录无需用户操作）
+function isAppleLoginAllowedDomain(url) {
+  try {
+    const hostname = new URL(String(url || '')).hostname.toLowerCase()
+    if (isAppleDomain(url)) return true
+    return hostname === 'icloud.com.cn' || hostname.endsWith('.icloud.com.cn')
+      || hostname === 'icloud.com' || hostname.endsWith('.icloud.com')
+      || hostname === 'gateway.icloud.com.cn'
+  } catch {
+    return false
+  }
+}
+
+// iCloud 首页提取账号名 + 头像 + 邮箱（登录 AM 后同一会话静默进入，SSO 自动登录）。
+// 头像 URL 需 iCloud 会话 cookie，因此在主进程用登录窗口会话抓取后转 data URL，可长期持久化。
+// 若 SSO 未自动登录（页面出现登录表单）或超时，静默放弃，不影响登录流程。
+// 提取全程由外部 interval 盖住页面（常驻遮罩"正在完成登录…"），用户只看到加载动画。
+let appleFinalizeTimer = null
+// 登录收尾阶段常驻遮罩：每 800ms 重新注入，覆盖 iCloud / 账户摘要等多次导航清空 DOM 的情况
+function startAppleFinalizeOverlay(win) {
+  const inject = () => {
+    if (!win || win.isDestroyed()) return
+    win.webContents.executeJavaScript(`
+      (function () {
+        if (document.getElementById('waveforge-icloud-overlay')) return;
+        var el = document.createElement('div');
+        el.id = 'waveforge-icloud-overlay';
+        el.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483646;background:#0a0a0a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#fff;font:500 14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;pointer-events:none;';
+        el.innerHTML = '<div style="width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.18);border-top-color:#fa2d48;animation:wf-icloud-spin .9s linear infinite;"></div><div style="opacity:.65">正在完成登录…</div>';
+        var st = document.createElement('style');
+        st.textContent = '@keyframes wf-icloud-spin{to{transform:rotate(360deg)}}';
+        (document.head || document.documentElement).appendChild(st);
+        document.body.appendChild(el);
+      })()
+    `).catch(() => {})
+  }
+  inject()
+  appleFinalizeTimer = setInterval(inject, 800)
+}
+function stopAppleFinalizeOverlay() {
+  if (appleFinalizeTimer) {
+    clearInterval(appleFinalizeTimer)
+    appleFinalizeTimer = null
+  }
+}
+
+async function extractICloudProfile(win, appleSession) {
+  try {
+    console.log('[Apple登录] 静默跳转 iCloud 提取资料…')
+    await win.loadURL('https://www.icloud.com.cn/')
+    // 等 SSO 重定向 + SPA 渲染（最多约 12 秒）；以「名字」出现作为渲染完成标志
+    const deadline = Date.now() + 12000
+    let info = null
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      if (!win || win.isDestroyed()) return null
+      info = await win.webContents.executeJavaScript(`
+        (function () {
+          var result = { name: '', email: '', avatar: '', needLogin: false };
+          function clean(t) { return (t || '').replace(/\\s+/g, ' ').trim(); }
+          var all = clean(document.body && document.body.textContent);
+          // SSO 未自动登录的标志：登录表单（密码框 / "登录"按钮）
+          if (document.querySelector('input[type="password"]')
+              || document.querySelector('input[type="email"]')
+              || (all.indexOf('登录') !== -1 && all.length < 4000)) {
+            result.needLogin = true;
+            return result;
+          }
+          // 邮箱
+          var emailMatch = all.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/);
+          if (emailMatch) result.email = emailMatch[0];
+          // 头像：alt 含「个人资料」的方形图
+          var imgs = document.querySelectorAll('img');
+          for (var i = 0; i < imgs.length; i++) {
+            var alt = clean(imgs[i].getAttribute('alt') || '');
+            var src = imgs[i].currentSrc || imgs[i].src || '';
+            if ((alt.indexOf('个人资料') !== -1 || alt.indexOf('资料照片') !== -1 || /profile|photo|avatar/i.test(alt)) && src) {
+              result.avatar = src;
+              break;
+            }
+          }
+          // 名字：「账户信息」区块内的短文本（排除邮箱/订阅词/占位文案）
+          if (all.indexOf('账户信息') !== -1 || all.indexOf('Account Information') !== -1) {
+            var headings = document.querySelectorAll('h1,h2,h3,h4,[role="heading"]');
+            var section = null;
+            for (var h = 0; h < headings.length; h++) {
+              var ht = clean(headings[h].textContent);
+              if (ht === '账户信息' || ht === 'Account Information') { section = headings[h].parentElement; break; }
+            }
+            var candidates = [];
+            if (section) {
+              var nodes = section.querySelectorAll('*');
+              for (var n = 0; n < nodes.length; n++) {
+                var t = clean(nodes[n].textContent);
+                if (t.length >= 1 && t.length <= 30
+                    && !/@/.test(t)
+                    && !/iCloud\\+|方案|储存空间|订阅|设置|账户信息|你的个人资料|个人资料图像|恢复|退出|签名/i.test(t)
+                    && /[\\u4e00-\\u9fa5A-Za-z]/.test(t)) {
+                  candidates.push(t);
+                }
+              }
+            }
+            if (candidates.length) result.name = candidates[0];
+          }
+          return result;
+        })()
+      `).catch(() => null)
+      if (info && typeof info === 'object' && String(info.name || '').trim()) break
+      // SSO 未自动登录（出现登录表单）→ 立即放弃，不阻塞登录
+      if (info && typeof info === 'object' && info.needLogin) {
+        try {
+          const curUrl = await win.webContents.getURL()
+          const bodyText = await win.webContents.executeJavaScript('(document.body && document.body.textContent || "").replace(/\\s+/g," ").slice(0,200)').catch(() => '')
+          console.log(`[Apple登录] iCloud SSO 未自动登录（URL=${curUrl}，页面=${bodyText}），跳过 iCloud 资料提取`)
+        } catch (e) {}
+        return null
+      }
+    }
+    if (!info || typeof info !== 'object') return null
+    const name = String(info.name || '').trim()
+    const email = String(info.email || '').trim()
+    const avatarUrl = String(info.avatar || '').trim()
+    if (!name && !avatarUrl) return null
+
+    // 头像转 data URL：主进程带会话 cookie 抓取（浏览器/渲染进程无 iCloud cookie，会 401）
+    let avatarDataUrl = ''
+    if (avatarUrl) {
+      try {
+        const cookies = await appleSession.cookies.get({ url: avatarUrl })
+        const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+        const resp = await fetch(avatarUrl, { headers: { Cookie: cookieHeader }, redirect: 'follow' })
+        if (resp.ok) {
+          const buf = Buffer.from(await resp.arrayBuffer())
+          const contentType = resp.headers.get('content-type') || 'image/jpeg'
+          // 头像一般几十 KB；超 300KB 不再转 data URL（避免撑爆 localStorage）
+          if (buf.length <= 300 * 1024) {
+            avatarDataUrl = `data:${contentType};base64,${buf.toString('base64')}`
+          } else {
+            avatarDataUrl = avatarUrl
+          }
+        }
+      } catch (e) {
+        console.log(`[Apple登录] iCloud 头像抓取失败：${e && e.message ? e.message : e}`)
+      }
+    }
+    if (name) console.log(`[Apple登录] iCloud 账号名：${name}`)
+    if (email) console.log(`[Apple登录] iCloud 邮箱：${email}`)
+    if (avatarDataUrl) console.log(`[Apple登录] iCloud 头像已抓取（${avatarDataUrl.startsWith('data:') ? 'data URL' : 'URL'}）`)
+    return { name, email, avatarUrl: avatarDataUrl || avatarUrl }
+  } catch (e) {
+    console.log(`[Apple登录] iCloud 资料提取失败（跳过，不影响登录）：${e && e.message ? e.message : e}`)
+    return null
+  }
+  // 遮罩由调用方 startAppleFinalizeOverlay 管理，窗口关闭时随 finish() 清理
+}
+
+async function createAppleLoginWindow() {
+  return new Promise((resolve) => {
+    if (appleLoginWindow) {
+      appleLoginWindow.focus()
+      resolve({ success: false, error: 'Apple Music 登录窗口已打开' })
+      return
+    }
+
+    let settled = false
+    let mediaTokenFoundAt = 0
+    appleDevTokenCapture = ''
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      // 释放 webRequest 拦截，避免常驻泄漏
+      try { appleSession.webRequest.onBeforeSendHeaders(null) } catch {}
+      stopAppleFinalizeOverlay()
+      resolve(result)
+    }
+
+    // 独立分区会话：登录窗口与主应用隔离，Cookie 互不污染
+    const appleSession = session.fromPartition(APPLE_LOGIN_PARTITION)
+
+    void (async () => {
+      try {
+        // 清理上次登录残留（cookies 需通过 clearStorageData 的 cookies storages 清除）
+        await appleSession.clearStorageData()
+        await appleSession.clearCache()
+        await appleSession.clearStorageData({ storages: ['cookies'] })
+
+        // 拦截登录窗口发往 Apple 目录 API 的请求，捕获 Authorization: Bearer <dev token>
+        appleSession.webRequest.onBeforeSendHeaders(
+          { urls: ['https://amp-api.music.apple.com/*'] },
+          (details, callback) => {
+            const auth = details.requestHeaders['Authorization'] || details.requestHeaders['authorization']
+            if (auth && auth.startsWith('Bearer ') && !appleDevTokenCapture) {
+              appleDevTokenCapture = auth.slice('Bearer '.length)
+            }
+            callback({ requestHeaders: details.requestHeaders })
+          }
+        )
+
+        const iconPath = path.join(__dirname, '..', 'build', 'icon.ico')
+
+        appleLoginWindow = new BrowserWindow({
+          width: 1000,
+          height: 700,
+          parent: mainWindow,
+          modal: true,
+          show: false, // 先显示本地加载动画页，避免 Apple 页面加载期间纯黑
+          frame: false, // 无标题栏/无最小化最大化/无菜单栏，只留注入的关闭 X
+          autoHideMenuBar: true,
+          backgroundColor: '#0a0a0a',
+          title: 'WaveForge 澜音工坊 - Apple Music 登录',
+          icon: fs.existsSync(iconPath) ? iconPath : undefined,
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            partition: APPLE_LOGIN_PARTITION,
+          },
+        })
+        appleLoginWindow.webContents.setUserAgent(APPLE_SAFARI_UA)
+
+        // 导航守卫：Apple 登录/授权只在 apple.com 域 + iCloud（提取资料用）；外链交给系统浏览器
+        appleLoginWindow.webContents.on('will-navigate', (event, url) => {
+          if (!isAppleLoginAllowedDomain(url)) {
+            event.preventDefault()
+            if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(String(url)).catch(() => {})
+          }
+        })
+        appleLoginWindow.webContents.setWindowOpenHandler(({ url }) => {
+          if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(String(url)).catch(() => {})
+          return { action: 'deny' }
+        })
+
+        // 先显示本地加载动画（立即可见，无黑屏），短暂停留后导航到 Apple 登录页
+        appleLoginWindow.loadURL(APPLE_SPINNER_HTML)
+        appleLoginWindow.once('ready-to-show', () => {
+          if (appleLoginWindow && !appleLoginWindow.isDestroyed()) appleLoginWindow.show()
+        })
+        appleNavigateTimer = setTimeout(() => {
+          if (appleLoginWindow && !appleLoginWindow.isDestroyed()) {
+            appleLoginWindow.loadURL('https://music.apple.com/')
+          }
+        }, 600)
+
+        // dom-ready 即注入主世界脚本（页面一就绪就有关闭 X；同时补丁 fetch/XHR 捕获
+        // amp-api 的 Authorization: Bearer Developer Token，并定期扫 localStorage）
+        appleLoginWindow.webContents.on('dom-ready', () => {
+          appleLoginWindow.webContents.executeJavaScript(`
+            (function () {
+              if (window.__waveforgeAppleHooked) return;
+              window.__waveforgeAppleHooked = true;
+              window.__waveforgeAppleDevToken = '';
+
+              function isValidToken(t) {
+                try {
+                  var parts = String(t).split('.');
+                  if (parts.length !== 3) return false;
+                  var b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+                  while (b64.length % 4) b64 += '=';
+                  var p = JSON.parse(decodeURIComponent(escape(atob(b64))));
+                  if (p && typeof p === 'object') {
+                    if (typeof p.root === 'string' && p.root.indexOf('amp-api.music.apple.com') !== -1 && !p.user) return true;
+                    if (p.iss && p.exp && !p.user) return true;
+                  }
+                } catch (e) {}
+                return false;
+              }
+              function report(t) {
+                var v = String(t || '').trim();
+                if (!v || window.__waveforgeAppleDevToken || !isValidToken(v)) return;
+                window.__waveforgeAppleDevToken = v;
+              }
+              function maybeFromHeaders(headers) {
+                try {
+                  var auth = (typeof headers.get === 'function')
+                    ? (headers.get('Authorization') || headers.get('authorization'))
+                    : (headers.Authorization || headers.authorization);
+                  if (auth && String(auth).indexOf('Bearer ') === 0) report(String(auth).slice(7));
+                } catch (e) {}
+              }
+
+              // 加载动画遮罩（页面渲染期间避免纯黑让用户误以为窗口卡死）
+              if (!document.getElementById('waveforge-loading-overlay')) {
+                var overlay = document.createElement('div');
+                overlay.id = 'waveforge-loading-overlay';
+                overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483645;background:#0a0a0a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#fff;font:500 14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;pointer-events:none;';
+                overlay.innerHTML = '<div style="width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.18);border-top-color:#fa2d48;animation:wf-loading-spin .9s linear infinite;"></div><div style="opacity:.65">正在加载 Apple Music…</div>';
+                var ovStyle = document.createElement('style');
+                ovStyle.textContent = '@keyframes wf-loading-spin{to{transform:rotate(360deg)}}';
+                (document.head || document.documentElement).appendChild(ovStyle);
+                document.body.appendChild(overlay);
+                // 用户一旦与页面交互（点击/触摸）立即移除遮罩，绝不让它盖住已渲染的界面
+                window.addEventListener('pointerdown', function wfRemove() {
+                  var el = document.getElementById('waveforge-loading-overlay');
+                  if (el && el.parentNode) el.parentNode.removeChild(el);
+                  window.removeEventListener('pointerdown', wfRemove);
+                });
+              }
+
+              // 常显关闭 X
+              if (!document.getElementById('waveforge-close-btn')) {
+                var btn = document.createElement('div');
+                btn.id = 'waveforge-close-btn';
+                btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+                btn.style.cssText = 'position:fixed;top:12px;right:12px;width:32px;height:32px;background:rgba(20,20,24,.55);backdrop-filter:blur(8px);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:2147483647;color:#fff;transition:background .2s ease;';
+                btn.addEventListener('mouseenter', function () { btn.style.background = 'rgba(220,38,38,.85)'; });
+                btn.addEventListener('mouseleave', function () { btn.style.background = 'rgba(20,20,24,.55)'; });
+                btn.addEventListener('click', function () { window.close(); });
+                document.body.appendChild(btn);
+              }
+
+              // 补丁 fetch（仅 amp-api 请求）
+              var origFetch = window.fetch;
+              window.fetch = function (input, init) {
+                try {
+                  var url = typeof input === 'string' ? input : (input && input.url) || '';
+                  if (url.indexOf('amp-api.music.apple.com') !== -1) maybeFromHeaders(init && init.headers);
+                } catch (e) {}
+                return origFetch.apply(this, arguments);
+              };
+
+              // 补丁 XHR
+              var origOpen = XMLHttpRequest.prototype.open;
+              XMLHttpRequest.prototype.open = function (method, url) {
+                try { this.__wfUrl = String(url || ''); } catch (e) {}
+                return origOpen.apply(this, arguments);
+              };
+              var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+              XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+                try {
+                  var url = this.__wfUrl || '';
+                  if (url.indexOf('amp-api.music.apple.com') !== -1 && String(name).toLowerCase() === 'authorization' && String(value).indexOf('Bearer ') === 0) {
+                    report(String(value).slice(7));
+                  }
+                } catch (e) {}
+                return origSetHeader.apply(this, arguments);
+              };
+
+              // 定期扫 localStorage
+              setInterval(function () {
+                try {
+                  for (var i = 0; i < localStorage.length; i++) {
+                    var v = localStorage.getItem(localStorage.key(i)) || '';
+                    if (v.length > 150) report(v);
+                  }
+                } catch (e) {}
+              }, 3000);
+            })();
+          `).catch(() => {})
+        })
+
+        // 页面加载完成后：固定延时移除加载动画（不再做内容检测，绝不卡死）
+        // 同时从页面 MusicKit 实例直接取 Developer Token（localStorage 扫描已由注入脚本完成）
+        appleLoginWindow.webContents.on('did-finish-load', () => {
+          if (appleOverlayTimer) clearTimeout(appleOverlayTimer)
+          appleOverlayTimer = setTimeout(() => {
+            appleOverlayTimer = null
+            if (!appleLoginWindow || appleLoginWindow.isDestroyed()) return
+            appleLoginWindow.webContents.executeJavaScript(
+              "(function(){var o=document.getElementById('waveforge-loading-overlay');if(o&&o.parentNode)o.parentNode.removeChild(o);})()"
+            ).catch(() => {})
+          }, 400)
+          appleLoginWindow.webContents.executeJavaScript(`
+            (function () {
+              try {
+                if (window.MusicKit && window.MusicKit.getInstance && MusicKit.getInstance().developerToken) {
+                  return MusicKit.getInstance().developerToken;
+                }
+              } catch (e) {}
+              return '';
+            })()
+          `).then(token => {
+            if (token && !appleDevTokenCapture) appleDevTokenCapture = String(token)
+          }).catch(() => {})
+        })
+
+        // 每 2 秒检查 media-user-token Cookie 是否出现（登录成功标志）
+        const checkInterval = setInterval(async () => {
+          if (!appleLoginWindow || appleLoginWindow.isDestroyed()) {
+            clearInterval(checkInterval)
+            return
+          }
+          // 读取页面主世界补丁捕获的 Developer Token
+          try {
+            appleLoginWindow.webContents.executeJavaScript('window.__waveforgeAppleDevToken || ""')
+              .then(token => { if (token && !appleDevTokenCapture) appleDevTokenCapture = String(token) })
+              .catch(() => {})
+          } catch (e) {}
+          try {
+            const cookies = await appleSession.cookies.get({})
+            const mediaUserToken = cookies.find(cookie => cookie.name === 'media-user-token')
+            if (mediaUserToken && mediaUserToken.value) {
+              // 登录成功后页面会立即请求 amp-api 拉取数据（此时才带 Developer Token）。
+              // 若还没抓到，给页面最多 8 秒余量再收尾，尽量把 dev token 一并带回。
+              if (!appleDevTokenCapture && !mediaTokenFoundAt) {
+                mediaTokenFoundAt = Date.now()
+              }
+              if (appleDevTokenCapture || (mediaTokenFoundAt && Date.now() - mediaTokenFoundAt > 8000)) {
+                clearInterval(checkInterval)
+                if (appleDevTokenCapture) {
+                  // 诊断日志：打印捕获到的 token 声明，便于排查兼容性
+                  // （新版令牌声明为 root_https_origin，旧版为 root）
+                  try {
+                    const parts = appleDevTokenCapture.split('.')
+                    const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'))
+                    const origin = payload.root_https_origin || payload.root || '?'
+                    console.log(`[Apple登录] Developer Token 已捕获: root=${Array.isArray(origin) ? origin.join(',') : origin} iss=${payload.iss || '?'} exp=${payload.exp ? new Date(payload.exp * 1000).toISOString() : '?'} user=${payload.user ? 'yes' : 'no'}`)
+                  } catch (e) {}
+                } else {
+                  console.warn('[Apple登录] 未能捕获 Developer Token（页面可能未发起 amp-api 请求）')
+                }
+                // 账号信息所需的 Apple 会话 cookie（buy.itunes 账号接口用，Cider 同款）
+                const APPLE_ACCOUNT_COOKIES = ['itspod', 'pltvcid', 'pldfltcid', 'itua', 'media-user-token', 'acn1', 'dslang', 'asp']
+                const appleCookies = cookies
+                  .filter(cookie => APPLE_ACCOUNT_COOKIES.includes(cookie.name))
+                  .map(cookie => `${cookie.name}=${cookie.value}`)
+                  .join('; ')
+                // 全量会话 cookie（含 Apple ID / idmsa 域，用于 Apple 账号体系的名字/头像解析）
+                const allCookies = cookies
+                  .map(cookie => `${cookie.name}=${cookie.value}`)
+                  .join('; ')
+                // 从登录窗口渲染出的界面提取账号名/头像（web 播放器侧边栏一定显示，最后的数据源）。
+                // 轮询等待侧边栏渲染完成（media-token 出现时界面可能还没画完）。
+                const extractSidebarUser = () => appleLoginWindow.webContents.executeJavaScript(`
+                  (function () {
+                    var result = { name: '', avatar: '' };
+                    function clean(t) { return (t || '').replace(/\\s+/g, ' ').trim(); }
+                    function looksLikeName(t) {
+                      return t.length >= 1 && t.length <= 40 && !/^\\d+$/.test(t) && !/^[\\s·•\\-–—]*$/.test(t);
+                    }
+                    // 头像：导航/侧边栏里的小尺寸方形图片
+                    var avatarImg = null;
+                    var imgs = document.querySelectorAll('img');
+                    for (var j = 0; j < imgs.length; j++) {
+                      var img = imgs[j];
+                      var src = img.src || '';
+                      if (src.indexOf('mzstatic') !== -1) {
+                        var r = img.getBoundingClientRect();
+                        if (r.width >= 16 && r.width <= 96 && r.height >= 16 && r.height <= 96 && Math.abs(r.width - r.height) < 8) {
+                          result.avatar = src;
+                          avatarImg = img;
+                          break;
+                        }
+                      }
+                    }
+                    // 名字：从头像元素向上爬（账号按钮 = 头像 + 昵称 在同一个容器里）
+                    if (avatarImg) {
+                      var el = avatarImg;
+                      for (var k = 0; k < 6 && el; k++) {
+                        el = el.parentElement;
+                        if (!el) break;
+                        var t = clean(el.textContent);
+                        if (t && looksLikeName(t) && t.indexOf('http') === -1) { result.name = t; break; }
+                        if (el.children && el.children.length > 1) {
+                          for (var c = 0; c < el.children.length; c++) {
+                            var ct = clean(el.children[c].textContent);
+                            if (ct && ct.length >= 1 && ct.length <= 40 && looksLikeName(ct) && ct !== t) { result.name = ct; break; }
+                          }
+                          if (result.name) break;
+                        }
+                      }
+                    }
+                    // 直接选择器兜底
+                    if (!result.name) {
+                      var selectors = [
+                        '[data-testid="sidebar-account-name"]', '[data-testid="sidebar-account"]',
+                        '[data-testid="account-name"]', '[data-testid="account-menu"]',
+                        '[class*="account-name"]', '[class*="user-name"]', '[class*="profile-name"]', '[class*="account-menu"]'
+                      ];
+                      for (var i = 0; i < selectors.length; i++) {
+                        var sel = document.querySelector(selectors[i]);
+                        if (sel) {
+                          var st = clean(sel.textContent);
+                          if (st && looksLikeName(st)) { result.name = st; break; }
+                        }
+                      }
+                    }
+                    return result;
+                  })()
+                `)
+                let domName = ''
+                let domAvatar = ''
+                let domBillingName = ''
+                for (let domAttempt = 0; domAttempt < 12; domAttempt += 1) {
+                  try {
+                    const info = await extractSidebarUser()
+                    if (info && typeof info === 'object') {
+                      const n = String(info.name || '').trim()
+                      const a = String(info.avatar || '').trim()
+                      if (n) domName = n
+                      if (a) domAvatar = a
+                      if (domName && domAvatar) break
+                    }
+                  } catch (e) { /* 重试 */ }
+                  await new Promise(resolve => setTimeout(resolve, 500))
+                }
+                if (domName) console.log(`[Apple登录] 从界面提取到账号名：${domName}`)
+                if (domAvatar) console.log(`[Apple登录] 从界面提取到头像：${domAvatar.slice(0, 120)}…`)
+
+                // iCloud 资料提取：登录窗口同会话静默跳转 iCloud（Apple ID SSO 自动登录），
+                // 拿最「正宗」的账号名（昵称）+ 头像 + 邮箱，不引导用户单独登录 iCloud。
+                // 始终尝试：iCloud 是昵称/头像最权威来源，成功则覆盖侧边栏提取值。
+                // 收尾阶段常驻遮罩：用户只看到"正在完成登录…"，不感知 iCloud / 账户摘要跳转。
+                let domEmail = ''
+                {
+                  stopAppleFinalizeOverlay()
+                  startAppleFinalizeOverlay(appleLoginWindow)
+                  // 提前记下当前 storefront（iCloud 导航会覆盖窗口 URL，账户摘要页需要它）
+                  const preUrl = (await appleLoginWindow.webContents.getURL()) || ''
+                  const preSf = (preUrl.match(/\/([a-z]{2})\//) || [])[1] || 'cn'
+                  const icloud = await extractICloudProfile(appleLoginWindow, appleSession)
+                  if (icloud) {
+                    if (icloud.name) domName = icloud.name
+                    if (icloud.avatarUrl) domAvatar = icloud.avatarUrl
+                    if (icloud.email && !domEmail) domEmail = icloud.email
+                  }
+                  appleLoginWindow.__wfAppleStorefront = preSf
+                }
+
+                // 邮箱/真实姓名：导航到「账户设置」页，从"账户摘要"里提取（iCloud 已给邮箱则只补真名）
+                if (!domEmail || !domBillingName) {
+                  try {
+                    const currentUrl = (await appleLoginWindow.webContents.getURL()) || ''
+                    const sfMatch = currentUrl.match(/\/([a-z]{2})\//)
+                    const storefront = (sfMatch && sfMatch[1]) || appleLoginWindow.__wfAppleStorefront || 'cn'
+                    await appleLoginWindow.loadURL(`https://music.apple.com/${storefront}/account/settings?l=zh-Hans-CN`)
+                    // 等 iframe（CommerceKit 账户设置）加载
+                    await new Promise(resolve => setTimeout(resolve, 4500))
+                    const accountInfo = await appleLoginWindow.webContents.executeJavaScript(`
+                      (function () {
+                        var result = { email: '', name: '' };
+                        function textOf(el) { return el && el.textContent ? el.textContent.replace(/\\s+/g, ' ').trim() : ''; }
+                        var iframes = document.querySelectorAll('iframe');
+                        var doc = document;
+                        for (var i = 0; i < iframes.length; i++) {
+                          try { if (iframes[i].contentDocument) { doc = iframes[i].contentDocument; break; } } catch (e) {}
+                        }
+                        var all = textOf(doc.body) || '';
+                        var emailMatch = all.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/);
+                        if (emailMatch) result.email = emailMatch[0];
+                        var regions = doc.querySelectorAll('[role="region"]');
+                        for (var j = 0; j < regions.length; j++) {
+                          var rt = textOf(regions[j]);
+                          if (rt.indexOf('账单寄送地址') !== -1 || rt.indexOf('Billing Address') !== -1) {
+                            var items = regions[j].querySelectorAll('li, [role="listitem"]');
+                            for (var k = 0; k < items.length; k++) {
+                              var lt = textOf(items[k]);
+                              if (lt && lt.length >= 1 && lt.length <= 30 && !/@/.test(lt) && !/支付|¥|元/.test(lt)) { result.name = lt; break; }
+                            }
+                            if (!result.name) {
+                              var lines = rt.split(/[，,。\\n]/).map(function (s) { return s.trim(); }).filter(Boolean);
+                              for (var m = 0; m < lines.length; m++) {
+                                if (lines[m].length >= 1 && lines[m].length <= 30 && !/@/.test(lines[m]) && lines[m] !== '账单寄送地址' && !/支付|¥/.test(lines[m])) { result.name = lines[m]; break; }
+                              }
+                            }
+                            break;
+                          }
+                        }
+                        return result;
+                      })()
+                    `)
+                    if (accountInfo && typeof accountInfo === 'object') {
+                      domEmail = String(accountInfo.email || '').trim()
+                      domBillingName = String(accountInfo.name || '').trim()
+                    }
+                    if (domEmail) console.log(`[Apple登录] 从账户摘要提取到邮箱：${domEmail}`)
+                    if (domBillingName) console.log(`[Apple登录] 从账户摘要提取到真实姓名：${domBillingName}`)
+                  } catch (e) {
+                    console.log(`[Apple登录] 账户摘要提取失败：${e && e.message ? e.message : e}`)
+                  }
+                }
+
+                const result = {
+                  success: true,
+                  mediaUserToken: mediaUserToken.value,
+                  developerToken: appleDevTokenCapture || undefined,
+                  cookies: appleCookies || undefined,
+                  allCookies: allCookies || undefined,
+                  name: domName || undefined,
+                  email: domEmail || undefined,
+                  realName: domBillingName || undefined,
+                  avatar: domAvatar || undefined,
+                }
+                finish(result)
+                if (appleLoginWindow && !appleLoginWindow.isDestroyed()) appleLoginWindow.close()
+              }
+            }
+          } catch (err) {
+            console.error('❌ [Apple登录] 检查登录状态失败:', err)
+          }
+        }, 2000)
+
+        // 超时保护（Apple 登录含两步验证，给足 10 分钟）
+        const timeoutTimer = setTimeout(() => {
+          clearInterval(checkInterval)
+          finish({ success: false, error: 'Apple Music 登录超时，请重试' })
+          if (appleLoginWindow && !appleLoginWindow.isDestroyed()) appleLoginWindow.close()
+        }, 10 * 60 * 1000)
+
+        appleLoginWindow.on('closed', () => {
+          clearInterval(checkInterval)
+          clearTimeout(timeoutTimer)
+          stopAppleFinalizeOverlay()
+          if (appleNavigateTimer) { clearTimeout(appleNavigateTimer); appleNavigateTimer = null }
+          if (appleOverlayTimer) { clearTimeout(appleOverlayTimer); appleOverlayTimer = null }
+          appleLoginWindow = null
+          finish({ success: false, error: '用户取消登录' })
+        })
+      } catch (error) {
+        console.error('❌ [Apple登录] 初始化登录窗口失败:', error)
+        if (appleLoginWindow && !appleLoginWindow.isDestroyed()) appleLoginWindow.destroy()
+        appleLoginWindow = null
+        finish({ success: false, error: error?.message || 'Apple 登录窗口初始化失败' })
+      }
+    })()
+  })
+}
+
+// 监听打开 Apple Music 登录窗口的请求
+ipcMain.handle('apple-login', async () => {
+  try {
+    const result = await createAppleLoginWindow()
+    return result
+  } catch (err) {
+    console.error('❌[Apple登录] 打开登录窗口失败:', err)
+    return { success: false, error: err.message }
+  }
+})
+
+// ── Apple 网页开发者令牌（gamdl / Cider-fork 同款做法）────────────────────
+// Apple 网页播放器把可用的 MusicKit 开发者令牌（iss=AMPWebPlay，约 70 天有效）
+// 内置在前端资源里。主进程 fetch 无 CORS 限制，拿到后返回给渲染进程缓存按需刷新。
+// 这是目前唯一无需用户提供 Apple Developer 密钥即可获得的可用 Developer Token。
+function decodeJwtExp(token) {
+  try {
+    const parts = String(token).split('.')
+    if (parts.length !== 3) return 0
+    const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'))
+    return Number(payload.exp) || 0
+  } catch {
+    return 0
+  }
+}
+
+ipcMain.handle('apple-fetch-dev-token', async () => {
+  // 主进程 fetch 必须带超时，否则网络卡住会让登录面板一直转圈
+  const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      return await fetch(url, { ...options, signal: controller.signal })
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  try {
+    // 方法一：browse 页 meta 标签中的环境配置（轻量，不下载大 bundle）
+    const browseRes = await fetchWithTimeout('https://music.apple.com/us/browse', { headers: { 'User-Agent': APPLE_SAFARI_UA } })
+    if (browseRes.ok) {
+      const html = await browseRes.text()
+      const metaMatch = html.match(/desktop-music-app\/config\/environment"\s+content="([^"]+)"/)
+      if (metaMatch) {
+        try {
+          const env = JSON.parse(decodeURIComponent(metaMatch[1]))
+          const token = env && env.MEDIA_API && env.MEDIA_API.token
+          if (token) {
+            const exp = decodeJwtExp(token)
+            if (exp) return { success: true, token, expiresAt: exp }
+          }
+        } catch (e) { /* 继续尝试 bundle 方法 */ }
+      }
+    }
+
+    // 方法二：主页 → 提取 bundle 路径 → 从 bundle 中提取 JWT
+    const homeRes = await fetchWithTimeout('https://music.apple.com/', { headers: { 'User-Agent': APPLE_SAFARI_UA } })
+    if (!homeRes.ok) throw new Error(`Apple 主页请求失败 (${homeRes.status})`)
+    const homeHtml = await homeRes.text()
+    const bundleMatch = homeHtml.match(/assets\/index[~-][^"']+\.js/)
+    if (!bundleMatch) throw new Error('未能定位 Apple 前端资源')
+    const jsRes = await fetchWithTimeout(`https://music.apple.com/${bundleMatch[0]}`, { headers: { 'User-Agent': APPLE_SAFARI_UA } })
+    if (!jsRes.ok) throw new Error(`Apple 前端资源请求失败 (${jsRes.status})`)
+    const js = await jsRes.text()
+    const tokenMatch = js.match(/"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"/)
+    if (!tokenMatch) throw new Error('前端资源中未找到开发者令牌')
+    const token = tokenMatch[0].replace(/"/g, '')
+    const exp = decodeJwtExp(token)
+    return { success: true, token, expiresAt: exp || 0 }
+  } catch (err) {
+    console.error('❌ [Apple登录] 获取网页开发者令牌失败:', err)
+    return { success: false, error: err && err.message ? err.message : '获取开发者令牌失败' }
+  }
+})
+
 // ── QQ 音乐官方增强：内置窗口领取 qmk API Key ──────────────────────────────
 const QMK_OFFICIAL_KEY_URL = 'https://y.qq.com/n/ryqq_v2/qqmusic_skills'
 // Dedicated isolated session for the claim window, wiped on every open so

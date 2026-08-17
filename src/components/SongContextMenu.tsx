@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { Play, ListPlus, Heart, HeartOff, MessageSquare, Disc, User, Copy, ChevronRight, Info, ListMusic, ThumbsDown } from 'lucide-react'
 import { Song, getProxiedImageUrl } from '../services/musicApi'
+import type { MusicPlatform } from '../services/platforms'
 import { useEffect, useLayoutEffect, useState, useRef } from 'react'
 import CachedImage from './CachedImage'
 import {
@@ -29,7 +30,7 @@ interface SongContextMenuProps {
   onCopyInfo?: (song: Song) => void
   onDislike?: (song: Song) => void
   userPlaylists: any[]
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   playerTheme?: 'light' | 'dark'
   hideFavoriteAction?: boolean
   currentPlaylistId?: string
@@ -71,7 +72,7 @@ export default function SongContextMenu({
   const submenuAnchorRef = useRef<HTMLDivElement>(null)
   const [adjustedPosition, setAdjustedPosition] = useState({ x, y })
   const [imageLoaded, setImageLoaded] = useState(false)
-  const resolvedPlatform = (song?.platform || platform) as 'netease' | 'qq'
+  const resolvedPlatform = (song?.platform || platform) as MusicPlatform
   const favoriteUserId = getFavoriteUserId(resolvedPlatform)
   const [favoriteStatus, setFavoriteStatus] = useState<boolean | null>(() => (
     hideFavoriteAction ? true : song ? peekSongFavoriteStatus(song, resolvedPlatform, favoriteUserId) : null
@@ -242,12 +243,14 @@ export default function SongContextMenu({
 
   const currentUserId = platform === 'qq'
     ? localStorage.getItem('qq_user_id') || ''
-    : localStorage.getItem('netease_user_id') || ''
+    : platform === 'apple' ? '' : localStorage.getItem('netease_user_id') || ''
   const ownedPlaylists = userPlaylists.filter((playlist) => {
     if (playlist.isCollected || playlist.isLike) return false
     if (playlist.platform && playlist.platform !== platform) return false
     const mutationId = String(playlist.dirId || playlist.id)
     if (currentPlaylistId && mutationId === String(currentPlaylistId)) return false
+    // Apple 资料库歌单无 userId 概念，直接放行
+    if (platform === 'apple') return true
     const playlistUserId = playlist.userId == null ? '' : String(playlist.userId)
     // 歌单列表本身来自当前登录用户；旧会话没有落盘 userId 时也应能显示自建歌单。
     return !playlistUserId || !currentUserId || playlistUserId === currentUserId
@@ -313,7 +316,7 @@ export default function SongContextMenu({
       },
       danger: true
     }] : []),
-    ...(onViewComments ? [{
+    ...(onViewComments && song?.platform !== 'apple' ? [{
       label: `查看评论${getCommentCountText() ? ` (${getCommentCountText()})` : ''}`,
       icon: MessageSquare,
       onClick: () => {

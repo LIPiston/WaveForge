@@ -62,7 +62,7 @@ export interface TrackAnalysis {
   schemaVersion: number
   trackKey: string
   duration: number
-  provider: 'beat_this' | 'librosa-fallback' | 'browser-fallback' | 'electron-unavailable' | 'metadata-only'
+  provider: 'beat_this' | 'librosa-fallback' | 'browser-fallback' | 'electron-unavailable' | 'metadata-only' | 'tv-metadata-only'
   beats: number[]
   downbeats: number[]
   beatConfidence: number[]

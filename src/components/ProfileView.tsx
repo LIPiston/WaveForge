@@ -19,6 +19,9 @@ import {
   updatePlaylist,
   updatePlaylistCover
 } from '../services/playlistService'
+import type { MusicPlatform } from '../services/platforms'
+import { getAppleAuthState } from '../services/appleAuth'
+import { getAppleLibraryPlaylists, getAppleRecentPlayed, appleLibraryTrackToSong, createApplePlaylist, deleteApplePlaylist, getApplePlaylistTracks, getAppleCatalogPlaylistTracks, getAppleLibrarySongs, getApplePlaylistFirstTrackArtwork, appleSongToSong, APPLE_LIBRARY_ID, isAppleLovedPlaylistName } from '../services/appleCatalog'
 import { detectQQMusicVip } from '../utils/musicEntitlements'
 
 interface Playlist {
@@ -39,7 +42,7 @@ interface Playlist {
   isLike?: boolean
   isCollected?: boolean
   subscribed?: boolean
-  platform?: 'netease' | 'qq'
+  platform?: MusicPlatform
   tags?: string[]
   createTime?: number
   commentCount?: number
@@ -57,6 +60,9 @@ interface UserDetail {
   follows?: number    // 关注数（网易云）
   playlistCount?: number
   level?: number
+  // Apple 特有字段
+  email?: string       // Apple ID 邮箱
+  realName?: string    // 账单真实姓名
   // 网易云特有字段
   eventCount?: number      // 动态数
   newFollows?: number      // 新关注数
@@ -110,7 +116,7 @@ interface RecentPlaybackItem {
 
 interface PlaylistGridCardProps {
   playlist: Playlist
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   accentColor: string
   showCreator?: boolean
   onOpen: (playlist: Playlist) => void
@@ -187,7 +193,7 @@ const PlaylistGridCard = memo(function PlaylistGridCard({
             <Music className="w-8 h-8 text-white/20" />
           </div>
         )}
-        {platform === 'qq' && playlist.isLike && (
+        {(platform === 'qq' || platform === 'apple') && playlist.isLike && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center" aria-hidden="true">
             <Heart
               className="h-[42%] w-[42%] fill-white/75 text-white/75"
@@ -208,13 +214,13 @@ const PlaylistGridCard = memo(function PlaylistGridCard({
 
 interface RecentPlaybackCardProps {
   item: RecentPlaybackItem
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   accentColor: string
   songItems: RecentPlaybackItem[]
   onSongSelect: (song: Song, songs: Song[]) => void
   onPlaylistOpen: (playlist: Playlist) => void
   onPlaylistPlay: (playlist: Playlist, event: React.MouseEvent) => void
-  onAlbumOpen: (albumId: string, platform: 'netease' | 'qq') => void
+  onAlbumOpen: (albumId: string, platform: MusicPlatform) => void
   onContextMenu: (song: Song, songs: Song[], event: React.MouseEvent) => void
 }
 
@@ -430,20 +436,20 @@ const RankSongRow = memo(function RankSongRow({
 })
 
 interface ProfileViewProps {
-  initialPlatform: 'netease' | 'qq'  // 初始显示的平台
+  initialPlatform: MusicPlatform  // 初始显示的平台
   initialTab?: ProfileTab
   canSwitchPlatform: boolean  // 是否可以切换平台
-  userId: string  // 当前平台的用户ID
-  cookie: string  // 当前平台的Cookie
+  userId: string  // 当前平台的用户ID（Apple 无此概念，传空串）
+  cookie: string  // 当前平台的Cookie（Apple 走 token，传空串）
   accentColor?: string  // 主题色
   onClose: () => void
   onSongSelect: (song: Song, playlist?: Song[]) => void
   handleSwitchPlatform: () => void  // 切换平台的回调
-  onLogout: (platform: 'netease' | 'qq') => void  // 退出登录回调
+  onLogout: (platform: MusicPlatform) => void  // 退出登录回调
   currentSong?: Song | null
   playerTheme?: 'light' | 'dark'
-  onOpenArtist?: (artistId: string, platform: 'netease' | 'qq') => void
-  onOpenAlbum?: (albumId: string, platform: 'netease' | 'qq') => void
+  onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
+  onOpenAlbum?: (albumId: string, platform: MusicPlatform) => void
   onPlayNext?: (song: Song) => void
   onAddToFavorites?: (song: Song) => void
   onRemoveFromFavorites?: (song: Song) => boolean | Promise<boolean>
@@ -474,7 +480,7 @@ function ProfileView({
   onViewComments,
   onCopyInfo
 }: ProfileViewProps) {
-  const [currentPlatform, setCurrentPlatform] = useState<'netease' | 'qq'>(initialPlatform)
+  const [currentPlatform, setCurrentPlatform] = useState<MusicPlatform>(initialPlatform)
   const [activeTab, setActiveTab] = useState<ProfileTab>(initialTab)
   const [recentType, setRecentType] = useState<RecentPlaybackType>('song')
   const [recentItems, setRecentItems] = useState<RecentPlaybackItem[]>([])
@@ -645,6 +651,15 @@ function ProfileView({
   const handleCreatePlaylist = async (name: string, privacy: 'public' | 'private', description?: string, coverDataUrl?: string) => {
     setOperationLoading(true)
     try {
+      // Apple：amp-api 创建资料库歌单（描述/封面不受公开接口支持）
+      if (platform === 'apple') {
+        const ok = await createApplePlaylist(name)
+        if (!ok) throw new Error('创建 Apple 歌单失败，请检查登录状态')
+        await refreshPlaylistLists()
+        setShowCreatePlaylist(false)
+        showPlaylistToast('Apple 歌单创建成功', 'success')
+        return
+      }
       const result = await createPlaylist(name, platform, {
         privacy: privacy === 'private' ? '10' : '0',
         type: 'NORMAL',
@@ -719,6 +734,17 @@ function ProfileView({
     if (!managementPlaylist) return
     setOperationLoading(true)
     try {
+      // Apple：删除资料库歌单（amp-api）
+      if (platform === 'apple') {
+        const ok = await deleteApplePlaylist(String(managementPlaylist.id || ''))
+        if (!ok) throw new Error('删除 Apple 歌单失败，请检查登录状态')
+        setShowDeletePlaylist(false)
+        setManagementPlaylist(null)
+        setShowPlaylistDetail(false)
+        await refreshPlaylistLists()
+        showPlaylistToast('Apple 歌单已删除', 'success')
+        return
+      }
       const deleteId = platform === 'qq' ? managementPlaylist.dirId || managementPlaylist.id : managementPlaylist.id
       const result = await deletePlaylist(deleteId.toString(), platform, { cookie })
       if (!isPlaylistActionSuccessful(result)) {
@@ -787,6 +813,23 @@ function ProfileView({
   const handlePlayPlaylist = async (playlist: Playlist, event: React.MouseEvent) => {
     event.stopPropagation()
     try {
+      // Apple：目录/资料库歌单统一拉曲目后播放（曲目经 App 层自动匹配载体）
+      if (platform === 'apple') {
+        if (playlist.id === APPLE_LIBRARY_ID) {
+          if (appleLibrarySongs.length > 0) handleSongSelection(appleLibrarySongs[0], appleLibrarySongs)
+          else showPlaylistToast('音乐库中暂无可播放歌曲', 'info')
+          return
+        }
+        const storefront = localStorage.getItem('appleStorefront') || 'cn'
+        const playlistId = String(playlist.id || '')
+        const tracks = playlistId.startsWith('pl.')
+          ? await getAppleCatalogPlaylistTracks(playlistId, storefront)
+          : await getApplePlaylistTracks(playlistId)
+        const songs = tracks.map(track => appleSongToSong(track, storefront))
+        if (songs.length > 0) handleSongSelection(songs[0], songs)
+        else showPlaylistToast('歌单中暂无可播放歌曲', 'info')
+        return
+      }
       const response = await fetch(
         platform === 'qq'
           ? `http://localhost:3001/api/qq/playlist/detail?id=${encodeURIComponent(playlist.id)}&cookie=${encodeURIComponent(cookie)}`
@@ -882,6 +925,8 @@ function ProfileView({
   const [selectedPlaylist, setSelectedPlaylist] = useState<any>(null)
   const [playlistSongs, setPlaylistSongs] = useState<Song[]>([])
   const [loadingPlaylistSongs, setLoadingPlaylistSongs] = useState(false)
+  // Apple 个人中心「我的音乐库」歌曲（喜欢歌曲，amp-api）
+  const [appleLibrarySongs, setAppleLibrarySongs] = useState<Song[]>([])
 
   const handleSongSelection = (song: Song, songs?: Song[]) => {
     setShowPlaylistDetail(false)
@@ -900,6 +945,26 @@ function ProfileView({
     
     try {
       let response, data
+      
+      // Apple：目录歌单（pl. 前缀）走 catalog，资料库歌单走 me/library；音乐库伪歌单直接使用已加载歌曲
+      if (platform === 'apple') {
+        if (playlist.id === APPLE_LIBRARY_ID) {
+          setSelectedPlaylist({ ...playlist, platform: 'apple' })
+          setManagementPlaylist({ ...playlist, platform: 'apple' })
+          setPlaylistSongs(appleLibrarySongs)
+          return
+        }
+        const storefront = localStorage.getItem('appleStorefront') || 'cn'
+        const playlistId = String(playlist.id || '')
+        const tracks = playlistId.startsWith('pl.')
+          ? await getAppleCatalogPlaylistTracks(playlistId, storefront)
+          : await getApplePlaylistTracks(playlistId)
+        const songs = tracks.map(track => appleSongToSong(track, storefront))
+        setSelectedPlaylist({ ...playlist, platform: 'apple' })
+        setManagementPlaylist({ ...playlist, platform: 'apple' })
+        setPlaylistSongs(songs)
+        return
+      }
       
       if (platform === 'netease') {
         response = await fetch(`http://localhost:3001/api/netease/playlist/detail?id=${encodeURIComponent(playlist.id)}&cookie=${encodeURIComponent(cookie)}`)
@@ -1083,6 +1148,21 @@ function ProfileView({
     setRecentError('')
     setRecentItems([])
     try {
+      // Apple：最近播放走 amp-api（需登录 token）
+      if (currentPlatform === 'apple') {
+        const tracks = await getAppleRecentPlayed(100)
+        if (recentRequestRef.current.revision !== revision) return
+        setRecentItems(tracks.map((track, index) => ({
+          id: String(track.id || index),
+          type: 'song' as const,
+          name: track.name || '未知歌曲',
+          subtitle: track.artistName || '',
+          coverUrl: track.artworkUrl || '',
+          playTime: 0,
+          song: appleLibraryTrackToSong(track),
+        })))
+        return
+      }
       const requestType = requestPlatform === 'qq' ? 'song' : type
       const endpoint = requestPlatform === 'qq'
         ? 'http://localhost:3001/api/qq/record/recent/song'
@@ -1399,10 +1479,75 @@ function ProfileView({
     handleSwitchPlatform()  // 调用父组件的回调
   }
 
-  const fetchUserData = async (targetPlatform?: 'netease' | 'qq') => {
+  const fetchUserData = async (targetPlatform?: MusicPlatform) => {
     setLoading(true)
     const platform = targetPlatform || (viewTarget?.platform || currentPlatform)
     const uid = activeUserId
+
+    if (platform === 'apple') {
+      // Apple：账号资料 + 资料库歌单 + 音乐库歌曲（amp-api，走 token 登录）
+      const state = getAppleAuthState()
+      setUserDetail({
+        nickname: state.name || 'Apple Music 用户',
+        avatarUrl: state.avatarUrl || '',
+        userId: '',
+        vipType: 0,
+        // Apple ID 邮箱与账单真实姓名（仅资料展示，不当显示名）
+        email: state.email,
+        realName: state.realName,
+      })
+      if (!state.loggedIn) {
+        setCreatedPlaylists([])
+        setSubscribedPlaylists([])
+        setLoading(false)
+        return
+      }
+      const [playlistsRes, libraryRes] = await Promise.allSettled([
+        getAppleLibraryPlaylists(200),
+        getAppleLibrarySongs(500),
+      ])
+      if (playlistsRes.status === 'fulfilled') {
+        // 喜爱歌曲：重命名为「用户名 的喜爱歌曲」+ 用首曲封面（Apple 系统歌单封面不可靠）
+        const mappedPlaylists = playlistsRes.value.map(playlist => ({
+          id: String(playlist.id),
+          name: playlist.name || '未命名歌单',
+          trackCount: Number(playlist.trackCount || 0),
+          coverImgUrl: playlist.artworkUrl || '',
+          description: playlist.description || '',
+          platform: 'apple' as const,
+          isLike: isAppleLovedPlaylistName(playlist.name || ''),
+        }))
+        const lovedPlaylist = mappedPlaylists.find(item => item.isLike)
+        if (lovedPlaylist) {
+          const displayName = getAppleAuthState().name || 'Apple Music 用户'
+          lovedPlaylist.name = `${displayName} 的喜爱歌曲`
+          const firstCover = await getApplePlaylistFirstTrackArtwork(String(lovedPlaylist.id))
+          if (firstCover) lovedPlaylist.coverImgUrl = firstCover
+        }
+        setCreatedPlaylists(mappedPlaylists)
+      }
+      if (libraryRes.status === 'fulfilled') {
+        const librarySongs = libraryRes.value.map(track => appleLibraryTrackToSong(track))
+        setAppleLibrarySongs(librarySongs)
+        // 「我的音乐库」= 全部收藏歌曲，以伪歌单置于歌单列表顶部（非喜爱，不打爱心）
+        if (librarySongs.length > 0) {
+          setCreatedPlaylists(previous => [
+            {
+              id: APPLE_LIBRARY_ID,
+              name: '我的音乐库',
+              coverImgUrl: librarySongs[0]?.album.picUrl || '',
+              trackCount: librarySongs.length,
+              description: 'Apple 音乐库中收藏的全部歌曲',
+              platform: 'apple',
+            },
+            ...previous,
+          ])
+        }
+      }
+      setSubscribedPlaylists([])
+      setLoading(false)
+      return
+    }
 
     if (platform === 'netease') {
       try {
@@ -1604,7 +1749,7 @@ function ProfileView({
   const stablePlaylistContextMenu = useCallback((playlist: Playlist, event: React.MouseEvent) => { profileHandlersRef.current.playlistContextMenu(playlist, event) }, [])
   const stablePlayPlaylist = useCallback((playlist: Playlist, event: React.MouseEvent) => { void profileHandlersRef.current.playPlaylist(playlist, event) }, [])
   const stableSongSelect = useCallback((song: Song, songs?: Song[]) => { profileHandlersRef.current.songSelect(song, songs) }, [])
-  const stableOpenAlbum = useCallback((albumId: string, platform: 'netease' | 'qq') => { profileHandlersRef.current.openAlbum?.(albumId, platform) }, [])
+  const stableOpenAlbum = useCallback((albumId: string, platform: MusicPlatform) => { profileHandlersRef.current.openAlbum?.(albumId, platform) }, [])
   const stableOpenQqSocialProfile = useCallback((user: QqSocialUserItem) => { profileHandlersRef.current.openQqSocialProfile(user) }, [])
   const stableOpenNeteaseUser = useCallback((user: SocialUserItem) => {
     if (user.userId) profileHandlersRef.current.openUserProfile('netease', user.userId, user.nickname, user.avatarUrl, user.signature)
@@ -1779,11 +1924,13 @@ function ProfileView({
                   className={`px-4 py-2 rounded-full font-medium text-sm transition-all flex items-center gap-2 ${
                     platform === 'netease'
                       ? 'bg-green-600 hover:bg-green-700 text-white'
-                      : 'bg-red-600 hover:bg-red-700 text-white'
+                      : platform === 'qq'
+                        ? 'bg-red-600 hover:bg-red-700 text-white'
+                        : 'bg-pink-600 hover:bg-pink-700 text-white'
                   }`}
                 >
                   <RefreshCw className="w-4 h-4" />
-                  切换到{platform === 'netease' ? 'QQ音乐' : '网易云'}
+                  切换到{platform === 'netease' ? 'QQ音乐' : platform === 'qq' ? 'Apple Music' : '网易云'}
                 </motion.button>
               )}
               
@@ -1815,6 +1962,7 @@ function ProfileView({
               <List className="w-5 h-5" />
               {viewTarget && platform === 'qq' ? '创建的歌单' : `我创建的歌单 (${createdPlaylists.length})`}
             </button>
+            {currentPlatform !== 'apple' && (
             <button
               onClick={() => setActiveTab('subscribed')}
               className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
@@ -1829,6 +1977,7 @@ function ProfileView({
               <Heart className="w-5 h-5" />
               {viewTarget && platform === 'qq' ? '收藏的歌单' : `收藏的歌单 (${subscribedPlaylists.length})`}
             </button>
+            )}
             {!viewTarget && (
             <button
               onClick={() => setActiveTab('recent')}
@@ -1877,7 +2026,7 @@ function ProfileView({
                 我喜欢
               </button>
             )}
-            {!viewTarget && (
+            {!viewTarget && currentPlatform !== 'apple' && (
               <button
                 onClick={() => setActiveTab('collections')}
                 className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
@@ -2424,6 +2573,22 @@ function ProfileView({
                           <div className="text-white font-medium">{userDetail.userId}</div>
                         </div>
 
+                        {/* Apple：Apple ID 邮箱 */}
+                        {userDetail.email && platform === 'apple' && (
+                          <div className="bg-white/5 rounded-lg p-4">
+                            <div className="text-white/50 text-sm mb-1">Apple ID</div>
+                            <div className="text-white font-medium break-all">{userDetail.email}</div>
+                          </div>
+                        )}
+
+                        {/* Apple：真实姓名（账单名，仅资料展示） */}
+                        {userDetail.realName && platform === 'apple' && (
+                          <div className="bg-white/5 rounded-lg p-4">
+                            <div className="text-white/50 text-sm mb-1">真实姓名</div>
+                            <div className="text-white font-medium">{userDetail.realName}</div>
+                          </div>
+                        )}
+
                         {userDetail.level !== undefined && (
                           <div className="bg-white/5 rounded-lg p-4">
                             <div className="text-white/50 text-sm mb-1">等级</div>
@@ -2671,20 +2836,20 @@ function ProfileView({
           onAddToPlaylist={onAddToPlaylist}
           onViewComments={onViewComments}
           onViewAlbum={onOpenAlbum ? (song) => {
-            const songPlatform = (song.platform || platform) as 'netease' | 'qq'
+            const songPlatform = song.platform || platform
             void resolveSongAlbumIdentifier(song, songPlatform).then(albumId => {
               if (albumId) onOpenAlbum(albumId, songPlatform)
             })
           } : undefined}
           onViewArtist={onOpenArtist ? (song) => {
-            const songPlatform = (song.platform || platform) as 'netease' | 'qq'
+            const songPlatform = song.platform || platform
             const artist = song.artists?.[0]
             const artistId = songPlatform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
             if (artistId) onOpenArtist(String(artistId), songPlatform)
           } : undefined}
           onCopyInfo={onCopyInfo}
           userPlaylists={[...createdPlaylists, ...subscribedPlaylists]}
-          platform={(recentSongContextMenu.song.platform || platform) as 'netease' | 'qq'}
+          platform={recentSongContextMenu.song.platform || platform}
         />
       )}
 

@@ -137,6 +137,22 @@ contextBridge.exposeInMainWorld('electron', {
   // QQ 音乐登录
   openQQLoginWindow: () => ipcRenderer.invoke('open-qq-login-window'),
 
+  // Apple Music 网页一键登录：内置窗口登录 Apple ID，自动抓取凭据
+  appleLogin: () => ipcRenderer.invoke('apple-login'),
+  // 从 Apple 网页前端资源获取可用的 Developer Token（免密钥，约 70 天有效）
+  appleFetchDevToken: () => ipcRenderer.invoke('apple-fetch-dev-token'),
+  // amp-api 代理：渲染进程浏览器直连会被 CORS 拦截，改由主进程请求
+  appleApi: (path, developerToken, mediaUserToken, method, body) =>
+    ipcRenderer.invoke('apple-api', { path, developerToken, mediaUserToken, method, body }),
+  // Apple 账号信息（buy.itunes 接口，需登录窗口抓取的 itunes cookie）
+  appleAccountInfo: (cookies) => ipcRenderer.invoke('apple-account-info', cookies),
+  // Apple 个人资料页（解析 og:image 头像）
+  appleFetchProfile: (profileUrl) => ipcRenderer.invoke('apple-fetch-profile', profileUrl),
+  // Apple 账号页面（Apple ID / Apple Account，带全量会话 cookie 解析名字与头像）
+  appleFetchAccount: (cookies) => ipcRenderer.invoke('apple-fetch-account', cookies),
+  // 渲染进程日志转发到主进程控制台（后台窗口可见，便于排查）
+  log: (message) => ipcRenderer.send('app-log', String(message)),
+
   // QQ 音乐官方 Skills Key 领取窗口（内置 Electron 窗口，登录后自动抓取 API Key）
   openQQSkillKeyWindow: () => ipcRenderer.invoke('open-qq-skill-key-window'),
 

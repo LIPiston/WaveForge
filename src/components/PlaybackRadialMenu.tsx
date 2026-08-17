@@ -204,7 +204,7 @@ export default function PlaybackRadialMenu({
         onViewArtist={onViewArtist}
         onCopyInfo={onCopyInfo}
         userPlaylists={userPlaylists}
-        platform={(song.platform || 'netease') as 'netease' | 'qq'}
+        platform={song.platform || 'netease'}
         playerTheme={playerTheme}
         hideFavoriteAction={liked}
       />

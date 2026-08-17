@@ -1,8 +1,10 @@
-﻿/**
+import type { MusicPlatform } from './platforms'
+/**
  * 歌单服务
  */
 
 import { indexedDBCache } from './indexedDBCache'
+import { getAppleLibrarySongs } from './appleCatalog'
 import { isQQFallbackDisplayName } from '../utils/qqUser'
 
 export interface PlaylistOptions {
@@ -60,7 +62,7 @@ function cacheUserPlaylists(key: string, playlists: any[]): void {
   }
 }
 
-function getPlatformCookie(platform: 'netease' | 'qq', explicitCookie?: string): string {
+function getPlatformCookie(platform: MusicPlatform, explicitCookie?: string): string {
   if (explicitCookie) return explicitCookie
   return platform === 'qq'
     ? localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
@@ -111,14 +113,14 @@ function isQQLikedPlaylist(item: any): boolean {
   return dirId === '201' || name === '我喜欢' || name === '我喜欢的音乐' || name.endsWith('喜欢的音乐')
 }
 
-function getUserPlaylistsCacheKey(platform: 'netease' | 'qq', userId: string): string {
+function getUserPlaylistsCacheKey(platform: MusicPlatform, userId: string): string {
   const cookie = getPlatformCookie(platform)
   const devMode = platform === 'qq' ? localStorage.getItem('developerMode') === 'true' : false
   return `${USER_PLAYLIST_CACHE_VERSION}:${platform}:${userId.trim()}:${devMode ? 'dev' : 'prod'}:${fingerprint(cookie)}`
 }
 
 export function getCachedUserPlaylists(
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   userId: string
 ): any[] | undefined {
   if (!userId.trim()) return undefined
@@ -127,7 +129,7 @@ export function getCachedUserPlaylists(
 }
 
 export function invalidateUserPlaylistsCache(
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   userId: string
 ): void {
   if (!userId.trim()) return
@@ -138,7 +140,7 @@ export function invalidateUserPlaylistsCache(
 }
 
 export function updateCachedUserPlaylists(
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   userId: string,
   updater: (playlists: any[]) => any[]
 ): void {
@@ -164,7 +166,7 @@ export function clearUserPlaylistsMemoryCache(): void {
  * 从服务器获取用户歌单列表
  */
 async function fetchUserPlaylists(
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   userId: string,
   username?: string
 ): Promise<any[]> {
@@ -338,7 +340,7 @@ async function fetchUserPlaylists(
  * 同一次软件运行期间默认复用已加载的数据；主动刷新时传 forceRefresh。
  */
 export async function getUserPlaylists(
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   userId: string,
   username?: string,
   options: PlaylistOptions = {}
@@ -398,7 +400,7 @@ export async function getUserPlaylists(
  */
 export async function getPlaylistDetail(
   playlistId: string,
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   options: PlaylistOptions = {}
 ): Promise<any> {
   console.log(`🌐 从服务器获取歌单详情: ${playlistId}`)
@@ -514,10 +516,17 @@ export async function streamNeteasePlaylistTracks(
  */
 export async function getLikedSongs(
   userId: string,
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   options: PlaylistOptions = {}
 ): Promise<any> {
   console.log('🌐 从服务器获取我喜欢的音乐')
+  // Apple：喜欢 = 音乐库歌曲（amp-api）；用 catalogId 与 UI 目录 id 对齐
+  if (platform === 'apple') {
+    const tracks = await getAppleLibrarySongs(500)
+    return {
+      ids: tracks.map(track => track.catalogId || track.id),
+    }
+  }
   const cookie = getPlatformCookie(platform)
   const url = platform === 'netease'
     ? `${API_BASE}/netease/likelist?uid=${encodeURIComponent(userId)}&cookie=${encodeURIComponent(cookie)}`
@@ -561,7 +570,7 @@ export async function getLikedSongs(
 export async function likeSong(
   songId: string,
   userId: string,
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   like: boolean = true,
   options: { songMid?: string; songType?: number; cookie?: string } = {}
 ): Promise<any> {
@@ -602,7 +611,7 @@ export async function addSongToPlaylist(
   playlistId: string,
   songId: string,
   userId: string,
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   options: { songMid?: string; songType?: number; cookie?: string } = {}
 ): Promise<any> {
   console.log(`➕ 添加歌曲 ${songId} 到歌单 ${playlistId}`)
@@ -645,7 +654,7 @@ export async function removeSongFromPlaylist(
   playlistId: string,
   songId: string,
   userId: string,
-  platform: 'netease' | 'qq',
+  platform: MusicPlatform,
   options: { songMid?: string; songType?: number; cookie?: string } = {}
 ): Promise<any> {
   console.log(`➖ 从歌单 ${playlistId} 删除歌曲 ${songId}`)
@@ -680,7 +689,7 @@ export async function removeSongFromPlaylist(
  */
 export async function refreshPlaylist(
   playlistId: string,
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
 ): Promise<any> {
   console.log(`🔄 手动刷新歌单: ${playlistId}`)
   return getPlaylistDetail(playlistId, platform, { forceRefresh: true })
@@ -691,7 +700,7 @@ export async function refreshPlaylist(
  */
 export async function refreshLikedSongs(
   userId: string,
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
 ): Promise<any> {
   console.log('🔄 手动刷新我喜欢的音乐')
   return getLikedSongs(userId, platform, { forceRefresh: true })
@@ -701,7 +710,7 @@ export async function refreshLikedSongs(
  */
 export async function createPlaylist(
   name: string,
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: {
     privacy?: string
     type?: string
@@ -735,7 +744,7 @@ export async function createPlaylist(
  */
 export async function deletePlaylist(
   playlistId: string,
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: {
     cookie?: string
   } = {}
@@ -825,7 +834,7 @@ export async function updatePlaylistCover(
 export async function subscribePlaylist(
   playlistId: string,
   subscribe: boolean = true,
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: {
     cookie?: string
   } = {}

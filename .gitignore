@@ -46,3 +46,6 @@ tv-license.json
 
 # v3 融合临时目录（用户待删，不入库）
 temp/
+
+# 调试截图
+wf-screen-check.png

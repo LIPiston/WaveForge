@@ -1,5 +1,11 @@
+import type { MusicPlatform } from './platforms'
 import type { Song } from './musicApi'
 import { getQQMusicSkillHeaders } from './qqMusicSkills'
+import { fetchAppleExplorePayload } from './appleExploreService'
+import {
+  appleSongToSong,
+  getAppleCatalogPlaylistTracks,
+} from './appleCatalog'
 
 const API_BASES = ['http://localhost:3001/api']
 const EXPLORE_MEMORY_CACHE_TTL = 9 * 60 * 1000
@@ -7,7 +13,7 @@ const EXPLORE_MEMORY_CACHE_TTL = 9 * 60 * 1000
 const exploreHomeMemoryCache = new Map<string, { payload: ExplorePayload; expiresAt: number }>()
 const exploreHomePending = new Map<string, Promise<ExplorePayload>>()
 
-export type ExplorePlatform = 'netease' | 'qq' | 'apple'
+export type ExplorePlatform = MusicPlatform
 
 function fingerprintExploreValue(value: string): string {
   let hash = 2166136261
@@ -18,7 +24,12 @@ function fingerprintExploreValue(value: string): string {
   return (hash >>> 0).toString(36)
 }
 
-function getExploreHomeCacheKey(platform: ExplorePlatform): string {
+function getExploreHomeCacheKey(platform: ExplorePlatform, appleCountry?: string): string {
+  // Apple 无 cookie，按商店区分缓存
+  if (platform === 'apple') {
+    const storefront = appleCountry || localStorage.getItem('appleStorefront') || 'cn'
+    return `apple:${storefront}`
+  }
   const userId = localStorage.getItem(platform === 'qq' ? 'qq_user_id' : 'netease_user_id') || ''
   const cookie = getExploreCookie(platform)
   const accountKey = userId ? `user:${userId}` : cookie ? `cookie:${fingerprintExploreValue(cookie)}` : 'guest'
@@ -44,7 +55,7 @@ export interface ExplorePlaylist {
   trackCount?: number
   creator?: string
   /** 歌单仅来自网易云/QQ（Apple 探索不产出歌单） */
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   source?: 'personalized' | 'community' | 'qqmusic-skills' | string
 }
 
@@ -116,7 +127,7 @@ export interface ExploreDetail {
     coverImgUrl: string
     trackCount: number
     description?: string
-    platform: 'netease' | 'qq'
+    platform: MusicPlatform
   }
   songs: Song[]
 }
@@ -232,6 +243,7 @@ const normalizeQQSong = (input: any): Song | null => {
 }
 
 export function getExploreCookie(platform: ExplorePlatform): string {
+  if (platform === 'apple') return ''
   return platform === 'qq'
     ? localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
     : localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
@@ -253,9 +265,9 @@ async function syncQQExploreCookie(cookie: string, signal?: AbortSignal): Promis
 export async function fetchExploreHome(
   platform: ExplorePlatform,
   signal?: AbortSignal,
-  options: { forceRefresh?: boolean; enhanced?: boolean } = {}
+  options: { forceRefresh?: boolean; enhanced?: boolean; appleCountry?: string } = {}
 ): Promise<ExplorePayload> {
-  const cacheKey = getExploreHomeCacheKey(platform)
+  const cacheKey = getExploreHomeCacheKey(platform, options.appleCountry)
   if (!options.forceRefresh) {
     const cached = exploreHomeMemoryCache.get(cacheKey)
     if (cached && cached.expiresAt > Date.now()) return cached.payload
@@ -264,6 +276,16 @@ export async function fetchExploreHome(
   }
 
   const request = (async () => {
+  // Apple：客户端组装（RSS + amp-api），不走服务端 /explore/apple
+  if (platform === 'apple') {
+    const storefront = options.appleCountry || localStorage.getItem('appleStorefront') || 'cn'
+    const payload = await fetchAppleExplorePayload(storefront)
+    exploreHomeMemoryCache.set(cacheKey, {
+      payload,
+      expiresAt: Date.now() + EXPLORE_MEMORY_CACHE_TTL
+    })
+    return payload
+  }
   // enhanced=false：关闭平台增强（不传 cookie，后端只返回公开榜单/热门，不请求个性化推荐）
   const cookie = options.enhanced === false ? '' : getExploreCookie(platform)
   if (platform === 'qq') {
@@ -335,6 +357,8 @@ export async function fetchExploreRecommendationBatch(
   excludeSongKeys: string[] = [],
   signal?: AbortSignal
 ): Promise<Song[]> {
+  // Apple 无连续电台接口
+  if (platform === 'apple') return []
   const cookie = getExploreCookie(platform)
   if (platform === 'qq') {
     return fetchQQGuessYouLikeBatch(batch, excludeSongKeys, signal)
@@ -353,6 +377,23 @@ export async function fetchExploreRecommendationBatch(
 }
 
 export async function fetchExplorePlaylist(playlist: ExplorePlaylist, signal?: AbortSignal): Promise<ExploreDetail> {
+  // Apple 编辑/热门歌单：amp-api catalog 曲目（需 dev token；无 token 返回空歌单）
+  if (playlist.platform === 'apple') {
+    const storefront = localStorage.getItem('appleStorefront') || 'cn'
+    const tracks = await getAppleCatalogPlaylistTracks(playlist.id, storefront)
+    const songs = tracks.map(track => appleSongToSong(track, storefront))
+    return {
+      playlist: {
+        id: playlist.id,
+        name: playlist.name,
+        coverImgUrl: playlist.coverUrl,
+        trackCount: songs.length || playlist.trackCount || 0,
+        description: playlist.description || '',
+        platform: 'apple',
+      },
+      songs,
+    }
+  }
   const cookie = getExploreCookie(playlist.platform)
   const data = await fetchExploreJson(`/${playlist.platform}/playlist/detail`, {
     id: playlist.id,
@@ -382,6 +423,28 @@ export async function fetchExplorePlaylist(playlist: ExplorePlaylist, signal?: A
 }
 
 export async function fetchExploreChart(chart: ExploreChart, signal?: AbortSignal): Promise<ExploreDetail> {
+  // Apple：榜单数据客户端已带（charts 携带歌曲列表），无需服务端
+  if (chart.platform === 'apple') {
+    const songs: Song[] = chart.songs.map(song => ({
+      id: typeof song.id === 'number' ? song.id : Number(song.id) || 0,
+      name: song.name,
+      artists: song.artist ? [{ name: song.artist }] : [],
+      album: { name: '', picUrl: song.coverUrl || '' },
+      duration: 0,
+      platform: 'apple',
+    }))
+    return {
+      playlist: {
+        id: chart.id,
+        name: chart.name,
+        coverImgUrl: chart.coverUrl,
+        trackCount: songs.length,
+        description: chart.description || '',
+        platform: 'apple',
+      },
+      songs,
+    }
+  }
   const cookie = getExploreCookie(chart.platform)
   let lastResult: ExploreDetail | null = null
   let lastError: unknown

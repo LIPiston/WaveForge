@@ -1,3 +1,4 @@
+import type { MusicPlatform } from './platforms'
 const DB_NAME = 'WaveForgeCache'
 const DB_VERSION = 2
 const COVER_STORE = 'covers'
@@ -30,7 +31,7 @@ interface CoverCacheItem {
 
 interface DataCacheItem {
   id: string
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   data: unknown
   timestamp: number
   lastAccess: number
@@ -147,28 +148,28 @@ class IndexedDBCache {
     })
   }
 
-  async cachePlaylist(id: string, platform: 'netease' | 'qq', data: unknown): Promise<void> {
+  async cachePlaylist(id: string, platform: MusicPlatform, data: unknown): Promise<void> {
     await this.cacheData(PLAYLIST_STORE, id, platform, data, MAX_PLAYLISTS(), MAX_PLAYLIST_BYTES(), PLAYLIST_TTL)
   }
 
-  async getCachedPlaylist<T = unknown>(id: string, platform: 'netease' | 'qq'): Promise<T | null> {
+  async getCachedPlaylist<T = unknown>(id: string, platform: MusicPlatform): Promise<T | null> {
     return this.getData<T>(PLAYLIST_STORE, id, platform, PLAYLIST_TTL)
   }
 
-  async invalidatePlaylist(id: string, platform: 'netease' | 'qq'): Promise<void> {
+  async invalidatePlaylist(id: string, platform: MusicPlatform): Promise<void> {
     const store = await this.store(PLAYLIST_STORE, 'readwrite')
     await this.request(store.delete(`${platform}_${id.trim()}`))
   }
 
-  async cacheLyrics(id: string, platform: 'netease' | 'qq', data: unknown): Promise<void> {
+  async cacheLyrics(id: string, platform: MusicPlatform, data: unknown): Promise<void> {
     await this.cacheData(LYRICS_STORE, id, platform, data, MAX_LYRICS(), MAX_LYRICS_BYTES(), LYRICS_TTL)
   }
 
-  async getCachedLyrics<T = unknown>(id: string, platform: 'netease' | 'qq'): Promise<T | null> {
+  async getCachedLyrics<T = unknown>(id: string, platform: MusicPlatform): Promise<T | null> {
     return this.getData<T>(LYRICS_STORE, id, platform, LYRICS_TTL)
   }
 
-  private async cacheData(storeName: string, id: string, platform: 'netease' | 'qq', data: unknown, maxCount: number, maxBytes: number, ttl: number): Promise<void> {
+  private async cacheData(storeName: string, id: string, platform: MusicPlatform, data: unknown, maxCount: number, maxBytes: number, ttl: number): Promise<void> {
     id = id.trim()
     if (!id) throw new Error('缓存 ID 不能为空')
     const size = serializedSize(data)
@@ -180,7 +181,7 @@ class IndexedDBCache {
     await this.request(store.put(item))
   }
 
-  private async getData<T>(storeName: string, id: string, platform: 'netease' | 'qq', ttl: number): Promise<T | null> {
+  private async getData<T>(storeName: string, id: string, platform: MusicPlatform, ttl: number): Promise<T | null> {
     id = id.trim()
     if (!id) return null
     const store = await this.store(storeName, 'readwrite')

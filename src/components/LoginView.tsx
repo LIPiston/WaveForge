@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Music, RefreshCw, Copy, Check, ExternalLink } from 'lucide-react'
+import type { MusicPlatform } from '../services/platforms'
 import GlobalToast from './GlobalToast'
 
 interface LoginViewProps {
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   onCancel: () => void
   onLoginSuccess: (cookie: string) => void
 }

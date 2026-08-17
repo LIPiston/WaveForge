@@ -163,6 +163,21 @@ export interface ElectronAPI {
   }
   openQQLoginWindow: () => Promise<{ success: boolean; cookie?: string; error?: string }>
   openQQSkillKeyWindow: () => Promise<{ success: boolean; apiKey?: string; error?: string }>
+  /** Apple Music 网页一键登录：内置窗口登录 Apple ID，自动抓取 media-user-token 与 Developer Token */
+  appleLogin: () => Promise<{ success: boolean; mediaUserToken?: string; developerToken?: string; error?: string }>
+  /** 从 Apple 网页前端资源获取可用的 Developer Token（免密钥，约 70 天有效） */
+  appleFetchDevToken: () => Promise<{ success: boolean; token?: string; expiresAt?: number; error?: string }>
+  /** amp-api 代理（渲染进程直连会被 CORS 拦截，改由主进程请求） */
+  appleApi: (path: string, developerToken: string, mediaUserToken: string, method?: string, body?: string | null) =>
+    Promise<{ ok: boolean; status: number; data: unknown; error?: string }>
+  /** Apple 账号信息（buy.itunes 接口，需登录窗口抓取的 itunes cookie） */
+  appleAccountInfo: (cookies: string) => Promise<{ ok: boolean; status: number; data: unknown; error?: string }>
+  /** Apple 个人资料页（解析 og:image 头像） */
+  appleFetchProfile: (profileUrl: string) => Promise<{ ok: boolean; status: number; html?: string; error?: string }>
+  /** Apple 账号页面（Apple ID / Apple Account，带全量会话 cookie 解析名字与头像） */
+  appleFetchAccount: (cookies: string) => Promise<{ ok: boolean; status: number; html?: string; error?: string }>
+  /** 渲染进程日志转发到主进程控制台（后台窗口可见） */
+  log: (message: string) => void
   wallpaper: {
     getCurrentWallpaper: () => Promise<WallpaperResult>
     onWallpaperChange: (callback: (wallpaper: WallpaperPayload | string) => void) => () => void

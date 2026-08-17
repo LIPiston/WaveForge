@@ -1,3 +1,4 @@
+import type { MusicPlatform } from './platforms'
 const API_BASE = 'http://localhost:3001/api'
 
 import { parseTTML } from '../utils/ttmlParser'
@@ -15,7 +16,7 @@ const isYrcTimestampFragment = (value: string) => {
     && /,/u.test(trimmed)
 }
 
-const getPlatformCookie = (platform: 'netease' | 'qq', explicitCookie?: string) => explicitCookie || (
+const getPlatformCookie = (platform: MusicPlatform, explicitCookie?: string) => explicitCookie || (
   platform === 'qq'
     ? localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
     : localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
@@ -85,7 +86,7 @@ const fetchSongUrlResponse = async (url: string): Promise<Response> => {
   }
 }
 
-const buildSongUrlCacheKey = (id: number | string, platform: 'netease' | 'qq') => {
+const buildSongUrlCacheKey = (id: number | string, platform: MusicPlatform) => {
   const cookie = platform === 'qq'
     ? (localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || '')
     : (localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || '')
@@ -96,7 +97,7 @@ const buildSongUrlCacheKey = (id: number | string, platform: 'netease' | 'qq') =
   return `${platform}:${id}:${preference}:${isVip ? 'vip' : 'free'}:${fingerprint(cookie)}:${crossPlatformFallback}`
 }
 
-export const invalidateSongUrl = (id: number | string, platform: 'netease' | 'qq' = 'netease') => {
+export const invalidateSongUrl = (id: number | string, platform: MusicPlatform = 'netease') => {
   const cacheKey = buildSongUrlCacheKey(id, platform)
   songUrlCache.delete(cacheKey)
   songUrlPending.delete(cacheKey)
@@ -125,14 +126,16 @@ export interface Song {
   }
   duration: number
   playCount?: number // 播放次数（听歌排行等）
-  platform?: 'netease' | 'qq' // 标识来源平台
+  platform?: MusicPlatform // 标识来源平台
+  /** Apple Music 目录/资料库 ID 原文（数字转 String(id) 后可能丢失精度，保留原串） */
+  appleId?: string
   vip?: boolean // 是否为VIP歌曲
   noCopyright?: boolean // 是否无版权
   commentCount?: number
   fee?: number // 付费类型（网易云）0免费 1VIP 4付费专辑 8低音质免费
   /** 融合搜索中，同一首歌可用的所有平台版本（第一项为当前优选版本） */
   fusedSources?: Array<{
-    platform: 'netease' | 'qq'
+    platform: MusicPlatform
     id: number
     mid?: string
     vip?: boolean
@@ -141,7 +144,7 @@ export interface Song {
 }
 
 
-export function getLocalAlbumIdentifier(song: Song, platform: 'netease' | 'qq'): string | null {
+export function getLocalAlbumIdentifier(song: Song, platform: MusicPlatform): string | null {
   const raw = song as any
   const album = raw.album || raw.al || {}
   const id = platform === 'qq'
@@ -150,7 +153,9 @@ export function getLocalAlbumIdentifier(song: Song, platform: 'netease' | 'qq'):
   return id ? String(id) : null
 }
 
-export async function resolveSongAlbumIdentifier(song: Song, platform: 'netease' | 'qq'): Promise<string | null> {
+export async function resolveSongAlbumIdentifier(song: Song, platform: MusicPlatform): Promise<string | null> {
+  // Apple 歌曲的 album 无网易云/QQ 专辑 id，不向平台接口查询
+  if (platform === 'apple') return null
   const localId = getLocalAlbumIdentifier(song, platform)
   if (localId) return localId
 
@@ -182,7 +187,7 @@ export interface Artist {
   albumSize?: number // 专辑数量
   musicSize?: number // 歌曲数量
   description?: string // 艺人介绍
-  platform?: 'netease' | 'qq'
+  platform?: MusicPlatform
   alias?: string[] // 别称
   intro?: any[] // 详细介绍（章节）
   country?: string // 国籍
@@ -192,7 +197,7 @@ export interface Artist {
   basic?: any // QQ音乐基本信息
   other?: any // QQ音乐其他信息
   /** 融合搜索去重后命中的平台 */
-  sourcePlatforms?: Array<'netease' | 'qq'>
+  sourcePlatforms?: Array<MusicPlatform>
 }
 
 export interface Album {
@@ -204,12 +209,12 @@ export interface Album {
   publishTime?: number
   size?: number // 歌曲数量
   description?: string // 专辑描述
-  platform?: 'netease' | 'qq'
+  platform?: MusicPlatform
   genre?: string // 流派/类型
   lan?: string // 语言
   company?: string // 唱片公司
   /** 融合搜索去重后命中的平台 */
-  sourcePlatforms?: Array<'netease' | 'qq'>
+  sourcePlatforms?: Array<MusicPlatform>
 }
 
 export interface SearchSuggestion {
@@ -279,7 +284,7 @@ export function getProxiedImageUrl(originalUrl: string, size: number = 500): str
 }
 
 // 搜索歌曲（支持平台选择）
-export async function searchSongs(keywords: string, limit = 30, platform: 'netease' | 'qq' = 'netease'): Promise<SearchResult> {
+export async function searchSongs(keywords: string, limit = 30, platform: MusicPlatform = 'netease'): Promise<SearchResult> {
   try {
     const devMode = localStorage.getItem('developerMode') === 'true'
     const endpoint = platform === 'qq' ? '/qq/search' : '/netease/search'
@@ -343,7 +348,7 @@ export async function searchSongs(keywords: string, limit = 30, platform: 'netea
 }
 
 // 搜索建议
-export async function searchSuggest(keywords: string, platform: 'netease' | 'qq' = 'netease'): Promise<SearchSuggestion[]> {
+export async function searchSuggest(keywords: string, platform: MusicPlatform = 'netease'): Promise<SearchSuggestion[]> {
   try {
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/suggest?keywords=${encodeURIComponent(keywords)}`)
@@ -410,7 +415,7 @@ export async function searchSuggest(keywords: string, platform: 'netease' | 'qq'
 }
 
 // 搜索歌手
-export async function searchArtists(keywords: string, platform: 'netease' | 'qq' = 'netease'): Promise<Artist[]> {
+export async function searchArtists(keywords: string, platform: MusicPlatform = 'netease'): Promise<Artist[]> {
   try {
     const devMode = localStorage.getItem('developerMode') === 'true'
     if (platform === 'qq') {
@@ -470,7 +475,7 @@ export async function searchArtists(keywords: string, platform: 'netease' | 'qq'
 }
 
 // 搜索专辑
-export async function searchAlbums(keywords: string, platform: 'netease' | 'qq' = 'netease'): Promise<Album[]> {
+export async function searchAlbums(keywords: string, platform: MusicPlatform = 'netease'): Promise<Album[]> {
   try {
     const devMode = localStorage.getItem('developerMode') === 'true'
     if (platform === 'qq') {
@@ -521,7 +526,7 @@ export async function searchAlbums(keywords: string, platform: 'netease' | 'qq' 
 }
 
 // 获取歌曲播放URL（支持平台）
-export async function getSongUrl(id: number | string, platform: 'netease' | 'qq' = 'netease'): Promise<string | null> {
+export async function getSongUrl(id: number | string, platform: MusicPlatform = 'netease'): Promise<string | null> {
   ensureSongUrlListenersRegistered()
   if (!String(id).trim()) return null
   const cacheKey = buildSongUrlCacheKey(id, platform)
@@ -1038,7 +1043,7 @@ export interface LyricsFinalInfo {
 
 export async function getLyrics(
   id: number | string, 
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   songName?: string,
   artistName?: string,
   duration?: number,
@@ -1086,13 +1091,22 @@ export async function getLyrics(
     
     // 默认策略：流式加载 - 先显示基础歌词，再逐步增强
     type LyricsSourceResult = { source: string; lyrics: LyricLine[]; hasWW: boolean; hasTrans: boolean; hasRom: boolean }
-    const platformSourceName = platform === 'qq' ? 'QQ音乐' : '网易云'
+    const isApplePlatform = platform === 'apple'
+    const platformSourceName = platform === 'qq' ? 'QQ音乐' : isApplePlatform ? 'Apple Music' : '网易云'
     
-    // 平台互斥：QQ音乐歌曲不请求网易云API，网易云歌曲不请求QQ音乐API
+    // 平台互斥：QQ音乐歌曲不请求网易云API，网易云歌曲不请求QQ音乐API。
+    // Apple 曲目不请求网易云/QQ 平台源（getPlatformLyrics/AMLL 目录均按平台区分），
+    // 只保留 Apple Music 官方源（已登录）与 Lrclib（按歌名/艺人）。
+    const platformSourcePromise = isApplePlatform
+      ? Promise.resolve([])
+      : getPlatformLyrics(id, platform)
+    const amllSourcePromise = isApplePlatform
+      ? Promise.resolve([])
+      : getAMLLTTMLLyrics(id, platform)
     const sources = [
       // 平台官方源只请求当前歌曲所属平台
-      { name: platformSourceName, promise: getPlatformLyrics(id, platform) },
-      { name: 'AMLL TTML DB', promise: getAMLLTTMLLyrics(id, platform) },
+      { name: platformSourceName, promise: platformSourcePromise },
+      { name: 'AMLL TTML DB', promise: amllSourcePromise },
       // Apple Music：仅在用户已完成 Apple 登录时才请求（未登录默认关闭，不替换平台歌词）
       ...(isAppleMusicConfigured()
         ? [{ name: 'Apple Music', promise: songName && artistName ? getAppleMusicLyrics(songName, artistName, duration) : Promise.resolve([]) }]
@@ -1309,6 +1323,17 @@ export async function getLyrics(
       }
 
       console.log(`  [Lyrics] 组合完成: 骨架=${baseResult.source}, 逐字=${hasWordByWord}, 罗马音=${hasRoman}, 翻译=${hasTranslation}`)
+      // Apple 曲目歌词诊断：转发到后台控制台，便于确认逐字/翻译/罗马音来源
+      if (isApplePlatform) {
+        try {
+          const bridge = (window as any).electron
+          if (bridge && typeof bridge.log === 'function') {
+            bridge.log(`[Apple歌词] 歌曲《${songName || ''}》骨架源=${baseResult.source} 逐字=${hasWordByWord} 罗马音=${hasRoman} 翻译=${hasTranslation}（${baseResult.lyrics.length}行）`)
+          }
+        } catch {
+          // 忽略
+        }
+      }
       if (onProgress) {
         onProgress(currentLyrics, baseResult.source, hasWordByWord, {
           logs: [...apiLogs],
@@ -1372,7 +1397,7 @@ export async function getLyrics(
 }
 
 // 获取平台原生歌词（内部函数）
-async function getPlatformLyrics(id: number | string, platform: 'netease' | 'qq'): Promise<LyricLine[]> {
+async function getPlatformLyrics(id: number | string, platform: MusicPlatform): Promise<LyricLine[]> {
   try {
     if (platform === 'qq') {
       const qqCookie = localStorage.getItem('qq_cookie') || ''
@@ -1622,7 +1647,7 @@ async function fetchFirstValidAMLL(endpoints: AMLLEndpoint[]): Promise<{ lyrics:
 }
 
 // 获取真正的 TTML，而不是仓库生成的普通 LRC；逐字、翻译和罗马音来自同一文档。
-async function getAMLLTTMLLyrics(id: number | string, platform: 'netease' | 'qq'): Promise<LyricLine[]> {
+async function getAMLLTTMLLyrics(id: number | string, platform: MusicPlatform): Promise<LyricLine[]> {
   const startTime = Date.now()
   const folder = platform === 'qq' ? 'qq-lyrics' : 'ncm-lyrics'
   const encodedId = encodeURIComponent(String(id))
@@ -1759,7 +1784,7 @@ export async function loadAlbumCovers(songs: Song[]): Promise<Song[]> {
 }
 
 // 获取歌手详情
-export async function getArtistDetail(id: number | string, platform: 'netease' | 'qq' = 'netease'): Promise<Artist | null> {
+export async function getArtistDetail(id: number | string, platform: MusicPlatform = 'netease'): Promise<Artist | null> {
   try {
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/artist?mid=${id}`)
@@ -1819,7 +1844,7 @@ export async function getArtistDetail(id: number | string, platform: 'netease' |
 }
 
 // 获取歌手热门歌曲
-export async function getArtistTopSongs(id: number | string, platform: 'netease' | 'qq' = 'netease'): Promise<Song[]> {
+export async function getArtistTopSongs(id: number | string, platform: MusicPlatform = 'netease'): Promise<Song[]> {
   try {
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/artist/songs?mid=${id}`)
@@ -1883,7 +1908,7 @@ export async function getArtistTopSongs(id: number | string, platform: 'netease'
 }
 
 // 获取专辑详情
-export async function getAlbumDetail(id: number | string, platform: 'netease' | 'qq' = 'netease'): Promise<Album | null> {
+export async function getAlbumDetail(id: number | string, platform: MusicPlatform = 'netease'): Promise<Album | null> {
   try {
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/album?mid=${id}`)
@@ -1932,7 +1957,7 @@ export async function getAlbumDetail(id: number | string, platform: 'netease' | 
 }
 
 // 获取专辑歌曲列表
-export async function getAlbumSongs(id: number | string, platform: 'netease' | 'qq' = 'netease'): Promise<Song[]> {
+export async function getAlbumSongs(id: number | string, platform: MusicPlatform = 'netease'): Promise<Song[]> {
   try {
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/album?mid=${id}`)
@@ -1981,7 +2006,7 @@ export async function getAlbumSongs(id: number | string, platform: 'netease' | '
 }
 
 // 获取歌手全部歌曲（分页加载）
-export async function getArtistAllSongs(id: number | string, platform: 'netease' | 'qq' = 'netease', offset: number = 0, limit: number = 40): Promise<{ songs: Song[], total: number }> {
+export async function getArtistAllSongs(id: number | string, platform: MusicPlatform = 'netease', offset: number = 0, limit: number = 40): Promise<{ songs: Song[], total: number }> {
   try {
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/artist/songs?mid=${id}&limit=${limit}`)
@@ -2020,7 +2045,7 @@ export async function getArtistAllSongs(id: number | string, platform: 'netease'
 }
 
 // 获取歌手专辑列表
-export async function getArtistAlbums(id: number | string, platform: 'netease' | 'qq' = 'netease', limit: number = 200, offset: number = 0): Promise<Album[]> {
+export async function getArtistAlbums(id: number | string, platform: MusicPlatform = 'netease', limit: number = 200, offset: number = 0): Promise<Album[]> {
   try {
     if (platform === 'qq') {
       const page = Math.floor(offset / limit) + 1
@@ -2056,7 +2081,7 @@ export async function getArtistAlbums(id: number | string, platform: 'netease' |
 }
 
 // 获取歌手MV列表
-export async function getArtistMVs(id: number | string, platform: 'netease' | 'qq' = 'netease', limit: number = 200, offset: number = 0): Promise<any[]> {
+export async function getArtistMVs(id: number | string, platform: MusicPlatform = 'netease', limit: number = 200, offset: number = 0): Promise<any[]> {
   try {
     if (platform === 'qq') {
       const page = Math.floor(offset / limit) + 1
@@ -2095,7 +2120,7 @@ export async function getArtistMVs(id: number | string, platform: 'netease' | 'q
 }
 
 // 获取MV播放地址
-export async function getMVUrl(mvId: number | string, quality: number = 1080, platform: 'netease' | 'qq' = 'netease'): Promise<string | null> {
+export async function getMVUrl(mvId: number | string, quality: number = 1080, platform: MusicPlatform = 'netease'): Promise<string | null> {
   try {
     if (platform === 'qq') {
       const cookie = getPlatformCookie('qq')
@@ -2114,7 +2139,7 @@ export async function getMVUrl(mvId: number | string, quality: number = 1080, pl
 }
 
 // 获取MV播放信息（含失败原因）——QQ MV 无免费播放源时返回 error 供 UI 展示
-export async function getMVPlaybackInfo(mvId: number | string, quality: number = 1080, platform: 'netease' | 'qq' = 'netease'): Promise<{ url: string | null, error?: string, needCookie?: boolean }> {
+export async function getMVPlaybackInfo(mvId: number | string, quality: number = 1080, platform: MusicPlatform = 'netease'): Promise<{ url: string | null, error?: string, needCookie?: boolean }> {
   try {
     if (platform === 'qq') {
       const cookie = getPlatformCookie('qq')
@@ -2132,7 +2157,7 @@ export async function getMVPlaybackInfo(mvId: number | string, quality: number =
 }
 
 // 获取MV详情
-export async function getMVDetail(mvId: number | string, platform: 'netease' | 'qq' = 'netease'): Promise<any> {
+export async function getMVDetail(mvId: number | string, platform: MusicPlatform = 'netease'): Promise<any> {
   try {
     if (platform === 'qq') {
       const cookie = getPlatformCookie('qq')
@@ -2170,7 +2195,7 @@ export async function getMVDetail(mvId: number | string, platform: 'netease' | '
 // 创建歌单
 export async function createPlaylist(
   name: string,
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: {
     privacy?: string
     type?: string
@@ -2201,7 +2226,7 @@ export async function createPlaylist(
 // 删除歌单
 export async function deletePlaylist(
   playlistId: string,
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: {
     cookie?: string
   } = {}
@@ -2229,7 +2254,7 @@ export async function deletePlaylist(
 export async function addTracksToPlaylist(
   playlistId: string,
   trackIds: string[],
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: {
     cookie?: string
   } = {}
@@ -2259,7 +2284,7 @@ export async function addTracksToPlaylist(
 export async function removeTracksFromPlaylist(
   playlistId: string,
   trackIds: string[],
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: {
     cookie?: string
   } = {}
@@ -2289,7 +2314,7 @@ export async function removeTracksFromPlaylist(
 export async function subscribePlaylist(
   playlistId: string,
   subscribe: boolean = true,
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: {
     cookie?: string
   } = {}
@@ -2320,7 +2345,7 @@ export async function subscribePlaylist(
 // ══════════════════════════════════════════════════════════════
 
 /** 获取搜索热词 */
-export async function searchHot(platform: 'netease' | 'qq' = 'netease'): Promise<any> {
+export async function searchHot(platform: MusicPlatform = 'netease'): Promise<any> {
   try {
     const response = await fetch(`${API_BASE}/${platform}/search/hot`)
     const data = await response.json()
@@ -2349,7 +2374,7 @@ export async function searchQuick(keywords: string): Promise<any> {
 export async function subscribeAlbum(
   id: string,
   subscribe: boolean = true,
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: { cookie?: string } = {}
 ): Promise<any> {
   try {
@@ -2388,7 +2413,7 @@ export async function getSubscribedAlbums(platform: 'netease' = 'netease', optio
  */
 export async function isAlbumSubscribed(
   albumId: string | number,
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
 ): Promise<boolean> {
   try {
     const id = String(albumId)
@@ -2435,7 +2460,7 @@ export async function getHotComments(
 /** 获取相似歌曲 */
 export async function getSimilarSongs(
   id: string,
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: { cookie?: string } = {}
 ): Promise<any> {
   try {
@@ -2455,7 +2480,7 @@ export async function getSimilarSongs(
 /** 获取相似歌手 */
 export async function getSimilarArtists(
   id: string,
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: { cookie?: string } = {}
 ): Promise<any> {
   try {
@@ -2476,7 +2501,7 @@ export async function getSimilarArtists(
 export async function subscribeArtist(
   id: string,
   subscribe: boolean = true,
-  platform: 'netease' | 'qq' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: { cookie?: string } = {}
 ): Promise<any> {
   try {
@@ -2502,7 +2527,7 @@ export async function subscribeArtist(
 }
 
 /** 获取已关注歌手列表 */
-export async function getSubscribedArtists(platform: 'netease' | 'qq' = 'netease', options: { cookie?: string } = {}): Promise<any> {
+export async function getSubscribedArtists(platform: MusicPlatform = 'netease', options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie(platform, options.cookie)
     const response = await fetch(`${API_BASE}/${platform}/artist/sublist?cookie=${encodeURIComponent(cookie)}`)
@@ -2549,7 +2574,7 @@ export async function getQQSubscribedArtists(options: { cookie?: string } = {}):
  */
 export async function isArtistFollowed(
   artistId: string | number,
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
 ): Promise<boolean> {
   try {
     const id = String(artistId)
@@ -2626,7 +2651,7 @@ export async function getMVListByCategory(version: number = 7, area: number = 15
 }
 
 /** 搜索 MV（网易云 type=1004，QQ t=12） */
-export async function searchMVs(keywords: string, platform: 'netease' | 'qq' = 'netease', limit: number = 30): Promise<any> {
+export async function searchMVs(keywords: string, platform: MusicPlatform = 'netease', limit: number = 30): Promise<any> {
   try {
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&limit=${limit}&type=mv`)
@@ -2646,7 +2671,7 @@ export async function searchMVs(keywords: string, platform: 'netease' | 'qq' = '
   }
 }
 
-/** 搜索歌单（网易云 type=1000，QQ t=2） */export async function searchPlaylists(keywords: string, platform: 'netease' | 'qq' = 'netease', limit: number = 20): Promise<any> {
+/** 搜索歌单（网易云 type=1000，QQ t=2） */export async function searchPlaylists(keywords: string, platform: MusicPlatform = 'netease', limit: number = 20): Promise<any> {
   try {
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&limit=${limit}&type=playlist`)

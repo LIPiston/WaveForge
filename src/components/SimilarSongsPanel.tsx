@@ -34,9 +34,11 @@ function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme }
   useEffect(() => {
     let cancelled = false
     const fetchSimilar = async () => {
+      // Apple 无相似歌曲接口（入口已按能力表隐藏，此处兜底）
+      if (song.platform === 'apple') return
       try {
         const id = song.platform === 'qq' ? String(song.id || song.mid) : String(song.id)
-        const data = await getSimilarSongs(id, song.platform as 'netease' | 'qq')
+        const data = await getSimilarSongs(id, (song.platform || 'netease') as 'netease' | 'qq')
         if (!cancelled && data) {
           const raw = data.songs || data.data?.list || data.data?.songs || (Array.isArray(data.data) ? data.data : []) || []
           const normalized = raw.map((s: any) => {

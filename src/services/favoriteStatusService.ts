@@ -1,7 +1,8 @@
+import type { MusicPlatform } from './platforms'
 import type { Song } from './musicApi'
 import { getLikedSongs } from './playlistService'
 
-export type FavoritePlatform = 'netease' | 'qq'
+export type FavoritePlatform = MusicPlatform
 
 const favoriteIdsCache = new Map<string, Set<string>>()
 const pendingLoads = new Map<string, Promise<Set<string>>>()
@@ -9,6 +10,10 @@ const pendingLoads = new Map<string, Promise<Set<string>>>()
 const ownerKey = (platform: FavoritePlatform, userId: string) => `${platform}:${userId}`
 
 export function getFavoriteUserId(platform: FavoritePlatform): string {
+  if (platform === 'apple') {
+    // Apple 无 userId；用固定归属键（登录态存在时），凭据失效即自然失效
+    return localStorage.getItem('appleMediaUserToken') ? 'apple-user' : ''
+  }
   return platform === 'qq'
     ? localStorage.getItem('qq_user_id') || ''
     : localStorage.getItem('netease_user_id') || ''

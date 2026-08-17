@@ -2,6 +2,8 @@ import { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Music, Info, Loader, Heart } from 'lucide-react'
 import { getAlbumDetail, getAlbumSongs, Album, Song, getProxiedImageUrl, subscribeAlbum, isAlbumSubscribed } from '../services/musicApi'
+import type { MusicPlatform } from '../services/platforms'
+import { getAppleAlbumDetail, appleSongToSong, getAppleLibraryPlaylists } from '../services/appleCatalog'
 import CachedImage from './CachedImage'
 import ScrollToTop from './ScrollToTop'
 import ScrollToCurrentSong from './ScrollToCurrentSong'
@@ -11,7 +13,7 @@ import { getReadableAccentColor } from '../utils/desktopAccentColor'
 
 interface AlbumDetailModalProps {
   albumId: string | number
-  platform: 'netease' | 'qq'
+  platform: MusicPlatform
   onClose: () => void
   onSongSelect?: (song: Song, playlist?: Song[]) => void
   playerTheme?: 'light' | 'dark'
@@ -24,8 +26,8 @@ interface AlbumDetailModalProps {
   onRemoveFromFavorites?: (song: Song) => void | Promise<unknown>
   onAddToPlaylist?: (song: Song, playlistId: string) => void
   onViewComments?: (song: Song) => void
-  onOpenArtist?: (artistId: string, platform: 'netease' | 'qq') => void
-  onOpenAlbum?: (albumId: string, platform: 'netease' | 'qq') => void
+  onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
+  onOpenAlbum?: (albumId: string, platform: MusicPlatform) => void
   onCopyInfo?: (song: Song) => void
 }
 
@@ -81,7 +83,7 @@ function AlbumDetailModal({
 
   // 打开专辑详情时按当前账号是否已收藏初始化按钮状态（QQ 传 mid，网易云传数字 id）
   useEffect(() => {
-    if (!album) return
+    if (!album || platform === 'apple') return
     let cancelled = false
     const id = platform === 'qq' ? String(album.mid || album.id) : String(album.id)
     setSubscribed(false)
@@ -118,6 +120,13 @@ function AlbumDetailModal({
   }, [albumId, platform])
 
   useEffect(() => {
+    // Apple：右键菜单歌单用资料库歌单（amp-api）
+    if (platform === 'apple') {
+      void getAppleLibraryPlaylists(100)
+        .then(setUserPlaylists)
+        .catch(() => setUserPlaylists([]))
+      return
+    }
     const userId = platform === 'qq'
       ? localStorage.getItem('qq_user_id') || ''
       : localStorage.getItem('netease_user_id') || ''
@@ -137,6 +146,25 @@ function AlbumDetailModal({
     setLoading(true)
     setError(null)
     try {
+      // Apple：iTunes Lookup 一次返回专辑信息与曲目（免 token）
+      if (platform === 'apple') {
+        const storefront = localStorage.getItem('appleStorefront') || 'cn'
+        const detail = await getAppleAlbumDetail(String(albumId), storefront)
+        if (detail) {
+          setAlbum({
+            id: Number(detail.album.id) || 0,
+            name: detail.album.name,
+            picUrl: detail.album.artworkUrl || '',
+            artist: { name: detail.album.artistName },
+            publishTime: detail.album.releaseDate ? Date.parse(detail.album.releaseDate) : undefined,
+            platform: 'apple',
+          })
+          setSongs(detail.tracks.map(track => appleSongToSong(track, storefront)))
+        } else {
+          setError('未找到该 Apple 专辑')
+        }
+        return
+      }
       const [albumData, songsData] = await Promise.all([
         getAlbumDetail(albumId, platform),
         getAlbumSongs(albumId, platform)
@@ -313,6 +341,7 @@ function AlbumDetailModal({
                       <Play className="w-4 h-4" fill="currentColor" />
                       播放专辑
                     </button>
+                    {platform !== 'apple' && (
                     <button
                       onClick={handleSubscribe}
                       disabled={subscribing}
@@ -328,6 +357,7 @@ function AlbumDetailModal({
                       <Heart className={`w-4 h-4 ${subscribed ? 'fill-current' : ''}`} />
                       {subscribed ? '已收藏' : '收藏专辑'}
                     </button>
+                    )}
                   </div>
                 </div>
 

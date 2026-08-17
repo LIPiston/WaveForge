@@ -12,6 +12,7 @@
 import type { LyricLine } from './musicApi'
 import { parseTTML, type TTMLAgent } from '../utils/ttmlParser'
 import { getAppleAuthState } from './appleAuth'
+import { appleApiRequest } from './appleApiBridge'
 
 // ─────────────────────────── 设置 ───────────────────────────
 
@@ -76,10 +77,12 @@ const normalizeTitle = (value: string) =>
     .toLowerCase()
     .replace(/[\s·•\-–—()（）[\]【】「」『』〈〉《》"'`、，。！？!?,.&/\\|]+/g, '')
 
-/** artworkUrl100 → 高清（正则 \d+x\d+bb 替换，与逆向文档一致） */
+/** artworkUrl100 → 高清（正则 \d+x\d+bb 替换，与逆向文档一致）；兼容 amp-api 的 {w}x{h}bb 占位符 */
 export function toHighResArtwork(url: string, size = 600): string {
   if (!url) return url
-  return url.replace(/\d+x\d+bb/g, `${size}x${size}bb`)
+  return url
+    .replace(/\d+x\d+bb/g, `${size}x${size}bb`)
+    .replace(/\{w\}x\{h\}bb/g, `${size}x${size}bb`)
 }
 
 /** 设置 storefront → iTunes country 参数（大写 ISO） */
@@ -213,49 +216,36 @@ export async function fetchAppleSyllableLyricsDirect(
   if (lang.script) params.set('l[script]', lang.script)
   params.set('extend', 'ttmlLocalizations')
 
-  const url = `https://amp-api.music.apple.com/v1/catalog/${encodeURIComponent(storefront)}/songs/${encodeURIComponent(match.songId)}/syllable-lyrics?${params.toString()}`
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 6000)
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${settings.developerToken}`,
-        'Media-User-Token': settings.mediaUserToken,
-        Origin: 'https://music.apple.com',
-        Referer: 'https://music.apple.com/',
-        'Accept-Language': lang.accept,
-        Accept: 'application/json',
-      },
-    })
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
-        console.warn('[AppleMusic] AMP 401/403：token 无效或未授权，回退社区库')
-      } else {
-        console.warn(`[AppleMusic] AMP HTTP ${response.status}`)
-      }
-      return null
+  // 走主进程代理（浏览器直连 amp-api 会被 CORS 拦截，与登录/资料库同理）
+  const path = `/v1/catalog/${encodeURIComponent(storefront)}/songs/${encodeURIComponent(match.songId)}/syllable-lyrics?${params.toString()}`
+  const result = await appleApiRequest(path, {
+    developerToken: settings.developerToken,
+    mediaUserToken: settings.mediaUserToken,
+    timeoutMs: 6000,
+  })
+  if (!result.ok) {
+    if (result.status === 401 || result.status === 403) {
+      console.warn('[AppleMusic] AMP 401/403：token 无效或未授权，回退社区库')
+    } else if (result.status === 0) {
+      console.warn('[AppleMusic] AMP 网络错误，回退社区库:', result.error)
+    } else {
+      console.warn(`[AppleMusic] AMP HTTP ${result.status}`)
     }
-    const data = await response.json()
-    const attributes = data?.data?.[0]?.attributes
-    if (!attributes) return null
-    // 优先当前语言（ttmlLocalizations 是按语言码 → TTML 字符串的映射）
-    const localizations = attributes.ttmlLocalizations
-    if (localizations && typeof localizations === 'object') {
-      const candidates = [settings.lyricLang, 'zh-Hans', 'zh-Hant', 'en-US']
-      for (const code of candidates) {
-        const ttml = localizations[code]
-        if (typeof ttml === 'string' && ttml.trim().length > 0) return ttml
-      }
-    }
-    if (typeof attributes.ttml === 'string' && attributes.ttml.trim().length > 0) return attributes.ttml
     return null
-  } catch (error) {
-    console.warn('[AppleMusic] AMP 请求失败:', error)
-    return null
-  } finally {
-    window.clearTimeout(timeout)
   }
+  const attributes = result.data?.data?.[0]?.attributes
+  if (!attributes) return null
+  // 优先当前语言（ttmlLocalizations 是按语言码 → TTML 字符串的映射）
+  const localizations = attributes.ttmlLocalizations
+  if (localizations && typeof localizations === 'object') {
+    const candidates = [settings.lyricLang, 'zh-Hans', 'zh-Hant', 'en-US']
+    for (const code of candidates) {
+      const ttml = localizations[code]
+      if (typeof ttml === 'string' && ttml.trim().length > 0) return ttml
+    }
+  }
+  if (typeof attributes.ttml === 'string' && attributes.ttml.trim().length > 0) return attributes.ttml
+  return null
 }
 
 // ─────────────────────────── AMLL am-lyrics 社区库（免 token） ───────────────────────────

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Search, X, Music, History, Clock, User, Disc, Sparkles, TrendingUp, ListMusic } from 'lucide-react'
 import { searchSongs, searchSuggest, searchArtists, searchAlbums, searchQuick, searchPlaylists, Song, Artist, Album, SearchSuggestion, getProxiedImageUrl, loadAlbumCovers, resolveSongAlbumIdentifier, searchHot } from '../services/musicApi'
 import { mergeFusedSearchResults, type FusedSearchIntent, type MusicPlatform } from '../services/fusedSearch'
+import { isPlatformVisible } from '../services/platforms'
 import CachedImage from './CachedImage'
 import ArtistDetailModal from './ArtistDetailModal'
 import AlbumDetailModal from './AlbumDetailModal'
@@ -11,6 +12,7 @@ import ScrollToCurrentSong from './ScrollToCurrentSong'
 import type { PlaybackOrigin, SongSelectHandler } from '../types/playbackNavigation'
 import SongContextMenu from './SongContextMenu'
 import { getUserPlaylists } from '../services/playlistService'
+import { searchAppleSongsAsSongs, searchAppleCatalogArtists, searchAppleCatalogAlbums, getAppleLibraryPlaylists } from '../services/appleCatalog'
 import { parseStoredArray } from '../utils/storage'
 
 interface SearchPanelProps {
@@ -28,8 +30,8 @@ interface SearchPanelProps {
   onRemoveFromFavorites?: (song: Song) => void | Promise<unknown>
   onAddToPlaylist?: (song: Song, playlistId: string) => void
   onViewComments?: (song: Song) => void
-  onOpenArtist?: (artistId: string, platform: 'netease' | 'qq') => void
-  onOpenAlbum?: (albumId: string, platform: 'netease' | 'qq') => void
+  onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
+  onOpenAlbum?: (albumId: string, platform: MusicPlatform) => void
   onCopyInfo?: (song: Song) => void
   onRestoreConsumed?: () => void
 }
@@ -37,6 +39,7 @@ interface SearchPanelProps {
 // 搜索历史本地存储key
 const SEARCH_HISTORY_KEY_NETEASE = 'waveforge_search_history_netease'
 const SEARCH_HISTORY_KEY_QQ = 'waveforge_search_history_qq'
+const SEARCH_HISTORY_KEY_APPLE = 'waveforge_search_history_apple'
 const SEARCH_HISTORY_KEY_FUSED = 'waveforge_search_history_fused'
 const MAX_HISTORY = 5
 // 搜索结果缓存上限：每次搜索缓存完整结果集（约 100 首歌对象），面板是常驻单例，
@@ -175,7 +178,14 @@ export default function SearchPanel({
     event.stopPropagation()
     setSongContextMenu({ show: true, x: event.clientX, y: event.clientY, song })
     setContextUserPlaylists([])
-    const songPlatform = (song.platform || 'netease') as 'netease' | 'qq'
+    const songPlatform = (song.platform || 'netease') as MusicPlatform
+    // Apple：右键菜单歌单用资料库歌单（amp-api）
+    if (songPlatform === 'apple') {
+      void getAppleLibraryPlaylists(100)
+        .then(setContextUserPlaylists)
+        .catch(error => console.warn('Failed to load Apple search context playlists:', error))
+      return
+    }
     const userId = songPlatform === 'qq'
       ? localStorage.getItem('qq_user_id') || ''
       : localStorage.getItem('netease_user_id') || ''
@@ -191,9 +201,17 @@ export default function SearchPanel({
   // 从 sessionStorage 读取会话内的平台和搜索模式，否则从 localStorage 读取
   const [platform, setPlatform] = useState<SearchPlatform>(() => {
     const sessionSaved = sessionStorage.getItem('waveforge_search_platform')
-    if (sessionSaved === 'qq' || sessionSaved === 'netease' || sessionSaved === 'fused') return sessionSaved
+    if (sessionSaved === 'qq' || sessionSaved === 'netease' || sessionSaved === 'apple') {
+      if (sessionSaved !== 'netease' && !isPlatformVisible(sessionSaved)) return 'netease'
+      return sessionSaved
+    }
+    if (sessionSaved === 'fused') return 'fused'
     const saved = localStorage.getItem('waveforge_last_search_platform')
-    return (saved === 'qq' || saved === 'netease' || saved === 'fused') ? saved : 'netease'
+    if (saved === 'qq' || saved === 'netease' || saved === 'apple') {
+      if (saved !== 'netease' && !isPlatformVisible(saved)) return 'netease'
+      return saved
+    }
+    return (saved === 'fused') ? 'fused' : 'netease'
   })
   const [searchType, setSearchType] = useState<'song' | 'artist' | 'album' | 'playlist'>(() => {
     const sessionSaved = sessionStorage.getItem('waveforge_search_type')
@@ -212,7 +230,7 @@ export default function SearchPanel({
   const qqSessionActive = qqLoggedIn || Boolean(
     localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || localStorage.getItem('qq_logged_in') === 'true'
   )
-  const isVipForPlatform = (songPlatform?: MusicPlatform) => songPlatform === 'qq' ? qqVip : neteaseVip
+  const isVipForPlatform = (songPlatform?: MusicPlatform) => songPlatform === 'qq' ? qqVip : songPlatform === 'apple' ? false : neteaseVip
   
   // 判断两首歌是否相同
   const isSameSong = (song1: Song | null | undefined, song2: Song | null | undefined) => {
@@ -235,7 +253,7 @@ export default function SearchPanel({
     const saved = sessionStorage.getItem('waveforge_search_album_results')
     return parseStoredArray<Album>(saved)
   })
-  const [playlistResults, setPlaylistResults] = useState<{ id: string; name: string; coverImgUrl: string; trackCount: number; creator: string; platform: 'netease' | 'qq' }[]>([])
+  const [playlistResults, setPlaylistResults] = useState<{ id: string; name: string; coverImgUrl: string; trackCount: number; creator: string; platform: MusicPlatform }[]>([])
   const [fusionUnavailablePlatforms, setFusionUnavailablePlatforms] = useState<MusicPlatform[]>([])
   const [fusionIntent, setFusionIntent] = useState<FusedSearchIntent>(() => {
     const saved = sessionStorage.getItem('waveforge_search_fusion_intent')
@@ -291,6 +309,11 @@ export default function SearchPanel({
   // 加载搜索热词
   useEffect(() => {
     let cancelled = false
+    // Apple 无热词接口
+    if (platform === 'apple') {
+      setHotSearch([])
+      return () => { cancelled = true }
+    }
     const platformForHot = platform === 'fused' ? 'netease' : platform
     const fetchHot = async () => {
       const data = await searchHot(platformForHot as 'netease' | 'qq')
@@ -313,7 +336,7 @@ export default function SearchPanel({
     setSearchHistory([])
     const key = platform === 'fused'
       ? SEARCH_HISTORY_KEY_FUSED
-      : platform === 'qq' ? SEARCH_HISTORY_KEY_QQ : SEARCH_HISTORY_KEY_NETEASE
+      : platform === 'qq' ? SEARCH_HISTORY_KEY_QQ : platform === 'apple' ? SEARCH_HISTORY_KEY_APPLE : SEARCH_HISTORY_KEY_NETEASE
     const history = localStorage.getItem(key)
     if (history) {
       try {
@@ -529,6 +552,7 @@ export default function SearchPanel({
           entitlements: {
             netease: { loggedIn: neteaseSessionActive, vip: neteaseVip },
             qq: { loggedIn: qqSessionActive, vip: qqVip },
+            apple: { loggedIn: false, vip: false },
           },
         })
         setFusionUnavailablePlatforms(unavailable)
@@ -542,6 +566,37 @@ export default function SearchPanel({
           allResults: fused.songs, artistResults: fused.artists, albumResults: fused.albums,
           artists: fused.artists, albums: fused.albums, unavailable, intent: fused.intent
         }, SEARCH_CACHE_MAX)
+      } else if (platform === 'apple') {
+        // Apple Music 目录搜索（iTunes Search，免 token；storefront 决定地区）
+        const storefront = localStorage.getItem('appleStorefront') || 'cn'
+        if (searchType === 'song') {
+          const songs = await searchAppleSongsAsSongs(finalKeyword, storefront, 50)
+          if (requestId !== searchRequestRef.current) return
+          setAllResults(songs)
+          setDisplayedResults(songs.slice(0, 20))
+        } else if (searchType === 'artist') {
+          const artists = await searchAppleCatalogArtists(finalKeyword, storefront)
+          if (requestId !== searchRequestRef.current) return
+          setArtistResults(artists.map(artist => ({
+            id: Number(artist.id) || 0,
+            name: artist.name,
+            picUrl: artist.artworkUrl || '',
+            platform: 'apple',
+          })))
+        } else if (searchType === 'album') {
+          const albums = await searchAppleCatalogAlbums(finalKeyword, storefront)
+          if (requestId !== searchRequestRef.current) return
+          setAlbumResults(albums.map(album => ({
+            id: Number(album.id) || 0,
+            name: album.name,
+            picUrl: album.artworkUrl || '',
+            artist: { name: album.artistName },
+            platform: 'apple',
+          })))
+        } else if (searchType === 'playlist') {
+          // Apple 无歌单搜索接口（编辑精选歌单走探索页）
+          setPlaylistResults([])
+        }
       } else if (searchType === 'song') {
         const songResult = await searchSongs(finalKeyword, 100, platform)
         if (requestId !== searchRequestRef.current) return
@@ -862,6 +917,7 @@ export default function SearchPanel({
               <Sparkles className="w-4 h-4" />
               融合搜索
             </button>
+            {isPlatformVisible('netease') && (
             <button
               onClick={() => setPlatform('netease')}
               className={`px-6 py-3 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg ${
@@ -874,6 +930,8 @@ export default function SearchPanel({
             >
               网易云音乐
             </button>
+            )}
+            {isPlatformVisible('qq') && (
             <button
               onClick={() => setPlatform('qq')}
               className={`px-6 py-3 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg ${
@@ -886,6 +944,21 @@ export default function SearchPanel({
             >
               QQ音乐
             </button>
+            )}
+            {isPlatformVisible('apple') && (
+            <button
+              onClick={() => setPlatform('apple')}
+              className={`px-6 py-3 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg ${
+                platform === 'apple'
+                  ? 'bg-pink-600/90 text-white hover:bg-pink-600'
+                  : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
+              }`}
+            >
+              Apple Music
+            </button>
+            )}
             <div className="flex-1 min-w-4" />
             {isFused ? (
               <div className={`px-4 py-2 rounded-2xl bg-violet-500/10 border border-violet-400/20 text-xs leading-5 ${playerTheme === 'dark' ? 'text-violet-200/80' : 'text-violet-700/80'}`}>
@@ -1470,20 +1543,20 @@ export default function SearchPanel({
         onAddToPlaylist={onAddToPlaylist}
         onViewComments={onViewComments}
         onViewAlbum={(song) => {
-          const songPlatform = (song.platform || 'netease') as 'netease' | 'qq'
+          const songPlatform = song.platform || 'netease'
           void resolveSongAlbumIdentifier(song, songPlatform).then(albumId => {
             if (albumId) onOpenAlbum?.(albumId, songPlatform)
           })
         }}
         onViewArtist={(song) => {
-          const songPlatform = (song.platform || 'netease') as 'netease' | 'qq'
+          const songPlatform = song.platform || 'netease'
           const artist = song.artists?.[0]
           const artistId = songPlatform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
           if (artistId) onOpenArtist?.(String(artistId), songPlatform)
         }}
         onCopyInfo={onCopyInfo}
         userPlaylists={contextUserPlaylists}
-        platform={(songContextMenu.song.platform || 'netease') as 'netease' | 'qq'}
+        platform={songContextMenu.song.platform || 'netease'}
       />
     )}
 

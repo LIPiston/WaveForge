@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, memo, type ReactElem
 import { List, useDynamicRowHeight, type ListImperativeAPI, type RowComponentProps } from 'react-window'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Song } from '../services/musicApi'
+import type { MusicPlatform } from '../services/platforms'
 import { getProxiedImageUrl } from '../services/musicApi'
 import { ThumbsUp, MessageCircle, Trash2, Send, ChevronDown, Edit3 } from 'lucide-react'
 import ScrollToTop from './ScrollToTop'
@@ -17,7 +18,7 @@ interface PlaylistCommentResource {
   tags?: string[]
   createTime?: number
   commentCount?: number
-  platform?: 'netease' | 'qq'
+  platform?: MusicPlatform
 }
 
 interface CommentModalProps {
@@ -556,6 +557,13 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
 
   const loadComments = async (reset = false) => {
     if (!resourceId) return
+    // Apple 无公开评论接口：不请求平台评论
+    if (resourcePlatform === 'apple') {
+      setLoading(false)
+      setIsLoadingMore(false)
+      setError(null)
+      return
+    }
     
     if (reset) {
       setLoading(true)

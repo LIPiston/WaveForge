@@ -63,11 +63,12 @@ export const EXPLORE_SECTION_LABELS: Record<ExploreSectionId, string> = {
 }
 
 const BASE_ORDER: ExploreSectionId[] = ['discover', 'journey', 'playlists', 'charts', 'newSongs', 'channels']
+const APPLE_ORDER: ExploreSectionId[] = ['discover', 'playlists', 'charts', 'newSongs', 'albums']
 const PLATFORM_ORDER: Record<ExplorePlatform, ExploreSectionId[]> = {
   netease: BASE_ORDER,
   qq: BASE_ORDER,
-  // Apple 探索为独立页面（榜单/专辑/搜索），不参与板块排序
-  apple: [],
+  // Apple 与网易云/QQ 共享探索 UI，按能力表提供可用区块（无旅程/频道）
+  apple: APPLE_ORDER,
 }
 
 const DEFAULT_PLATFORM_PREFS = {
@@ -108,7 +109,7 @@ export function normalizeExplorePreferences(input: unknown): ExplorePreferences 
   const defaults = createDefaultExplorePreferences()
   const raw = input && typeof input === 'object' ? input as Partial<Record<ExplorePlatform, Partial<ExplorePlatformPreferences>>> : {}
 
-  for (const platform of ['netease', 'qq'] as ExplorePlatform[]) {
+  for (const platform of ['netease', 'qq', 'apple'] as ExplorePlatform[]) {
     const source = raw[platform] || {}
     const defaultOrder = PLATFORM_ORDER[platform]
     const validOrder = Array.isArray(source.order)
@@ -120,7 +121,8 @@ export function normalizeExplorePreferences(input: unknown): ExplorePreferences 
       : []
     let normalizedOrder = [...validOrder, ...missing]
     // 旧版本网易云没有旅程板块，QQ 旧偏好也可能缺失；升级后统一放在“为你发现”之后。
-    if (!validOrder.includes('journey')) {
+    // （Apple 不支持旅程，不做此迁移）
+    if (defaultOrder.includes('journey') && !validOrder.includes('journey')) {
       normalizedOrder = normalizedOrder.filter(item => item !== 'journey')
       normalizedOrder.splice(Math.max(0, normalizedOrder.indexOf('discover') + 1), 0, 'journey')
     }
@@ -447,10 +449,12 @@ export default function ExploreSettingsPanel({
               <section className="mb-7 space-y-4">
                 <h3 className={`text-sm font-semibold ${textPrimary}`}>平台增强</h3>
                 <ToggleRow
-                  label={platform === 'qq' ? 'QQ 个性化推荐（Skills）' : '网易云个性化推荐'}
+                  label={platform === 'qq' ? 'QQ 个性化推荐（Skills）' : platform === 'apple' ? 'Apple 目录增强' : '网易云个性化推荐'}
                   description={platform === 'qq'
                     ? '启用登录后的每日 30 首 / 猜你喜欢 / AI 歌单等增强推荐；关闭则只使用公开榜单与热门。'
-                    : '启用登录后的每日推荐 / 私人漫游等个性化内容。'}
+                    : platform === 'apple'
+                      ? '使用已配置的 Developer Token 获取更丰富的目录数据；未配置时使用公开 RSS 榜单。'
+                      : '启用登录后的每日推荐 / 私人漫游等个性化内容。'}
                   checked={current.enhancedApi}
                   accent={accent}
                   isDark={isDark}

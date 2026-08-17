@@ -8,6 +8,7 @@ import {
   Crown,
   Disc3,
   Film,
+  Globe,
   Headphones,
   Loader2,
   LogIn,
@@ -43,7 +44,8 @@ import MiniPlayer from './MiniPlayer'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
 import QQMusicJourney from './QQMusicJourney'
 import NeteaseMusicJourney from './NeteaseMusicJourney'
-import AppleExploreView from './AppleExploreView'
+import { getAppleLibraryPlaylists, APPLE_EXPLORE_COUNTRIES } from '../services/appleCatalog'
+import { getPlatformCapabilities, getVisiblePlatforms, PLATFORM_VISIBILITY_EVENT } from '../services/platforms'
 import ExploreSettingsPanel, {
   EXPLORE_SECTION_LABELS,
   createDefaultExplorePreferences,
@@ -394,6 +396,8 @@ const fingerprintExploreCredential = (value: string) => {
 }
 
 const getExploreAccountKey = (platform: ExplorePlatform) => {
+  // Apple 无 cookie/用户，按商店区分缓存
+  if (platform === 'apple') return `apple:${localStorage.getItem('appleStorefront') || 'cn'}`
   const userId = localStorage.getItem(platform === 'qq' ? 'qq_user_id' : 'netease_user_id') || ''
   const cookie = getExploreCookie(platform)
   if (userId) return `user:${userId}`
@@ -414,7 +418,7 @@ const readExploreCache = (): Partial<Record<ExplorePlatform, ExplorePayload>> =>
   const entries = readExploreCacheEntries()
   const today = getExploreDateKey()
   const result: Partial<Record<ExplorePlatform, ExplorePayload>> = {}
-  ;(['netease', 'qq'] as ExplorePlatform[]).forEach(platform => {
+  ;(['netease', 'qq', 'apple'] as ExplorePlatform[]).forEach(platform => {
     const entry = entries[platform]
     if (
       entry?.payload &&
@@ -488,6 +492,21 @@ function ExploreView({
     const saved = localStorage.getItem('explorePlatform')
     return saved === 'qq' ? 'qq' : saved === 'apple' ? 'apple' : 'netease'
   })
+  // 可见平台（设置中可隐藏不常用的平台）
+  const [visiblePlatforms, setVisiblePlatforms] = useState<ExplorePlatform[]>(() => getVisiblePlatforms())
+  useEffect(() => {
+    const sync = () => setVisiblePlatforms(getVisiblePlatforms())
+    window.addEventListener(PLATFORM_VISIBILITY_EVENT, sync)
+    return () => window.removeEventListener(PLATFORM_VISIBILITY_EVENT, sync)
+  }, [])
+  useEffect(() => {
+    // 当前平台被隐藏时切换到第一个可见平台
+    if (platform && !visiblePlatforms.includes(platform)) {
+      const next = visiblePlatforms[0] || 'netease'
+      setPlatform(next)
+      localStorage.setItem('explorePlatform', next)
+    }
+  }, [visiblePlatforms, platform])
   const [dataByPlatform, setDataByPlatform] = useState<Partial<Record<ExplorePlatform, ExplorePayload>>>(() => readExploreCache())
   const [loading, setLoading] = useState(() => {
     const cached = readExploreCache()
@@ -505,6 +524,15 @@ function ExploreView({
   const detailControllerRef = useRef<AbortController | null>(null)
   const detailCleanupTimerRef = useRef<number | null>(null)
   const [userPlaylists, setUserPlaylists] = useState<any[]>([])
+  // Apple 探索国家/地区切换（缺省取账号 storefront）
+  const [appleCountry, setAppleCountry] = useState(() => (
+    localStorage.getItem('appleExploreCountry') || (appleStorefront && APPLE_EXPLORE_COUNTRIES.some(item => item.code === appleStorefront) ? appleStorefront : 'cn')
+  ))
+  const changeAppleCountry = (country: string) => {
+    localStorage.setItem('appleExploreCountry', country)
+    setAppleCountry(country)
+    void loadExplore(undefined, true)
+  }
   const [songContextMenu, setSongContextMenu] = useState<{
     show: boolean
     x: number
@@ -665,11 +693,10 @@ function ExploreView({
   } as CSSProperties
 
   const loadExplore = useCallback(async (signal?: AbortSignal, forceRefresh = false) => {
-    if (platform === 'apple') return
     setLoading(true)
     setError('')
     try {
-      const result = await fetchExploreHome(platform, signal, { forceRefresh, enhanced: platformPreferences.enhancedApi })
+      const result = await fetchExploreHome(platform, signal, { forceRefresh, enhanced: platformPreferences.enhancedApi, appleCountry: platform === 'apple' ? appleCountry : undefined })
       writeExploreCache(platform, result)
       setDataByPlatform(previous => ({ ...previous, [platform]: result }))
     } catch (requestError) {
@@ -679,11 +706,10 @@ function ExploreView({
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [platform, qqLoggedIn, neteaseLoggedIn, authRevision, platformPreferences.enhancedApi])
+  }, [platform, qqLoggedIn, neteaseLoggedIn, authRevision, platformPreferences.enhancedApi, appleCountry])
 
   useEffect(() => {
     localStorage.setItem('explorePlatform', platform)
-    if (platform === 'apple') return
     const sessionKey = `${EXPLORE_SESSION_REFRESH_PREFIX}${platform}`
     const requiresPersonalizedPayload = platform === 'qq' && qqLoggedIn
     const inMemoryPayload = dataByPlatform[platform]
@@ -716,8 +742,21 @@ function ExploreView({
 
   useEffect(() => {
     if (platform === 'apple') {
-      setUserPlaylists([])
-      return
+      if (!appleLoggedIn) {
+        setUserPlaylists([])
+        return
+      }
+      let active = true
+      const shouldForceRefresh = authRevision !== playlistAuthRevisionRef.current
+      playlistAuthRevisionRef.current = authRevision
+      void getAppleLibraryPlaylists(100)
+        .then(playlists => {
+          if (active) setUserPlaylists(playlists)
+        })
+        .catch(() => {
+          if (active) setUserPlaylists([])
+        })
+      return () => { active = false }
     }
     const isLoggedIn = platform === 'qq' ? qqLoggedIn : neteaseLoggedIn
     const userId = platform === 'qq' ? qqUserId || '' : neteaseUserId || ''
@@ -798,7 +837,7 @@ function ExploreView({
     () => Object.fromEntries(platformPreferences.order.map((section, index) => [section, index])) as Record<ExploreSectionId, number>,
     [platformPreferences.order]
   )
-  const sectionVisible = (section: ExploreSectionId) => !platformPreferences.hidden.includes(section)
+  const sectionVisible = (section: ExploreSectionId) => !platformPreferences.hidden.includes(section) && getPlatformCapabilities(platform).exploreSections.includes(section)
   const sectionStyle = (section: ExploreSectionId): CSSProperties => ({ order: sectionOrder[section] ?? 99 })
   const showSectionDescriptions = platformPreferences.showDescriptions
   const expandedHome = platformPreferences.contentAmount === 'expanded'
@@ -884,7 +923,7 @@ function ExploreView({
     coverImgUrl: chart.coverUrl,
     trackCount: 0,
     description: chart.description,
-    platform: chart.platform as 'netease' | 'qq',
+    platform: chart.platform,
   }, signal => fetchExploreChart(chart, signal), autoplay)
 
   const handleChannel = (channel: ExploreChannel, autoplay = false) => {
@@ -898,7 +937,7 @@ function ExploreView({
       coverImgUrl: channel.coverUrl,
       trackCount: channel.song ? 1 : 0,
       description: channel.description,
-      platform: channel.platform as 'netease' | 'qq',
+      platform: channel.platform,
     }, signal => fetchExploreChannel(channel, signal), autoplay)
   }
 
@@ -1182,7 +1221,7 @@ function ExploreView({
             </div>
 
             <div className="ml-1 flex items-center rounded-2xl border border-white/[0.08] bg-black/20 p-1">
-              {(['netease', 'qq', 'apple'] as ExplorePlatform[]).map(item => (
+              {visiblePlatforms.map(item => (
                 <button
                   key={item}
                   type="button"
@@ -1204,6 +1243,25 @@ function ExploreView({
               ))}
             </div>
 
+            {platform === 'apple' && (
+              <div className="ml-1 flex items-center gap-0.5 rounded-2xl border border-white/[0.08] bg-black/20 p-1">
+                <Globe className="ml-1.5 h-3.5 w-3.5 shrink-0 text-white/35" />
+                {APPLE_EXPLORE_COUNTRIES.map(item => (
+                  <button
+                    key={item.code}
+                    type="button"
+                    onClick={() => changeAppleCountry(item.code)}
+                    className={`rounded-lg px-2 py-1 text-xs transition ${
+                      appleCountry === item.code ? 'font-medium text-[#081017]' : 'text-white/55 hover:bg-white/[0.06] hover:text-white'
+                    }`}
+                    style={appleCountry === item.code ? { background: accent } : undefined}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className="ml-auto flex items-center gap-2">
               {platform === 'netease' && (
                 <button
@@ -1216,6 +1274,7 @@ function ExploreView({
                   <Radio className={`h-[18px] w-[18px] ${fmLoading ? 'animate-pulse' : ''}`} />
                 </button>
               )}
+              {platform !== 'apple' && (
               <button
                 type="button"
                 onClick={() => setShowMVExplore(true)}
@@ -1225,6 +1284,7 @@ function ExploreView({
               >
                 <Film className="h-[18px] w-[18px]" />
               </button>
+              )}
               <button
                 type="button"
                 onClick={onRemoteClick}
@@ -1274,17 +1334,6 @@ function ExploreView({
           </div>
         </header>
 
-        {platform === 'apple' ? (
-          <main className="mx-auto w-full max-w-[1680px] px-5 pb-40 pt-7 md:px-8 lg:px-10">
-            <AppleExploreView
-              onSongSelect={onSongSelect}
-              accentColor={accent}
-              initialCountry={appleStorefront || 'cn'}
-              appleLoggedIn={appleLoggedIn}
-              onOpenLogin={() => onLoginClick('apple')}
-            />
-          </main>
-        ) : (
         <main className="mx-auto max-w-[1680px] px-5 pb-8 pt-7 md:px-8 lg:px-10">
           <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -1464,13 +1513,15 @@ function ExploreView({
                       songs: payload.dailySongs.length ? payload.dailySongs : payload.newSongs,
                     },
                     {
-                      label: platform === 'qq' ? '猜你喜欢' : '私人漫游',
-                      title: '一键进入无限电台',
-                      copy: payload.radioSongs.length ? '越听越懂你的连续推荐' : '从相似口味自然延伸',
+                      label: platform === 'qq' ? '猜你喜欢' : platform === 'apple' ? '今日热选' : '私人漫游',
+                      title: platform === 'apple' ? '苹果全球热榜' : '一键进入无限电台',
+                      copy: platform === 'apple'
+                        ? `${payload.dailySongs.length} 首热门歌曲一次听完`
+                        : payload.radioSongs.length ? '越听越懂你的连续推荐' : '从相似口味自然延伸',
                       icon: Radio,
-                      cover: payload.radioSongs[0]?.album.picUrl || payload.channels[0]?.coverUrl,
-                      songs: payload.radioSongs,
-                      continuous: true,
+                      cover: payload.radioSongs[0]?.album.picUrl || payload.channels[0]?.coverUrl || payload.dailySongs[0]?.album.picUrl,
+                      songs: payload.radioSongs.length ? payload.radioSongs : (platform === 'apple' ? payload.dailySongs : payload.radioSongs),
+                      continuous: platform !== 'apple',
                     },
                     {
                       label: '新鲜发行',
@@ -1535,7 +1586,7 @@ function ExploreView({
               </section>
               )}
 
-              {sectionVisible('journey') && ((platform === 'qq' && qqLoggedIn) || (platform === 'netease' && neteaseLoggedIn && neteaseUserId)) && (
+              {sectionVisible('journey') && platform !== 'apple' && ((platform === 'qq' && qqLoggedIn) || (platform === 'netease' && neteaseLoggedIn && neteaseUserId)) && (
                 <section style={sectionStyle('journey')}>
                   {platform === 'qq' ? (
                     <QQMusicJourney
@@ -1581,6 +1632,9 @@ function ExploreView({
                         <div className="absolute inset-0 bg-black/0 transition group-hover:bg-black/20" />
                         {playlist.source === 'qqmusic-skills' && (
                           <span className="absolute left-3 top-3 rounded-full bg-black/45 px-2.5 py-1 text-[10px] text-white/75 backdrop-blur-md">AI 推荐</span>
+                        )}
+                        {playlist.source === 'apple-personalized' && (
+                          <span className="absolute left-3 top-3 rounded-full bg-black/45 px-2.5 py-1 text-[10px] text-white/75 backdrop-blur-md">为你推荐</span>
                         )}
                         {formatCount(playlist.playCount) && (
                           <span className="absolute right-3 top-3 flex items-center gap-1 rounded-full bg-black/45 px-2.5 py-1 text-[10px] text-white/75 backdrop-blur-md">
@@ -1788,7 +1842,6 @@ function ExploreView({
             </div>
           )}
         </main>
-        )}
       </div>
 
       <AnimatePresence>
@@ -1873,7 +1926,7 @@ function ExploreView({
         })}
         neteaseVip={neteaseVip}
         qqVip={qqVip}
-        currentPlatform={(detail?.playlist.platform || (platform === 'apple' ? 'netease' : platform)) as 'netease' | 'qq'}
+        currentPlatform={detail?.playlist.platform || platform}
         onOpenArtist={onOpenArtist}
         onOpenAlbum={onOpenAlbum}
         onPlayNext={onPlayNext}
@@ -1909,20 +1962,19 @@ function ExploreView({
             const identifier = song.platform === 'qq'
               ? song.album?.mid || song.album?.pmid || song.album?.id
               : song.album?.id
-            // 上下文菜单只处理可播放平台（Apple 曲目经匹配后以网易云/QQ 形式进入播放队列）
-            const menuPlatform = (song.platform || (platform === 'apple' ? 'netease' : platform)) as 'netease' | 'qq'
+            const menuPlatform = song.platform || platform
             if (identifier) onOpenAlbum?.(String(identifier), menuPlatform)
           }}
           onViewArtist={song => {
             const artist = song.artists[0]
             const identifier = song.platform === 'qq' ? artist?.mid || artist?.id : artist?.id
-            const menuPlatform = (song.platform || (platform === 'apple' ? 'netease' : platform)) as 'netease' | 'qq'
+            const menuPlatform = song.platform || platform
             if (identifier) onOpenArtist?.(String(identifier), menuPlatform)
           }}
           onCopyInfo={onCopyInfo}
           onDislike={handleDislike}
           userPlaylists={userPlaylists}
-          platform={(songContextMenu.song.platform || (platform === 'apple' ? 'netease' : platform)) as 'netease' | 'qq'}
+          platform={songContextMenu.song.platform || platform}
         />
       )}
 

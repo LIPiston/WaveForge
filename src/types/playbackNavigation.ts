@@ -21,7 +21,7 @@ export interface PlaybackOrigin {
   mode?: ViewMode
   surface: PlaybackSurface
   platform?: 'netease' | 'qq' | 'apple'
-  searchMode?: 'netease' | 'qq' | 'fused'
+  searchMode?: 'netease' | 'qq' | 'apple' | 'fused'
   artistId?: string | number
   albumId?: string | number
   artistTab?: 'hotSongs' | 'allSongs' | 'albums' | 'videos' | 'similarArtists' | 'info'
