@@ -26,6 +26,11 @@ const { app, BrowserWindow, ipcMain, protocol, shell, session, safeStorage, dial
 const path = require('path')
 const fs = require('fs')
 const crypto = require('crypto')
+const {
+  loadWindowState,
+  saveWindowState,
+  clampBoundsToWorkArea,
+} = require('./window-state.cjs')
 const startupTimingLogPath = process.env.WAVEFORGE_STARTUP_LOG || ''
 function logStartupTiming(message) {
   const line = '[Electron +' + Math.round(performance.now() - electronProcessStartedAt) + 'ms] ' + message
@@ -1356,6 +1361,32 @@ function createWindow() {
   // 阻止同窗口被导航到外部站点（特权 preload 桥只允许停留在应用自身地址）
   guardAgainstExternalNavigation(mainWindow.webContents)
 
+  // ── 窗口状态记忆：恢复上次关闭时的窗口布局（大小/位置/显示器/全屏或最大化） ──
+  // 仅当记录的版本与当前版本一致（未经过应用内更新）时恢复，否则保持默认（主屏 + 1400×900）。
+  const savedWindowState = loadWindowState(app)
+  if (savedWindowState) {
+    try {
+      const { screen } = require('electron')
+      const displays = screen.getAllDisplays()
+      const targetDisplay = displays.find((d) => d.id === savedWindowState.displayId) || screen.getPrimaryDisplay()
+      const bounds = clampBoundsToWorkArea(savedWindowState.bounds, targetDisplay.workArea)
+      mainWindow.setBounds(bounds)
+      if (savedWindowState.state === 'maximized') {
+        // 窗口尚未显示时 maximize 可能不生效，等 show 后再设置
+        mainWindow.once('show', () => {
+          if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isKiosk()) mainWindow.maximize()
+        })
+      } else if (savedWindowState.state === 'kiosk') {
+        // 全屏覆盖任务栏（kiosk）：同样等窗口显示后再进入
+        mainWindow.once('show', () => {
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setKiosk(true)
+        })
+      }
+    } catch (error) {
+      console.error('[WindowState] 恢复窗口状态失败:', error?.message || error)
+    }
+  }
+
   // 开发模式加载 Vite 服务器
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     console.error('[ProcessHealth] Main renderer exited:', {
@@ -1452,6 +1483,11 @@ function createWindow() {
     return { action: 'deny' }
   })
 
+  // 窗口关闭（含退出）前做最终状态保存——will-quit 时窗口可能已销毁拿不到 bounds
+  mainWindow.on('close', () => {
+    persistMainWindowState()
+  })
+
   mainWindow.on('closed', () => {
     mainWindow = null
     if (wallpaperWatcher) {
@@ -1484,6 +1520,22 @@ function createWindow() {
       safeSendToWindow(mainWindow, 'window-fullscreen-change', mainWindow.isKiosk() || mainWindow.isFullScreen())
     }
   })
+
+  // ── 窗口状态记忆：大小/位置/状态变化后防抖保存（关闭时会做最终保存） ──
+  let windowStateSaveTimer = null
+  const scheduleWindowStateSave = () => {
+    if (windowStateSaveTimer) clearTimeout(windowStateSaveTimer)
+    windowStateSaveTimer = setTimeout(() => {
+      windowStateSaveTimer = null
+      persistMainWindowState()
+    }, 400)
+  }
+  mainWindow.on('resize', scheduleWindowStateSave)
+  mainWindow.on('move', scheduleWindowStateSave)
+  mainWindow.on('maximize', scheduleWindowStateSave)
+  mainWindow.on('unmaximize', scheduleWindowStateSave)
+  mainWindow.on('enter-full-screen', scheduleWindowStateSave)
+  mainWindow.on('leave-full-screen', scheduleWindowStateSave)
 
   // F12 快捷键：开发者模式下打开开发者工具
   mainWindow.webContents.on('before-input-event', (event, input) => {
@@ -2808,6 +2860,18 @@ ipcMain.handle('revert-gpu-change', () => {
   }
 })
 
+// 保存主窗口当前状态（窗口化/最大化/全屏覆盖任务栏 + 位置大小 + 所在显示器）
+function persistMainWindowState() {
+  try {
+    const { screen } = require('electron')
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      saveWindowState(app, mainWindow, screen)
+    }
+  } catch {
+    // ignore
+  }
+}
+
 // IPC 处理：窗口控制
 ipcMain.handle('window-minimize', () => {
   if (mainWindow) {
@@ -2861,6 +2925,7 @@ ipcMain.handle('window-maximize', async () => {
         mainWindow.setKiosk(true)
       }
     }
+    persistMainWindowState() // kiosk 切换可能不触发 fullscreen 事件，立即记忆
   }
 })
 
@@ -2925,6 +2990,7 @@ ipcMain.handle('window-set-fullscreen', (event, fullscreen, kiosk = false) => {
     }
     
     console.log(`[全屏控制] 执行后状态: isKiosk=${mainWindow.isKiosk()}, isFullScreen=${mainWindow.isFullScreen()}, isMaximized=${mainWindow.isMaximized()}`)
+    persistMainWindowState() // 全屏/最大化切换后立即记忆
   }
 })
 
@@ -3108,6 +3174,7 @@ function startLocalBackend() {
 
 // 应用退出时一并结束本地子进程
 app.on('will-quit', () => {
+  persistMainWindowState() // 关闭前做最终窗口状态保存（防抖定时器可能尚未触发）
   try { localApiChild?.kill() } catch {}
   try { localPythonChild?.kill() } catch {}
   try { localLoudnessChild?.kill() } catch {}
