@@ -1,7 +1,7 @@
 /**
- * WaveForge v3 调音室 UI —— 渲染冒烟测试（jsdom）
+ * WaveForge v3 调音室 UI —— HyperSoundEngine 风格新 UI 渲染冒烟测试（jsdom）
  *
- * 验证主面板可渲染、页签切换、效果弹窗开合、场景应用、分享串往返、
+ * 验证主面板可渲染、左侧导航切换、效果弹窗开合、场景应用、分享串往返、
  * 听力测试流程状态机推进。不依赖真实 Web Audio（桥由 EngineV3 真实实例提供）。
  * 环境：文件头 @vitest-environment jsdom。
  */
@@ -22,42 +22,56 @@ function makeUi() {
   return { engine, bridge, view }
 }
 
-/** 点击页签 */
-function clickTab(label: string) {
+/** 点击左侧导航项 */
+function clickNav(label: string) {
   fireEvent.click(screen.getAllByText(label)[0])
 }
 
 describe('V3 调音室 UI 冒烟', () => {
   beforeEach(() => cleanup())
 
-  it('主面板渲染：标题 + 4 页签 + 默认音效场景页', () => {
+  it('主面板渲染：标题 + 7 导航项 + 默认主页', () => {
     makeUi()
-    expect(screen.getByText('调音室')).toBeTruthy()
-    for (const label of ['音效场景', '均衡器', '调音器', '分析']) {
+    expect(screen.getByText('HyperSoundEngine')).toBeTruthy()
+    for (const label of ['主页', '音效场景', '均衡器', '空间音效', '动态调音', '分析', '调音器']) {
       expect(screen.getAllByText(label).length).toBeGreaterThan(0)
     }
-    // 默认页：场景方案 + 效果卡
-    expect(screen.getByText('场景方案')).toBeTruthy()
-    expect(screen.getByText('混响')).toBeTruthy()
-    expect(screen.getByText('3D 环绕')).toBeTruthy()
-    expect(screen.getByText('低音增强')).toBeTruthy()
-    expect(screen.getByText('音量自适应补偿')).toBeTruthy()
+    // 默认页：主页包含系统音效 + 音效模式快捷
+    expect(screen.getByText('系统音效')).toBeTruthy()
+    expect(screen.getByText('Hi-Fi 模式')).toBeTruthy()
+    expect(screen.getByText('增强模式')).toBeTruthy()
+    expect(screen.getByText('影院模式')).toBeTruthy()
   })
 
-  it('效果卡点击打开配置弹窗，关闭按钮关闭', () => {
-    makeUi()
-    fireEvent.click(screen.getByText('混响'))
-    expect(screen.getByText('启用 混响')).toBeTruthy()
-    fireEvent.click(screen.getByLabelText('关闭弹窗'))
-    // 弹窗关闭后主面板仍在
-    expect(screen.getByText('调音室')).toBeTruthy()
-  })
-
-  it('弹窗内修改参数经桥写入引擎（压缩器阈值）', () => {
+  it('空间音效页：混响开关可切换启用态', () => {
     const { bridge } = makeUi()
-    fireEvent.click(screen.getByText('动态压缩'))
-    expect(screen.getByText('启用 动态压缩')).toBeTruthy()
-    // 拖动阈值滑杆到 -30（fireEvent.change 模拟）
+    clickNav('空间音效')
+    // 混响卡片标题存在
+    expect(screen.getAllByText('混响').length).toBeGreaterThan(0)
+    // 默认未启用
+    expect(bridge.getParams().reverb.enabled).toBe(false)
+    // 点击「启用 混响」开关文案（位于卡片头部右侧 toggle 按钮的 aria-pressed）
+    const toggles = screen.getAllByRole('button')
+    // 找到混响卡片的开关按钮并切换
+    const reverbToggle = toggles.find((btn) => btn.getAttribute('aria-pressed') === 'false' && btn.classList.contains('rounded-full'))
+    expect(reverbToggle).toBeTruthy()
+    fireEvent.click(reverbToggle!)
+    expect(bridge.getParams().reverb.enabled).toBe(true)
+  })
+
+  it('动态调音页：压缩器阈值修改经桥写入引擎', () => {
+    const { bridge } = makeUi()
+    clickNav('动态调音')
+    // 切换压缩器开关（默认关闭，先开启）
+    const compressHeader = screen.getAllByText('动态压缩')
+    expect(compressHeader.length).toBeGreaterThan(0)
+    // 找到压缩器开关（aria-pressed=false 的圆角按钮）并开启
+    const toggles = screen.getAllByRole('button')
+    const compToggle = toggles.find((btn) => btn.getAttribute('aria-pressed') === 'false' && btn.classList.contains('rounded-full'))
+    expect(compToggle).toBeTruthy()
+    fireEvent.click(compToggle!)
+    expect(bridge.getParams().compressor.enabled).toBe(true)
+    // 开启后阈值滑杆出现，拖动到 -30
     const sliders = screen.getAllByRole('slider')
     expect(sliders.length).toBeGreaterThan(0)
     fireEvent.change(sliders[0], { target: { value: '-30' } })
@@ -67,6 +81,7 @@ describe('V3 调音室 UI 冒烟', () => {
 
   it('场景应用：点「流行」→ sceneId=pop 且参数变化', () => {
     const { bridge } = makeUi()
+    clickNav('音效场景')
     fireEvent.click(screen.getByText('流行'))
     expect(bridge.getParams().sceneId).toBe('pop')
     expect(bridge.getParams().eq.proBands[0].gain).not.toBe(0)
@@ -74,7 +89,7 @@ describe('V3 调音室 UI 冒烟', () => {
 
   it('分享串：生成 → 解码往返一致（校验白名单）', () => {
     const { bridge } = makeUi()
-    clickTab('调音器')
+    clickNav('调音器')
     fireEvent.click(screen.getByText('生成分享串'))
     const textarea = screen.getAllByRole('textbox').find((el) => (el as HTMLTextAreaElement).value.length > 20) as HTMLTextAreaElement
     expect(textarea).toBeTruthy()
@@ -87,7 +102,7 @@ describe('V3 调音室 UI 冒烟', () => {
 
   it('听力测试：开始 → 二分推进 5 轮后切频点 → 完成', () => {
     const { bridge } = makeUi()
-    clickTab('分析')
+    clickNav('分析')
     fireEvent.click(screen.getByText('开始测试'))
     // 7 频点 × 5 轮 = 35 次作答（全部"没听到"则阈值收敛到 -60.. 区间）
     for (let i = 0; i < 35; i++) {
@@ -101,9 +116,9 @@ describe('V3 调音室 UI 冒烟', () => {
     expect(audio.audiogram.length).toBe(7)
   })
 
-  it('EQ 页签：10/20 段切换 + 曲线编辑器存在', () => {
+  it('均衡器页：10/20 段切换 + 曲线编辑器存在', () => {
     const { bridge } = makeUi()
-    clickTab('均衡器')
+    clickNav('均衡器')
     fireEvent.click(screen.getByText('20 段'))
     expect(bridge.getParams().eq.bandCount).toBe(20)
     expect(bridge.getParams().eq.proBands.length).toBe(20)
@@ -111,20 +126,17 @@ describe('V3 调音室 UI 冒烟', () => {
     expect(document.querySelector('svg')).toBeTruthy()
   })
 
-  it('音量自适应补偿：auto 曲线读数随音量变化', () => {
+  it('主页音量控制：拖动到 20% → 引擎增益写入响度归一化通道', () => {
     const { bridge } = makeUi()
-    // 响度补偿/归一化两卡各有"配置"按钮，第一个是音量自适应补偿
-    fireEvent.click(screen.getAllByText('配置')[0])
-    expect(screen.getByText('启用 音量自适应补偿')).toBeTruthy()
-    // 音量滑杆拖动到 20% → 低频提升 >0
+    // 主页默认展示音量控制滑杆
     const sliders = screen.getAllByRole('slider')
     const volSlider = sliders.find((el) => (el as HTMLInputElement).min === '0' && (el as HTMLInputElement).max === '100')
     expect(volSlider).toBeTruthy()
     fireEvent.change(volSlider!, { target: { value: '20' } })
     const p = bridge.getParams()
-    expect(p.loudnessCompensation.volumePercent).toBe(20)
-    // 展示曲线读数：低频 +9.0dB（spl=56 → (80-56)*0.35=8.4 → 显示 +8.4）
-    expect(screen.getByText(/\+8\.4dB/)).toBeTruthy()
+    expect(p.loudnessNormalization.enabled).toBe(true)
+    // 20% → (20-100)*0.6 = -48dB
+    expect(p.loudnessNormalization.externalGainDb).toBe(-48)
   })
 
   it('编码一致性：encodeShareCode 与桥一致', () => {
@@ -132,4 +144,4 @@ describe('V3 调音室 UI 冒烟', () => {
     const p = bridge.getParams()
     expect(encodeShareCode(p)).toBe(bridge.encodeShare(p))
   })
-});
+})

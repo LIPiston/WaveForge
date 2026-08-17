@@ -22,10 +22,12 @@ interface MixingStudioProps {
   sourceDuration?: number
   /** 打开按钮的锚点位置（弹窗从按钮侧弹出/关闭时收缩回按钮） */
   anchorRect?: { x: number; y: number; width: number; height: number } | null
-  /** 当前引擎版本（切换入口显示用） */
-  engineVersion?: 'v1' | 'v2' | 'v3'
+  /** 当前引擎版本 id（切换入口高亮当前按钮） */
+  engineVersion?: string
   /** 请求切换引擎（App 负责热/冷切换与弹窗） */
-  onSwitchEngine?: (version: 'v1' | 'v2' | 'v3') => void
+  onSwitchEngine?: (version: string) => void
+  /** 可用引擎列表（由适配层注册表动态提供，据此动态渲染版本按钮） */
+  availableEngines?: Array<{ id: string; displayName: string; description: string }>
 }
 
 type Tab = 'effects' | 'eq' | 'tuner'
@@ -77,7 +79,7 @@ const EFFECT_META: Record<EffectKey, { name: string; desc: string; intro: string
   nightMode: { name: '夜间模式', desc: '软限幅不吵人', intro: '用软限幅把整体响度压到舒适范围，深夜低音量听感不刺耳。强度越高压得越狠。', icon: Moon },
 }
 
-export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, sourceDuration, anchorRect, engineVersion = 'v2', onSwitchEngine }: MixingStudioProps) {
+export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, sourceDuration, anchorRect, engineVersion = 'v2', onSwitchEngine, availableEngines }: MixingStudioProps) {
   const [activeTab, setActiveTab] = useState<Tab>('effects')
   const [settings, setSettings] = useState<AudioEffectsSettings>(engine.getSettings())
   const [presets, setPresets] = useState<EqPreset[]>(loadPresets)
@@ -519,42 +521,26 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {/* 引擎版本切换（v1 原版 / v2 增强版 / v3 DSP 内核） */}
+              {/* 引擎版本切换（动态渲染：根据适配层注册表检测到的引擎列表） */}
               {onSwitchEngine && (
                 <div
                   className="flex items-center rounded-full p-0.5"
                   style={{ background: inputBg, border: `1px solid ${glassBorder}`, backdropFilter: 'blur(8px)' }}
                 >
-                  <button
-                    type="button"
-                    onClick={() => onSwitchEngine('v1')}
-                    className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
-                    style={engineVersion === 'v1'
-                      ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
-                      : { color: textSecondary }}
-                  >
-                    v1
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onSwitchEngine('v2')}
-                    className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
-                    style={engineVersion === 'v2'
-                      ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
-                      : { color: textSecondary }}
-                  >
-                    v2
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onSwitchEngine('v3')}
-                    className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
-                    style={engineVersion === 'v3'
-                      ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
-                      : { color: textSecondary }}
-                  >
-                    v3
-                  </button>
+                  {(availableEngines || [{ id: 'v2', displayName: 'v2', description: '' }]).map((eng) => (
+                    <button
+                      key={eng.id}
+                      type="button"
+                      onClick={() => onSwitchEngine(eng.id)}
+                      title={eng.description}
+                      className="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all"
+                      style={engineVersion === eng.id
+                        ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
+                        : { color: textSecondary }}
+                    >
+                      {eng.displayName}
+                    </button>
+                  ))}
                 </div>
               )}
               <button

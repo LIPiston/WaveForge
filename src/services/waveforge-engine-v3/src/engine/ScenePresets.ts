@@ -18,7 +18,7 @@ import type { ScenePreset, V3EngineParams } from '../types'
 /** 11 个场景 id（顺序固定，与 SCENE_PRESETS 一一对应） */
 export const SCENE_IDS = [
   'pop',
-  'rock',
+  'enhanced',
   'jazz',
   'dance',
   'classical',
@@ -73,10 +73,14 @@ function setReverb(p: V3EngineParams, opts: {
   p.reverb.algorithmic.width = opts.width ?? 1
 }
 
-/** 关闭混响（干声直通）：非空间类场景的默认姿态 */
+/** 关闭混响（干声直通）：仅关 enabled，mode 保持 algorithmic（默认值）。
+ *  不把 mode 设成 'off'——否则用户在调音室打开混响开关时 mode 仍是 'off'，
+ *  引擎继续直通（路由条件是 enabled && mode !== 'off'），看起来"开不动"，
+ *  用户得进二级选项卡手动切到 algorithmic 才有声。mode='off' 只应由用户在
+ *  二级选项卡里手动选"关闭"时设。 */
 function disableReverb(p: V3EngineParams): void {
   p.reverb.enabled = false
-  p.reverb.mode = 'off'
+  p.reverb.mode = 'algorithmic'
 }
 
 function setCompressor(p: V3EngineParams, opts: {
@@ -159,9 +163,9 @@ export const SCENE_PRESETS: ScenePreset[] = [
     disableReverb(p)
     setBass(p, { cutoffHz: 85, harmonicType: 'odd', harmonicGain: 0.6, mix: 0.5 })
     // 齿音抑制默认关闭：摇滚高频本就锐利，去齿音会削掉吉他泛音与镲片亮度
-    const sc = finish(p, 'rock')
-    sc.name = '摇滚'
-    sc.description = '摇滚现场感：中频凹陷 + 强压缩 + 低频冲击（干声）'
+    const sc = finish(p, 'enhanced')
+    sc.name = '增强'
+    sc.description = '增强现场感：中频凹陷 + 强压缩 + 低频冲击（干声）'
     return sc
   })(),
   (() => {

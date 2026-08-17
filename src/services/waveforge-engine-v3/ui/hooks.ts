@@ -51,7 +51,10 @@ export function useV3Params(bridge: V3UiBridge): V3ParamsController {
   }, [bridge])
 
   const patch = useCallback((partial: DeepPartial<V3EngineParams>) => {
-    commit(deepMerge(bridge.getParams(), partial))
+    const merged = deepMerge(bridge.getParams(), partial)
+    // 手动调整参数后视为脱离场景快照（场景名显示「自定义」，模式卡不再高亮）
+    merged.customized = true
+    commit(merged)
   }, [bridge, commit])
 
   const replace = useCallback((next: V3EngineParams) => {

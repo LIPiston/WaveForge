@@ -16,7 +16,7 @@ import type { ScenePreset, V3EngineParams } from '../src/types'
 
 const EXPECTED_IDS = [
   'pop',
-  'rock',
+  'enhanced',
   'jazz',
   'dance',
   'classical',
