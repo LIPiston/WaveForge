@@ -478,7 +478,9 @@ function createDesktopPlayerWindow() {
       } catch (positionError) {
         console.warn('[桌面播放器] 初始定位失败:', positionError)
       }
-      desktopPlayerWindow.show()
+      // showInactive：不抢焦点。主窗口 kiosk 全屏（覆盖任务栏）时若被抢焦，
+      // Windows 会退出 kiosk 露出任务栏，用户还需再点一次主窗口才能恢复全屏。
+      desktopPlayerWindow.showInactive()
       desktopPlayerWindow.moveTop()
     }
   })

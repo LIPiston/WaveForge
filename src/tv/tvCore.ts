@@ -103,8 +103,8 @@ function focusRectOf(el: HTMLElement): DOMRect {
   return r
 }
 
-/** 基本可见性：display/visibility/透明度/尺寸/视口内（不含滚动容器裁剪）。 */
-function isBasicallyVisible(el: HTMLElement): boolean {
+/** 渲染存在性：display/visibility/透明度/尺寸（不含视口与滚动裁剪）。 */
+function isRendered(el: HTMLElement): boolean {
   if (!el.isConnected) return false
   const style = getComputedStyle(el)
   if (style.visibility === 'hidden' || style.display === 'none') return false
@@ -118,6 +118,13 @@ function isBasicallyVisible(el: HTMLElement): boolean {
   }
   const vr = focusRectOf(el)
   if (vr.width < 2 || vr.height < 2) return false
+  return true
+}
+
+/** 基本可见性：渲染存在 + 在视口内（不含滚动容器裁剪）。 */
+function isBasicallyVisible(el: HTMLElement): boolean {
+  if (!isRendered(el)) return false
+  const vr = focusRectOf(el)
   if (vr.bottom < 0 || vr.top > window.innerHeight) return false
   if (vr.right < 0 || vr.left > window.innerWidth) return false
   return true
@@ -142,6 +149,30 @@ function isClippedByScroll(el: HTMLElement): boolean {
     const scrolls =
       oy === 'auto' || oy === 'scroll' || o === 'auto' || o === 'scroll' || o === 'hidden' || oy === 'hidden'
     if (scrolls) {
+      const pr = node.getBoundingClientRect()
+      if (r.bottom < pr.top + 1 || r.top > pr.bottom - 1 || r.right < pr.left + 1 || r.left > pr.right - 1) {
+        return true
+      }
+    }
+    node = node.parentElement
+  }
+  return false
+}
+
+/**
+ * 元素是否被「不可滚动」的裁剪容器（overflow:hidden/clip）排除在可视区外。
+ * 这类容器无法 scrollIntoView 滚回来，同容器保留逻辑不应接纳它们。
+ */
+function isClippedByNonScrollable(el: HTMLElement): boolean {
+  const r = focusRectOf(el)
+  let node: HTMLElement | null = el.parentElement
+  while (node) {
+    const style = getComputedStyle(node)
+    const o = style.overflow
+    const oy = style.overflowY
+    const scrollable = oy === 'auto' || oy === 'scroll' || o === 'auto' || o === 'scroll'
+    const clipping = o === 'hidden' || oy === 'hidden' || o === 'clip' || oy === 'clip'
+    if (clipping && !scrollable) {
       const pr = node.getBoundingClientRect()
       if (r.bottom < pr.top + 1 || r.top > pr.bottom - 1 || r.right < pr.left + 1 || r.left > pr.right - 1) {
         return true
@@ -197,10 +228,14 @@ function candidates(from: HTMLElement | null = null, dir: Direction | null = nul
   const list = Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR)) as HTMLElement[]
   return list.filter((el) => {
     if (el.closest('[data-tv-skip]')) return false
-    if (!isBasicallyVisible(el)) return false
+    if (!isRendered(el)) return false
     if (isClippedByScroll(el)) {
+      // 被不可滚动容器（overflow:hidden/clip）裁掉的项滚不回来，排除
+      if (isClippedByNonScrollable(el)) return false
       // 同滚动容器内被裁剪的项仍保留为候选：上下导航选中后 scrollIntoView 自动滚回，
       // 避免"按上跳过紧邻的上一项直接跳到标签栏"；跨容器裁剪项仍排除。
+      // 注意：被裁剪项不做视口检查——高模态框把顶部（如关闭按钮）滚出浏览器视口时，
+      // 选中后 scrollIntoView 会把容器滚回来使其进入视口。
       if (from && dir && (dir === 'up' || dir === 'down')) {
         const curScroll = scrollParentOf(from)
         const candScroll = scrollParentOf(el)
@@ -208,6 +243,10 @@ function candidates(from: HTMLElement | null = null, dir: Direction | null = nul
       }
       return false
     }
+    // 未裁剪项必须在视口内且可命中
+    const vr = focusRectOf(el)
+    if (vr.bottom < 0 || vr.top > window.innerHeight) return false
+    if (vr.right < 0 || vr.left > window.innerWidth) return false
     if (!isHitTestable(el)) return false
     return true
   })
