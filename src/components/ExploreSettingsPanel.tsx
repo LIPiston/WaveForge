@@ -31,8 +31,10 @@ export interface ExplorePlatformPreferences {
   coverWallStyle: ExploreCoverWallStyle
   // 封面墙动画（缓慢漂移）开关
   coverWallAnimated: boolean
-  // 封面墙模糊遮罩强度
-  coverWallBlur: 'soft' | 'medium' | 'strong'
+  // 封面墙模糊遮罩强度（custom=自定义，用 coverWallBlurCustom 的像素值）
+  coverWallBlur: 'soft' | 'medium' | 'strong' | 'custom'
+  // 封面墙自定义模糊像素（0-80），coverWallBlur === 'custom' 时生效
+  coverWallBlurCustom: number
   // 卡片玻璃化程度
   cardOpacity: ExploreCardOpacity
   // 排行榜/新歌列表显示序号
@@ -74,6 +76,7 @@ const DEFAULT_PLATFORM_PREFS = {
   coverWallStyle: 'tilted' as const,
   coverWallAnimated: true,
   coverWallBlur: 'medium' as const,
+  coverWallBlurCustom: 40,
   cardOpacity: 'frosted' as const,
   showRankNumbers: true,
   enhancedApi: true,
@@ -127,7 +130,11 @@ export function normalizeExplorePreferences(input: unknown): ExplorePreferences 
       backgroundMode: source.backgroundMode === 'coverWall' ? 'coverWall' : 'gradient',
       coverWallStyle: source.coverWallStyle === 'grid' ? 'grid' : 'tilted',
       coverWallAnimated: source.coverWallAnimated !== false,
-      coverWallBlur: source.coverWallBlur === 'soft' || source.coverWallBlur === 'strong' ? source.coverWallBlur : 'medium',
+      coverWallBlur:
+        source.coverWallBlur === 'soft' || source.coverWallBlur === 'strong' || source.coverWallBlur === 'custom'
+          ? source.coverWallBlur
+          : 'medium',
+      coverWallBlurCustom: Math.max(0, Math.min(80, Number(source.coverWallBlurCustom) || 40)),
       cardOpacity: source.cardOpacity === 'solid' || source.cardOpacity === 'glass' ? source.cardOpacity : 'frosted',
       showRankNumbers: source.showRankNumbers !== false,
       enhancedApi: source.enhancedApi !== false,
@@ -312,13 +319,29 @@ export default function ExploreSettingsPanel({
                     />
                     <SettingChoice
                       label="封面墙模糊"
-                      description="遮罩越强，前景内容越清晰。"
+                      description="遮罩越强，前景内容越清晰；选择「自定义」可精确调节像素。"
                       value={current.coverWallBlur}
-                      options={[['soft', '轻微'], ['medium', '适中'], ['strong', '强烈']]}
+                      options={[['soft', '轻微'], ['medium', '适中'], ['strong', '强烈'], ['custom', '自定义']]}
                       accent={accent}
                       isDark={isDark}
-                      onChange={value => updateCurrent({ coverWallBlur: value as 'soft' | 'medium' | 'strong' })}
+                      onChange={value => updateCurrent({ coverWallBlur: value as 'soft' | 'medium' | 'strong' | 'custom' })}
                     />
+                    {current.coverWallBlur === 'custom' && (
+                      <div className={`flex items-center gap-3 rounded-2xl border p-3 ${panelBorder}`}>
+                        <input
+                          type="range"
+                          min={0}
+                          max={80}
+                          value={current.coverWallBlurCustom}
+                          onChange={e => updateCurrent({ coverWallBlurCustom: Number(e.target.value) })}
+                          className="flex-1 accent-[#4fc3f7]"
+                          aria-label="封面墙自定义模糊"
+                        />
+                        <span className={`w-12 shrink-0 text-right text-xs font-semibold ${textPrimary}`}>
+                          {current.coverWallBlurCustom}px
+                        </span>
+                      </div>
+                    )}
                     <ToggleRow
                       label="封面墙动画"
                       description="封面缓慢漂移，营造呼吸感。"
