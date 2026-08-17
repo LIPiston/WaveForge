@@ -121,11 +121,11 @@ class SplashView @JvmOverloads constructor(
 
         // 2) Logo 图片（圆角方形 + 浮动 + 阴影）
         val logoSize = 130 * dot * (0.94f + 0.06f * eased)
-        val logoY = h * 0.30f - logoSize / 2f + enterY + sin(t * PI * 2 * 0.5).toFloat() * 6f * dot
+        val logoY = h * 0.30f - logoSize / 2f + enterY + sin(t / 3f * PI * 2).toFloat() * 6f * dot
         if (logoBitmap != null) {
             canvas.save()
             canvas.translate(cx, logoY)
-            canvas.rotate(sin(t * PI * 2 * 0.25f).toFloat() * 1.5f)
+            canvas.rotate(sin(t / 4f * PI * 2).toFloat() * 1.5f)
             // 柔和阴影（PC 端 box-shadow 风格）：用 ShadowLayer 大范围模糊，不做偏移实心块
             val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
                 this.alpha = alpha
@@ -153,7 +153,7 @@ class SplashView @JvmOverloads constructor(
         // 3) "WaveForge" 渐变文字（文字颜色渐变随背景色板滑动）
         val textY = h * 0.42f + enterY
         textPaint.alpha = alpha
-        val shimmerOffset = ((t * 30f) % 1f) * 400f
+        val shimmerOffset = ((t / 3f) % 1f) * 400f
         textPaint.shader = LinearGradient(
             cx - 200f + shimmerOffset, 0f, cx + 200f + shimmerOffset, 0f,
             GRADIENT_COLORS.copyOf(GRADIENT_COLORS.size - 1), null, Shader.TileMode.REPEAT,
@@ -167,7 +167,7 @@ class SplashView @JvmOverloads constructor(
         val gap = 22 * dot
         val maxH = 64 * dot
         for (i in WAVE_COLORS.indices) {
-            val phase = t * PI * 2 * 1.2 + i * 0.6
+            val phase = t / 1.4f * PI * 2 + i * 0.6
             val amp = (0.5 + 0.5 * sin(phase)).toFloat()
             val bh = (14 + (maxH - 14) * amp) * (if (i % 2 == 0) 1f else 0.85f)
             val x = cx + (i - WAVE_COLORS.size / 2f + 0.5f) * gap

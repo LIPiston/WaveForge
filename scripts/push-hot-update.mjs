@@ -17,11 +17,14 @@ import { execSync } from 'child_process'
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const DIST = join(ROOT, 'android', 'app', 'src', 'main', 'assets', 'nodejs-project', 'dist')
 
-const ip = process.argv[2]
-if (!ip) {
-  console.error('用法: node scripts/push-hot-update.mjs <设备IP> [--rebuild]')
+const ipArg = process.argv[2]
+if (!ipArg) {
+  console.error('用法: node scripts/push-hot-update.mjs <设备IP[:端口]> [--rebuild]')
   process.exit(1)
 }
+// 支持 "IP:端口"（模拟器 adb forward 场景：node scripts/push-hot-update.mjs 127.0.0.1:13002）
+const [host, port] = ipArg.split(':')
+const targetPort = port || 3002
 
 if (process.argv.includes('--rebuild')) {
   console.log('▶ 构建 android 前端...')
@@ -46,9 +49,9 @@ function walk(dir, out = []) {
 }
 
 const files = walk(DIST)
-console.log(`▶ 推送 ${files.length} 个文件到 ${ip}:3002/update ...`)
+console.log(`▶ 推送 ${files.length} 个文件到 ${host}:${targetPort}/update ...`)
 try {
-  const res = await fetch(`http://${ip}:3002/update`, {
+  const res = await fetch(`http://${host}:${targetPort}/update`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ files }),
@@ -61,7 +64,7 @@ try {
     process.exit(1)
   }
 } catch (err) {
-  console.error(`❌ 无法连接 ${ip}:3002 —— 请确认设备开发者模式已开启且与电脑同一局域网`)
+  console.error(`❌ 无法连接 ${host}:${targetPort} —— 请确认设备开发者模式已开启且与电脑同一局域网`)
   console.error(`   ${err.message}`)
   process.exit(1)
 }
