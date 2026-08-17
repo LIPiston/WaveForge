@@ -61,9 +61,16 @@ async function buildServerBundle() {
     // nodejs-mobile 精简构建缺全局 File：undici（fetch 实现）webidl 断言引用 File，
     // 加载即 ReferenceError 崩溃（模拟器/真机启动闪退）。banner 在最顶部执行，
     // 先于 bundle 内任何模块注入 File 全局。
+    // 同时注册 node 崩溃捕获：uncaughtException/unhandledRejection 堆栈写入
+    // filesDir/tv-crash.log，供局域网调试端口（:3002/crash）读取，无需 adb 定位崩溃。
     banner: {
       js:
-        "if (typeof globalThis.File === 'undefined') { try { const { File: __wfFile } = require('buffer'); if (__wfFile) globalThis.File = __wfFile; } catch (__e) {} }",
+        "if (typeof globalThis.File === 'undefined') { try { const { File: __wfFile } = require('buffer'); if (__wfFile) globalThis.File = __wfFile; } catch (__e) {} }" +
+        "try { const __wfPath = require('path'); const __wfFs = require('fs');" +
+        "const __wfCrashFile = __wfPath.join(__wfPath.dirname(process.argv[1] || process.cwd()), '..', 'tv-crash.log');" +
+        "const __wfCrash = (__e) => { try { __wfFs.appendFileSync(__wfCrashFile, '[' + new Date().toISOString() + '] ' + ((__e && __e.stack) || String(__e)) + '\\n'); } catch (__x) {} }; " +
+        "process.on('uncaughtException', __wfCrash); " +
+        "process.on('unhandledRejection', (__r) => __wfCrash(__r instanceof Error ? __r : new Error(String(__r)))); } catch (__e) {}",
     },
   })
   console.log(`  bundle 完成${result.metafile ? '（' + Object.keys(result.metafile.inputs).length + ' 个输入文件）' : ''}`)

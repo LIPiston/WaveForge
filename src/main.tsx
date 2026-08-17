@@ -9,6 +9,7 @@ import { installElectronShim } from './electronShim'
 import { startTv } from './tv/tvCore'
 import { initPerfMode } from './tv/perfMode'
 import { captureFrontendConsole, initDebugMode } from './tv/debugStore'
+import { installDebugRemote } from './tv/debugRemote'
 import DebugPanels from './tv/DebugPanels'
 import { installMediaKeyBridge } from './tv/mediaKeyBridge'
 import { installRemoteBridge } from './tv/remoteBridge'
@@ -29,6 +30,9 @@ initPerfMode()
 // 调试模式：捕获前端日志 + 初始化开关状态（面板组件 DebugPanels 按需挂载）
 captureFrontendConsole()
 initDebugMode()
+
+// 局域网调试桥（跟随开发者模式，默认关闭）：:3002 日志/崩溃/远程控制
+installDebugRemote()
 
 // 遥控器媒体键 → 应用播放控制桥接（仅 tv-mode 生效）。
 installMediaKeyBridge()

@@ -9,9 +9,182 @@
  * 所有路径（壁纸目录）由调用方传入。
  */
 import { createRemoteServer, getLanIPv4Addresses } from './desktop/remote-server.cjs'
-import { createReadStream, existsSync, mkdirSync, readdirSync, statSync, writeFileSync, readFileSync } from 'fs'
+import { createReadStream, existsSync, mkdirSync, readdirSync, statSync, writeFileSync, readFileSync, appendFileSync } from 'fs'
+import { createServer } from 'http'
+import { WebSocketServer } from 'ws'
 import { dirname, join } from 'path'
 import { verifyCode } from './desktop/device-license.cjs'
+
+// ── 局域网调试服务（:3002，仅开发者模式开启时运行） ──
+// 电脑浏览器访问 http://<设备IP>:3002 查看后端日志/崩溃记录/前端错误，并可直接控制 App。
+// 前端页面（localhost:3001）在开发者模式开启时连 ws://localhost:3002/ws 接收控制命令。
+const DEBUG_PORT = 3002
+let debugServer = null // { server, wss }
+let debugPageClients = new Set() // 前端页面 WS 客户端
+
+function setDebugServerEnabled(enabled, { serverLogs, crashFile }) {
+  if (enabled && !debugServer) {
+    const server = createServer((req, res) => {
+      const url = new URL(req.url, 'http://localhost')
+      const sendJson = (obj) => {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(obj))
+      }
+      if (url.pathname === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(DEBUG_PANEL_HTML)
+        return
+      }
+      if (url.pathname === '/logs') {
+        sendJson({ lines: serverLogs.slice(-300), total: serverLogs.length })
+        return
+      }
+      if (url.pathname === '/crash') {
+        try {
+          sendJson({ exists: existsSync(crashFile), content: readFileSync(crashFile, 'utf8') })
+        } catch {
+          sendJson({ exists: false, content: '' })
+        }
+        return
+      }
+      res.writeHead(404)
+      res.end('Not Found')
+    })
+    const wss = new WebSocketServer({ server, path: '/ws' })
+    wss.on('connection', (ws) => {
+      debugPageClients.add(ws)
+      ws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(String(data))
+          if (msg.type === 'command') {
+            // 调试面板发出的控制命令 → 转发给前端页面执行
+            const payload = JSON.stringify({ type: 'control', action: msg.action, value: msg.value })
+            for (const c of debugPageClients) {
+              if (c.readyState === 1) {
+                try { c.send(payload) } catch { /* ignore */ }
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      })
+      ws.on('close', () => debugPageClients.delete(ws))
+    })
+    wss.on('error', () => {}) // 端口冲突等静默
+    server.on('error', (err) => {
+      console.error('[调试服务] 启动失败:', err?.message || err)
+      debugServer = null
+    })
+    server.listen(DEBUG_PORT, '0.0.0.0')
+    debugServer = { server, wss }
+    console.log(`[调试服务] 已开启: http://0.0.0.0:${DEBUG_PORT}（局域网可访问）`)
+  } else if (!enabled && debugServer) {
+    try { debugServer.wss.close() } catch { /* ignore */ }
+    try { debugServer.server.close() } catch { /* ignore */ }
+    debugServer = null
+    debugPageClients = new Set()
+    console.log('[调试服务] 已关闭')
+  }
+}
+
+// ── 局域网调试面板（开发者模式开启后，电脑浏览器访问 http://<设备IP>:3002） ──
+const DEBUG_PANEL_HTML = `<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WaveForge TV 调试台</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", sans-serif; background: #0a0f14; color: #e6edf3; margin: 0; padding: 20px; }
+  h1 { font-size: 18px; margin: 0 0 4px; } .sub { color: #8b9bb4; font-size: 12px; margin-bottom: 16px; }
+  .card { background: #11161f; border: 1px solid #1f2836; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; margin: 0 0 10px; color: #7ee787; }
+  .btn { background: #1b2430; color: #e6edf3; border: 1px solid #2a3546; border-radius: 8px; padding: 8px 12px; font-size: 13px; cursor: pointer; margin: 0 6px 6px 0; }
+  .btn:hover { background: #243043; } .btn:active { transform: scale(.96); }
+  .btn.primary { background: #4fc3f7; color: #06222e; border-color: transparent; font-weight: 600; }
+  .log { font-family: ui-monospace, Menlo, monospace; font-size: 11px; line-height: 1.6; background: #0d1117; border-radius: 8px; padding: 10px; max-height: 280px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+  .log .warn { color: #ffd28a; } .log .error { color: #ff7b72; }
+  .badge { display: inline-block; background: #2a3546; border-radius: 999px; padding: 2px 10px; font-size: 11px; color: #9db2cc; }
+</style></head><body>
+<h1>WaveForge TV 调试台</h1>
+<div class="sub">本机调试服务 · 仅开发者模式开启时可用 · <span class="badge" id="wsState">未连接</span></div>
+
+<div class="card">
+  <h2>遥控 App（直接控制 TV 上的软件）</h2>
+  <div>
+    <button class="btn primary" data-a="toggle">播放/暂停</button>
+    <button class="btn" data-a="prev">上一首</button>
+    <button class="btn" data-a="next">下一首</button>
+    <button class="btn" data-a="stop">停止</button>
+    <button class="btn" data-a="rewind">快退10s</button>
+    <button class="btn" data-a="fast-forward">快进10s</button>
+    <button class="btn" data-a="volume" data-v="0.1">音量+</button>
+    <button class="btn" data-a="volume" data-v="-0.1">音量-</button>
+    <button class="btn" data-a="mute">静音</button>
+  </div>
+  <div style="margin-top:6px">
+    <button class="btn" data-a="nav" data-v="up">▲ 上</button>
+    <button class="btn" data-a="nav" data-v="down">▼ 下</button>
+    <button class="btn" data-a="nav" data-v="left">◀ 左</button>
+    <button class="btn" data-a="nav" data-v="right">▶ 右</button>
+    <button class="btn primary" data-a="ok">OK 确定</button>
+    <button class="btn" data-a="back">返回</button>
+    <button class="btn" data-a="home">主页</button>
+    <button class="btn" data-a="open-search">搜索</button>
+    <button class="btn" data-a="open-settings">设置</button>
+    <button class="btn" data-a="menu">菜单</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>后端日志 <button class="btn" style="padding:2px 8px;font-size:11px" id="clearLog">清屏</button></h2>
+  <div class="log" id="logBox"></div>
+</div>
+
+<div class="card">
+  <h2>崩溃记录（node 崩溃堆栈） <button class="btn" style="padding:2px 8px;font-size:11px" id="refreshCrash">刷新</button></h2>
+  <div class="log" id="crashBox">（无崩溃记录）</div>
+</div>
+
+<script>
+  var ws = new WebSocket('ws://' + location.host + '/ws');
+  var wsState = document.getElementById('wsState');
+  ws.onopen = function () { wsState.textContent = '已连接'; wsState.style.color = '#31e68b'; };
+  ws.onclose = function () { wsState.textContent = '已断开'; wsState.style.color = '#ff6b81'; };
+  ws.onerror = function () { wsState.textContent = '连接失败'; wsState.style.color = '#ff6b81'; };
+
+  // 控制按钮 → 发命令（由 TV 前端页面执行）
+  document.querySelectorAll('[data-a]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var action = btn.getAttribute('data-a');
+      var value = btn.getAttribute('data-v') || undefined;
+      if (action === 'nav') {
+        // 方向键：走 D-pad（TV 空间导航）
+        ws.send(JSON.stringify({ type: 'command', action: 'nav', value: value }));
+        return;
+      }
+      ws.send(JSON.stringify({ type: 'command', action: action, value: value }));
+    });
+  });
+
+  var logBox = document.getElementById('logBox');
+  function loadLogs() {
+    fetch('/logs').then(function (r) { return r.json(); }).then(function (d) {
+      logBox.innerHTML = (d.lines || []).map(function (l) {
+        var cls = l.level === 'error' ? 'error' : (l.level === 'warn' ? 'warn' : '');
+        return '<span class="' + cls + '">[' + l.time + ' ' + l.level + '] ' + l.text.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>';
+      }).join('\\n');
+      logBox.scrollTop = logBox.scrollHeight;
+    }).catch(function () {});
+  }
+  loadLogs(); setInterval(loadLogs, 2000);
+  document.getElementById('clearLog').addEventListener('click', function () { logBox.innerHTML = ''; });
+
+  function loadCrash() {
+    fetch('/crash').then(function (r) { return r.json(); }).then(function (d) {
+      document.getElementById('crashBox').textContent = d.content ? ('最后崩溃（' + new Date().toLocaleString() + '）：\\n\\n' + d.content) : '（无崩溃记录）';
+    }).catch(function () {});
+  }
+  loadCrash();
+  document.getElementById('refreshCrash').addEventListener('click', loadCrash);
+</script></body></html>`
 
 // ── TV 壁纸扫码上传：手机浏览器 → 25567 上传页 → 存本地/设备存储 ──
 // 手机上传的图片由 SPA 从 /api/tv/wallpapers 拉回并导入 wallpaperManager（IndexedDB）。
@@ -183,6 +356,26 @@ export function installTvExtensions({
     }
     res.type('image/jpeg')
     createReadStream(file).pipe(res)
+  })
+
+  // ── 开发者模式调试服务开关（跟随前端 developerMode，默认关闭） ──
+  const tvCrashFile = join(dirname(wallpapersDir), 'tv-crash.log')
+  app.post('/api/tv/debug-mode', (req, res) => {
+    const enabled = req.body?.enabled === true
+    setDebugServerEnabled(enabled, { serverLogs, crashFile: tvCrashFile })
+    res.json({ ok: true, enabled, port: DEBUG_PORT })
+  })
+  // 前端 JS 错误上报（页面 window.onerror/unhandledrejection → 记录日志 + 崩溃文件）
+  app.post('/api/tv/debug-report', (req, res) => {
+    const { source, message, stack, url } = req.body || {}
+    const text = `[前端${source || 'error'}] ${message || ''} @ ${url || ''}${stack ? '\n' + stack : ''}`
+    if (serverLogs) {
+      serverLogs.push({ time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'error', text })
+    }
+    try {
+      appendFileSync(tvCrashFile, `[${new Date().toISOString()}] ${text}\n`)
+    } catch { /* ignore */ }
+    res.json({ ok: true })
   })
 
   // 后端日志环形缓冲（TV 调试面板轮询展示，本机接口）

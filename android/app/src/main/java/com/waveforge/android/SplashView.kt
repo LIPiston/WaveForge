@@ -116,32 +116,29 @@ class SplashView @JvmOverloads constructor(
         // 2) Logo 图片（圆角方形 + 浮动 + 阴影）
         val logoSize = 130 * dot * (0.94f + 0.06f * eased)
         val logoY = h * 0.30f - logoSize / 2f + enterY + sin(progress * PI * 2).toFloat() * 6f * dot
-        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb((0.35f * alpha).toInt(), 0, 0, 0)
-        }
         if (logoBitmap != null) {
             canvas.save()
             canvas.translate(cx, logoY)
             canvas.rotate(sin(progress * PI * 2 * 0.5f).toFloat() * 1.5f)
-            // 阴影
-            canvas.drawRoundRect(
-                -logoSize / 2f + 6 * dot, -logoSize / 2f + 12 * dot,
-                logoSize / 2f + 6 * dot, logoSize / 2f + 12 * dot,
-                28 * dot, 28 * dot, shadowPaint,
-            )
-            // 圆角裁剪绘制
+            // 柔和阴影（PC 端 box-shadow 风格）：用 ShadowLayer 大范围模糊，不做偏移实心块
+            val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+                this.alpha = alpha
+                setShadowLayer(24 * dot, 0f, 10 * dot, Color.argb((0.45f * alpha).toInt(), 0, 0, 0))
+            }
+            // 圆角裁剪绘制（PC 端 border-radius 28px/120px 比例）
+            val radius = logoSize * 0.23f
             val saveCount = canvas.saveLayer(-logoSize / 2f, -logoSize / 2f, logoSize / 2f, logoSize / 2f, null)
             val clip = android.graphics.Path().apply {
                 addRoundRect(
                     -logoSize / 2f, -logoSize / 2f, logoSize / 2f, logoSize / 2f,
-                    28 * dot, 28 * dot, android.graphics.Path.Direction.CW,
+                    radius, radius, android.graphics.Path.Direction.CW,
                 )
             }
             canvas.clipPath(clip)
             canvas.drawBitmap(
                 logoBitmap, null,
                 android.graphics.RectF(-logoSize / 2f, -logoSize / 2f, logoSize / 2f, logoSize / 2f),
-                Paint(Paint.ANTI_ALIAS_FLAG).apply { this.alpha = alpha },
+                logoPaint,
             )
             canvas.restoreToCount(saveCount)
             canvas.restore()
