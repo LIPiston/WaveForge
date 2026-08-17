@@ -9,7 +9,14 @@
  *  - BACK / 完成键关闭键盘并把焦点交还页面。
  */
 import { useEffect, useRef, useState } from 'react'
-import { useTvMode, useRemoteCursorMode, setKeyboardActive, useTvBack, startTv } from './tvCore'
+import {
+  useTvMode,
+  useRemoteCursorMode,
+  setKeyboardActive,
+  useTvBack,
+  startTv,
+  setTvFocus,
+} from './tvCore'
 import { requestRemoteTextInput } from './remoteBridge'
 
 // 标准 QWERTY 布局（按真实键盘行排列），数字/符号页同理
@@ -42,8 +49,12 @@ export default function TvKeyboard() {
   const remoteCursorMode = useRemoteCursorMode()
   const [target, setTarget] = useState<HTMLInputElement | HTMLTextAreaElement | null>(null)
   const [page, setPage] = useState<Page>('lower')
+  const [closing, setClosing] = useState(false)
   const targetRef = useRef<typeof target>(null)
   const keyboardRef = useRef<HTMLDivElement>(null)
+  const switchBtnRef = useRef<HTMLButtonElement>(null)
+  const closeTimerRef = useRef<number | null>(null)
+  const closingRef = useRef(false)
   const remoteCursorModeRef = useRef(remoteCursorMode)
   remoteCursorModeRef.current = remoteCursorMode
   targetRef.current = target
@@ -90,13 +101,45 @@ export default function TvKeyboard() {
   })
 
   const close = () => {
-    setTarget(null)
-    setKeyboardActive(false)
-    try {
-      targetRef.current?.blur()
-    } catch {
-      // ignore
+    if (closingRef.current) return
+    closingRef.current = true
+    setClosing(true)
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
+    // 先播退出动画（260ms 淡出上移），动画结束后再卸载键盘
+    closeTimerRef.current = window.setTimeout(() => {
+      closingRef.current = false
+      setClosing(false)
+      setTarget(null)
+      setKeyboardActive(false)
+      try {
+        targetRef.current?.blur()
+      } catch {
+        // ignore
+      }
+    }, 260)
+  }
+
+  // 输入框失焦且新焦点不在键盘内 → 自动关闭（输入完成/取消输入/输入框被移除都覆盖）
+  useEffect(() => {
+    if (!tvMode || !target) return
+    const onFocusOut = (e: FocusEvent) => {
+      if (closingRef.current) return
+      const next = e.relatedTarget as Node | null
+      if (next && keyboardRef.current?.contains(next)) return
+      close()
     }
+    document.addEventListener('focusout', onFocusOut)
+    return () => document.removeEventListener('focusout', onFocusOut)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tvMode, target])
+
+  // 切换 ABC/abc/123 页：字符键会卸载重建，把焦点显式放回切换按钮，
+  // 避免焦点落在已卸载节点上（焦点环变淡/按 OK 无效）。
+  const switchPage = () => {
+    setPage(page === 'lower' ? 'upper' : page === 'upper' ? 'symbols' : 'lower')
+    requestAnimationFrame(() => {
+      if (switchBtnRef.current) setTvFocus(switchBtnRef.current)
+    })
   }
 
   // ★ hooks 必须全部在提前 return 之前（React 规则：hooks 不能条件化，否则 #310 白屏）
@@ -208,7 +251,7 @@ export default function TvKeyboard() {
       style={{
         position: 'fixed',
         left: '50%',
-        transform: 'translateX(-50%)',
+        transform: `translateX(-50%)${closing ? ' translateY(14px)' : ''}`,
         bottom: 24,
         zIndex: 2147483001,
         maxWidth: 'min(96vw, 1200px)',
@@ -218,6 +261,9 @@ export default function TvKeyboard() {
         padding: '12px 16px 14px',
         boxShadow: '0 18px 60px rgba(0,0,0,0.6)',
         textAlign: 'center',
+        opacity: closing ? 0 : 1,
+        transition: 'opacity .24s ease, transform .24s ease',
+        pointerEvents: closing ? 'none' : 'auto',
       }}
     >
       {/* 键盘头部：说明 + 关闭按钮 */}
@@ -271,17 +317,35 @@ export default function TvKeyboard() {
         {KEY_ROWS[page].map((row, ri) => (
           <div key={ri} style={{ display: 'flex', justifyContent: 'center' }}>
             {row.split('').map((c) => (
-              <Key key={c} label={c} onClick={() => insert(c)} />
+              <Key key={`${page}-${c}`} label={c} onClick={() => insert(c)} />
             ))}
           </div>
         ))}
 
         {/* 控制行 */}
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: 6 }}>
-          <Key
-            label={page === 'lower' ? 'ABC' : page === 'upper' ? '123' : 'abc'}
-            onClick={() => setPage(page === 'lower' ? 'upper' : page === 'upper' ? 'symbols' : 'lower')}
-          />
+          <button
+            ref={switchBtnRef}
+            data-tv-focus
+            tabIndex={-1}
+            onClick={switchPage}
+            className="tv-key"
+            style={{
+              minWidth: 62,
+              height: 58,
+              margin: 4,
+              borderRadius: 10,
+              border: '1px solid rgba(255,255,255,0.22)',
+              background: 'rgba(255,255,255,0.12)',
+              color: '#fff',
+              fontSize: 20,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            {page === 'lower' ? 'ABC' : page === 'upper' ? '123' : 'abc'}
+          </button>
           <Key label="空格" wide onClick={() => insert(SPACE)} />
           <Key label="⌫ 删除" wide onClick={deleteChar} />
           <Key label="完成" wide onClick={close} />
