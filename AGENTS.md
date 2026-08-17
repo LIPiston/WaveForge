@@ -104,3 +104,4 @@ npm run version:dry     # 预览将要执行的操作（不落地）
 - `WALLPAPER_GUIDE.md` / `DESKTOP_MODE.md` — wallpaper & desktop-mode feature docs.
 - `PYTHON_EMBEDDING_GUIDE.md` — embedded Python build/rebuild process.
 - `docs/歌词对比-LyricsBlossom.md` — Apple Music 歌词逆向对比分析（Apple 逐字模式参考）。
+- `DEVELOPMENT-CONSENSUS.md` — ⚠️ **TV/平板/手机端开发共识（必读）**：Dev 阶段前端改动一律通过内置无线调试（:3002）热更新验证，禁止走"检查更新"发行版本。改完代码用 `node scripts/push-hot-update.mjs <设备IP> --rebuild` 推送，无需重装 APK。
