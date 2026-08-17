@@ -7,7 +7,7 @@
  */
 
 export { default as V3MixingStudio } from './V3MixingStudio'
-export type { V3MixingStudioProps, V3EngineVersion } from './V3MixingStudio'
+export type { V3MixingStudioProps } from './V3MixingStudio'
 export { createV3UiBridge, MAX_MY_SCENES } from './bridge'
 export type { V3UiBridge, V3HearingSession } from './bridge'
 export { useV3Theme } from './theme'

@@ -24,11 +24,8 @@ import AppleLoginPanel from './components/AppleLoginPanel'
 import { cacheManager } from './services/cacheManager'
 import { indexedDBCache } from './services/indexedDBCache'
 import { autoMixAnalysisService } from './services/autoMixAnalysisService'
-import { AudioEffectsEngine } from './services/audioEffects/AudioEffectsEngine'
-import { AudioEffectsEngine as AudioEffectsEngineV2, LOUDNESS_COMPENSATION_THRESHOLD } from './services/audio-effects-v2/AudioEffectsEngine'
-import { loudnessNormalizationService } from './services/audio-effects-v2/loudnessNormalization'
 import { getAudioEngineVersion, setAudioEngineVersion, type AudioEngineVersion } from './services/audioEngineVersion'
-import { attachV3Engine, detachV3Engine, getV3Bridge, setV3SystemVolume, exportV3Wav } from './services/waveforge-engine-v3/attachV3Engine'
+import { getEngineAdapter, getAvailableEngines, getAvailableEngineIds, type IAudioEngineAdapter } from './services/audio-engine'
 import { sequenceTracksHam2, type SequencingEntry } from './services/playlistSequencing'
 import { likeSong, addSongToPlaylist, getUserPlaylists, updateCachedUserPlaylists, getPlaylistDetail } from './services/playlistService'
 import { fetchExploreRecommendationBatch } from './services/exploreApi'
@@ -52,12 +49,8 @@ const LazySearchPanel = lazy(loadSearchPanel)
 const LazyUpNextNotification = lazy(loadUpNextNotification)
 const loadSettingsPanel = () => import('./components/SettingsPanel')
 const LazySettingsPanel = lazy(loadSettingsPanel)
-const loadMixingStudio = () => import('./components/MixingStudio')
-const LazyMixingStudio = lazy(loadMixingStudio)
-const loadMixingStudioV2 = () => import('./components/MixingStudioV2')
-const LazyMixingStudioV2 = lazy(loadMixingStudioV2)
-// v3 调音室（纯 TS DSP 内核引擎的 UI，见 src/services/waveforge-engine-v3/）
-const LazyMixingStudioV3 = lazy(() => import('./services/waveforge-engine-v3/ui').then((m) => ({ default: m.V3MixingStudio })))
+// 调音室组件的 lazy import 已下沉到各引擎 Adapter 的 renderStudio 内部，
+// App.tsx 不再直接引用调音室组件（统一通过 engineAdapterRef.current.renderStudio 渲染）。
 const loadPlaylistPanel = () => import('./components/PlaylistPanel')
 const loadLoginView = () => import('./components/LoginView')
 const loadProfileView = () => import('./components/ProfileView')
@@ -439,9 +432,9 @@ function App() {
   const [detailPlaylist, setDetailPlaylist] = useState<{ playlist: any; songs: Song[] } | null>(null)
   const [detailPlaylistLoading, setDetailPlaylistLoading] = useState(false)
   // 音效引擎版本（v1 远程原版 / v2 本地增强版 / v3 纯 TS DSP 内核），默认 v1；切换见 switchAudioEngine
-  const [audioEngineVersion, setAudioEngineVersionState] = useState<AudioEngineVersion>(getAudioEngineVersion)
-  // v3 调音室离线导出进行中状态（导出按钮禁用/文案）
-  const [v3Exporting, setV3Exporting] = useState(false)
+  const [audioEngineVersion, setAudioEngineVersionState] = useState<AudioEngineVersion>(() => getAudioEngineVersion(getAvailableEngineIds()))
+  // 引擎导出进行中状态（由 adapter.onExportingChange 事件驱动，供调音室导出按钮禁用/文案）
+  const [engineExporting, setEngineExporting] = useState(false)
   // 与 state 同步的 ref：switchAudioEngine 切换中同步读写它，规避闭包陈旧 / 同帧连点竞态
   const audioEngineVersionRef = useRef<AudioEngineVersion>(audioEngineVersion)
   audioEngineVersionRef.current = audioEngineVersion
@@ -1295,56 +1288,44 @@ function App() {
   const handleNextRef = useRef<() => void>(() => undefined)
   const dominantColorRef = useRef<string>('#3B82F6')
   
-  // 调音室音效引擎：v1（远程原版）/ v2（本地增强版）/ v3（机型预设版）三实例，按版本激活。
-  // 同名但来自不同模块，activeEngine 用版本分支取用，避免两套实例互相干扰。
-  const v1EngineRef = useRef<AudioEffectsEngine | null>(null)
-  const v2EngineRef = useRef<AudioEffectsEngineV2 | null>(null)
-  if (v1EngineRef.current === null) v1EngineRef.current = new AudioEffectsEngine()
-  if (v2EngineRef.current === null) v2EngineRef.current = new AudioEffectsEngineV2()
+  // 调音室音效引擎：通过统一适配层（IAudioEngineAdapter）接入 v1/v2/v3，App 不再直接持有引擎实例。
+  // engineAdapterRef 在版本切换时重建（getEngineAdapter(next)）；addToast 注入给 v2 低音量提示。
+  const engineAdapterRef = useRef<IAudioEngineAdapter>(getEngineAdapter(getAudioEngineVersion(getAvailableEngineIds()), {
+    onLowVolumeHint: (msg) => addToast(msg, 'info'),
+  }))
   const audioGraphHandleRef = useRef<AudioGraphHandle | null>(null)
+
+  // 订阅初始 adapter 的导出状态（若启动时默认 v3，导出按钮需要此状态；切换引擎时在 switchAudioEngine 内重新订阅）
+  useEffect(() => {
+    const adapter = engineAdapterRef.current
+    if (!adapter.onExportingChange) return
+    return adapter.onExportingChange(setEngineExporting)
+  }, [])
 
   const handleAudioGraphReady = useCallback((handle: AudioGraphHandle) => {
     audioGraphHandleRef.current = handle
-    if (audioEngineVersion === 'v3') {
-      // v3 接入为异步（worklet 注册），失败自动回退 script 兜底（EngineV3Host 内置）
-      void attachV3Engine(handle).catch(() => { /* 两条通路都不可用：保持直连，播放不受影响 */ })
-    }
-    else if (audioEngineVersion === 'v2') v2EngineRef.current?.attach(handle)
-    else v1EngineRef.current?.attach(handle)
+    // 统一接入：adapter.attach 内部按版本走 v1/v2 同步或 v3 异步（worklet 注册）
+    void engineAdapterRef.current.attach(handle).catch(() => { /* 通路不可用：保持直连，播放不受影响 */ })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioEngineVersion])
+  }, [])
 
   // 引擎切换：热切换（暂停音乐 → 替换音频图效果链 → 恢复播放），
   // 音频图未就绪时退化为冷切换（仅保存配置，下次启动生效）。切换后右上角弹 2s 提示。
   // 注意：audioPlayer 在其后声明，此回调仅作引用传递，由调用方（调音室）在运行时触发。
   const switchAudioEngineRef = useRef<(next: AudioEngineVersion) => void>(() => undefined)
 
-  // 系统音量检测：告知 v2 引擎（频响补偿自适应）/ v3 引擎（等响度补偿 auto 曲线）+ 低音量一次性提示（localStorage 防重复）
+  // 系统音量检测：告知引擎频响补偿/等响度补偿（按 capabilities 判断，不再写版本分支）
   useEffect(() => {
-    // 频响补偿是 v2/v3 的能力；v1 下不轮询系统音量，避免每 10 分钟一次 IPC 空转
-    if (audioEngineVersion !== 'v2' && audioEngineVersion !== 'v3') return
+    const adapter = engineAdapterRef.current
+    if (!adapter.capabilities.supportsSystemVolume) return // v1 无此能力，不轮询避免 IPC 空转
     let cancelled = false
     let timer: number | null = null
     const checkSystemVolume = async () => {
       try {
         const result = await window.electron?.audio?.getSystemVolume()
         if (cancelled || !result || !result.success) return
-        if (audioEngineVersion === 'v3') {
-          // v3：loudnessCompensation auto 模式按系统音量提升低/高频（引擎内实现）
-          setV3SystemVolume(result.volume)
-          return
-        }
-        if (v2EngineRef.current) {
-          v2EngineRef.current.setSystemVolume(result.volume)
-          const compEnabled = v2EngineRef.current.getSettings().effects.loudnessCompensation.enabled
-          if (!compEnabled && result.volume >= 0 && result.volume < LOUDNESS_COMPENSATION_THRESHOLD) {
-            const key = 'waveforge:loudness-comp-hinted'
-            if (!localStorage.getItem(key)) {
-              localStorage.setItem(key, '1')
-              addToast(`系统音量较低（${result.volume}%），可在调音室开启频响补偿改善低音量听感`, 'info')
-            }
-          }
-        }
+        // 统一调 adapter.setSystemVolume：v2 内部含低音量提示（capabilities.supportsLowVolumeHint）
+        adapter.setSystemVolume(result.volume)
       } catch {
         // 忽略：系统音量不可用（非 Windows / 读取失败）
       }
@@ -1356,7 +1337,7 @@ function App() {
       cancelled = true
       if (timer !== null) window.clearInterval(timer)
     }
-    // eslint 无：addToast 为渲染内稳定函数（useCallback 未使用也安全，闭包读取最新 state）
+    // eslint 无：adapter 通过 ref 读取最新实例
   }, [audioEngineVersion])
 
   // 服务健康检测：应用启动后约 3s（等待 Python 子进程就绪），检测频响补偿（3004）与响度（3003）
@@ -1391,24 +1372,21 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 响度归一化（v2 专属）：开关在调音室切换时即时应用/回退（利用最新 activeTrackKeyRef 与预载 url）
+  // 响度归一化：开关在调音室切换时即时应用/回退（按 capabilities 判断，v1/v3 no-op）
   useEffect(() => {
-    // 归一化是 v2 专属；v1 下不挂监听（事件由 v2 调音室派发）
-    // 响度归一化监听是 v2 专属（v3 响度归一化在引擎内实时实现，无需外部服务）
-    if (audioEngineVersion !== 'v2') return
+    const adapter = engineAdapterRef.current
+    if (!adapter.capabilities.supportsLoudnessNormalization) return // v1/v3 无外部归一化（v3 引擎内实时）
     const handleNormalizationChange = (e: Event) => {
       const enabled = (e as CustomEvent).detail === true
-      const engine = v2EngineRef.current
-      if (!engine) return
       if (!enabled) {
-        loudnessNormalizationService.reset(engine)
+        adapter.resetLoudnessNormalization()
         return
       }
       const trackKey = activeTrackKeyRef.current
       if (!trackKey) return
       const cached = preloadCacheRef.current.get(trackKey)
       const url = cached?.url || ''
-      if (url) void loudnessNormalizationService.apply(engine, trackKey, url)
+      if (url) adapter.applyLoudnessNormalization(trackKey, url)
     }
     window.addEventListener('normalizationEnabledChanged', handleNormalizationChange)
     return () => window.removeEventListener('normalizationEnabledChanged', handleNormalizationChange)
@@ -1644,29 +1622,29 @@ function App() {
     if (wasPlaying) void activeAudio?.pause()
 
     // 换引擎：dispose 旧链（恢复 masterGain→analyser 直连），attach 新链
+    const oldAdapter = engineAdapterRef.current
     if (handle) {
-      if (audioEngineVersionRef.current === 'v3') detachV3Engine()
-      else if (audioEngineVersionRef.current === 'v2') v2EngineRef.current?.dispose()
-      else v1EngineRef.current?.dispose()
+      oldAdapter.dispose()
     }
+    // 重建 adapter：新版本实例 + 注入 addToast（v2 低音量提示用）
+    const newAdapter = getEngineAdapter(next, { onLowVolumeHint: (msg) => addToast(msg, 'info') })
+    engineAdapterRef.current = newAdapter
     audioEngineVersionRef.current = next
     setAudioEngineVersionState(next)
     setAudioEngineVersion(next)
+    // 订阅新 adapter 的导出状态（v3 adapter 有此事件；v1/v2 adapter 无，isExporting 恒 false）
+    if (newAdapter.onExportingChange) {
+      newAdapter.onExportingChange(setEngineExporting)
+    }
     if (handle) {
-      if (next === 'v3') {
-        // v3 异步接入（worklet 注册）；恢复播放不等待其完成（script 兜底立即出声，worklet 换入无声断）
-        void attachV3Engine(handle).catch(() => { /* 通路不可用：保持直连 */ })
-      }
-      else if (next === 'v2') v2EngineRef.current?.attach(handle)
-      else v1EngineRef.current?.attach(handle)
-      // 切到 v2 时补挂响度归一化（若调音室已开启；apply 内部按 settings 判断，未开启即跳过）
-      if (next === 'v2' && v2EngineRef.current) {
-        const trackKey = activeTrackKeyRef.current
-        if (trackKey) {
-          const cached = preloadCacheRef.current.get(trackKey)
-          const url = cached?.url || ''
-          if (url) void loudnessNormalizationService.apply(v2EngineRef.current, trackKey, url)
-        }
+      // attach 新链（v3 异步 worklet 注册，v1/v2 同步；恢复播放不等待 attach 完成）
+      void newAdapter.attach(handle).catch(() => { /* 通路不可用：保持直连 */ })
+      // 补挂响度归一化（若新引擎支持且调音室已开启；adapter 内部按 capabilities 判断，不支持则 no-op）
+      const trackKey = activeTrackKeyRef.current
+      if (trackKey) {
+        const cached = preloadCacheRef.current.get(trackKey)
+        const url = cached?.url || ''
+        if (url) newAdapter.applyLoudnessNormalization(trackKey, url)
       }
       // 恢复播放（热切换成功路径）：恢复同一个活跃 deck
       if (wasPlaying && activeAudio) {
@@ -1675,7 +1653,8 @@ function App() {
     }
     // 右上角 2s 淡出弹窗（连点/重入时先清旧定时器，避免旧弹窗提前清掉新弹窗）
     if (engineSwitchToastTimerRef.current !== null) window.clearTimeout(engineSwitchToastTimerRef.current)
-    setEngineSwitchToast(`音效引擎已切换至 ${next === 'v3' ? 'v3（DSP 内核）' : next === 'v2' ? 'v2（增强版）' : 'v1（原版）'}${handle ? '' : '，下次启动生效'}`)
+    const versionLabel = next === 'v3' ? 'v3（DSP 内核）' : next === 'v2' ? 'v2（增强版）' : 'v1（原版）'
+    setEngineSwitchToast(`音效引擎已切换至 ${versionLabel}${handle ? '' : '，下次启动生效'}`)
     engineSwitchToastTimerRef.current = window.setTimeout(() => {
       engineSwitchToastTimerRef.current = null
       setEngineSwitchToast(null)
@@ -3120,10 +3099,8 @@ function App() {
       }
       if (!started || !isLatestLoad()) return
       
-      // 响度归一化（v2 专属）：按曲目测量 LUFS 并施加链首增益（独立服务，失败自动回退原声）
-      if (audioEngineVersion === 'v2' && v2EngineRef.current) {
-        void loudnessNormalizationService.apply(v2EngineRef.current, cacheKey, url)
-      }
+      // 响度归一化：按曲目测量 LUFS 并施加增益（adapter 内部按 capabilities 判断，v1/v3 no-op）
+      engineAdapterRef.current.applyLoudnessNormalization(cacheKey, url)
       
       // 请求可能已经由下一首预载启动；这里仅保持引用，避免重复调用。
       void lyricsPromise
@@ -4662,55 +4639,20 @@ function App() {
             } as any)} />
         </Suspense>
 
-        {/* 调音室（v1/v2 按版本渲染） */}
+        {/* 调音室（统一通过适配层渲染：custom 模式返回引擎自带调音室，generic 模式返回通用调音室） */}
         <AnimatePresence>
           {showMixingStudio && (
             <Suspense fallback={null}>
-              {audioEngineVersion === 'v3' ? (
-                <LazyMixingStudioV3
-                  bridge={getV3Bridge()}
-                  onClose={() => setShowMixingStudio(false)}
-                  playerTheme={playerTheme}
-                  anchorRect={mixingStudioAnchorRef.current}
-                  engineVersion={audioEngineVersion}
-                  onSwitchEngine={switchAudioEngine}
-                  exportWav={audioPlayer.audioElement?.src
-                    ? async () => {
-                        setV3Exporting(true)
-                        try {
-                          await exportV3Wav(audioPlayer.audioElement!.src, audioPlayer.audioElement?.duration || 0)
-                        } catch (err) {
-                          addToast(`导出失败：${err instanceof Error ? err.message : String(err)}`, 'error')
-                        } finally {
-                          setV3Exporting(false)
-                        }
-                      }
-                    : null}
-                  exporting={v3Exporting}
-                />
-              ) : audioEngineVersion === 'v2' ? (
-                <LazyMixingStudioV2
-                  engine={v2EngineRef.current!}
-                  onClose={() => setShowMixingStudio(false)}
-                  playerTheme={playerTheme}
-                  sourceUrl={audioPlayer.audioElement?.src || undefined}
-                  sourceDuration={audioPlayer.audioElement?.duration || undefined}
-                  anchorRect={mixingStudioAnchorRef.current}
-                  engineVersion={audioEngineVersion}
-                  onSwitchEngine={switchAudioEngine}
-                />
-              ) : (
-                <LazyMixingStudio
-                  engine={v1EngineRef.current!}
-                  onClose={() => setShowMixingStudio(false)}
-                  playerTheme={playerTheme}
-                  sourceUrl={audioPlayer.audioElement?.src || undefined}
-                  sourceDuration={audioPlayer.audioElement?.duration || undefined}
-                  anchorRect={mixingStudioAnchorRef.current}
-                  engineVersion={audioEngineVersion}
-                  onSwitchEngine={switchAudioEngine}
-                />
-              )}
+              {engineAdapterRef.current.renderStudio({
+                onClose: () => setShowMixingStudio(false),
+                playerTheme,
+                anchorRect: mixingStudioAnchorRef.current,
+                engineVersion: audioEngineVersion,
+                onSwitchEngine: switchAudioEngine,
+                availableEngines: getAvailableEngines(),
+                sourceUrl: audioPlayer.audioElement?.src || undefined,
+                sourceDuration: audioPlayer.audioElement?.duration || undefined,
+              })}
             </Suspense>
           )}
         </AnimatePresence>
