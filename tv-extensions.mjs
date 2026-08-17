@@ -12,7 +12,7 @@ import { createRemoteServer, getLanIPv4Addresses } from './desktop/remote-server
 import { createReadStream, existsSync, mkdirSync, readdirSync, statSync, writeFileSync, readFileSync, appendFileSync } from 'fs'
 import { createServer } from 'http'
 import { WebSocketServer } from 'ws'
-import { dirname, join } from 'path'
+import { dirname, join, sep } from 'path'
 import { verifyCode } from './desktop/device-license.cjs'
 
 // ── 局域网调试服务（:3002，仅开发者模式开启时运行） ──
@@ -22,7 +22,7 @@ const DEBUG_PORT = 3002
 let debugServer = null // { server, wss }
 let debugPageClients = new Set() // 前端页面 WS 客户端
 
-function setDebugServerEnabled(enabled, { serverLogs, crashFile }) {
+function setDebugServerEnabled(enabled, { serverLogs, crashFile, distDir = null }) {
   if (enabled && !debugServer) {
     const server = createServer((req, res) => {
       const url = new URL(req.url, 'http://localhost')
@@ -45,6 +45,45 @@ function setDebugServerEnabled(enabled, { serverLogs, crashFile }) {
         } catch {
           sendJson({ exists: false, content: '' })
         }
+        return
+      }
+      // 热更新：上传 dist 前端资源（index.html + assets/*）→ 替换 → 广播 reload 刷新页面
+      if (url.pathname === '/update' && req.method === 'POST') {
+        let body = ''
+        req.on('data', (c) => { body += c })
+        req.on('end', () => {
+          try {
+            const { files } = JSON.parse(body)
+            if (!Array.isArray(files) || !files.length || !distDir) {
+              sendJson({ ok: false, error: '缺少文件或 dist 目录不可用' })
+              return
+            }
+            const distRoot = join(distDir) + sep
+            let count = 0
+            for (const f of files) {
+              const rel = String(f?.path || '').replace(/\\/g, '/').replace(/^\/+/, '')
+              const full = join(distDir, rel)
+              if (!full.startsWith(distRoot) || rel.includes('..')) {
+                sendJson({ ok: false, error: `非法路径: ${rel}` })
+                return
+              }
+              mkdirSync(dirname(full), { recursive: true })
+              writeFileSync(full, Buffer.from(String(f.data || ''), 'base64'))
+              count++
+            }
+            // 通知前端页面刷新（新 bundle 生效）
+            const reloadMsg = JSON.stringify({ type: 'reload' })
+            for (const c of debugPageClients) {
+              if (c.readyState === 1) {
+                try { c.send(reloadMsg) } catch { /* ignore */ }
+              }
+            }
+            console.log(`[调试服务] 热更新 ${count} 个文件`)
+            sendJson({ ok: true, count })
+          } catch (err) {
+            sendJson({ ok: false, error: err?.message || '更新失败' })
+          }
+        })
         return
       }
       res.writeHead(404)
@@ -105,6 +144,14 @@ const DEBUG_PANEL_HTML = `<!DOCTYPE html>
 </style></head><body>
 <h1>WaveForge TV 调试台</h1>
 <div class="sub">本机调试服务 · 仅开发者模式开启时可用 · <span class="badge" id="wsState">未连接</span></div>
+
+<div class="card">
+  <h2>热更新（改完代码直接部署，无需重装）</h2>
+  <p class="sub" style="margin:0 0 8px">选择 vite 构建产物（index.html + dist/assets/*）上传，设备自动替换并刷新页面。</p>
+  <input type="file" id="fileInput" multiple webkitdirectory style="margin-bottom:8px;color:#9db2cc;font-size:12px">
+  <button class="btn primary" id="uploadBtn">上传并刷新</button>
+  <span id="uploadStatus" style="margin-left:8px;font-size:12px;color:#9db2cc"></span>
+</div>
 
 <div class="card">
   <h2>遥控 App（直接控制 TV 上的软件）</h2>
@@ -176,6 +223,38 @@ const DEBUG_PANEL_HTML = `<!DOCTYPE html>
   }
   loadLogs(); setInterval(loadLogs, 2000);
   document.getElementById('clearLog').addEventListener('click', function () { logBox.innerHTML = ''; });
+
+  // 热更新：读取所选文件 → 上传到设备 dist → 自动刷新
+  var fileInput = document.getElementById('fileInput');
+  var uploadStatus = document.getElementById('uploadStatus');
+  document.getElementById('uploadBtn').addEventListener('click', function () {
+    var files = Array.prototype.slice.call(fileInput.files || []);
+    if (!files.length) { uploadStatus.textContent = '请先选择构建产物文件'; return; }
+    var payload = [];
+    var done = 0;
+    files.forEach(function (f) {
+      // 只传相对路径（保留目录结构），base64 编码
+      var rel = f.webkitRelativePath || f.name;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var data = reader.result.split(',')[1] || '';
+        payload.push({ path: rel, data: data });
+        done++;
+        if (done === files.length) doUpload(payload);
+      };
+      reader.readAsDataURL(f);
+    });
+  });
+  function doUpload(payload) {
+    uploadStatus.textContent = '上传中…';
+    fetch('/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: payload }),
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      uploadStatus.textContent = d.ok ? ('已更新 ' + d.count + ' 个文件，页面即将刷新') : ('失败: ' + (d.error || ''));
+    }).catch(function (e) { uploadStatus.textContent = '上传失败: ' + e.message; });
+  }
 
   function loadCrash() {
     fetch('/crash').then(function (r) { return r.json(); }).then(function (d) {
@@ -300,6 +379,7 @@ export function installTvExtensions({
   serverName = 'WaveForge TV',
   serverLogs = null,
   remotePort = 25567,
+  distDir = null,
 }) {
   const handleWallpaperHttp = makeWallpaperHttpHandler(wallpapersDir)
 
@@ -371,16 +451,31 @@ export function installTvExtensions({
   }
   app.post('/api/tv/debug-mode', (req, res) => {
     const enabled = req.body?.enabled === true
-    setDebugServerEnabled(enabled, { serverLogs, crashFile: tvCrashFile })
+    setDebugServerEnabled(enabled, { serverLogs, crashFile: tvCrashFile, distDir })
     try {
       writeFileSync(tvDebugStateFile, JSON.stringify({ enabled }))
     } catch { /* ignore */ }
     res.json({ ok: true, enabled, port: DEBUG_PORT })
   })
   // 后端启动时按持久化状态启停（默认开；用户关掉后重启保持关闭，受开关约束）
-  setDebugServerEnabled(readDebugState(), { serverLogs, crashFile: tvCrashFile })
-  // 前端 JS 错误上报（页面 window.onerror/unhandledrejection → 记录日志 + 崩溃文件）
+  setDebugServerEnabled(readDebugState(), { serverLogs, crashFile: tvCrashFile, distDir })
+  // 前端日志/错误上报（页面 console 批量日志 + window.onerror/unhandledrejection）
   app.post('/api/tv/debug-report', (req, res) => {
+    const { logs } = req.body || {}
+    if (Array.isArray(logs)) {
+      // 前端 console 日志批量上报 → 追加到后端日志（调试台可见）
+      if (serverLogs) {
+        for (const l of logs.slice(-100)) {
+          serverLogs.push({
+            time: l?.time || new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+            level: l?.level || 'log',
+            text: `[前端] ${l?.text || ''}`,
+          })
+        }
+      }
+      res.json({ ok: true })
+      return
+    }
     const { source, message, stack, url } = req.body || {}
     const text = `[前端${source || 'error'}] ${message || ''} @ ${url || ''}${stack ? '\n' + stack : ''}`
     if (serverLogs) {

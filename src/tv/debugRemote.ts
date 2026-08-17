@@ -5,9 +5,10 @@
  *  - 前端 JS 错误（window.onerror/unhandledrejection）上报到后端调试服务，
  *    电脑端无需 adb 即可看到崩溃原因。
  */
-import { isDebugMode } from './debugStore'
+import { isDebugMode, getFrontendLogs } from './debugStore'
 
 let ws: WebSocket | null = null
+let lastReportedLogs = 0
 
 function syncBackend(enabled: boolean): void {
   try {
@@ -31,6 +32,11 @@ function connectWs(): void {
   ws.onmessage = (ev) => {
     try {
       const msg = JSON.parse(String(ev.data)) as { type?: string; action?: string; value?: unknown }
+      if (msg?.type === 'reload') {
+        // 热更新完成：刷新页面加载新 bundle
+        window.location.reload()
+        return
+      }
       if (msg?.type !== 'control') return
       const action = msg.action
       if (!action) return
@@ -83,6 +89,24 @@ function reportFrontendError(payload: Record<string, unknown>): void {
   }
 }
 
+/** 前端 console 日志批量上报到调试台（电脑端可见前端运行日志） */
+function reportFrontendLogs(): void {
+  if (!isDebugMode()) return
+  const logs = getFrontendLogs()
+  if (logs.length <= lastReportedLogs) return
+  const batch = logs.slice(lastReportedLogs)
+  lastReportedLogs = logs.length
+  try {
+    void fetch('http://localhost:3001/api/tv/debug-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ logs: batch }),
+    }).catch(() => {})
+  } catch {
+    // ignore
+  }
+}
+
 export function installDebugRemote(): void {
   const sync = () => {
     const enabled = isDebugMode()
@@ -106,5 +130,6 @@ export function installDebugRemote(): void {
       stack: e.reason instanceof Error ? e.reason.stack : undefined,
     })
   })
+  setInterval(reportFrontendLogs, 2000)
   sync() // 初始同步（开发者模式默认关 → 不启调试服务）
 }
