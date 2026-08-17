@@ -90,6 +90,96 @@ function ensureDeviceNodeModules() {
   )
 }
 
+/**
+ * nodejs-mobile 内核（V8 过旧）不支持 \p{ID_Start}/\p{ID_Continue} Unicode 属性，
+ * Express 5 依赖的 path-to-regexp v8 加载即 SyntaxError（网易云增强 API 不可用）。
+ * 构建后把这三处正则替换为 ASCII + 常见 Unicode 范围的近似等价（路由参数名足够）。
+ * 幂等：每次构建都执行。
+ */
+function patchPathToRegexp() {
+  const file = join(ASSETS_DIR, 'node_modules', 'path-to-regexp', 'dist', 'index.js')
+  if (!existsSync(file)) {
+    console.log('  path-to-regexp 不存在，跳过 patch')
+    return
+  }
+  const src = readFileSync(file, 'utf8')
+  const next = src
+    .replace(/\\p\{ID_Start\}/g, 'A-Za-z\\u00AA-\\uFFFF')
+    .replace(/\\p\{ID_Continue\}/g, 'A-Za-z0-9_\\u00AA-\\uFFFF')
+  if (next !== src) {
+    writeFileSync(file, next)
+    console.log('  已 patch path-to-regexp（移除 \\p{ID_Start} 等 Unicode 属性，兼容 nodejs-mobile）')
+  } else {
+    console.log('  path-to-regexp 已兼容，无需 patch')
+  }
+}
+
+/**
+ * nodejs-mobile 上 os.tmpdir()/process.cwd() 都指向只读根目录，netease api 把匿名
+ * token 写到那里会 EROFS 加载失败。patch 成 main.cjs 所在目录（filesDir 层，可写）。
+ * 幂等：每次构建都执行。
+ */
+function patchNeteaseApi() {
+  const files = [
+    join(ASSETS_DIR, 'node_modules', '@neteasecloudmusicapienhanced', 'api', 'main.js'),
+    join(ASSETS_DIR, 'node_modules', '@neteasecloudmusicapienhanced', 'api', 'app.js'),
+    join(ASSETS_DIR, 'node_modules', '@neteasecloudmusicapienhanced', 'api', 'util', 'request.js'),
+  ]
+  // nodejs-mobile 的 os.tmpdir() 指向只读 /tmp：匿名 token 是缓存，统一容错处理。
+  // main.js/app.js：写 token 静默失败；util/request.js：tmpPath 改可写目录 + 读取容错。
+  const mainPatch = [
+    {
+      from: "const tmpPath = require('os').tmpdir()",
+      to: "const tmpPath = require('path').join(__dirname, '..', '..', '..')",
+    },
+    {
+      from: "const tmpPath = require('process').cwd()",
+      to: "const tmpPath = require('path').join(__dirname, '..', '..', '..')",
+    },
+    {
+      from: "const tmpPath = require('path').dirname(process.argv[1] || process.cwd())",
+      to: "const tmpPath = require('path').join(__dirname, '..', '..', '..')",
+    },
+    // 写失败静默（ESM 下 __dirname 不可用 / 路径不可写都不阻塞加载）
+    {
+      from: "if (!fs.existsSync(anonymousTokenPath)) {\n  fs.writeFileSync(anonymousTokenPath, '', 'utf-8')\n}",
+      to: "if (!fs.existsSync(anonymousTokenPath)) { try { fs.writeFileSync(anonymousTokenPath, '', 'utf-8') } catch (__e) {} }",
+    },
+    {
+      from: "if (!fs.existsSync(path.resolve(tmpPath, 'anonymous_token'))) {\n    fs.writeFileSync(path.resolve(tmpPath, 'anonymous_token'), '', 'utf-8')\n  }",
+      to: "if (!fs.existsSync(path.resolve(tmpPath, 'anonymous_token'))) { try { fs.writeFileSync(path.resolve(tmpPath, 'anonymous_token'), '', 'utf-8') } catch (__e) {} }",
+    },
+  ]
+  // util/request.js：util 目录上四级才到 nodejs-project；顶层读 token 也要容错
+  const requestPatch = [
+    {
+      from: "const tmpPath = require('os').tmpdir()",
+      to: "const tmpPath = require('path').join(__dirname, '..', '..', '..', '..')",
+    },
+    {
+      from: "const anonymous_token = fs.readFileSync(\n  path.resolve(tmpPath, './anonymous_token'),\n  'utf-8',\n)",
+      to: "let anonymous_token = ''\ntry { anonymous_token = fs.readFileSync(path.resolve(tmpPath, './anonymous_token'), 'utf-8') } catch (__e) {}",
+    },
+  ]
+  for (const file of files) {
+    if (!existsSync(file)) continue
+    let src = readFileSync(file, 'utf8')
+    let changed = false
+    const rules = file.endsWith('request.js') ? requestPatch : mainPatch
+    for (const p of rules) {
+      const next = src.replace(p.from, p.to)
+      if (next !== src) {
+        src = next
+        changed = true
+      }
+    }
+    if (changed) {
+      writeFileSync(file, src)
+      console.log(`  已 patch ${file.split('/').pop()} 匿名 token（容错 + 可写路径）`)
+    }
+  }
+}
+
 /** 手机遥控器页面：remote-server.cjs 运行时按 __dirname/remote-ui.html 读取，需随包携带。 */
 function copyRemoteUi() {
   const src = join(ROOT, 'desktop', 'remote-ui.html')
@@ -113,6 +203,8 @@ async function main() {
   await buildFrontend()
   await buildServerBundle()
   ensureDeviceNodeModules()
+  patchPathToRegexp()
+  patchNeteaseApi()
   copyRemoteUi()
   bumpAssetsVersion()
   console.log('\n完成。资产目录：', ASSETS_DIR)

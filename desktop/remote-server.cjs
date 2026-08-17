@@ -107,11 +107,14 @@ function createRemoteServer(options) {
   }
 
   function status() {
+    // clientCount 只统计"手机控制端"：TV 端 SPA 自连（role=spa）不算，
+    // 否则 TV 一启动就被自己触发 remoteCursorMode → 整页切成 PC 风格 UI。
+    const phoneCount = clients.filter(c => c.role !== 'spa').length
     return {
       running,
       port,
       token: nextToken(),
-      clientCount: clients.length,
+      clientCount: phoneCount,
       maxClients: MAX_CLIENTS,
       clients: clientList(),
       ips: getLanIPv4Addresses(),
@@ -269,6 +272,8 @@ function createRemoteServer(options) {
           ws.close(4001, 'Unauthorized')
           return
         }
+        // role=spa：TV 端 SPA 自连（remoteBridge），不计入手机客户端数
+        const role = url ? url.searchParams.get('role') || '' : ''
 
         // 同一 token 槽位重连（如页面刷新）：顶掉旧连接
         const existing = clients.find(c => c.token === t)
@@ -289,6 +294,7 @@ function createRemoteServer(options) {
           ws,
           slot,
           token: t,
+          role,
           name: `设备 ${slot + 1}`,
           ip: normalizeIp(ws._socket && ws._socket.remoteAddress),
           connectedAt: Date.now(),

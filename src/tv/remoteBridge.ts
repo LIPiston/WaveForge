@@ -71,7 +71,9 @@ async function connect(): Promise<void> {
   }
   const port = st.port || DEFAULT_PORT
   try {
-    ws = new WebSocket(`ws://localhost:${port}/ws?t=${encodeURIComponent(st.token)}`)
+    // role=spa：标记为 TV 端自身连接，remote-server 不计入手机客户端数
+    // （否则 clientCount≥1 → remoteCursorMode=true → 整个 UI 变 PC 风格）
+    ws = new WebSocket(`ws://localhost:${port}/ws?t=${encodeURIComponent(st.token)}&role=spa`)
   } catch {
     scheduleRetry(5000)
     return

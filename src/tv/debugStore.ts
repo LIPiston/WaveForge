@@ -54,12 +54,21 @@ export const DEBUG_PANEL_KEYS = {
   frontend: 'waveforge:debug-show-frontend',
   perf: 'waveforge:debug-show-perf',
 }
+// 默认：有无线调试台后，前端/后端日志弹窗默认关闭（日志在电脑调试台看），
+// FPS 性能面板默认保留。
+const DEBUG_PANEL_DEFAULT: Record<string, boolean> = {
+  [DEBUG_PANEL_KEYS.backend]: false,
+  [DEBUG_PANEL_KEYS.frontend]: false,
+  [DEBUG_PANEL_KEYS.perf]: true,
+}
 
 export function getDebugPanelVisible(key: string): boolean {
   try {
-    return localStorage.getItem(key) !== '0'
+    const saved = localStorage.getItem(key)
+    if (saved !== null) return saved === '1'
+    return DEBUG_PANEL_DEFAULT[key] ?? true
   } catch {
-    return true
+    return DEBUG_PANEL_DEFAULT[key] ?? true
   }
 }
 
