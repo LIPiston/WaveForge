@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Play, Music, Crown, Loader2, Sparkles } from 'lucide-react'
+import { isTvModeActive } from '../platform'
 import { Song } from '../services/musicApi'
 import CachedImage from './CachedImage'
 import ScrollToTop from './ScrollToTop'
@@ -148,7 +149,7 @@ function PlaylistPanel({
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {onSmartReorder && (
+                {onSmartReorder && !isTvModeActive() && (
                   <motion.button
                     type="button"
                     whileHover={!isSmartReordering ? { scale: 1.03 } : undefined}

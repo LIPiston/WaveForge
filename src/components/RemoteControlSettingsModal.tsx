@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { X, MonitorSmartphone, Moon, Sun } from 'lucide-react'
+import { isTvModeActive } from '../platform'
 
 interface RemoteControlSettingsModalProps {
   show: boolean
@@ -13,6 +14,7 @@ const TOP_RIGHT_ACTIONS = [
   ['comment', '查看评论'],
   ['artist', '查看歌手'],
   ['favorite', '我喜欢'],
+  // TV 上无桌面歌词窗口：动作列表动态过滤（见组件内 actions 变量）
   ['desktop-lyrics', '桌面歌词'],
   ['mode-switch', '模式切换'],
 ] as const
@@ -124,7 +126,7 @@ export default function RemoteControlSettingsModal({ show, onClose, playerTheme 
               <div>
                 <h3 className={`text-base font-semibold ${textPrimary} mb-3`}>右上角按钮功能</h3>
                 <div className="grid grid-cols-3 gap-2">
-                  {TOP_RIGHT_ACTIONS.map(([value, label]) => (
+                  {TOP_RIGHT_ACTIONS.filter(([value]) => !(isTvModeActive() && value === 'desktop-lyrics')).map(([value, label]) => (
                     <button
                       key={value}
                       type="button"

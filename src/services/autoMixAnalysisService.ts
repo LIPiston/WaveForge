@@ -1,4 +1,5 @@
 ﻿import { debugLog } from '../utils/debugLog'
+import { isTvModeActive } from '../platform'
 import type { BeatFeatureFrame, SectionMarker, TrackAnalysis } from '../audio/types'
 
 export interface TrackAnalysisInput {
@@ -526,6 +527,13 @@ class AutoMixAnalysisService {
           debugLog('⚠️ [AutoMix] Electron 分析不可用，跳过 Renderer 整曲解码')
           isTransientFallback = true
           analysis = metadataOnly(input, 'electron-unavailable')
+        } else if (isTvModeActive()) {
+          // TV 弱机：没有独立分析进程，且浏览器整曲 decodeAudioData 在 WebView 里
+          // 是数百 MB 级开销（每次 AutoMix 过渡都会触发）。直接元数据回退，
+          // 保持 fixed-crossfade 可用，不再走渲染进程整曲解码。
+          debugLog('⚠️ [AutoMix] TV 端跳过浏览器整曲解码，使用元数据回退')
+          isTransientFallback = true
+          analysis = metadataOnly(input, 'metadata-only')
         } else {
           // Web 版没有独立分析进程，才使用浏览器本地检测。
           debugLog('⚠️ [AutoMix] 使用浏览器本地节拍检测')

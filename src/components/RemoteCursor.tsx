@@ -83,6 +83,15 @@ export default function RemoteCursor() {
     dispatchEventAt('pointerup', x, y, 0)
     dispatchEventAt('mouseup', x, y, 0)
     dispatchEventAt('click', x, y, 0)
+    // 合成事件不会触发浏览器默认聚焦行为：命中输入框时手动 focus()，
+    // 否则 TvKeyboard 的 focusin 监听收不到、手机远程输入链整条失效
+    try {
+      const hit = document.elementFromPoint(x, y)
+      const editable = hit instanceof HTMLElement ? hit.closest('input, textarea, [contenteditable="true"]') : null
+      if (editable instanceof HTMLElement && editable.isConnected) editable.focus()
+    } catch {
+      // ignore
+    }
     scheduleHide()
   }
 

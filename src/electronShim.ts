@@ -33,7 +33,8 @@ export function installElectronShim(): void {
       revertGpuChange: async () => {},
     },
     audio: {
-      getSystemVolume: async () => ({ volume: 100, muted: false }),
+      // TV 无系统音量接口：按 100% 处理（调用方判断 result.success 分支，缺 success 会短路）
+      getSystemVolume: async () => ({ success: true, volume: 100, muted: false }),
     },
     audioDownload: {
       prepare: unavailable('audioDownload'),

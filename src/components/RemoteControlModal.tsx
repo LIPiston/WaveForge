@@ -99,7 +99,12 @@ export default function RemoteControlModal({ onClose, playerTheme }: RemoteContr
         void fetch('http://localhost:3001/api/tv/remote-status', { cache: 'no-store' })
           .then((r) => (r.ok ? r.json() : null))
           .then((st) => {
-            if (st) setStatus((prev) => ({ ...prev, ...st }))
+            if (st) {
+              setStatus((prev) => ({ ...prev, ...st }))
+              // 有设备新连入时自动收起「连接新设备」区块（与 Electron 路径行为一致）
+              if ((st.clientCount || 0) > prevClientCountRef.current) setShowConnect(false)
+              prevClientCountRef.current = st.clientCount || 0
+            }
           })
           .catch(() => {})
       }, 3000)

@@ -91,14 +91,17 @@ export default function TvKeyboard() {
     }
   }, [tvMode])
 
-  // BACK：优先关闭软键盘
-  useTvBack(() => {
-    if (targetRef.current) {
-      close()
-      return true
-    }
-    return false
-  })
+  // BACK：优先关闭软键盘（target 变化时重新注册，把键盘的 BACK 处理顶到栈尾）
+  useTvBack(
+    () => {
+      if (targetRef.current) {
+        close()
+        return true
+      }
+      return false
+    },
+    [target]
+  )
 
   const close = () => {
     if (closingRef.current) return

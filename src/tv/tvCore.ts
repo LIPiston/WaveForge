@@ -10,7 +10,7 @@
  *
  * 键码兼容两套：DOM 标准箭头键（37-40）与 Android TV 遥控器键码（19-22 上下左右、23/66 确定）。
  */
-import { useEffect, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 
 // ---------------- tv-mode 状态（React 可订阅） ----------------
 let tvMode =
@@ -183,12 +183,19 @@ function isClippedByNonScrollable(el: HTMLElement): boolean {
   return false
 }
 
-/** 元素所在的最近滚动容器（overflow-y auto/scroll）。 */
+/** 元素所在的最近滚动容器（overflow-y/overflow-x auto/scroll）。 */
 function scrollParentOf(el: HTMLElement): HTMLElement | null {
   let node: HTMLElement | null = el.parentElement
   while (node) {
     const style = getComputedStyle(node)
-    if (style.overflowY === 'auto' || style.overflowY === 'scroll') return node
+    if (
+      style.overflowY === 'auto' ||
+      style.overflowY === 'scroll' ||
+      style.overflowX === 'auto' ||
+      style.overflowX === 'scroll'
+    ) {
+      return node
+    }
     node = node.parentElement
   }
   return null
@@ -232,14 +239,24 @@ function candidates(from: HTMLElement | null = null, dir: Direction | null = nul
     if (isClippedByScroll(el)) {
       // 被不可滚动容器（overflow:hidden/clip）裁掉的项滚不回来，排除
       if (isClippedByNonScrollable(el)) return false
-      // 同滚动容器内被裁剪的项仍保留为候选：上下导航选中后 scrollIntoView 自动滚回，
-      // 避免"按上跳过紧邻的上一项直接跳到标签栏"；跨容器裁剪项仍排除。
-      // 注意：被裁剪项不做视口检查——高模态框把顶部（如关闭按钮）滚出浏览器视口时，
-      // 选中后 scrollIntoView 会把容器滚回来使其进入视口。
-      if (from && dir && (dir === 'up' || dir === 'down')) {
+      // 同滚动容器内被裁剪的项仍保留为候选（上下/左右均可）：导航选中后
+      // scrollIntoView 自动滚回（横向歌单列表 / 纵向设置页都受益）；
+      // 跨容器裁剪项仍排除。
+      if (from && dir) {
         const curScroll = scrollParentOf(from)
         const candScroll = scrollParentOf(el)
-        if (curScroll && candScroll === curScroll) return true
+        if (curScroll && candScroll === curScroll) {
+          // 容器在该方向已无滚动余量（滚到头/底）时，被裁剪项滚不回来，排除
+          const vertical = dir === 'up' || dir === 'down'
+          if (vertical) {
+            if (dir === 'down' && candScroll.scrollTop + candScroll.clientHeight >= candScroll.scrollHeight - 1) return false
+            if (dir === 'up' && candScroll.scrollTop <= 0) return false
+          } else {
+            if (dir === 'right' && candScroll.scrollLeft + candScroll.clientWidth >= candScroll.scrollWidth - 1) return false
+            if (dir === 'left' && candScroll.scrollLeft <= 0) return false
+          }
+          return true
+        }
       }
       return false
     }
@@ -276,9 +293,12 @@ function ensureRing(): HTMLDivElement {
   if (ringEl?.isConnected) return ringEl
   ringEl = document.createElement('div')
   ringEl.id = 'tv-focus-ring'
+  // 边框宽度按屏幕宽度缩放：4K 电视（~1920 CSS px 布局）上 3px 几乎不可见
+  const borderPx = Math.max(3, Math.round((typeof window !== 'undefined' ? window.innerWidth : 1920) / 640))
   ringEl.style.cssText =
     'position:fixed;pointer-events:none;z-index:2147483000;box-sizing:border-box;' +
-    'border-radius:8px;border:3px solid #4fc3f7;box-shadow:0 0 0 1px rgba(0,0,0,.45),0 0 20px rgba(79,195,247,.5);' +
+    `border-radius:${Math.round(borderPx * 2.6)}px;border:${borderPx}px solid #4fc3f7;` +
+    'box-shadow:0 0 0 1px rgba(0,0,0,.45),0 0 20px rgba(79,195,247,.5);' +
     'transition:left .12s ease,top .12s ease,width .12s ease,height .12s ease,opacity .3s ease;display:none;'
   document.body.appendChild(ringEl)
   return ringEl
@@ -322,7 +342,8 @@ export function isKeyboardActive(): boolean {
 
 export function setKeyboardActive(v: boolean): void {
   keyboardActive = v
-  if (!v && !focusedEl) focusFirst()
+  // 关闭键盘/面板后若焦点元素已失效（断连/卸载），重新收拢到首个可见候选
+  if (!v && (!focusedEl || !focusedEl.isConnected)) focusFirst()
 }
 
 export function setTvFocus(el: HTMLElement | null): void {
@@ -347,6 +368,8 @@ export function setTvFocus(el: HTMLElement | null): void {
   updateRing()
   markRingActive()
   updateVolumeKeyCapture()
+  // 焦点刚落位时元素可能处于动画初始帧（getBoundingClientRect 位置偏移），下一帧再校正一次
+  requestAnimationFrame(updateRing)
 }
 
 /** 焦点在 range 滑块上时，让原生层把音量键转发给页面（用于 +1/-1 调节） */
@@ -458,14 +481,24 @@ function activate(): void {
 type BackHandler = () => boolean
 const backHandlers: BackHandler[] = []
 
-export function useTvBack(handler: BackHandler): void {
+/**
+ * 注册 BACK 处理器。默认在挂载时注册一次（栈序 = 挂载/打开顺序，稳定不随渲染漂移）；
+ * 传入 deps（如 [target]）可在依赖变化时把处理器重新顶到栈尾提升优先级（软键盘用）。
+ */
+export function useTvBack(handler: BackHandler, deps: ReadonlyArray<unknown> = []): void {
+  const ref = useRef(handler)
+  ref.current = handler
   useEffect(() => {
-    backHandlers.push(handler)
+    const fn = () => ref.current()
+    const existing = backHandlers.indexOf(fn)
+    if (existing >= 0) backHandlers.splice(existing, 1)
+    backHandlers.push(fn)
     return () => {
-      const i = backHandlers.indexOf(handler)
+      const i = backHandlers.indexOf(fn)
       if (i >= 0) backHandlers.splice(i, 1)
     }
-  }, [handler])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps)
 }
 
 /** 触发一次 BACK（由 DOM keydown/自定义事件/Kotlin 转发调用）。返回是否已被消费。 */
@@ -598,6 +631,12 @@ function handleKeyDown(e: KeyboardEvent): void {
     case 4: // KEYCODE_BACK
       if (dispatchTvBack()) {
         e.preventDefault()
+        // 真机：告知原生层"页面已消费 BACK"，避免原生再执行默认返回/退出
+        try {
+          ;(window as any).WaveForgeNative?.reportBackConsumed?.()
+        } catch {
+          // ignore
+        }
       }
       return
     case 85: // KEYCODE_MEDIA_PLAY_PAUSE
@@ -619,6 +658,7 @@ let scopeObserver: MutationObserver | null = null
 function setupScopeObserver(): void {
   scopeObserver = new MutationObserver((mutations) => {
     let changed = false
+    let focusedRemoved = false
     for (const m of mutations) {
       for (const node of m.addedNodes) {
         if (!(node instanceof HTMLElement)) continue
@@ -631,7 +671,19 @@ function setupScopeObserver(): void {
           changed = true
         })
       }
+      for (const node of m.removedNodes) {
+        // 面板卸载：若焦点在被移除子树内，立即隐藏焦点环并复位（避免环残留悬浮）
+        if (focusedEl && node instanceof Node && node.contains(focusedEl)) {
+          focusedEl = null
+          focusedRemoved = true
+        }
+        // 惰性剔除已断连的 scope，避免长会话累积对已卸载 DOM 的强引用
+        for (let i = scopes.length - 1; i >= 0; i--) {
+          if (node instanceof Node && node.contains(scopes[i])) scopes.splice(i, 1)
+        }
+      }
     }
+    if (focusedRemoved) updateRing()
     if (changed) {
       // 新面板打开：若当前焦点不在新域内，收拢到新域
       const scope = currentScope()
@@ -673,8 +725,14 @@ export function initTv(): void {
   }
   window.addEventListener('scroll', onLayout, true)
   window.addEventListener('resize', onLayout)
-  const ro = new ResizeObserver(onLayout)
-  ro.observe(document.body)
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(onLayout)
+    ro.observe(document.body)
+  }
+  // 面板入场/出场动画（framer-motion 改 transform/opacity）不触发 resize/scroll：
+  // 监听动画与过渡结束事件，动画完成后重画焦点环到最终位置
+  document.addEventListener('transitionend', onLayout, true)
+  document.addEventListener('animationend', onLayout, true)
 }
 
 /** 在文档加载完成后调用一次（WebView 就绪、React 挂载后由 main.tsx 调用）。 */
