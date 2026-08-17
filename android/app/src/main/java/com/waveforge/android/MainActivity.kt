@@ -45,7 +45,7 @@ class MainActivity : Activity() {
     companion object {
         private const val NODE_ASSETS_DIR = "nodejs-project"
         private const val PREF_TAG_KEY = "node_assets_version"
-        private const val ASSETS_VERSION = 11
+        private const val ASSETS_VERSION = 12
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
         // QQ 统一登录页（appid=716027609 为 QQ 音乐）：自带二维码，加载即出扫码登录，
