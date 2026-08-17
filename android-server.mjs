@@ -61,6 +61,7 @@ localApp.use((req, res, next) => {
 })
 
 // TV 扩展：壁纸扫码上传（25567）+ 远程遥控器（25567）+ /api/tv/* 路由
+// （含局域网调试服务 :3002：按持久化的开发者模式状态启停，调试阶段默认开）
 installTvExtensions({ app: localApp, wallpapersDir, serverName: 'WaveForge TV', serverLogs })
 
 console.log('[WaveForge Android] API + SPA 已就绪: http://localhost:3001')

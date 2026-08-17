@@ -2,6 +2,15 @@ import React, { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, Trash2, ChevronLeft, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone, Gamepad2 } from 'lucide-react'
 import LoginButton from './LoginButton'
+import type { AppleUserInfo } from '../services/appleAuth'
+import {
+  MUSIC_PLATFORMS,
+  PLATFORM_LABELS,
+  PLATFORM_VISIBILITY_EVENT,
+  getHiddenPlatforms,
+  setPlatformHidden,
+  type MusicPlatform,
+} from '../services/platforms'
 import HomeCustomizeModal from './HomeCustomizeModal'
 import DeviceInfoModal from './DeviceInfoModal'
 import AudioQualitySettingsModal from './AudioQualitySettingsModal'
@@ -81,6 +90,10 @@ interface SettingsPanelProps {
   qqVip: boolean
   onQQLogin: (cookie: string) => void
   onQQLogout: () => void
+  appleLoggedIn: boolean
+  appleUsername: string
+  onAppleLogin: (user: AppleUserInfo | null) => void
+  onAppleLogout: () => void
   playerTheme?: 'light' | 'dark'
 }
 
@@ -98,6 +111,10 @@ function SettingsPanel({
   qqVip,
   onQQLogin,
   onQQLogout,
+  appleLoggedIn,
+  appleUsername,
+  onAppleLogin,
+  onAppleLogout,
   playerTheme = 'dark',
 }: SettingsPanelProps) {
   const [activeTab, setActiveTab] = useState<'tv' | 'account' | 'advanced' | 'personalization' | 'about'>('account')
@@ -114,6 +131,14 @@ function SettingsPanel({
   const bgCard = playerTheme === 'dark' ? 'bg-white/5' : 'bg-black/5'
   const borderColor = playerTheme === 'dark' ? 'border-white/10' : 'border-black/10'
   const hoverBg = playerTheme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-black/5'
+
+  // 隐藏平台（账号区块）：默认全部显示，用户可隐藏不常用的平台
+  const [hiddenPlatforms, setHiddenPlatforms] = useState<MusicPlatform[]>(() => getHiddenPlatforms())
+  useEffect(() => {
+    const sync = () => setHiddenPlatforms(getHiddenPlatforms())
+    window.addEventListener(PLATFORM_VISIBILITY_EVENT, sync)
+    return () => window.removeEventListener(PLATFORM_VISIBILITY_EVENT, sync)
+  }, [])
   
   const [wordByWordLyrics, setWordByWordLyrics] = useState(() => {
     const saved = localStorage.getItem('wordByWordLyrics')
@@ -684,10 +709,10 @@ function SettingsPanel({
     return parseStoredBoolean(saved, true)
   })
 
-  // 开发者模式
+  // 开发者模式（调试阶段 TV 端默认开，正式版默认关）
   const [developerMode, setDeveloperMode] = useState(() => {
     const saved = localStorage.getItem('developerMode')
-    return parseStoredBoolean(saved, false)
+    return parseStoredBoolean(saved, isTvModeActive())
   })
 
   // 全屏模式设置
@@ -1546,6 +1571,67 @@ function SettingsPanel({
                             playerTheme={playerTheme}
                           />
                         </div>
+                      </div>
+
+                      {/* Apple Music 登录 */}
+                      <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-pink-600 flex items-center justify-center">
+                              <img 
+                                src="https://www.apple.com/favicon.ico"
+                                alt="Apple Music"
+                                className="w-6 h-6"
+                                onError={(e) => {
+                                  e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='70' text-anchor='middle' fill='white' font-size='45' font-weight='bold'%3E苹%3C/text%3E%3C/svg%3E"
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <div className={`${textPrimary} font-medium`}>Apple Music</div>
+                              <div className={`${textTertiary} text-xs`}>使用 Developer Token + Media-User-Token 登录</div>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="mt-4">
+                          <LoginButton
+                            platform="apple"
+                            isLoggedIn={appleLoggedIn}
+                            username={appleUsername}
+                            onLogin={() => undefined}
+                            onLogout={onAppleLogout}
+                            onAppleLogin={onAppleLogin}
+                            playerTheme={playerTheme}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                      <div className={`${textPrimary} font-medium`}>隐藏平台</div>
+                      <div className={`${textTertiary} text-xs mt-1`}>
+                        在平台切换器中隐藏不常用的平台（默认全部显示，至少保留一个）
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {MUSIC_PLATFORMS.map(platform => {
+                          const visible = !hiddenPlatforms.includes(platform)
+                          const dotColor = platform === 'netease' ? 'bg-red-500' : platform === 'qq' ? 'bg-green-500' : 'bg-pink-500'
+                          return (
+                            <button
+                              key={platform}
+                              type="button"
+                              onClick={() => setPlatformHidden(platform, visible)}
+                              className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all flex items-center gap-1.5 border ${
+                                visible
+                                  ? playerTheme === 'dark' ? 'text-white/85' : 'text-black/80'
+                                  : `${textTertiary} opacity-60 line-through`
+                              } ${visible ? (platform === 'netease' ? 'border-red-500/40 bg-red-500/10' : platform === 'qq' ? 'border-green-500/40 bg-green-500/10' : 'border-pink-500/40 bg-pink-500/10') : `${borderColor} ${bgCard}`}`}
+                            >
+                              <span className={`w-2 h-2 rounded-full ${visible ? dotColor : 'bg-current'}`} />
+                              {PLATFORM_LABELS[platform]}
+                            </button>
+                          )
+                        })}
                       </div>
                     </div>
 
@@ -3150,6 +3236,7 @@ function SettingsPanel({
                     )}
                   </section>
 
+                  {!isTvModeActive() && (
                   <section className={`${bgCard} rounded-2xl border ${borderColor} p-5`}>
                     <div className="flex items-start gap-4 mb-5">
                       <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: `${accentColor}20`, color: accentColor }}>
@@ -3192,6 +3279,7 @@ function SettingsPanel({
                       )}
                     </div>
                   </section>
+                  )}
 
                   <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-1">
                     <p className={`${textTertiary} text-xs`}>© 2026 WaveForge. All rights reserved.</p>

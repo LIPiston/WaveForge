@@ -358,13 +358,27 @@ export function installTvExtensions({
     createReadStream(file).pipe(res)
   })
 
-  // ── 开发者模式调试服务开关（跟随前端 developerMode，默认关闭） ──
+  // ── 开发者模式调试服务开关（受开发者模式开关约束；调试阶段默认开，前端可关） ──
   const tvCrashFile = join(dirname(wallpapersDir), 'tv-crash.log')
+  const tvDebugStateFile = join(dirname(wallpapersDir), 'tv-debug-state.json')
+  const readDebugState = () => {
+    try {
+      const raw = JSON.parse(readFileSync(tvDebugStateFile, 'utf8'))
+      if (typeof raw?.enabled === 'boolean') return raw.enabled
+    } catch { /* ignore */ }
+    // 无记录：调试阶段默认开（正式发布改 false）
+    return true
+  }
   app.post('/api/tv/debug-mode', (req, res) => {
     const enabled = req.body?.enabled === true
     setDebugServerEnabled(enabled, { serverLogs, crashFile: tvCrashFile })
+    try {
+      writeFileSync(tvDebugStateFile, JSON.stringify({ enabled }))
+    } catch { /* ignore */ }
     res.json({ ok: true, enabled, port: DEBUG_PORT })
   })
+  // 后端启动时按持久化状态启停（默认开；用户关掉后重启保持关闭，受开关约束）
+  setDebugServerEnabled(readDebugState(), { serverLogs, crashFile: tvCrashFile })
   // 前端 JS 错误上报（页面 window.onerror/unhandledrejection → 记录日志 + 崩溃文件）
   app.post('/api/tv/debug-report', (req, res) => {
     const { source, message, stack, url } = req.body || {}
@@ -450,4 +464,4 @@ export function installTvExtensions({
   return tvRemoteServer
 }
 
-export { getLanIPv4Addresses }
+export { getLanIPv4Addresses, setDebugServerEnabled }

@@ -6,6 +6,7 @@
  * 全部为只读展示用途（面板 pointer-events:none + data-tv-skip，遥控器/远程光标不可选中）。
  */
 import { useSyncExternalStore } from 'react'
+import { isTvModeActive } from '../platform'
 
 // ── 调试模式开关（localStorage developerMode + developerModeChanged 事件） ──
 let debugMode = readDebugMode()
@@ -13,9 +14,13 @@ const debugListeners = new Set<() => void>()
 
 function readDebugMode(): boolean {
   try {
-    return localStorage.getItem('developerMode') === 'true'
+    const saved = localStorage.getItem('developerMode')
+    if (saved !== null) return saved === 'true'
+    // 调试阶段：TV 端默认开启（软件进不去时也需要调试台可用）；PC 默认关。
+    // 正式发布时把这里改回 false。
+    return isTvModeActive()
   } catch {
-    return false
+    return isTvModeActive()
   }
 }
 
