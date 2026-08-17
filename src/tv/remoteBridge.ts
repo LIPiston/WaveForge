@@ -10,7 +10,7 @@
  * 另外轮询 /api/tv/remote-status：手机连上（clientCount>0）时切换为"光标模式"，
  * TV 的 hover 驱动 UI 与 PC 一致、焦点环隐藏。
  */
-import { isAndroid } from '../platform'
+import { isTvModeActive } from '../platform'
 import { setRemoteCursorMode } from './tvCore'
 
 let installed = false
@@ -128,9 +128,9 @@ export function requestRemoteTextInput(): void {
   }
 }
 
-/** 仅 Android（TV/平板）启动；桌面走 Electron 的 remote 桥，不需要。 */
+/** TV 模式（真机 TV/平板或浏览器 ?tv=1 强制）启动；桌面非 TV 走 Electron 的 remote 桥。 */
 export function installRemoteBridge(): void {
-  if (installed || !isAndroid() || typeof WebSocket === 'undefined') return
+  if (installed || !isTvModeActive() || typeof WebSocket === 'undefined') return
   installed = true
   void connect()
   startStatusPolling()

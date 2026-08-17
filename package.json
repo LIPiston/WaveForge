@@ -9,7 +9,7 @@
   "private": true,
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "dev:api": "node local-server.mjs",
+    "dev:api": "node dev-tv-server.mjs",
     "dev:electron": "node scripts/dev-electron.mjs",
     "build": "vite build",
     "build:electron": "npm run build && electron-builder --win nsis --publish never",
