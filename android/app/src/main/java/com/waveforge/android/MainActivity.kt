@@ -22,6 +22,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.util.Log
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import java.io.File
@@ -43,9 +44,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MainActivity : Activity() {
 
     companion object {
+        private const val TAG = "WaveForgeMain"
         private const val NODE_ASSETS_DIR = "nodejs-project"
         private const val PREF_TAG_KEY = "node_assets_version"
-        private const val ASSETS_VERSION = 13
+        private const val ASSETS_VERSION = 16
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
         // Node 启动标记：必须进程级唯一（nodejs-mobile 不支持重启、每次进程只允许一个）。
@@ -70,6 +72,8 @@ class MainActivity : Activity() {
     private var qqLoginPolling: Thread? = null
     // BACK 键：JS 消费（useTvBack 逐级关闭）后上报，原生不再执行默认返回
     private val backConsumed = java.util.concurrent.atomic.AtomicBoolean(false)
+    // WebView 渲染进程崩溃重载计数（防无限重载）
+    private var rendererCrashCount = 0
     // 焦点在滑块上时由 Web 层开启：音量键转发给页面做 +1/-1 调节，不再调系统音量
     @Volatile
     private var volumeKeyCapture = false
@@ -91,10 +95,8 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#0a0f14"))
         }
 
-        // TV 全屏启动动画（涟漪 + logo + 音波条），后端就绪后淡出
-        val appVersion = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }
-            .getOrNull() ?: ""
-        splashView = SplashView(this, appVersion).apply {
+        // TV 全屏启动动画（参照 Win 端 splash：渐变背景 + Logo + 音波条），后端就绪后淡出
+        splashView = SplashView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -117,7 +119,32 @@ class MainActivity : Activity() {
             // 这里仍放开兜底，避免个别 https 页面加载 http 资源时被拦。
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             settings.cacheMode = WebSettings.LOAD_DEFAULT
-            webViewClient = WebViewClient()
+            webViewClient = object : WebViewClient() {
+                // WebView 渲染进程崩溃（Android 8+ 模拟器/低端机常见）：默认行为是终止整个应用闪退。
+                // 这里接管：返回 true 阻止终止，并尝试重载页面（最多 2 次）。
+                @SuppressLint("NewApi")
+                override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+                    Log.w(TAG, "WebView 渲染进程崩溃: $detail")
+                    if (rendererCrashCount < 2) {
+                        rendererCrashCount++
+                        view.postDelayed({
+                            if (!isFinishing) view.loadUrl(SERVER_URL)
+                        }, 800)
+                        return true
+                    }
+                    // 连续崩溃：展示静态提示，避免无限重载
+                    view.postDelayed({
+                        if (!isFinishing) {
+                            view.loadData(
+                                "<html><body style='background:#0a0f14;color:#9db2cc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh'>" +
+                                    "<div style='text-align:center'><h2>页面渲染失败</h2><p>请尝试重启应用，或更新系统 WebView</p></div></body></html>",
+                                "text/html", "utf-8"
+                            )
+                        }
+                    }, 800)
+                    return true
+                }
+            }
             webChromeClient = WebChromeClient()
             // 供前端"检查更新"按钮触发原生更新器（TV 上由原生弹窗下载安装）
             addJavascriptInterface(object {
@@ -241,6 +268,7 @@ class MainActivity : Activity() {
 
     /** 轮询 Node 服务直到 /health 就绪，然后加载应用。 */
     private fun waitForServerAndLoad() {
+        val activity = this
         Thread {
             var ready = false
             var attempts = 0
@@ -249,16 +277,26 @@ class MainActivity : Activity() {
                 ready = isServerUp()
                 if (!ready) Thread.sleep(250)
             }
+            if (activity.isFinishing) return@Thread
             runOnUiThread {
+                if (activity.isFinishing) return@runOnUiThread
                 // 启动动画淡出后再展示应用（避免生硬切换）
                 splashView?.animate()?.alpha(0f)?.setDuration(450)?.withEndAction {
-                    rootView.removeView(splashView)
+                    if (activity.isFinishing) return@withEndAction
+                    runCatching {
+                        rootView.removeView(splashView)
+                    }
                     splashView = null
                     webView.visibility = View.VISIBLE
                     webView.requestFocus()
-                    webView.loadUrl(SERVER_URL)
+                    if (!ready) {
+                        // 后端未在时限内就绪：不加载空页，稍后重试
+                        webView.postDelayed({ if (!activity.isFinishing) webView.loadUrl(SERVER_URL) }, 3000)
+                    } else {
+                        webView.loadUrl(SERVER_URL)
+                    }
                     // 应用内更新检查（后台拉清单，有新版弹窗，不影响启动）
-                    UpdateChecker.check(this@MainActivity)
+                    if (!activity.isFinishing) UpdateChecker.check(activity)
                 }
             }
         }.start()
@@ -476,7 +514,7 @@ class MainActivity : Activity() {
             backConsumed.set(false)
             forwardKeyToDom(KeyEvent.KEYCODE_BACK)
             rootView.postDelayed({
-                if (!backConsumed.get() && !isDestroyed && !isFinishing) {
+                if (!backConsumed.get() && !isFinishing) {
                     handleBackDefault()
                 }
             }, 120)

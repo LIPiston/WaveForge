@@ -2,52 +2,75 @@ package com.waveforge.android
 
 import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.View
 import android.view.animation.LinearInterpolator
+import kotlin.math.PI
 import kotlin.math.sin
 
 /**
- * TV 端全屏启动动画（主风格与 PC splash 一致：深色底 + 居中 logo + 音波条），
- * 针对电视重新设计：元素更大、居中偏上，加入「涟漪」扩散动画呼应澜音水主题。
+ * TV 端全屏启动动画，与 Win 端 splash（desktop/splash.html）同风格：
+ * 多彩旋转渐变背景 + 应用 Logo + 渐变 "WaveForge" 文字 + 多彩音波条。
  * 后端就绪后由 MainActivity 淡出移除。
  */
 class SplashView @JvmOverloads constructor(
     context: Context,
-    private val versionName: String = "",
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
 
-    private val accent = Color.parseColor("#4fc3f7")
-    private val ink = Color.parseColor("#0a0f14")
     private val dot = resources.displayMetrics.density
 
+    // 多彩渐变（与 Win 端 splash 同色板）
+    private val GRADIENT_COLORS = intArrayOf(
+        Color.parseColor("#FF6B6B"),
+        Color.parseColor("#FFB347"),
+        Color.parseColor("#FFE66D"),
+        Color.parseColor("#4ECDC4"),
+        Color.parseColor("#5B9FFF"),
+        Color.parseColor("#A78BFA"),
+        Color.parseColor("#EC4899"),
+        Color.parseColor("#FF6B6B"),
+    )
+    // 音波条颜色（Win 端 12 根循环）
+    private val WAVE_COLORS = intArrayOf(
+        Color.parseColor("#FF6B6B"),
+        Color.parseColor("#FFB347"),
+        Color.parseColor("#FFE66D"),
+        Color.parseColor("#4ECDC4"),
+        Color.parseColor("#5B9FFF"),
+        Color.parseColor("#A78BFA"),
+        Color.parseColor("#EC4899"),
+        Color.parseColor("#FF6B6B"),
+        Color.parseColor("#FFB347"),
+        Color.parseColor("#FFE66D"),
+        Color.parseColor("#4ECDC4"),
+        Color.parseColor("#5B9FFF"),
+    )
+
+    private val gradientPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val wavePaints: List<Paint> = WAVE_COLORS.map { color ->
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
+    }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        textSize = 36 * dot
+        textSize = 54 * dot
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         textAlign = Paint.Align.CENTER
     }
-    private val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#8b9bb4")
-        textSize = 15 * dot
-        textAlign = Paint.Align.CENTER
-    }
-    private val ripplePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 3 * dot
-        color = accent
-    }
-    private val logoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent }
-    private val notePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ink }
-    private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent }
+
+    // Win 端 Logo 图片
+    private val logoBitmap = runCatching {
+        BitmapFactory.decodeResource(resources, R.drawable.wf_splash_logo)
+    }.getOrNull()
 
     private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = 2400
+        duration = 4000
         repeatCount = ValueAnimator.INFINITE
         interpolator = LinearInterpolator()
         addUpdateListener { invalidate() }
@@ -70,54 +93,86 @@ class SplashView @JvmOverloads constructor(
         val cx = w / 2f
         val progress = animator.animatedValue as Float
 
-        // 入场：前 35% 时间内 logo 从 0.8 放大到 1 并淡入
-        val enter = if (progress < 0.35f) progress / 0.35f else 1f
-        val eased = enter * enter * (3f - 2f * enter) // smoothstep
-        val scale = 0.8f + 0.2f * eased
+        // 入场：前 30% 时间内整体上移淡入（参照 Win 端 splashEnter 位移入场）
+        val enter = if (progress < 0.3f) progress / 0.3f else 1f
+        val eased = enter * enter * (3f - 2f * enter)
         val alpha = (eased * 255).toInt()
+        val enterY = (1f - eased) * 30 * dot
 
-        val cy = h * 0.42f
-        val logoCy = cy - 10 * dot
+        // 1) 多彩旋转渐变背景（200% 尺寸，慢速旋转，低透明度）
+        canvas.save()
+        canvas.rotate(progress * 360f, cx, h / 2f)
+        val bgSize = maxOf(w, h) * 2f
+        val bgLeft = cx - bgSize / 2f
+        val bgTop = h / 2f - bgSize / 2f
+        gradientPaint.shader = LinearGradient(
+            bgLeft, bgTop, bgLeft + bgSize, bgTop + bgSize,
+            GRADIENT_COLORS, null, Shader.TileMode.CLAMP,
+        )
+        gradientPaint.alpha = (0.18f * alpha).toInt()
+        canvas.drawRect(bgLeft, bgTop, bgLeft + bgSize, bgTop + bgSize, gradientPaint)
+        canvas.restore()
 
-        // 涟漪：logo 外扩散的三圈循环
-        for (i in 0 until 3) {
-            val off = (progress + i / 3f) % 1f
-            val radius = (50 * dot + off * 150 * dot) * scale
-            ripplePaint.alpha = ((1f - off) * 150).toInt()
-            canvas.drawCircle(cx, logoCy, radius, ripplePaint)
+        // 2) Logo 图片（圆角方形 + 浮动 + 阴影）
+        val logoSize = 130 * dot * (0.94f + 0.06f * eased)
+        val logoY = h * 0.30f - logoSize / 2f + enterY + sin(progress * PI * 2).toFloat() * 6f * dot
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb((0.35f * alpha).toInt(), 0, 0, 0)
+        }
+        if (logoBitmap != null) {
+            canvas.save()
+            canvas.translate(cx, logoY)
+            canvas.rotate(sin(progress * PI * 2 * 0.5f).toFloat() * 1.5f)
+            // 阴影
+            canvas.drawRoundRect(
+                -logoSize / 2f + 6 * dot, -logoSize / 2f + 12 * dot,
+                logoSize / 2f + 6 * dot, logoSize / 2f + 12 * dot,
+                28 * dot, 28 * dot, shadowPaint,
+            )
+            // 圆角裁剪绘制
+            val saveCount = canvas.saveLayer(-logoSize / 2f, -logoSize / 2f, logoSize / 2f, logoSize / 2f, null)
+            val clip = android.graphics.Path().apply {
+                addRoundRect(
+                    -logoSize / 2f, -logoSize / 2f, logoSize / 2f, logoSize / 2f,
+                    28 * dot, 28 * dot, android.graphics.Path.Direction.CW,
+                )
+            }
+            canvas.clipPath(clip)
+            canvas.drawBitmap(
+                logoBitmap, null,
+                android.graphics.RectF(-logoSize / 2f, -logoSize / 2f, logoSize / 2f, logoSize / 2f),
+                Paint(Paint.ANTI_ALIAS_FLAG).apply { this.alpha = alpha },
+            )
+            canvas.restoreToCount(saveCount)
+            canvas.restore()
         }
 
-        // logo：圆形底 + 双音符
-        logoPaint.alpha = alpha
-        val logoR = 46 * dot * scale
-        canvas.drawCircle(cx, logoCy, logoR, logoPaint)
-
-        notePaint.alpha = alpha
-        val ncx = cx
-        val ncy = logoCy
-        val lx = ncx - 14 * dot * scale
-        val rx = ncx + 13 * dot * scale
-        canvas.drawCircle(lx, ncy - 2 * dot * scale, 9 * dot * scale, notePaint)
-        canvas.drawCircle(rx, ncy + 7 * dot * scale, 9 * dot * scale, notePaint)
-        canvas.drawRect(lx - 2 * dot, ncy - 2 * dot * scale - 26 * dot * scale, lx + 2 * dot, ncy - 2 * dot * scale, notePaint)
-        canvas.drawRect(rx - 2 * dot, ncy + 7 * dot * scale - 26 * dot * scale, rx + 2 * dot, ncy + 7 * dot * scale, notePaint)
-
-        // 标题与版本
+        // 3) "WaveForge" 渐变文字（文字颜色渐变随背景色板滑动）
+        val textY = h * 0.42f + enterY
         textPaint.alpha = alpha
-        canvas.drawText("WaveForge", cx, cy + 64 * dot, textPaint)
-        subPaint.alpha = alpha
-        canvas.drawText("澜音工坊 · 版本 ${versionName.ifEmpty { "0.1.3" }}", cx, cy + 94 * dot, subPaint)
+        val shimmerOffset = (progress % 1f) * 400f
+        textPaint.shader = LinearGradient(
+            cx - 200f + shimmerOffset, 0f, cx + 200f + shimmerOffset, 0f,
+            GRADIENT_COLORS.copyOf(GRADIENT_COLORS.size - 1), null, Shader.TileMode.REPEAT,
+        )
+        canvas.drawText("WaveForge", cx, textY, textPaint)
+        textPaint.shader = null
 
-        // 底部音波条（7 根，正弦起伏）
-        val barY = h * 0.72f
-        val barW = 6 * dot
-        val gap = 17 * dot
-        for (i in 0 until 7) {
-            val phase = progress * Math.PI * 2 * 1.5 + i * 0.85
+        // 4) 多彩音波条（12 根，高度/相位错开，参照 Win 端 wave-bar）
+        val barY = h * 0.62f + enterY
+        val barW = 8 * dot
+        val gap = 22 * dot
+        val maxH = 64 * dot
+        for (i in WAVE_COLORS.indices) {
+            val phase = progress * PI * 2 * 1.2 + i * 0.6
             val amp = (0.5 + 0.5 * sin(phase)).toFloat()
-            val bh = (10 + 26 * amp) * dot
-            val x = cx + (i - 3) * gap
-            canvas.drawRect(x - barW / 2, barY - bh / 2, x + barW / 2, barY + bh / 2, barPaint)
+            val bh = (14 + (maxH - 14) * amp) * (if (i % 2 == 0) 1f else 0.85f)
+            val x = cx + (i - WAVE_COLORS.size / 2f + 0.5f) * gap
+            wavePaints[i].alpha = alpha
+            canvas.drawRoundRect(
+                x - barW / 2f, barY - bh / 2f, x + barW / 2f, barY + bh / 2f,
+                4 * dot, 4 * dot, wavePaints[i],
+            )
         }
     }
 }

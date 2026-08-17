@@ -58,6 +58,13 @@ async function buildServerBundle() {
     // qq-music-api 内部有运行时动态 require（jade 模板等）也已验证可打包；
     // 仅 netease 增强 API 必须保持 external（见文件顶部注释）。
     external: [NETEASE_API_EXTERNAL],
+    // nodejs-mobile 精简构建缺全局 File：undici（fetch 实现）webidl 断言引用 File，
+    // 加载即 ReferenceError 崩溃（模拟器/真机启动闪退）。banner 在最顶部执行，
+    // 先于 bundle 内任何模块注入 File 全局。
+    banner: {
+      js:
+        "if (typeof globalThis.File === 'undefined') { try { const { File: __wfFile } = require('buffer'); if (__wfFile) globalThis.File = __wfFile; } catch (__e) {} }",
+    },
   })
   console.log(`  bundle 完成${result.metafile ? '（' + Object.keys(result.metafile.inputs).length + ' 个输入文件）' : ''}`)
 }

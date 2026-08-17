@@ -35,9 +35,9 @@ android {
         }
 
         ndk {
-            // 现代 Android TV（2019 年后）几乎全是 64 位，默认只出 arm64 一个 ABI，
-            // APK 体积减半。若需要支持老式 32 位盒子，把 "armeabi-v7a" 加回列表。
-            abiFilters += listOf("arm64-v8a")
+            // 绝大多数 Android TV 是 64 位 arm；加 x86_64 供电脑模拟器原生运行。
+            // 正式发布可只保留 arm64 减体积。
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
