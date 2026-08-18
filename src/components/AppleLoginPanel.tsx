@@ -3,6 +3,7 @@ import { CheckCircle2, ChevronDown, KeyRound, Link2, Loader2, LogOut, Music, Shi
 import { validateAppleLogin, clearAppleLogin, saveAppleLogin, getAppleAuthState, resolveAppleAccountName, resolveAppleAccountProfile, generateInitialsAvatar, type AppleUserInfo } from '../services/appleAuth'
 import { ensureAppleWebDevToken } from '../services/appleMusicToken'
 import { recordLogin, clearLoginExpiry } from '../services/loginExpiry'
+import { useTvBack } from '../tv/tvCore'
 
 const STOREFRONTS = [
   { code: 'cn', label: '中国大陆 (cn)' },
@@ -25,6 +26,11 @@ interface AppleLoginPanelProps {
  * 校验通过后拉取 storefront 与用户资料（头像/昵称）。
  */
 export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLoginSuccess }: AppleLoginPanelProps) {
+  // TV 遥控器 BACK：关闭 Apple 登录面板
+  useTvBack(() => {
+    onClose()
+    return true
+  }, [onClose])
   const [devToken, setDevToken] = useState(() => localStorage.getItem('appleDeveloperToken') || '')
   const [mediaToken, setMediaToken] = useState(() => localStorage.getItem('appleMediaUserToken') || '')
   const [storefront, setStorefront] = useState(() => localStorage.getItem('appleStorefront') || 'cn')
@@ -278,7 +284,7 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="flex w-full max-w-3xl items-stretch justify-center gap-3" onClick={event => event.stopPropagation()}>
+      <div data-tv-scope className="flex w-full max-w-3xl items-stretch justify-center gap-3" onClick={event => event.stopPropagation()}>
         {loginMode === 'manual' && showGuide && (
           <div className="hidden w-72 shrink-0 flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#12141c] shadow-2xl sm:flex">
             <div className="flex items-center justify-between px-5 pb-3 pt-5">

@@ -13,6 +13,7 @@ import {
   REVERB_TYPES,
 } from '../services/audio-effects-v2/AudioEffectsEngine'
 import { COMPENSATION_PRESETS } from '../services/audio-effects-v2/compensationService'
+import { useTvBack } from '../tv/tvCore'
 
 interface MixingStudioProps {
   engine: AudioEffectsEngine
@@ -80,6 +81,11 @@ const EFFECT_META: Record<EffectKey, { name: string; desc: string; intro: string
 }
 
 export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, sourceDuration, anchorRect, engineVersion = 'v2', onSwitchEngine, availableEngines }: MixingStudioProps) {
+  // TV 遥控器 BACK：关闭调音室
+  useTvBack(() => {
+    onClose()
+    return true
+  }, [onClose])
   const [activeTab, setActiveTab] = useState<Tab>('effects')
   const [settings, setSettings] = useState<AudioEffectsSettings>(engine.getSettings())
   const [presets, setPresets] = useState<EqPreset[]>(loadPresets)

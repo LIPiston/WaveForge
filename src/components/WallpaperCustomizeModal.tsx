@@ -4,6 +4,7 @@ import { X, Upload, Trash2, Image as ImageIcon, Video, Check, RotateCcw, QrCode 
 import { QRCodeSVG } from 'qrcode.react'
 import { wallpaperManager, WallpaperFile, WallpaperMode, WallpaperSwitchMode } from '../services/wallpaperManager'
 import { isTvModeActive } from '../platform'
+import { useTvBack } from '../tv/tvCore'
 
 interface WallpaperCustomizeModalProps {
   show: boolean
@@ -12,6 +13,14 @@ interface WallpaperCustomizeModalProps {
 }
 
 export default function WallpaperCustomizeModal({ show, onClose, playerTheme = 'dark' }: WallpaperCustomizeModalProps) {
+  // TV 遥控器 BACK：关闭壁纸自定义弹窗
+  useTvBack(() => {
+    if (show) {
+      onClose()
+      return true
+    }
+    return false
+  }, [show, onClose])
   const textPrimary = playerTheme === 'dark' ? 'text-white' : 'text-black'
   const textSecondary = playerTheme === 'dark' ? 'text-white/60' : 'text-black/60'
   const textTertiary = playerTheme === 'dark' ? 'text-white/40' : 'text-black/40'
@@ -210,6 +219,7 @@ export default function WallpaperCustomizeModal({ show, onClose, playerTheme = '
 
           {/* 弹窗内容 */}
           <motion.div
+            data-tv-scope
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}

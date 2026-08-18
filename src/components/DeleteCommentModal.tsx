@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertTriangle, Trash2, X } from 'lucide-react'
+import { useTvBack } from '../tv/tvCore'
 
 interface DeleteCommentModalProps {
   show: boolean
@@ -9,6 +10,14 @@ interface DeleteCommentModalProps {
 }
 
 export default function DeleteCommentModal({ show, loading = false, onClose, onConfirm }: DeleteCommentModalProps) {
+  // TV 遥控器 BACK：关闭删除评论确认弹窗
+  useTvBack(() => {
+    if (show) {
+      onClose()
+      return true
+    }
+    return false
+  }, [show, onClose])
   return (
     <AnimatePresence>
       {show && (
@@ -21,6 +30,7 @@ export default function DeleteCommentModal({ show, loading = false, onClose, onC
             className="fixed inset-0 z-[10040] bg-black/70 backdrop-blur-sm"
           />
           <motion.div
+            data-tv-scope
             initial={{ opacity: 0, scale: 0.92, y: 18 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.92, y: 18 }}
