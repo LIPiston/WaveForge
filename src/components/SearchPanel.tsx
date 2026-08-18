@@ -559,9 +559,6 @@ export default function SearchPanel({
             netease: { loggedIn: neteaseSessionActive, vip: neteaseVip },
             qq: { loggedIn: qqSessionActive, vip: qqVip },
             apple: { loggedIn: false, vip: false },
-            spotify: { loggedIn: false, vip: false },
-            kugou: { loggedIn: false, vip: false },
-            soda: { loggedIn: false, vip: false },
           },
         })
         setFusionUnavailablePlatforms(unavailable)
