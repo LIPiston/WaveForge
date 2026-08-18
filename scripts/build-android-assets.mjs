@@ -188,6 +188,30 @@ function copyRemoteUi() {
   console.log('  已复制 desktop/remote-ui.html → 设备资产')
 }
 
+/**
+ * TV 端布局基准：dist/index.html 的 viewport 静态设为 width=2259（= 1920/0.85，
+ * 软件 UI 整体缩小 15%）。桌面构建（vite.config.ts）不受影响。
+ * JS 动态改 meta 无效（reload 会重置），必须在静态 HTML 里设置。
+ */
+function patchTvViewport() {
+  const indexPath = join(ASSETS_DIR, 'dist', 'index.html')
+  if (!existsSync(indexPath)) {
+    console.log('  dist/index.html 不存在，跳过 viewport patch')
+    return
+  }
+  const src = readFileSync(indexPath, 'utf8')
+  const next = src.replace(
+    /<meta name="viewport"[^>]*>/,
+    '<meta name="viewport" content="width=2259, initial-scale=1" />'
+  )
+  if (next !== src) {
+    writeFileSync(indexPath, next)
+    console.log('  已 patch dist/index.html viewport → width=2259（TV 布局基准，UI 缩小 15%）')
+  } else {
+    console.log('  dist/index.html viewport 已是 2259，无需 patch')
+  }
+}
+
 function bumpAssetsVersion() {
   console.log('[3/3] 递增 MainActivity.kt ASSETS_VERSION ...')
   if (!existsSync(MAIN_ACTIVITY)) throw new Error(`找不到 ${MAIN_ACTIVITY}`)
@@ -206,6 +230,7 @@ async function main() {
   patchPathToRegexp()
   patchNeteaseApi()
   copyRemoteUi()
+  patchTvViewport()
   bumpAssetsVersion()
   console.log('\n完成。资产目录：', ASSETS_DIR)
 }

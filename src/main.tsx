@@ -20,37 +20,10 @@ import TvKeyboard from './tv/TvKeyboard'
 initPlatformUI()
 installElectronShim()
 
-// TV DPI 适配：Android TV 系统 density 因设备而异（4K 投影可能报高 density，
-// 导致 CSS 视口过小、整个 UI 被放大）。统一以 1920 CSS 宽为设计基准缩放。
-// 注意：zoom 会改变 innerWidth 并触发 resize，必须只应用一次（applied 防振荡）。
-let tvDpiApplied = false
-function applyTvDpiScale(): void {
-  if (tvDpiApplied) return
-  if (!document.documentElement.classList.contains('tv-mode')) return
-  const innerW = window.innerWidth
-  if (!innerW) return
-  tvDpiApplied = true
-  if (innerW >= 1920) {
-    console.log(`[TV DPI] innerWidth=${innerW} 视口已达标，不缩放`)
-    return
-  }
-  // 用 viewport width=1920（布局视口 = 设计宽度，浏览器自动缩放），
-  // 不用 CSS zoom（Android WebView 渲染有 bug）。
-  // 注意：WebView 运行时改 viewport meta 不重新布局，需 reload 一次让 meta 生效
-  // （原生已开 useWideViewPort，reload 后 meta width=1920 才会真正采用）。
-  const vp = document.querySelector<HTMLMetaElement>('meta[name="viewport"]')
-  if (!vp) return
-  vp.setAttribute('content', 'width=1920, initial-scale=1')
-  console.log(`[TV DPI] innerWidth=${innerW} → viewport width=1920，reload 生效`)
-  try {
-    if (!sessionStorage.getItem('wf-dpi-reloaded')) {
-      sessionStorage.setItem('wf-dpi-reloaded', '1')
-      window.location.reload()
-    }
-  } catch {
-    // ignore
-  }
-}
+// TV DPI：TV 端布局基准宽由 android 构建产物的 index.html 静态 viewport 决定
+// （build-android-assets.mjs 把 dist/index.html 的 viewport 设为 width=2259，即
+// 1920/0.85，软件 UI 整体缩小 15%；桌面构建不受影响）。JS 动态改 meta 无效
+// （reload 会重置 meta），因此这里不再做运行时缩放。
 
 // TV 遥控器交互层（仅 html.tv-mode 生效）：空间导航/焦点环/软键盘。
 // 组件挂载后再调用一次（见 TvKeyboard），确保 React 首帧渲染完就有候选可聚焦。
@@ -62,9 +35,6 @@ initPerfMode()
 // 调试模式：捕获前端日志 + 初始化开关状态（面板组件 DebugPanels 按需挂载）
 captureFrontendConsole()
 initDebugMode()
-
-// TV DPI 适配（在 captureFrontendConsole 之后执行，DPI 日志才能上报到调试台）
-applyTvDpiScale()
 
 // 局域网调试桥（跟随开发者模式，默认关闭）：:3002 日志/崩溃/远程控制
 installDebugRemote()
