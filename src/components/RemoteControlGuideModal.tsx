@@ -125,22 +125,15 @@ export default function RemoteControlGuideModal({ onClose, playerTheme = 'dark' 
         </div>
 
         {/* 遥控器 UI */}
-        <div className="rounded-3xl p-5 mx-auto" style={{ width: 240, background: 'linear-gradient(160deg, #171c26, #0d1117)', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 20px 50px rgba(0,0,0,0.45)' }}>
-          {/* 电源（仅示意） */}
-          <div className="flex justify-center mb-4">
-            <div style={{ ...keyBox(false), width: 36, height: 36, borderRadius: '50%' }}>
-              <Power className="w-4 h-4" />
-            </div>
-          </div>
-
-          {/* D-pad */}
+        <div className="rounded-3xl p-5 mx-auto" style={{ width: 248, background: 'linear-gradient(160deg, #171c26, #0d1117)', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 20px 50px rgba(0,0,0,0.45)' }}>
+          {/* D-pad：方向键与中央 OK 分开留隙，OK 位于正中心 */}
           <div className="flex justify-center mb-3">
-            <div style={{ position: 'relative', width: 132, height: 132 }}>
-              <Key ids={['dpad']} extra={{ position: 'absolute', left: 40, top: 0, width: 52, height: 44 }}><span>▲</span></Key>
-              <Key ids={['dpad']} extra={{ position: 'absolute', left: 0, top: 44, width: 44, height: 44 }}><span>◀</span></Key>
-              <Key ids={['ok']} extra={{ position: 'absolute', left: 44, top: 44, width: 44, height: 44 }}><CornerDownLeft className="w-4 h-4" /></Key>
-              <Key ids={['dpad']} extra={{ position: 'absolute', left: 88, top: 44, width: 44, height: 44 }}><span>▶</span></Key>
-              <Key ids={['dpad']} extra={{ position: 'absolute', left: 40, top: 88, width: 52, height: 44 }}><span>▼</span></Key>
+            <div style={{ position: 'relative', width: 150, height: 150 }}>
+              <Key ids={['dpad']} extra={{ position: 'absolute', left: 49, top: 0, width: 52, height: 42 }}><span>▲</span></Key>
+              <Key ids={['dpad']} extra={{ position: 'absolute', left: 0, top: 54, width: 42, height: 42 }}><span>◀</span></Key>
+              <Key ids={['ok']} extra={{ position: 'absolute', left: 51, top: 54, width: 48, height: 42 }}><CornerDownLeft className="w-4 h-4" /></Key>
+              <Key ids={['dpad']} extra={{ position: 'absolute', left: 108, top: 54, width: 42, height: 42 }}><span>▶</span></Key>
+              <Key ids={['dpad']} extra={{ position: 'absolute', left: 49, top: 108, width: 52, height: 42 }}><span>▼</span></Key>
             </div>
           </div>
 

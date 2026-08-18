@@ -1,5 +1,22 @@
 /* TV 遥控器模式样式：html.tv-mode 由 src/platform.ts 在安卓端启动时添加，桌面不受影响。 */
 
+/* TV 布局视口固定（viewport width=2133 时布局高会超出屏幕产生页面滚动）：
+   禁止页面级滚动，内容在各自的内部滚动容器里滚动（TV 遥控器模式的正常形态） */
+html.tv-mode,
+html.tv-mode body {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* TV 端滚动条按钮（上/下箭头）在旧 Chromium 渲染异常（两端重复双箭头）：
+   直接隐藏按钮，只保留滑块（遥控器用不到按钮，PC 端不受影响） */
+html.tv-mode ::-webkit-scrollbar-button {
+  display: none;
+}
+html.tv-mode * {
+  scrollbar-width: thin;
+}
+
 /* 无鼠标光标：电视上不显示指针 */
 html.tv-mode,
 html.tv-mode * {

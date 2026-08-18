@@ -175,6 +175,27 @@ function isClippedByNonScrollable(el: HTMLElement): boolean {
     if (clipping && !scrollable) {
       const pr = node.getBoundingClientRect()
       if (r.bottom < pr.top + 1 || r.top > pr.bottom - 1 || r.right < pr.left + 1 || r.left > pr.right - 1) {
+        // 元素与当前裁剪容器之间若有滚动容器，说明可通过 scrollIntoView 滚回，
+        // 外层壳（如设置面板 fixed overflow-hidden）的裁剪不算不可恢复，跳过继续向外查
+        let inner: HTMLElement | null = el.parentElement
+        let recoverable = false
+        while (inner && inner !== node) {
+          const si = getComputedStyle(inner)
+          if (
+            si.overflowY === 'auto' ||
+            si.overflowY === 'scroll' ||
+            si.overflowX === 'auto' ||
+            si.overflowX === 'scroll'
+          ) {
+            recoverable = true
+            break
+          }
+          inner = inner.parentElement
+        }
+        if (recoverable) {
+          node = node.parentElement
+          continue
+        }
         return true
       }
     }
@@ -235,6 +256,22 @@ function candidates(from: HTMLElement | null = null, dir: Direction | null = nul
   const list = Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR)) as HTMLElement[]
   return list.filter((el) => {
     if (el.closest('[data-tv-skip]')) return false
+    // sr-only 开关 input（checkbox/radio 且有 label）：label 已是候选（focusRectOf 用 label rect），
+    // 排除 input，避免同一开关两个候选（label + input）rect 相同导致导航原地打转
+    if (
+      el.tagName === 'INPUT' &&
+      ((el as HTMLInputElement).type === 'checkbox' || (el as HTMLInputElement).type === 'radio') &&
+      el.closest('label')
+    ) {
+      return false
+    }
+    // 包裹禁用控件（disabled input/button）的 label：禁用开关不可操作，不参与导航
+    if (
+      el.tagName === 'LABEL' &&
+      (el.querySelector('input:disabled, button:disabled, select:disabled') !== null)
+    ) {
+      return false
+    }
     if (!isRendered(el)) return false
     if (isClippedByScroll(el)) {
       // 被不可滚动容器（overflow:hidden/clip）裁掉的项滚不回来，排除
@@ -335,6 +372,8 @@ function markRingActive(): void {
 // ---------------- 设置焦点 ----------------
 // 软键盘激活时：焦点环照常移动，但不调用原生 focus()，避免输入框失焦导致键盘消失。
 let keyboardActive = false
+// 滑块调节模式：range 聚焦 + OK 进入，左右键增减（见 handleKeyDown）
+let rangeAdjusting = false
 
 export function isKeyboardActive(): boolean {
   return keyboardActive
@@ -344,6 +383,27 @@ export function setKeyboardActive(v: boolean): void {
   keyboardActive = v
   // 关闭键盘/面板后若焦点元素已失效（断连/卸载），重新收拢到首个可见候选
   if (!v && (!focusedEl || !focusedEl.isConnected)) focusFirst()
+}
+
+/** 元素所在的"卡片"容器：有内边距+圆角、内含少量可聚焦项的小分组。
+ * 焦点滚动以卡片为目标，避免按钮进入视口但卡片标题/说明仍被裁剪（如设置页歌词库卡片）。 */
+function cardContainerOf(el: HTMLElement): HTMLElement | null {
+  let node: HTMLElement | null = el.parentElement
+  while (node && node !== document.body) {
+    const cs = getComputedStyle(node)
+    const radius = parseFloat(cs.borderRadius)
+    const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
+    if (radius > 0 && pad > 0) {
+      const r = node.getBoundingClientRect()
+      const focusableInside = node.querySelectorAll(FOCUSABLE_SELECTOR).length
+      // 排除大面板（高于视口 80% 或含大量焦点项）：那类容器不是"卡片"，滚动它没有意义
+      if (r.height < window.innerHeight * 0.8 && focusableInside <= 8) {
+        return node
+      }
+    }
+    node = node.parentElement
+  }
+  return null
 }
 
 export function setTvFocus(el: HTMLElement | null): void {
@@ -362,9 +422,22 @@ export function setTvFocus(el: HTMLElement | null): void {
         // ignore
       }
     }
-    el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    // 按钮所在卡片（若有）一起滚进视口，保证卡片整体（含上方标题/说明）可见
+    const card = cardContainerOf(el)
+    ;(card || el).scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }
   focusListeners.forEach((fn) => fn())
+  // 诊断：焦点移动日志（配合局域网调试台定位遥控导航问题）
+  try {
+    if (el) {
+      const label = (el.getAttribute('aria-label') || el.textContent || el.className || '').toString().slice(0, 20)
+      console.log(`[FOCUS] ${label}`)
+    } else {
+      console.log('[FOCUS] null')
+    }
+  } catch {
+    // ignore
+  }
   updateRing()
   markRingActive()
   updateVolumeKeyCapture()
@@ -393,6 +466,23 @@ type Direction = 'up' | 'down' | 'left' | 'right'
 
 function bestNeighbor(current: HTMLElement, dir: Direction): HTMLElement | null {
   const list = candidates(current, dir)
+  // 诊断：打印候选摘要（文本/是否裁剪/是否同容器），配合调试台定位导航问题
+  try {
+    const curLabel = (current.textContent || current.getAttribute('aria-label') || current.className || '').toString().replace(/\s+/g, ' ').slice(0, 14)
+    const curSp = scrollParentOf(current)
+    const diag = list
+      .filter((el) => el !== current)
+      .slice(0, 10)
+      .map((el) => {
+        const l = (el.textContent || el.getAttribute('aria-label') || el.className || '').toString().replace(/\s+/g, ' ').slice(0, 10)
+        const same = scrollParentOf(el) === curSp
+        return `${l}[${isClippedByScroll(el) ? '裁' : '显'}${same ? '同' : '异'}]`
+      })
+      .join(' ')
+    console.log(`[NAV] ${dir} from=${curLabel} cand=${list.length} → ${diag}`)
+  } catch {
+    // ignore
+  }
   const cur = focusRectOf(current)
   const cx = cur.left + cur.width / 2
   const cy = cur.top + cur.height / 2
@@ -415,8 +505,9 @@ function bestNeighbor(current: HTMLElement, dir: Direction): HTMLElement | null 
     const perpendicular = dir === 'left' || dir === 'right' ? Math.abs(dy) : Math.abs(dx)
     // 垂直方向偏差权重大，避免对角线跳跃
     let score = parallel + perpendicular * 1.5
-    // 同滚动容器优先：上下导航不应跳出当前面板的滚动区（如设置页内容区→左侧标签栏），
-    // 跨容器候选加重惩罚，仅在无同容器候选时才会被选到。
+    // 同滚动容器优先：上下导航优先选当前面板滚动区内的项（含滚出可视区的，
+    // 选中后自动滚动回去）。仅当同容器该方向无候选（滚到头/底）时，
+    // 才允许跨容器候选（如从设置内容区回到顶部 tab）。
     if (dir === 'up' || dir === 'down') {
       const curScroll = scrollParentOf(current)
       const candScroll = scrollParentOf(el)
@@ -428,6 +519,17 @@ function bestNeighbor(current: HTMLElement, dir: Direction): HTMLElement | null 
       bestScore = score
       best = el
     }
+  }
+  // 诊断：选中项
+  try {
+    if (best) {
+      const bl = (best.textContent || best.getAttribute('aria-label') || best.className || '').toString().replace(/\s+/g, ' ').slice(0, 16)
+      console.log(`[NAV] → 选中: ${bl}`)
+    } else {
+      console.log(`[NAV] → 无候选`)
+    }
+  } catch {
+    // ignore
   }
   return best
 }
@@ -564,6 +666,40 @@ function handleKeyDown(e: KeyboardEvent): void {
       }
     }
     return
+  }
+
+  // 滑块调节模式：焦点在 range 上按 OK 进入，左右键增减；再按其他键退出恢复导航
+  const isRangeFocused =
+    focusedEl !== null &&
+    focusedEl.tagName === 'INPUT' &&
+    (focusedEl as HTMLInputElement).type === 'range'
+  if (isRangeFocused && (code === 13 || code === 23 || code === 66)) {
+    e.preventDefault()
+    if (!rangeAdjusting) {
+      rangeAdjusting = true
+      try {
+        window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '按 ◀ ▶ 调节数值，其他键退出', type: 'info' } }))
+      } catch {
+        // ignore
+      }
+    }
+    return
+  }
+  if (rangeAdjusting && isRangeFocused) {
+    if (code === 37 || code === 21 || code === 39 || code === 22) {
+      e.preventDefault()
+      const input = focusedEl as HTMLInputElement
+      try {
+        if (code === 37 || code === 21) input.stepDown()
+        else input.stepUp()
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        input.dispatchEvent(new Event('change', { bubbles: true }))
+      } catch {
+        // ignore
+      }
+      return
+    }
+    rangeAdjusting = false // 非左右键：退出调节模式，走正常导航
   }
 
   // 软键盘激活：方向键在键盘网格内做空间导航，Enter 激活键位，BACK 关闭键盘

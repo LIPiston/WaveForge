@@ -36,6 +36,15 @@ initPerfMode()
 captureFrontendConsole()
 initDebugMode()
 
+// 诊断：确认 TV 布局视口（应为 2133；若为设备宽则 viewport 未生效）
+console.log(`[VIEWPORT] innerWidth=${window.innerWidth} innerHeight=${window.innerHeight}`)
+// 诊断：Tailwind v4 透明度依赖 color-mix（需 Chromium 111+），旧 WebView 不支持会导致颜色失效
+try {
+  console.log(`[COLOR-MIX] ${CSS.supports('color', 'color-mix(in oklab, red 50%, blue)')}`)
+} catch {
+  console.log('[COLOR-MIX] 不可检测')
+}
+
 // 局域网调试桥（跟随开发者模式，默认关闭）：:3002 日志/崩溃/远程控制
 installDebugRemote()
 

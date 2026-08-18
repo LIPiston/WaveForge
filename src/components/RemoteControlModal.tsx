@@ -155,6 +155,7 @@ export default function RemoteControlModal({ onClose, playerTheme }: RemoteContr
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
+      data-tv-scope
       className="fixed inset-0 z-[80] flex items-center justify-center p-4"
       style={{ backgroundColor: dark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.25)', backdropFilter: 'blur(8px)' }}
       onClick={onClose}

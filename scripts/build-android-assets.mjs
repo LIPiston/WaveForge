@@ -8,7 +8,7 @@
 import { build as viteBuild } from 'vite'
 import { build as esbuildBuild } from 'esbuild'
 import { execSync } from 'child_process'
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'fs'
+import { copyFileSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -189,8 +189,104 @@ function copyRemoteUi() {
 }
 
 /**
- * TV 端布局基准：dist/index.html 的 viewport 静态设为 width=2259（= 1920/0.85，
- * 软件 UI 整体缩小 15%）。桌面构建（vite.config.ts）不受影响。
+ * 旧 WebView（Chromium <111）不支持 color-mix。Tailwind v4 的 /opacity 修饰符
+ * 输出 color-mix，110 上全部失效 → 半透明颜色变黑/丢失。
+ * 构建后把两类 color-mix 基础声明替换成旧式 rgb(/alpha)：
+ *  1) color-mix(in srgb, rgb(R G B/<alpha-value>) P%, transparent) → rgb(R G B / P%)
+ *  2) color-mix(in oklab, var(--color-X) P%, transparent)
+ *     → 提取 --color-X: oklch(...) 定义并转成 rgb，替换为 rgb(R G B / P%)
+ * @supports 块里的 oklab color-mix 在 110 被忽略，不影响。
+ */
+function oklchToRgb(l, c, h) {
+  // oklch → oklab → LMS → linear sRGB → sRGB
+  const hr = (h * Math.PI) / 180
+  const a = c * Math.cos(hr)
+  const b = c * Math.sin(hr)
+  const l_ = l + 0.3963377774 * a + 0.2158037573 * b
+  const m_ = l - 0.1055613458 * a - 0.0638541728 * b
+  const s_ = l - 0.0894841775 * a - 1.291485548 * b
+  const l3 = l_ ** 3
+  const m3 = m_ ** 3
+  const s3 = s_ ** 3
+  let r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3
+  let g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3
+  let bl = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3
+  const gamma = (u) => (u <= 0.0031308 ? 12.92 * u : 1.055 * Math.pow(u, 1 / 2.4) - 0.055)
+  return [r, g, bl].map((v) => Math.round(Math.max(0, Math.min(1, gamma(v))) * 255)).join(' ')
+}
+
+function patchCssColorMix() {
+  const cssDir = join(ASSETS_DIR, 'dist', 'assets')
+  if (!existsSync(cssDir)) return
+  let patched = 0
+  for (const name of readdirSync(cssDir)) {
+    if (!name.endsWith('.css')) continue
+    const file = join(cssDir, name)
+    let src = readFileSync(file, 'utf8')
+    let changed = false
+
+    // 1) 提取 --color-* 定义 → rgb，替换定义本身（var() 引用仍有效）。oklch 和 hex 都处理
+    const colorMap = {}
+    src = src.replace(
+      /(--color-[a-z0-9-]+):\s*oklch\(([\d.]+%?)\s+([\d.]+%?)\s+([\d.]+)\)/g,
+      (whole, name, l, c, h) => {
+        const parse = (v) => (String(v).endsWith('%') ? parseFloat(v) / 100 : parseFloat(v))
+        const rgb = oklchToRgb(parse(l), parse(c), parse(h))
+        colorMap[name] = rgb
+        changed = true
+        return `${name}: rgb(${rgb})`
+      }
+    )
+    src = src.replace(
+      /(--color-[a-z0-9-]+):\s*#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})/g,
+      (whole, name, hex) => {
+        const full = hex.length === 3 ? hex.split('').map((ch) => ch + ch).join('') : hex
+        const r = parseInt(full.slice(0, 2), 16)
+        const g = parseInt(full.slice(2, 4), 16)
+        const b = parseInt(full.slice(4, 6), 16)
+        colorMap[name] = `${r} ${g} ${b}`
+        changed = true
+        return `${name}: rgb(${r} ${g} ${b})`
+      }
+    )
+
+    // 2) color-mix(in srgb, rgb(.../<alpha-value>) P%, transparent) → rgb(/alpha)
+    src = src.replace(
+      /color-mix\(in srgb,\s*rgb\(([^)]*?)\s*\/\s*<alpha-value>\)\s*([\d.]+%),\s*transparent\)/g,
+      (whole, channels, pct) => {
+        changed = true
+        return `rgb(${channels} / ${pct})`
+      }
+    )
+
+    // 3) color-mix(in oklab, var(--color-X) P%, transparent) → rgb(转换值 / P%)
+    src = src.replace(
+      /color-mix\(in oklab,\s*var\((--color-[a-z0-9-]+)\)\s*([\d.]+%),\s*transparent\)/g,
+      (whole, name, pct) => {
+        if (!colorMap[name]) return whole // 未转换的定义保留原样（@supports 内不影响 110）
+        changed = true
+        return `rgb(${colorMap[name]} / ${pct})`
+      }
+    )
+
+    // 4) Tailwind v4 渐变用 `to right in oklab`（oklab 插值，Chromium 111+）：
+    //    去掉 ` in oklab`，用默认 srgb 插值，Chromium 110 的 linear-gradient 恢复生效
+    src = src.replace(/(--tw-gradient-position:[^;]*?)\s+in oklab/g, (whole, pos) => {
+      changed = true
+      return pos
+    })
+
+    if (changed) {
+      writeFileSync(file, src)
+      patched++
+    }
+  }
+  console.log(`  已 patch ${patched} 个 CSS：color-mix → rgb(/alpha)（兼容 Chromium <111）`)
+}
+
+/**
+ * TV 端布局基准：dist/index.html 的 viewport 静态设为 width=2133（= 1920/0.9，
+ * 软件 UI 整体缩小 10%）。桌面构建（vite.config.ts）不受影响。
  * JS 动态改 meta 无效（reload 会重置），必须在静态 HTML 里设置。
  */
 function patchTvViewport() {
@@ -202,13 +298,16 @@ function patchTvViewport() {
   const src = readFileSync(indexPath, 'utf8')
   const next = src.replace(
     /<meta name="viewport"[^>]*>/,
-    '<meta name="viewport" content="width=2259, initial-scale=1" />'
+    // width=2133（1920/0.9，UI 缩小 10%）。不能带 initial-scale=1：
+    // 它会强制初始缩放 1，布局以原始大小显示 → 只能看左上角 + 滚动。
+    // 无 initial-scale 时 WebView overview 自动把布局适配到屏幕宽度。
+    '<meta name="viewport" content="width=2133" />'
   )
   if (next !== src) {
     writeFileSync(indexPath, next)
-    console.log('  已 patch dist/index.html viewport → width=2259（TV 布局基准，UI 缩小 15%）')
+    console.log('  已 patch dist/index.html viewport → width=2133（TV 布局基准，UI 缩小 10%）')
   } else {
-    console.log('  dist/index.html viewport 已是 2259，无需 patch')
+    console.log('  dist/index.html viewport 已是 2133，无需 patch')
   }
 }
 
@@ -231,6 +330,7 @@ async function main() {
   patchNeteaseApi()
   copyRemoteUi()
   patchTvViewport()
+  patchCssColorMix()
   bumpAssetsVersion()
   console.log('\n完成。资产目录：', ASSETS_DIR)
 }

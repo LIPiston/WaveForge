@@ -131,6 +131,7 @@ export default function DeviceInfoModal({ show, onClose, playerTheme = 'dark' }:
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
+          data-tv-scope
           className="fixed inset-0 z-[9990] flex items-center justify-center p-4"
           style={{ backgroundColor: isDark ? 'rgba(0,0,0,0.7)' : 'rgba(0,0,0,0.45)', backdropFilter: 'blur(6px)' }}
           onClick={onClose}
