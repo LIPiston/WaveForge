@@ -2,14 +2,14 @@
  * WaveForge v3 调音室 —— HyperSoundEngine 风格新 UI
  *
  * 布局：左侧导航 + 主内容区 + 底部状态栏
- * 7 个页面：主页 / 音效场景 / 均衡器 / 空间音效 / 动态调音 / 分析 / 调音器
+ * 8 个页面：主页 / 音效场景 / 均衡器 / 空间音效 / 动态调音 / 分析 / 调音器 / 关于
  */
 
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import {
   Home, Play, Sparkles, SlidersHorizontal, AudioLines, Activity,
-  BarChart3, Settings, X, Save, RotateCcw,
+  BarChart3, Settings, Info, X, Save, RotateCcw,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -39,6 +39,7 @@ import SpatialPage from './pages/SpatialPage'
 import DynamicsPage from './pages/DynamicsPage'
 import AnalysisPage from './pages/AnalysisPage'
 import TunerPage from './pages/TunerPage'
+import AboutPage from './pages/AboutPage'
 
 export interface V3MixingStudioProps {
   bridge: V3UiBridge
@@ -52,7 +53,7 @@ export interface V3MixingStudioProps {
   exporting?: boolean
 }
 
-type PageKey = 'home' | 'scenes' | 'eq' | 'spatial' | 'dynamics' | 'analysis' | 'tuner'
+type PageKey = 'home' | 'scenes' | 'eq' | 'spatial' | 'dynamics' | 'analysis' | 'tuner' | 'about'
 
 interface NavItem {
   key: PageKey
@@ -68,6 +69,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'dynamics', label: '动态调音', icon: Activity },
   { key: 'analysis', label: '分析', icon: BarChart3 },
   { key: 'tuner', label: '调音器', icon: Settings },
+  { key: 'about', label: '关于', icon: Info },
 ]
 
 const PANEL_IN = `
@@ -268,6 +270,7 @@ export default function V3MixingStudio({
                 {activePage === 'dynamics' && <DynamicsPage {...commonProps} />}
                 {activePage === 'analysis' && <AnalysisPage {...commonProps} />}
                 {activePage === 'tuner' && <TunerPage {...commonProps} exportWav={exportWav} exporting={exporting} />}
+                {activePage === 'about' && <AboutPage theme={theme} />}
               </motion.div>
             </main>
 
