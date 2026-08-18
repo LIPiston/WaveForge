@@ -2453,7 +2453,7 @@ function startAppleFinalizeOverlay(win) {
         var el = document.createElement('div');
         el.id = 'waveforge-icloud-overlay';
         el.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483646;background:#0a0a0a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#fff;font:500 14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;pointer-events:none;';
-        el.innerHTML = '<div style="width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.18);border-top-color:#fa2d48;animation:wf-icloud-spin .9s linear infinite;"></div><div style="opacity:.65">正在完成登录…</div>';
+        el.innerHTML = '<div style="width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.18);border-top-color:#fa2d48;animation:wf-icloud-spin .9s linear infinite;"></div><div style="opacity:.65">正在获取用户信息…</div>';
         var st = document.createElement('style');
         st.textContent = '@keyframes wf-icloud-spin{to{transform:rotate(360deg)}}';
         (document.head || document.documentElement).appendChild(st);
@@ -2822,6 +2822,10 @@ async function createAppleLoginWindow() {
               }
               if (appleDevTokenCapture || (mediaTokenFoundAt && Date.now() - mediaTokenFoundAt > 8000)) {
                 clearInterval(checkInterval)
+                // 登录成功即进入收尾阶段：常驻遮罩立即盖住窗口（用户只看到"正在获取用户信息…"，
+                // 全程不感知侧边栏提取 / iCloud 静默登录 / 账户摘要等内部跳转）。
+                stopAppleFinalizeOverlay()
+                startAppleFinalizeOverlay(appleLoginWindow)
                 if (appleDevTokenCapture) {
                   // 诊断日志：打印捕获到的 token 声明，便于排查兼容性
                   // （新版令牌声明为 root_https_origin，旧版为 root）
@@ -2925,11 +2929,9 @@ async function createAppleLoginWindow() {
                 // iCloud 资料提取：登录窗口同会话静默跳转 iCloud（Apple ID SSO 自动登录），
                 // 拿最「正宗」的账号名（昵称）+ 头像 + 邮箱，不引导用户单独登录 iCloud。
                 // 始终尝试：iCloud 是昵称/头像最权威来源，成功则覆盖侧边栏提取值。
-                // 收尾阶段常驻遮罩：用户只看到"正在完成登录…"，不感知 iCloud / 账户摘要跳转。
+                // 遮罩已在收尾起点启动，覆盖此后的所有内部跳转。
                 let domEmail = ''
                 {
-                  stopAppleFinalizeOverlay()
-                  startAppleFinalizeOverlay(appleLoginWindow)
                   // 提前记下当前 storefront（iCloud 导航会覆盖窗口 URL，账户摘要页需要它）
                   const preUrl = (await appleLoginWindow.webContents.getURL()) || ''
                   const preSf = (preUrl.match(/\/([a-z]{2})\//) || [])[1] || 'cn'
