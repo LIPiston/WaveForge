@@ -6,7 +6,7 @@
  * 纯展示 + 受控回调，不依赖任何绘图库。
  */
 
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import type { V3Theme } from './theme'
 
 export interface EqPoint {
@@ -53,8 +53,31 @@ export function EqCurveEditor({ points, theme, onChange, readonly, reference, he
   const x = (f: number) => padL + fToX(f, fMin, fMax) * iw
   const y = (g: number) => padT + dbToY(g, minDb, maxDb) * ih
 
+  /** 折线路径（参考曲线用） */
   const linePath = (pts: EqPoint[]) =>
     pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.frequency).toFixed(2)},${y(p.gain).toFixed(2)}`).join(' ')
+
+  /** Catmull-Rom→三次贝塞尔平滑路径（模拟模拟电路柔和感，替代生硬折线） */
+  const smoothPath = (pts: EqPoint[]): string => {
+    if (pts.length === 0) return ''
+    if (pts.length === 1) return `M${x(pts[0].frequency).toFixed(2)},${y(pts[0].gain).toFixed(2)}`
+    const P = pts.map((p) => [x(p.frequency), y(p.gain)] as [number, number])
+    let d = `M${P[0][0].toFixed(2)},${P[0][1].toFixed(2)}`
+    for (let i = 0; i < P.length - 1; i++) {
+      const p0 = P[i - 1] ?? P[i]
+      const p1 = P[i]
+      const p2 = P[i + 1]
+      const p3 = P[i + 2] ?? p2
+      const c1x = p1[0] + (p2[0] - p0[0]) / 6
+      const c1y = p1[1] + (p2[1] - p0[1]) / 6
+      const c2x = p2[0] - (p3[0] - p1[0]) / 6
+      const c2y = p2[1] - (p3[1] - p1[1]) / 6
+      d += ` C${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2[0].toFixed(2)},${p2[1].toFixed(2)}`
+    }
+    return d
+  }
+
+  const [dragIdx, setDragIdx] = useState<number | null>(null)
 
   /** 命中检测：频率最近的拖拽点 */
   const hitIndex = (clientX: number, clientY: number): number | null => {
@@ -77,6 +100,7 @@ export function EqCurveEditor({ points, theme, onChange, readonly, reference, he
     const idx = hitIndex(e.clientX, e.clientY)
     if (idx === null) return
     e.currentTarget.setPointerCapture(e.pointerId)
+    setDragIdx(idx)
     const rect = e.currentTarget.getBoundingClientRect()
     const py = ((e.clientY - rect.top) / rect.height) * H
     applyGain(idx, py, rect.height)
@@ -86,8 +110,13 @@ export function EqCurveEditor({ points, theme, onChange, readonly, reference, he
     if (readonly || !onChange || e.buttons !== 1) return
     const rect = e.currentTarget.getBoundingClientRect()
     const py = ((e.clientY - rect.top) / rect.height) * H
-    const idx = hitIndex(e.clientX, e.clientY)
+    const idx = dragIdx ?? hitIndex(e.clientX, e.clientY)
     if (idx !== null) applyGain(idx, py, rect.height)
+  }
+
+  const endDrag = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+    setDragIdx(null)
   }
 
   const applyGain = (idx: number, py: number, svgHeight: number) => {
@@ -108,7 +137,8 @@ export function EqCurveEditor({ points, theme, onChange, readonly, reference, he
       style={{ cursor: readonly ? 'default' : 'grab' }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
-      onPointerUp={(e) => { if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId) }}
+      onPointerUp={endDrag}
+      onPointerLeave={endDrag}
     >
       {/* 网格 */}
       {gridFreqs.map((f) => (
@@ -119,23 +149,41 @@ export function EqCurveEditor({ points, theme, onChange, readonly, reference, he
 
       {/* 参考曲线（Q 补偿预估等） */}
       {reference && reference.length > 0 && (
-        <path d={linePath(reference)} fill="none" stroke={theme.dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.3)'} strokeWidth={1.2} strokeDasharray="3 3" />
+        <path d={smoothPath(reference)} fill="none" stroke={theme.dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.3)'} strokeWidth={1.2} strokeDasharray="3 3" />
       )}
 
-      {/* 主曲线 */}
-      <path d={linePath(points)} fill="none" stroke={theme.accentColor} strokeWidth={2} strokeLinejoin="round" />
+      {/* 主曲线（贝塞尔平滑） */}
+      <path d={smoothPath(points)} fill="none" stroke={theme.accentColor} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" style={{ filter: `drop-shadow(0 0 3px ${theme.accentColor}55)` }} />
       {/* 填充 */}
-      <path d={`${linePath(points)} L${x(points[points.length - 1]?.frequency ?? 20000)},${zeroY} L${x(points[0]?.frequency ?? 20)},${zeroY} Z`}
+      <path d={`${smoothPath(points)} L${x(points[points.length - 1]?.frequency ?? 20000).toFixed(2)},${zeroY.toFixed(2)} L${x(points[0]?.frequency ?? 20).toFixed(2)},${zeroY.toFixed(2)} Z`}
         fill={theme.accentColor} opacity={0.12} />
 
       {/* 控制点 */}
-      {points.map((p, i) => (
-        <g key={`${p.frequency}-${i}`}>
-          <circle cx={x(p.frequency)} cy={y(p.gain)} r={8} fill="transparent" style={{ cursor: readonly ? 'default' : 'pointer' }} />
-          <circle cx={x(p.frequency)} cy={y(p.gain)} r={4.5} fill={theme.dark ? '#0b0d14' : '#ffffff'} stroke={theme.accentColor} strokeWidth={2}
-            style={{ cursor: readonly ? 'default' : 'pointer', filter: `drop-shadow(0 0 4px ${theme.accentColor}88)` }} />
-        </g>
-      ))}
+      {points.map((p, i) => {
+        const active = dragIdx === i
+        return (
+          <g key={`${p.frequency}-${i}`}>
+            <circle cx={x(p.frequency)} cy={y(p.gain)} r={8} fill="transparent" style={{ cursor: readonly ? 'default' : 'pointer' }} />
+            <circle cx={x(p.frequency)} cy={y(p.gain)} r={active ? 5.5 : 4.5} fill={theme.dark ? '#0b0d14' : '#ffffff'} stroke={theme.accentColor} strokeWidth={2}
+              style={{ cursor: readonly ? 'default' : 'pointer', filter: `drop-shadow(0 0 ${active ? 6 : 4}px ${theme.accentColor}aa)`, transition: 'r 0.1s ease' }} />
+          </g>
+        )
+      })}
+
+      {/* 拖动 Tooltip：实时显示 Hz / dB */}
+      {dragIdx !== null && points[dragIdx] && (() => {
+        const p = points[dragIdx]
+        const tx = Math.max(padL + 26, Math.min(padL + iw - 26, x(p.frequency)))
+        const ty = Math.max(padT + 10, y(p.gain) - 12)
+        const label = `${p.frequency >= 1000 ? (p.frequency / 1000).toFixed(p.frequency % 1000 === 0 ? 0 : 1) + 'k' : Math.round(p.frequency)}Hz · ${p.gain > 0 ? '+' : ''}${p.gain.toFixed(1)}dB`
+        const w = label.length * 4.2 + 10
+        return (
+          <g pointerEvents="none">
+            <rect x={tx - w / 2} y={ty - 11} width={w} height={15} rx={4} fill={theme.dark ? 'rgba(10,12,20,0.92)' : 'rgba(255,255,255,0.92)'} stroke={theme.accentColor} strokeWidth={0.8} />
+            <text x={tx} y={ty} textAnchor="middle" fontSize={9} fill={theme.accentColor} style={{ font: '9px ui-monospace, monospace' }}>{label}</text>
+          </g>
+        )
+      })()}
 
       {/* 频率标签 */}
       {[100, 1000, 10000].map((f) => (

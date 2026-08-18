@@ -5,6 +5,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
+import { motion } from 'framer-motion'
 import { Volume2, Power, Music2, Zap, AudioLines } from 'lucide-react'
 import { GlassCard, Toggle, Slider, RangeStyle } from '../components/Primitives'
 import { WaveformVisualizer } from '../components/WaveformVisualizer'
@@ -122,19 +123,19 @@ export default function HomePage({ bridge, controller, theme, onOpenEffect, onNa
         <div className="w-[220px] shrink-0 space-y-3">
           <GlassCard theme={theme}>
             <div className={`${theme.textSecondary} text-[10px] mb-1`}>整合响度</div>
-            <div className={`${theme.textPrimary} text-lg font-semibold`} style={{ color: theme.accentColor }}>
+            <div className={`hse-mono ${theme.textPrimary} text-lg font-semibold`} style={{ color: theme.accentColor }}>
               {Number.isFinite(stats.lufsIntegrated) ? stats.lufsIntegrated.toFixed(1) : '—'} <span className="text-xs">LUFS</span>
             </div>
           </GlassCard>
           <GlassCard theme={theme}>
             <div className={`${theme.textSecondary} text-[10px] mb-1`}>引擎延迟</div>
-            <div className={`${theme.textPrimary} text-lg font-semibold`}>
+            <div className={`hse-mono ${theme.textPrimary} text-lg font-semibold`}>
               {(stats.engineLatencySamples / bridge.getSampleRate() * 1000).toFixed(1)} <span className="text-xs">ms</span>
             </div>
           </GlassCard>
           <GlassCard theme={theme}>
             <div className={`${theme.textSecondary} text-[10px] mb-1`}>限幅衰减</div>
-            <div className={`${theme.textPrimary} text-lg font-semibold`} style={{ color: stats.limiterReductionDb < -0.1 ? '#fbbf24' : undefined }}>
+            <div className={`hse-mono ${theme.textPrimary} text-lg font-semibold`} style={{ color: stats.limiterReductionDb < -0.1 ? '#fbbf24' : undefined }}>
               {stats.limiterReductionDb.toFixed(1)} <span className="text-xs">dB</span>
             </div>
           </GlassCard>
@@ -161,11 +162,13 @@ export default function HomePage({ bridge, controller, theme, onOpenEffect, onNa
             const Icon = sc.icon
             const active = params.sceneId === sc.id && !params.customized
             return (
-              <button
+              <motion.button
                 key={sc.id}
                 type="button"
+                whileHover={{ y: -2 }}
+                whileTap={{ scale: 0.98 }}
                 onClick={() => handleApplyScene(sc.id)}
-                className="relative flex-1 rounded-2xl px-3 py-3 text-left transition-all hover:brightness-110 active:scale-[0.98]"
+                className="relative flex-1 rounded-2xl px-3 py-3 text-left transition-colors"
                 style={{
                   background: active
                     ? `linear-gradient(135deg, ${theme.accentDim} 0%, rgba(18,18,22,0.8) 100%)`
@@ -174,13 +177,18 @@ export default function HomePage({ bridge, controller, theme, onOpenEffect, onNa
                   boxShadow: active ? `0 0 20px ${theme.accentGlow}` : theme.cardGlow,
                 }}
               >
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-2" style={{ background: `${theme.accentColor}22` }}>
+                <motion.div
+                  className="w-9 h-9 rounded-xl flex items-center justify-center mb-2"
+                  style={{ background: `${theme.accentColor}22` }}
+                  animate={{ scale: active ? 1.1 : 1 }}
+                  transition={{ type: 'spring', stiffness: 350, damping: 18 }}
+                >
                   <Icon className="w-4.5 h-4.5" style={{ color: theme.accentColor }} />
-                </div>
+                </motion.div>
                 <div className={`${theme.textPrimary} text-[13px] font-medium mb-0.5 truncate`}>{sc.name}</div>
                 <div className={`${theme.textTertiary} text-[10px] truncate`}>{sc.desc}</div>
                 {active && <div className="absolute top-2 right-2 w-2 h-2 rounded-full" style={{ background: theme.accentColor, boxShadow: `0 0 6px ${theme.accentColor}` }} />}
-              </button>
+              </motion.button>
             )
           })}
         </div>
@@ -191,7 +199,7 @@ export default function HomePage({ bridge, controller, theme, onOpenEffect, onNa
         <div className="flex items-center gap-3 mb-3">
           <Volume2 className="w-4 h-4" style={{ color: theme.accentColor }} />
           <span className={`${theme.textPrimary} text-sm font-medium`}>音量控制</span>
-          <span className={`${theme.textSecondary} text-xs ml-auto`}>{volume}% · {volumeToGainDb(volume) > 0 ? '+' : ''}{volumeToGainDb(volume)}dB</span>
+          <span className={`hse-mono ${theme.textSecondary} text-xs ml-auto`}>{volume}% · {volumeToGainDb(volume) > 0 ? '+' : ''}{volumeToGainDb(volume)}dB</span>
         </div>
         <input
           type="range"
@@ -204,16 +212,22 @@ export default function HomePage({ bridge, controller, theme, onOpenEffect, onNa
           style={{ background: theme.sliderTrack(volume, 0, 100) }}
         />
         <div className="flex justify-between mt-1.5">
-          {Array.from({ length: 20 }).map((_, i) => (
-            <div
-              key={i}
-              className="w-0.5 rounded-full"
-              style={{
-                height: i < volume / 5 ? 10 : 6,
-                background: i < volume / 5 ? theme.accentColor : 'rgba(255,255,255,0.12)',
-              }}
-            />
-          ))}
+          {Array.from({ length: 21 }).map((_, i) => {
+            const pct = i * 5
+            const major = pct === 0 || pct === 50 || pct === 100
+            const filled = pct <= volume
+            return (
+              <div
+                key={i}
+                className="w-0.5 rounded-full"
+                style={{
+                  height: major ? 11 : 6,
+                  background: filled ? theme.accentColor : 'rgba(255,255,255,0.14)',
+                  opacity: major ? 1 : 0.7,
+                }}
+              />
+            )
+          })}
         </div>
         <div className={`${theme.textTertiary} text-[10px] mt-1.5`}>拖动即时改变输出响度（0% 静音 ~ 100% 原声，经引擎增益通道）。</div>
       </GlassCard>

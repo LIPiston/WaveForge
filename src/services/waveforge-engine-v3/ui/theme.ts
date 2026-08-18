@@ -16,6 +16,12 @@ import { useEffect, useState } from 'react'
 export interface V3Theme {
   dark: boolean
   accentColor: string
+  /** 电光青→深邃紫线性渐变（激活态按钮背景，§A 主色） */
+  accentGradient: string
+  /** 渐变起点色（电光青） */
+  accentFrom: string
+  /** 渐变终点色（深邃紫） */
+  accentTo: string
   glassPanel: string
   glassPanelHighlight: string
   glassCard: string
@@ -55,9 +61,16 @@ function useAccentColor(): string {
 export function useV3Theme(playerTheme: 'dark' | 'light'): V3Theme {
   const dark = playerTheme === 'dark'
   const accentColor = useAccentColor()
+  // §A 主色：电光青→深邃紫渐变（激活态按钮 + 滑块轨道，默认启用）
+  const accentFrom = '#22d3ee'
+  const accentTo = '#7c3aed'
+  const accentGradient = `linear-gradient(135deg, ${accentFrom} 0%, ${accentTo} 100%)`
   return {
     dark,
     accentColor,
+    accentGradient,
+    accentFrom,
+    accentTo,
     glassPanel: dark ? 'rgba(10, 12, 20, 0.38)' : 'rgba(255, 255, 255, 0.45)',
     glassPanelHighlight: dark
       ? 'linear-gradient(160deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.03) 45%, rgba(255,255,255,0.06) 100%)'
@@ -75,7 +88,7 @@ export function useV3Theme(playerTheme: 'dark' | 'light'): V3Theme {
     sliderTrack: (value: number, min: number, max: number) => {
       const ratio = Math.min(1, Math.max(0, (value - min) / (max - min)))
       const rest = dark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.14)'
-      return `linear-gradient(to right, ${accentColor} 0%, ${accentColor} ${ratio * 100}%, ${rest} ${ratio * 100}%, ${rest} 100%)`
+      return `linear-gradient(to right, ${accentFrom} 0%, ${accentTo} ${ratio * 100}%, ${rest} ${ratio * 100}%, ${rest} 100%)`
     },
   }
 }

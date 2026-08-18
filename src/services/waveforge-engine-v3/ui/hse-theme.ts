@@ -12,6 +12,12 @@ export interface HSETheme {
   accentColor: string
   accentGlow: string
   accentDim: string
+  /** 渐变起点色（电光青），激活态按钮/滑块轨道渐变起点 */
+  accentFrom: string
+  /** 渐变终点色（深邃紫），激活态按钮/滑块轨道渐变终点 */
+  accentTo: string
+  /** 电光青→深邃紫线性渐变（激活态按钮背景） */
+  accentGradient: string
   /** 面板背景 */
   panelBg: string
   panelBorder: string
@@ -48,9 +54,9 @@ function useAccentColor(): string {
   const [accentColor, setAccentColor] = useState(() => {
     try {
       const saved = localStorage.getItem('accentColor')
-      return saved || '#c9a84c'
+      return saved || '#7c3aed'
     } catch {
-      return '#c9a84c'
+      return '#7c3aed'
     }
   })
   useEffect(() => {
@@ -66,7 +72,10 @@ function useAccentColor(): string {
 
 export function useHSETheme(): HSETheme {
   const accentColor = useAccentColor()
-  const amber = '#c9a84c'
+  // §A 主色：电光青 → 深邃紫线性渐变（激活态按钮 + 滑块轨道，默认启用）
+  const accentFrom = '#22d3ee' // 电光青
+  const accentTo = '#7c3aed'   // 深邃紫
+  const accentGradient = `linear-gradient(135deg, ${accentFrom} 0%, ${accentTo} 100%)`
   const glow = `${accentColor}44`
   const dim = `${accentColor}22`
 
@@ -75,6 +84,9 @@ export function useHSETheme(): HSETheme {
     accentColor,
     accentGlow: glow,
     accentDim: dim,
+    accentFrom,
+    accentTo,
+    accentGradient,
     panelBg: 'rgba(18, 18, 22, 0.85)',
     panelBorder: 'rgba(255,255,255,0.08)',
     panelHighlight: 'linear-gradient(160deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 45%, rgba(255,255,255,0.04) 100%)',
@@ -99,7 +111,8 @@ export function useHSETheme(): HSETheme {
     sliderTrack: (value: number, min: number, max: number) => {
       const ratio = Math.min(1, Math.max(0, (value - min) / (max - min)))
       const rest = 'rgba(255,255,255,0.12)'
-      return `linear-gradient(to right, ${accentColor} 0%, ${accentColor} ${ratio * 100}%, ${rest} ${ratio * 100}%, ${rest} 100%)`
+      // 填充段用电光青→深邃紫渐变（§A 主色），剩余段中性灰
+      return `linear-gradient(to right, ${accentFrom} 0%, ${accentTo} ${ratio * 100}%, ${rest} ${ratio * 100}%, ${rest} 100%)`
     },
   }
 }
@@ -111,6 +124,9 @@ export function useHSETheme(): HSETheme {
 export function toLegacyTheme(t: HSETheme): {
   dark: true
   accentColor: string
+  accentGradient: string
+  accentFrom: string
+  accentTo: string
   glassPanel: string
   glassPanelHighlight: string
   glassCard: string
@@ -126,6 +142,9 @@ export function toLegacyTheme(t: HSETheme): {
   return {
     dark: true,
     accentColor: t.accentColor,
+    accentGradient: t.accentGradient,
+    accentFrom: t.accentFrom,
+    accentTo: t.accentTo,
     glassPanel: 'rgba(18,18,22,0.92)',
     glassPanelHighlight: t.panelHighlight,
     glassCard: t.cardBg,

@@ -89,33 +89,70 @@ export default function AnalysisPage({ bridge, theme }: AnalysisPageProps) {
   const feats = analysis.features
   const freqLabel = (f: number) => (f >= 1000 ? `${(f / 1000).toFixed(1)}k` : Math.round(f)) + 'Hz'
 
+  /** 把 0..1 的柱值序列转成 Catmull-Rom→三次贝塞尔平滑面积路径（SVG viewBox 100×40） */
+  const spectrumPath = (() => {
+    const n = barData.length
+    if (n === 0) return ''
+    const W = 100, H = 40, pad = 1
+    const pts: Array<[number, number]> = barData.map((v, i) => [
+      (i / (n - 1)) * W,
+      H - pad - v * (H - pad * 2),
+    ])
+    // Catmull-Rom → 三次贝塞尔（张力 0.5）：模拟模拟电路柔和感
+    let d = `M ${pts[0][0].toFixed(2)} ${(H - pad).toFixed(2)} L ${pts[0][0].toFixed(2)} ${pts[0][1].toFixed(2)}`
+    for (let i = 0; i < n - 1; i++) {
+      const p0 = pts[i - 1] ?? pts[i]
+      const p1 = pts[i]
+      const p2 = pts[i + 1]
+      const p3 = pts[i + 2] ?? p2
+      const c1x = p1[0] + (p2[0] - p0[0]) / 6
+      const c1y = p1[1] + (p2[1] - p0[1]) / 6
+      const c2x = p2[0] - (p3[0] - p1[0]) / 6
+      const c2y = p2[1] - (p3[1] - p1[1]) / 6
+      d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2[0].toFixed(2)} ${p2[1].toFixed(2)}`
+    }
+    d += ` L ${pts[n - 1][0].toFixed(2)} ${(H - pad).toFixed(2)} Z`
+    return d
+  })()
+
   return (
     <div className="space-y-4">
       <RangeStyle theme={theme} />
 
-      {/* 响度读数 */}
+      {/* 响度读数（Bento Grid：整合响度大字号主卡 + 3 个次级 + GR 仪表） */}
       <GlassCard theme={theme}>
         <div className="flex items-center gap-2 mb-3">
           <Activity className="w-4 h-4" style={{ color: theme.accentColor }} />
           <span className={`${theme.textPrimary} text-sm font-medium`}>响度与电平</span>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <div className="grid grid-cols-3 gap-2">
+          {/* 主卡：整合响度（大字号 + 微型趋势条） */}
+          <div className="col-span-3 sm:col-span-1 row-span-2 rounded-xl p-3 flex flex-col justify-between" style={{ background: `${theme.accentColor}14`, border: `1px solid ${theme.accentColor}33` }}>
+            <div className={`${theme.textTertiary} text-[10px]`}>整合响度</div>
+            <div className="hse-mono font-semibold leading-none" style={{ color: theme.accentColor, fontSize: 30 }}>
+              {Number.isFinite(stats.lufsIntegrated) ? stats.lufsIntegrated.toFixed(1) : '—'}
+              <span className="text-xs ml-0.5 opacity-70">LUFS</span>
+            </div>
+            <div className="h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
+              <div className="h-full transition-all duration-300" style={{ width: `${Math.max(4, Math.min(100, (stats.lufsIntegrated + 30) / 26 * 100))}%`, background: theme.accentColor }} />
+            </div>
+          </div>
+          {/* 次级三格 */}
           {[
-            { label: '整合响度', value: Number.isFinite(stats.lufsIntegrated) ? stats.lufsIntegrated.toFixed(1) + ' LUFS' : '—' },
             { label: '短时响度', value: Number.isFinite(stats.lufsMomentary) ? stats.lufsMomentary.toFixed(1) + ' LUFS' : '—' },
             { label: 'LRA', value: Number.isFinite(stats.lra) ? stats.lra.toFixed(1) + ' LU' : '—' },
             { label: '峰值 / 真峰值', value: `${stats.peakDb.toFixed(1)} / ${stats.truePeakDb.toFixed(1)} dBFS` },
           ].map((item) => (
             <div key={item.label} className="px-3 py-2 rounded-lg bg-white/5 border border-white/10">
               <div className={`${theme.textTertiary} text-[10px]`}>{item.label}</div>
-              <div className={`${theme.textPrimary} font-medium mt-0.5`}>{item.value}</div>
+              <div className={`hse-mono ${theme.textPrimary} font-medium mt-0.5`}>{item.value}</div>
             </div>
           ))}
         </div>
         <div className="mt-3">
           <div className="flex items-center justify-between mb-1">
             <span className={`${theme.textSecondary} text-xs`}>限幅衰减（GR）</span>
-            <span className={`${theme.textPrimary} text-xs font-medium`}>{stats.limiterReductionDb.toFixed(1)} dB</span>
+            <span className={`hse-mono ${theme.textPrimary} text-xs font-medium`}>{stats.limiterReductionDb.toFixed(1)} dB</span>
           </div>
           <div className="h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
             <div className="h-full transition-all duration-200" style={{ width: `${Math.min(100, -stats.limiterReductionDb * 5)}%`, background: theme.accentColor }} />
@@ -123,18 +160,22 @@ export default function AnalysisPage({ bridge, theme }: AnalysisPageProps) {
         </div>
       </GlassCard>
 
-      {/* 频谱 */}
+      {/* 频谱（平滑贝塞尔面积曲线，替代生硬柱状图） */}
       <GlassCard theme={theme}>
         <div className="flex items-center gap-2 mb-3">
           <Activity className="w-4 h-4" style={{ color: theme.accentColor }} />
           <span className={`${theme.textPrimary} text-sm font-medium`}>实时频谱</span>
         </div>
-        <div className="flex items-end gap-[2px] h-24">
-          {barData.map((v, i) => (
-            <div key={i} className="flex-1 rounded-t-sm transition-all duration-150"
-              style={{ height: `${Math.max(3, v * 100)}%`, background: v > 0.85 ? theme.accentColor : `${theme.accentColor}55`, opacity: 0.35 + 0.65 * v }} />
-          ))}
-        </div>
+        <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="w-full h-24" style={{ overflow: 'visible' }}>
+          <defs>
+            <linearGradient id="hse-spec-grad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={theme.accentColor} stopOpacity={0.55} />
+              <stop offset="100%" stopColor={theme.accentColor} stopOpacity={0.04} />
+            </linearGradient>
+          </defs>
+          <path d={spectrumPath} fill="url(#hse-spec-grad)" />
+          <path d={spectrumPath} fill="none" stroke={theme.accentColor} strokeWidth={0.7} vectorEffect="non-scaling-stroke" style={{ filter: `drop-shadow(0 0 3px ${theme.accentGlow})` }} />
+        </svg>
         <div className="flex justify-between mt-1">
           <span className={`${theme.textTertiary} text-[10px]`}>20Hz</span>
           <span className={`${theme.textTertiary} text-[10px]`}>200Hz</span>

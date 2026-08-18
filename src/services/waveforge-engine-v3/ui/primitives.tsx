@@ -25,7 +25,7 @@ export function Toggle({ checked, onChange, theme }: {
       aria-pressed={checked}
       onClick={(e) => { e.stopPropagation(); onChange(!checked) }}
       className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${checked ? '' : theme.dark ? 'bg-white/20' : 'bg-black/15'}`}
-      style={checked ? { backgroundColor: theme.accentColor, boxShadow: `0 0 12px ${theme.accentColor}55` } : undefined}
+      style={checked ? { background: theme.accentGradient, boxShadow: `0 0 12px ${theme.accentColor}55` } : undefined}
     >
       <span
         className="absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-md transition-transform"
@@ -182,7 +182,7 @@ export function Segmented<T extends string | boolean>({ options, value, onChange
             type="button"
             onClick={() => onChange(opt.value)}
             className={`flex-1 ${small ? 'py-1.5 rounded-lg text-[11px]' : 'py-2 rounded-lg text-xs'} transition-all ${active ? 'text-white font-medium' : theme.textSecondary + ' ' + (theme.dark ? 'bg-white/5' : 'bg-black/5')}`}
-            style={active ? { backgroundColor: theme.accentColor, boxShadow: `0 4px 14px ${theme.accentColor}44` } : undefined}
+            style={active ? { background: theme.accentGradient, boxShadow: `0 4px 14px ${theme.accentColor}44` } : undefined}
           >
             {opt.label}
           </button>
@@ -276,7 +276,7 @@ export function ActionButton({ onClick, children, theme, disabled, title, ghost 
       disabled={disabled}
       title={title}
       className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-white transition-all hover:brightness-110 active:scale-95 disabled:opacity-40"
-      style={{ backgroundColor: theme.accentColor, boxShadow: `0 4px 14px ${theme.accentColor}44` }}
+      style={{ background: theme.accentGradient, boxShadow: `0 4px 14px ${theme.accentColor}44` }}
     >
       {children}
     </button>

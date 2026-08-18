@@ -6,6 +6,30 @@ import type { ReactNode, CSSProperties } from 'react'
 import { motion } from 'framer-motion'
 import type { HSETheme } from '../hse-theme'
 
+/* ───────── 点击音效反馈（规划书 C；默认开启，localStorage 'waveforge:ui-click'='0' 关闭） ───────── */
+let clickCtx: AudioContext | null = null
+function uiClick(): void {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('waveforge:ui-click') === '0') return
+    const w = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }
+    const Ctor = w.AudioContext ?? w.webkitAudioContext
+    if (!Ctor) return
+    if (!clickCtx) clickCtx = new Ctor()
+    const ctx = clickCtx
+    if (ctx.state === 'suspended') void ctx.resume()
+    const o = ctx.createOscillator()
+    const g = ctx.createGain()
+    o.type = 'sine'
+    o.frequency.value = 1320
+    const t = ctx.currentTime
+    g.gain.setValueAtTime(0.0001, t)
+    g.gain.exponentialRampToValueAtTime(0.05, t + 0.004)
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05)
+    o.connect(g); g.connect(ctx.destination)
+    o.start(t); o.stop(t + 0.06)
+  } catch { /* 静默：无 AudioContext 或被策略拦截 */ }
+}
+
 /* ───────── 玻璃卡片（hover 上浮 + 边框亮起） ───────── */
 export function GlassCard({ children, theme, className, style }: {
   children: ReactNode
@@ -47,10 +71,10 @@ export function Toggle({ checked, onChange, theme }: {
       type="button"
       aria-pressed={checked}
       whileTap={{ scale: 0.9 }}
-      onClick={(e) => { e.stopPropagation(); onChange(!checked) }}
+      onClick={(e) => { e.stopPropagation(); uiClick(); onChange(!checked) }}
       className="relative h-6 w-11 shrink-0 rounded-full transition-colors"
       style={checked
-        ? { backgroundColor: theme.accentColor, boxShadow: `0 0 12px ${theme.accentColor}55` }
+        ? { background: theme.accentGradient, boxShadow: `0 0 12px ${theme.accentColor}55` }
         : { backgroundColor: 'rgba(255,255,255,0.15)' }}
     >
       <span
@@ -77,7 +101,7 @@ export function Slider({ label, value, min, max, step, onChange, display, theme,
     <div className={`mb-3 ${disabled ? 'opacity-40 pointer-events-none' : ''}`}>
       <div className="flex items-center justify-between mb-1">
         <span className={`${theme.textSecondary} text-xs`}>{label}</span>
-        <span className={`${theme.textPrimary} text-xs font-medium`}>{display ?? value}</span>
+        <span className={`hse-mono ${theme.textPrimary} text-xs font-medium`}>{display ?? value}</span>
       </div>
       <input
         type="range"
@@ -110,10 +134,10 @@ export function Segmented<T extends string | boolean | number>({ options, value,
             key={String(opt.value)}
             type="button"
             whileTap={{ scale: 0.96 }}
-            onClick={() => onChange(opt.value)}
+            onClick={() => { uiClick(); onChange(opt.value) }}
             className={`flex-1 ${small ? 'py-1.5 rounded-lg text-[11px]' : 'py-2 rounded-lg text-xs'} transition-all ${active ? 'text-white font-medium' : theme.textSecondary}`}
             style={active
-              ? { backgroundColor: theme.accentColor, boxShadow: `0 4px 14px ${theme.accentColor}44` }
+              ? { background: theme.accentGradient, boxShadow: `0 4px 14px ${theme.accentColor}44` }
               : { backgroundColor: 'rgba(255,255,255,0.06)' }}
           >
             {opt.label}
@@ -138,7 +162,7 @@ export function ActionBtn({ onClick, children, theme, disabled, ghost }: {
         type="button"
         whileHover={{ y: -1 }}
         whileTap={{ scale: 0.95 }}
-        onClick={onClick}
+        onClick={() => { uiClick(); onClick() }}
         disabled={disabled}
         className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs transition-all hover:brightness-110 disabled:opacity-40 ${theme.textSecondary}`}
         style={{ backgroundColor: theme.inputBg, border: `1px solid ${theme.cardBorder}` }}
@@ -152,10 +176,10 @@ export function ActionBtn({ onClick, children, theme, disabled, ghost }: {
       type="button"
       whileHover={{ y: -1 }}
       whileTap={{ scale: 0.95 }}
-      onClick={onClick}
+      onClick={() => { uiClick(); onClick() }}
       disabled={disabled}
       className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-white transition-all hover:brightness-110 disabled:opacity-40"
-      style={{ backgroundColor: theme.accentColor, boxShadow: `0 4px 14px ${theme.accentColor}44` }}
+      style={{ background: theme.accentGradient, boxShadow: `0 4px 14px ${theme.accentColor}44` }}
     >
       {children}
     </motion.button>
@@ -172,10 +196,11 @@ export function InfoLine({ children, theme }: { children: ReactNode; theme: HSET
   )
 }
 
-/* ───────── 滑块样式注入 ───────── */
+/* ───────── 滑块样式注入（含等宽数字类） ───────── */
 export function RangeStyle({ theme }: { theme: HSETheme }) {
   return (
     <style>{`
+      .hse-mono { font-family: ui-monospace, 'JetBrains Mono', 'Roboto Mono', SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
       .wf-hse-range::-webkit-slider-thumb {
         appearance: none; width: 16px; height: 16px; border-radius: 50%;
         background: rgba(255,255,255,0.92); border: 2px solid rgba(255,255,255,0.6);

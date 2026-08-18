@@ -162,6 +162,12 @@ export default function V3MixingStudio({
           animate={{ opacity: 1, scale: 1, x: 0, y: 0 }}
           transition={{ type: 'spring', stiffness: 320, damping: 28 }}
         >
+          {/* 微弱噪点叠加层（深炭灰质感，减少死黑感） */}
+          <div className="pointer-events-none absolute inset-0 z-[1] rounded-2xl" style={{
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+            opacity: 0.035,
+            mixBlendMode: 'overlay',
+          }} />
           {/* 左侧导航栏 */}
           <nav className="w-[150px] shrink-0 flex flex-col" style={{ background: theme.navBg, borderRight: `1px solid ${theme.panelBorder}` }}>
             {/* 品牌 */}
