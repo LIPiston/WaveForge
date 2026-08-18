@@ -30,7 +30,7 @@ function dftMag(x: Float32Array, bin: number): number {
 }
 
 const settings = (over: Partial<BassEnhancerSettings> = {}): BassEnhancerSettings => ({
-  enabled: true, cutoffHz: 90, q: 0.7, harmonicType: 'odd', harmonicGain: 1, mix: 1, levelDb: 0, ...over,
+  enabled: true, cutoffHz: 90, q: 0.7, harmonicType: 'odd', harmonicGain: 1, mix: 1, levelDb: 0, lowBoostDb: 0, ...over,
 })
 
 describe('BassEnhancer', () => {
@@ -127,5 +127,40 @@ describe('BassEnhancer', () => {
     let maxDiff = 0
     for (let i = 0; i < n; i++) maxDiff = Math.max(maxDiff, Math.abs(l[i] - inL[i]))
     expect(maxDiff).toBeLessThan(1e-6)
+  })
+
+  it('lowBoostDb=+6 时低频带真实电平提升（harmonicGain=0，60Hz 稳态幅度≈×1.65）', () => {
+    const be = new BassEnhancer(FS)
+    be.setParams(settings({ harmonicGain: 0, lowBoostDb: 6 }))
+    const n = 48000
+    const l = makeSine(n, 60, 0.5)
+    const r = l.slice()
+    be.processStereo(l, r)
+    // 跳过起始瞬态取稳态峰值：90Hz 低通在 60Hz 增益≈0.91、相移≈-60°，
+    // 干声与低频带是向量和 |1 + (10^(6/20)−1)·0.91·e^(jφ)| ≈ 1.65 → 0.5×1.65 ≈ 0.825
+    let peak = 0
+    for (let i = 4800; i < n; i++) peak = Math.max(peak, Math.abs(l[i]))
+    expect(peak).toBeGreaterThan(0.78)
+    expect(peak).toBeLessThan(0.88)
+  })
+
+  it('lowBoostDb 越界钳制：+99→+12（幅度≈×3.3）、-99→-6（幅度≈×0.87），均无 NaN', () => {
+    for (const [db, lo, hi] of [[99, 1.55, 1.78], [-99, 0.40, 0.47]] as Array<[number, number, number]>) {
+      const be = new BassEnhancer(FS)
+      be.setParams(settings({ harmonicGain: 0, lowBoostDb: db }))
+      const n = 48000
+      const l = makeSine(n, 60, 0.5)
+      const r = l.slice()
+      be.processStereo(l, r)
+      let peak = 0
+      let nonFinite = false
+      for (let i = 4800; i < n; i++) {
+        peak = Math.max(peak, Math.abs(l[i]))
+        if (!Number.isFinite(l[i])) nonFinite = true
+      }
+      expect(nonFinite).toBe(false)
+      expect(peak).toBeGreaterThan(lo)
+      expect(peak).toBeLessThan(hi)
+    }
   })
 })

@@ -81,6 +81,8 @@ function expectValidParams(p: V3EngineParams, id: string): void {
   expect(b.mix).toBeLessThanOrEqual(1)
   expect(b.levelDb).toBeGreaterThanOrEqual(-6)
   expect(b.levelDb).toBeLessThanOrEqual(6)
+  expect(b.lowBoostDb).toBeGreaterThanOrEqual(-6)
+  expect(b.lowBoostDb).toBeLessThanOrEqual(12)
   // Reverb
   const r = p.reverb
   expect(['convolution', 'algorithmic', 'off']).toContain(r.mode)

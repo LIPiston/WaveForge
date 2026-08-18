@@ -189,7 +189,7 @@ export function BassEnhancerModal({ controller, theme, onClose }: { controller: 
   const bass = params.bassEnhancer
   return (
     <Modal title="低音增强" icon={<Music2 className="w-4.5 h-4.5" />} onClose={onClose} theme={theme}>
-      <p className={`${theme.textSecondary} text-xs leading-relaxed mb-4`}>低通提取低频并生成谐波，让小型设备也能感知低频。四种非线性可选。</p>
+      <p className={`${theme.textSecondary} text-xs leading-relaxed mb-4`}>低通提取低频并生成谐波，让小型设备也能感知低频；「低音下潜」同时提升真实低频能量（v2 低音增强的 lowshelf 语义）。四种非线性可选。</p>
       <div className="flex items-center justify-between mb-4">
         <span className={`${theme.textPrimary} text-sm font-medium`}>启用 低音增强</span>
         <Toggle checked={bass.enabled} onChange={(v) => patch({ bassEnhancer: { ...bass, enabled: v } })} theme={theme} />
@@ -211,7 +211,8 @@ export function BassEnhancerModal({ controller, theme, onClose }: { controller: 
       <Slider label="谐波增益" value={bass.harmonicGain} min={0} max={1} step={0.01} onChange={(v) => patch({ bassEnhancer: { ...bass, harmonicGain: v } })} display={`${Math.round(bass.harmonicGain * 100)}%`} theme={theme} />
       <Slider label="干湿混合" value={bass.mix} min={0} max={1} step={0.01} onChange={(v) => patch({ bassEnhancer: { ...bass, mix: v } })} display={`${Math.round(bass.mix * 100)}%`} theme={theme} />
       <Slider label="整体电平" value={bass.levelDb} min={-6} max={6} step={0.5} onChange={(v) => patch({ bassEnhancer: { ...bass, levelDb: v } })} display={`${bass.levelDb > 0 ? '+' : ''}${bass.levelDb.toFixed(1)}dB`} theme={theme} />
-      <InfoLine theme={theme}>偶次谐波对低音冲击感最强；奇次更温暖。建议与限幅器同开以防削波。</InfoLine>
+      <Slider label="低音下潜" value={bass.lowBoostDb} min={-6} max={12} step={0.5} onChange={(v) => patch({ bassEnhancer: { ...bass, lowBoostDb: v } })} display={`${bass.lowBoostDb > 0 ? '+' : ''}${bass.lowBoostDb.toFixed(1)}dB`} theme={theme} />
+      <InfoLine theme={theme}>偶次谐波对低音冲击感最强；奇次更温暖。低音下潜提升真实低频能量，建议与限幅器同开以防削波。</InfoLine>
     </Modal>
   )
 }

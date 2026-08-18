@@ -116,7 +116,11 @@ export function createV3UiBridge(engine: EngineV3, sampleRate: number): V3UiBrid
     applyScene: (id: string) => {
       const scene = getSceneById(id) ?? loadMyScenes().find((s) => s.id === id)
       if (!scene) return
+      // 音量控制是实时控制，独立于场景预设/组合：应用场景时保留当前响度归一化
+      // 状态（外部增益/归一化模式），场景快照不得重置用户音量
+      const ln = current.loudnessNormalization
       impl.setParams(scene.params)
+      impl.setParams({ ...current, loudnessNormalization: ln })
     },
     saveMyScene: (name: string): boolean => {
       const mine = loadMyScenes()

@@ -107,6 +107,7 @@ function setBass(p: V3EngineParams, opts: {
   harmonicGain?: number
   mix?: number
   levelDb?: number
+  lowBoostDb?: number
 }): void {
   p.bassEnhancer.enabled = true
   p.bassEnhancer.cutoffHz = opts.cutoffHz ?? 90
@@ -115,6 +116,7 @@ function setBass(p: V3EngineParams, opts: {
   p.bassEnhancer.harmonicGain = opts.harmonicGain ?? 0.6
   p.bassEnhancer.mix = opts.mix ?? 0.5
   p.bassEnhancer.levelDb = opts.levelDb ?? 0
+  p.bassEnhancer.lowBoostDb = opts.lowBoostDb ?? 0
 }
 
 function setDeesser(p: V3EngineParams, opts: {
@@ -148,7 +150,7 @@ export const SCENE_PRESETS: ScenePreset[] = [
     applyEqCurve(p, [3.5, 2.5, 1.5, 0.5, -0.5, 0, 1, 2, 2.5, 1.5])
     setCompressor(p, { thresholdDb: -18, ratio: 2.5, kneeDb: 8, attackMs: 12, releaseMs: 180, makeupDb: 5 })
     disableReverb(p)
-    setBass(p, { cutoffHz: 100, harmonicGain: 0.35, mix: 0.3 })
+    setBass(p, { cutoffHz: 100, harmonicGain: 0.35, mix: 0.3, lowBoostDb: 3 })
     setDeesser(p, { centerHz: 6500 })
     const sc = finish(p, 'pop')
     sc.name = '流行'
@@ -161,7 +163,7 @@ export const SCENE_PRESETS: ScenePreset[] = [
     applyEqCurve(p, [2.5, 2, 0.5, -1.5, -1.5, 0, 1.5, 2.5, 3, 2])
     setCompressor(p, { thresholdDb: -22, ratio: 5, kneeDb: 4, attackMs: 5, releaseMs: 120, makeupDb: 13 })
     disableReverb(p)
-    setBass(p, { cutoffHz: 85, harmonicType: 'odd', harmonicGain: 0.6, mix: 0.5 })
+    setBass(p, { cutoffHz: 85, harmonicType: 'odd', harmonicGain: 0.6, mix: 0.5, lowBoostDb: 6 })
     // 齿音抑制默认关闭：摇滚高频本就锐利，去齿音会削掉吉他泛音与镲片亮度
     const sc = finish(p, 'enhanced')
     sc.name = '增强'
@@ -185,7 +187,7 @@ export const SCENE_PRESETS: ScenePreset[] = [
     applyEqCurve(p, [4, 3, 1.5, 0.5, -0.5, 0, 1, 2, 3, 3])
     setCompressor(p, { thresholdDb: -14, ratio: 4, kneeDb: 4, attackMs: 8, releaseMs: 90, makeupDb: 4 })
     disableReverb(p)
-    setBass(p, { cutoffHz: 100, harmonicType: 'even', harmonicGain: 0.7, mix: 0.6, levelDb: 1 })
+    setBass(p, { cutoffHz: 100, harmonicType: 'even', harmonicGain: 0.7, mix: 0.6, levelDb: 1, lowBoostDb: 6 })
     setDeesser(p, { centerHz: 7500, thresholdDb: -26 })
     p.stereoWidth = 1.2
     const sc = finish(p, 'dance')
@@ -234,7 +236,7 @@ export const SCENE_PRESETS: ScenePreset[] = [
     applyEqCurve(p, [3, 2.5, 2, 1, 0.5, 0, -0.5, -1.5, -2.5, -3])
     setCompressor(p, { thresholdDb: -18, ratio: 2, kneeDb: 10, attackMs: 20, releaseMs: 300, makeupDb: 5 })
     disableReverb(p)
-    setBass(p, { cutoffHz: 110, harmonicGain: 0.4, mix: 0.35 })
+    setBass(p, { cutoffHz: 110, harmonicGain: 0.4, mix: 0.35, lowBoostDb: 4 })
     const sc = finish(p, 'warm')
     sc.name = '温暖'
     sc.description = '温暖模拟味：饱满低音 + 柔和高频（干声）'
@@ -273,7 +275,7 @@ export const SCENE_PRESETS: ScenePreset[] = [
     applyEqCurve(p, [4, 3.5, 2, 0.5, 0, 0, -0.5, -1, -0.5, 0]) // 12.5k −0.5 / 16k 0（收敛迭代到契约界内）
     setCompressor(p, { thresholdDb: -24, ratio: 6, kneeDb: 4, attackMs: 5, releaseMs: 200, makeupDb: 15 })
     disableReverb(p)
-    setBass(p, { cutoffHz: 120, harmonicType: 'even', harmonicGain: 0.8, mix: 0.7, levelDb: 1 })
+    setBass(p, { cutoffHz: 120, harmonicType: 'even', harmonicGain: 0.8, mix: 0.7, levelDb: 1, lowBoostDb: 8 })
     setDeesser(p, { centerHz: 6000, thresholdDb: -36, ratio: 6 }) // 阈值放宽 + 比率降为 6，减少白噪声下的高频压制
     p.nightMode.enabled = true
     p.nightMode.amount = 1 // 6kHz shelf −1.5dB（验收复验迭代收敛：5→3→2→1 进入契约界）

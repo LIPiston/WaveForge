@@ -68,6 +68,9 @@ const IEQ_BAND_COUNT = 10
 const IEQ_FREQS = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 /** 响度归一化实时增益平滑时间常数（秒），防抽吸（技术文档 §7.2 慢速 AGC） */
 const NORM_SMOOTH_SEC = 3.0
+/** 手动音量（调音室音量滑块 externalGainDb）平滑时间常数（秒）：
+ *  跟手（~80ms 到位）又不产生咔哒声；自动归一化仍走 NORM_SMOOTH_SEC 慢速防抽吸 */
+const MANUAL_GAIN_SMOOTH_SEC = 0.08
 
 /** 深拷贝参数快照：数组逐元素复制，避免外部可变对象影响引擎；引擎本身不修改传入参数。 */
 function cloneParams(p: V3EngineParams): V3EngineParams {
@@ -308,9 +311,10 @@ export class EngineV3 {
         const alpha = 1 - Math.exp(-(n / this._fs) / NORM_SMOOTH_SEC)
         this._normGain += alpha * (targetLin - this._normGain)
       } else {
-        // 外部给定增益：平滑过渡（v2 整曲测量换算语义；审计修复：不再瞬时阶跃）
+        // 外部给定增益（调音室音量滑块）：快时间常数平滑——滑块跟手、无阶跃咔哒
+        // （原与自动归一化共用 3s 慢平滑，拖滑块声音几秒才到位，不跟手）
         const targetLin = Math.pow(10, Math.min(ln.maxGainDb, Math.max(ln.minGainDb, ln.externalGainDb)) / 20)
-        const alpha = 1 - Math.exp(-(n / this._fs) / NORM_SMOOTH_SEC)
+        const alpha = 1 - Math.exp(-(n / this._fs) / MANUAL_GAIN_SMOOTH_SEC)
         this._normGain += alpha * (targetLin - this._normGain)
       }
       const g = this._normGain

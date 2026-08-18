@@ -372,7 +372,7 @@ describe('⑦ 响度归一化：启动不膨胀', () => {
     e.process([l, r], [out, out])
     let peak1 = 0
     for (let i = 0; i < B; i++) peak1 = Math.max(peak1, Math.abs(out[i]))
-    // 第一块只走部分增益（3s 平滑 → 单块 480 样本 ≈ 0.3% 步进）
+    // 第一块只走部分增益（80ms 快平滑 → 单块 480 样本 ≈ 11.7% 步进，仍非瞬时阶跃）
     expect(peak1).toBeLessThan(0.6)
   })
 })

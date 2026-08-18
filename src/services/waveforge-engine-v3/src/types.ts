@@ -102,6 +102,8 @@ export interface BassEnhancerSettings {
   mix: number
   /** 整体电平 dB -6..6 */
   levelDb: number
+  /** 低音下潜 dB -6..12：真实低频电平提升（低通提取的低频带按增益混回，v2 低音增强的 lowshelf 语义） */
+  lowBoostDb: number
 }
 
 /** 混响（v3：卷积 + 算法双路，IR 去周期化） */
@@ -291,7 +293,7 @@ export function createDefaultParams(sampleRate: number): V3EngineParams {
     deesser: { enabled: false, centerHz: 6000, q: 0.7, thresholdDb: -30, ratio: 8, attackMs: 1, releaseMs: 80, splitBand: true, mix: 1 },
     compressor: { enabled: false, thresholdDb: -20, ratio: 4, kneeDb: 6, attackMs: 10, releaseMs: 150, makeupDb: 0, outputGain: 1 },
     nightMode: { enabled: false, amount: 0 },
-    bassEnhancer: { enabled: false, cutoffHz: 90, q: 0.7, harmonicType: 'odd', harmonicGain: 0.6, mix: 0.5, levelDb: 0 },
+    bassEnhancer: { enabled: false, cutoffHz: 90, q: 0.7, harmonicType: 'odd', harmonicGain: 0.6, mix: 0.5, levelDb: 0, lowBoostDb: 0 },
     reverb: {
       enabled: false,
       mode: 'algorithmic',

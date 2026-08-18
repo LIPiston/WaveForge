@@ -87,6 +87,30 @@ describe('V3 调音室 UI 冒烟', () => {
     expect(bridge.getParams().eq.proBands[0].gain).not.toBe(0)
   })
 
+  it('场景应用保留音量控制：内置场景与我的场景快照均不得覆盖 loudnessNormalization', () => {
+    const { bridge } = makeUi()
+    // 用户把音量拉到 40%（-36dB，调音室音量滑块同款通道）
+    const ln = bridge.getParams().loudnessNormalization
+    bridge.setParams({
+      ...bridge.getParams(),
+      loudnessNormalization: { ...ln, enabled: true, useRealtimeMeter: false, externalGainDb: -36, minGainDb: -60, maxGainDb: 12 },
+    })
+    // 应用内置「增强」场景（其快照 loudnessNormalization 为默认关闭/0dB）
+    bridge.applyScene('enhanced')
+    let after = bridge.getParams()
+    expect(after.sceneId).toBe('enhanced')
+    expect(after.loudnessNormalization.enabled).toBe(true)
+    expect(after.loudnessNormalization.useRealtimeMeter).toBe(false)
+    expect(after.loudnessNormalization.externalGainDb).toBe(-36)
+    // 保存并应用「我的场景」组合——音量同样保留
+    expect(bridge.saveMyScene('我的组合')).toBe(true)
+    const mine = bridge.getScenes().find((s) => s.name === '我的组合')
+    expect(mine).toBeTruthy()
+    bridge.applyScene(mine!.id)
+    after = bridge.getParams()
+    expect(after.loudnessNormalization.externalGainDb).toBe(-36)
+  })
+
   it('分享串：生成 → 解码往返一致（校验白名单）', () => {
     const { bridge } = makeUi()
     clickNav('调音器')

@@ -422,7 +422,7 @@ describe('C. 分享串（ShareCodec）编解码与防注入', () => {
       deesser: { enabled: true, centerHz: 4000, q: 0.1, thresholdDb: -60, ratio: 50, mix: 1 },
       compressor: { enabled: true, thresholdDb: -60, ratio: 50, kneeDb: 0, attackMs: 0, releaseMs: 3000, makeupDb: 24, outputGain: 2 },
       nightMode: { enabled: true, amount: 10 },
-      bassEnhancer: { enabled: true, cutoffHz: 500, harmonicType: 'even', harmonicGain: 1, mix: 1, levelDb: 6 },
+      bassEnhancer: { enabled: true, cutoffHz: 500, harmonicType: 'even', harmonicGain: 1, mix: 1, levelDb: 6, lowBoostDb: 0 },
       reverb: { enabled: true, mode: 'algorithmic', algorithmic: { type: 'hall', roomSize: 0.98, damping: 0.01, wet: 1, dry: 1, preDelayMs: 500, width: 2 } },
       surround3d: { enabled: true, distance: 10, speed: 10, angle: 360, direction: -1 },
       loudnessCompensation: { enabled: true, mode: 'auto', volumePercent: 0, maxBoostDb: 24, smoothingSeconds: 0.01 },

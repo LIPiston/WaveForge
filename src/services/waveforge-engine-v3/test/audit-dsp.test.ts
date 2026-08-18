@@ -663,9 +663,9 @@ describe('audit BassEnhancer（虚拟低频）', () => {
   it('enabled=false → 恒等；harmonicGain=0 → 恒等；mix=0 → 恒等', () => {
     const n = 2048
     for (const p of [
-      { enabled: false, cutoffHz: 90, q: 0.7, harmonicType: 'odd' as const, harmonicGain: 0.6, mix: 0.5, levelDb: 0 },
-      { enabled: true, cutoffHz: 90, q: 0.7, harmonicType: 'odd' as const, harmonicGain: 0, mix: 0.5, levelDb: 0 },
-      { enabled: true, cutoffHz: 90, q: 0.7, harmonicType: 'odd' as const, harmonicGain: 0.6, mix: 0, levelDb: 0 },
+      { enabled: false, cutoffHz: 90, q: 0.7, harmonicType: 'odd' as const, harmonicGain: 0.6, mix: 0.5, levelDb: 0, lowBoostDb: 0 },
+      { enabled: true, cutoffHz: 90, q: 0.7, harmonicType: 'odd' as const, harmonicGain: 0, mix: 0.5, levelDb: 0, lowBoostDb: 0 },
+      { enabled: true, cutoffHz: 90, q: 0.7, harmonicType: 'odd' as const, harmonicGain: 0.6, mix: 0, levelDb: 0, lowBoostDb: 0 },
     ]) {
       const be = new BassEnhancer(FS)
       be.setParams(p)
@@ -682,7 +682,7 @@ describe('audit BassEnhancer（虚拟低频）', () => {
   it('零输入零输出；四种非线性类型均无 NaN', () => {
     for (const t of ['odd', 'even', 'atan', 'soft'] as const) {
       const be = new BassEnhancer(FS)
-      be.setParams({ enabled: true, cutoffHz: 90, q: 0.7, harmonicType: t, harmonicGain: 1, mix: 1, levelDb: 6 })
+      be.setParams({ enabled: true, cutoffHz: 90, q: 0.7, harmonicType: t, harmonicGain: 1, mix: 1, levelDb: 6, lowBoostDb: 0 })
       const n = 48000
       const l = sine(n, 60, 0.5, FS)
       const r = zeros(n)
@@ -697,7 +697,7 @@ describe('audit BassEnhancer（虚拟低频）', () => {
   it('边界 clamp 无 NaN：fs 8k/192k、cutoff 极值、levelDb ±6', () => {
     for (const fs of [8000, 192000]) {
       const be = new BassEnhancer(fs)
-      be.setParams({ enabled: true, cutoffHz: fs * 0.45, q: 20, harmonicType: 'odd', harmonicGain: 1, mix: 1, levelDb: 6 })
+      be.setParams({ enabled: true, cutoffHz: fs * 0.45, q: 20, harmonicType: 'odd', harmonicGain: 1, mix: 1, levelDb: 6, lowBoostDb: 0 })
       const n = fs
       const l = sine(n, 200, 0.7, fs)
       const r = zeros(n)
@@ -709,7 +709,7 @@ describe('audit BassEnhancer（虚拟低频）', () => {
 
   it('10s 长跑无 NaN/发散；odd 型 60Hz → 输出含 180Hz 三次谐波', () => {
     const be = new BassEnhancer(FS)
-    be.setParams({ enabled: true, cutoffHz: 90, q: 0.7, harmonicType: 'odd', harmonicGain: 1, mix: 1, levelDb: 0 })
+    be.setParams({ enabled: true, cutoffHz: 90, q: 0.7, harmonicType: 'odd', harmonicGain: 1, mix: 1, levelDb: 0, lowBoostDb: 0 })
     const n = 480000
     const l = sine(n, 60, 0.5, FS)
     const r = zeros(n)
@@ -731,7 +731,7 @@ describe('audit BassEnhancer（虚拟低频）', () => {
 
   it('零输入后状态衰减：60Hz 激励后 1s 零输入 → 输出≈0（无 DC 泄漏）', () => {
     const be = new BassEnhancer(FS)
-    be.setParams({ enabled: true, cutoffHz: 90, q: 0.7, harmonicType: 'even', harmonicGain: 1, mix: 1, levelDb: 0 })
+    be.setParams({ enabled: true, cutoffHz: 90, q: 0.7, harmonicType: 'even', harmonicGain: 1, mix: 1, levelDb: 0, lowBoostDb: 0 })
     const n = 48000
     const l = sine(n, 60, 0.5, FS)
     const r = zeros(n)
