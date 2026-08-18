@@ -18,14 +18,17 @@ interface AnalysisPageProps {
   onOpenEffect: (key: string) => void
 }
 
-const POLL_MS = 300
+const POLL_MS = 100
 const BARS = 32
+const SPECTRUM_MIN_HZ = 20
 
 export default function AnalysisPage({ bridge, theme }: AnalysisPageProps) {
   const [stats, setStats] = useState<EngineStats>(() => bridge.getStats())
   const [analysis, setAnalysis] = useState<EngineAnalysis>(() => bridge.getAnalysis())
   const [hearing, setHearing] = useState<V3HearingSession | null>(null)
   const timerRef = useRef<number | null>(null)
+  // 频谱条 EMA 平滑（防 10fps 更新跳变，观感接近连续）
+  const smoothedRef = useRef<number[] | null>(null)
 
   useEffect(() => {
     const tick = () => { setStats(bridge.getStats()); setAnalysis(bridge.getAnalysis()) }
@@ -54,16 +57,32 @@ export default function AnalysisPage({ bridge, theme }: AnalysisPageProps) {
   const spectrum = analysis.spectrum
   const barData: number[] = (() => {
     if (!spectrum) return Array(BARS).fill(0)
+    const len = spectrum.length
+    // FFT bin 幅度归一化到 0dBFS：满幅正弦在 Hann 窗下的 bin 峰值 = N/4
+    // （N = (len-1)*2），原实现把原始 bin 值当线性幅度直接取 dB，-47dB 以上
+    // 的信号就会顶满条、显示毫无动态。除以 N/4 后 -80dBFS..0dBFS 映射 0..1。
+    const normScale = 2 / (len - 1)
+    const binHz = bridge.getSampleRate() / ((len - 1) * 2)
+    const topHz = Math.min(20000, bridge.getSampleRate() / 2)
     const out: number[] = []
-    const step = Math.max(1, Math.floor(spectrum.length / BARS))
     for (let i = 0; i < BARS; i++) {
-      const start = i * step
-      const end = Math.min(spectrum.length, start + step)
+      // 对数频率轴（音乐频谱标准做法）：20Hz..topHz 等比均分，
+      // 线性轴会把 20-100Hz 低音全挤进第一根条、低频分辨率归零
+      const fLo = SPECTRUM_MIN_HZ * Math.pow(topHz / SPECTRUM_MIN_HZ, i / BARS)
+      const fHi = SPECTRUM_MIN_HZ * Math.pow(topHz / SPECTRUM_MIN_HZ, (i + 1) / BARS)
+      const kLo = Math.max(1, Math.floor(fLo / binHz))
+      const kHi = Math.min(len - 1, Math.ceil(fHi / binHz))
       let peak = 0
-      for (let j = start; j < end; j++) peak = Math.max(peak, spectrum[j] ?? 0)
+      for (let k = kLo; k <= kHi; k++) peak = Math.max(peak, (spectrum[k] ?? 0) * normScale)
       const db = 20 * Math.log10(Math.max(peak, 1e-4))
       out.push(Math.min(1, Math.max(0, (db + 80) / 80)))
     }
+    // 一阶 EMA 平滑（α=0.45），并随新一帧长度复位缓存
+    const prev = smoothedRef.current
+    if (prev && prev.length === out.length) {
+      for (let i = 0; i < out.length; i++) out[i] = prev[i] + 0.45 * (out[i] - prev[i])
+    }
+    smoothedRef.current = out
     return out
   })()
 
@@ -118,7 +137,8 @@ export default function AnalysisPage({ bridge, theme }: AnalysisPageProps) {
         </div>
         <div className="flex justify-between mt-1">
           <span className={`${theme.textTertiary} text-[10px]`}>20Hz</span>
-          <span className={`${theme.textTertiary} text-[10px]`}>1kHz</span>
+          <span className={`${theme.textTertiary} text-[10px]`}>200Hz</span>
+          <span className={`${theme.textTertiary} text-[10px]`}>2kHz</span>
           <span className={`${theme.textTertiary} text-[10px]`}>20kHz</span>
         </div>
         {feats && (
