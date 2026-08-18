@@ -73,3 +73,9 @@
 - **测试调整**：`test/device.test.ts` 删除；audit-chain/audit-combo/codec 中 deviceProfile 引用清理，
   组合用例改为「EQ Q 补偿 + LoudnessComp」。
 - **文档同步**：API_SPEC 模块 G、FEATURES #15、FUSION_GUIDE 映射表、统计文档、THIRD_PARTY_NOTICES 已更新。
+---
+
+## 追加（2026-08-18）：融合后计数更新
+
+- **现状**：模块已融合进 WaveForge（`src/services/waveforge-engine-v3/`，经 `attachV3Engine.ts` + 统一适配层接入）；调音室 UI 为 HSE 风格 8 页导航。
+- **测试基线**：29 文件 / **324 用例（319 过 + 5 LGPL 跳过）**、tsc 0 错误；2026-08-18 新增 BassEnhancer `lowBoostDb` 电平提升/越界钳制 2 用例、UI 冒烟 +1（场景保留音量断言，10 项）。

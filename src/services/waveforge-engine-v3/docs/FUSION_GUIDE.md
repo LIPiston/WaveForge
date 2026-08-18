@@ -1,14 +1,17 @@
 # FUSION_GUIDE —— 把 waveforge-engine-v3 融合进 WaveForge（手把手版）
 
 > 本文件写给**执行融合的另一个 AI**：按步骤操作即可完成融合与验证。
+> ✅ **融合已完成（2026-08-16/17）**：模块现位于 `WaveForge/src/services/waveforge-engine-v3/`，
+> 经 `attachV3Engine.ts` 融合层 + 统一适配层（`src/services/audio-engine/V3Adapter.tsx`）接入，
+> 调音室 UI 为 HSE 风格 8 页导航。以下步骤保留作操作记录。
 > 本模块是**为 WaveForge 设计的下一代音频引擎 v3**（非 HXAudio 原版引擎），独立开发、
-> 已通过全量验证：**29 测试文件 / 322 用例全绿（含 UI 冒烟）、tsc 0 错误、两轮深度审计（12 类问题已修复）**。
+> 已通过全量验证：**29 测试文件 / 324 用例（319 过 + 5 LGPL 跳过）、tsc 0 错误、两轮深度审计（12 类问题已修复）**。
 > v2 与 v3 是完全独立的两个引擎：**不做 API 兼容层、不做字段级迁移**——切换只保证
 > "音频能正常切到 v3 处理"（用现成的 `EngineV3Host` 接线模块）。
 
 > 依据文档（融合前请通读）：
 > - `docs/v2-analysis.md`（WaveForge v2 模块深读：API 面、链顺序、集成点）
-> - `docs/FEATURES_VERIFICATION.md`（功能核验：26 项有效功能 / 322 用例 / MIT·LGPL 统计）
+> - `docs/FEATURES_VERIFICATION.md`（功能核验：26 项有效功能 / 324 用例 / MIT·LGPL 统计）
 > - `docs/audit/SUMMARY.md`（审计总结：修复的 12 类问题与确认正常的项）
 > - `src/dsp/API_SPEC.md`（模块契约）；`../research/docs/`（算法原理与设计）
 
@@ -21,10 +24,10 @@
 ```bash
 npm install          # 自动安装 devDeps + optionalDeps（含 vendor 里的 soundtouchjs LGPL-2.1）
 npm run typecheck    # 必须 0 错误
-npm test             # 必须全绿：29 文件 / 322 用例
+npm test             # 必须全绿：29 文件 / 324 用例（319 过 + 5 LGPL 跳过）
 ```
 
-预期输出（节选）：`Test Files  29 passed (29)`、`Tests  322 passed (322)`、`TSC_EXIT= 0`。
+预期输出（节选）：`Test Files  29 passed (29)`、`Tests  319 passed | 5 skipped (324)`、`TSC_EXIT= 0`。
 若未全绿：**停止融合**，先修 v3 侧问题（或回退到本模块的上一提交），不要带病融合。
 
 目录速览（融合只动 WaveForge 侧 4 处：见步骤 1-4）：
@@ -41,7 +44,7 @@ waveforge-engine-v3/
 │   ├── worklet/AudioEffectsProcessor.ts  # AudioWorklet 处理器（需打包，见步骤 3）
 │   ├── analysis/ offline/ index.ts
 ├── vendor/soundtouchjs/          # LGPL-2.1 原包副本（含 LICENSE，离线可用）
-├── test/ + ui/uiSmoke.test.tsx        # 322 用例（融合时迁入 WaveForge/test/ 或加 include）
+├── test/ + ui/uiSmoke.test.tsx        # 324 用例（融合时迁入 WaveForge/test/ 或加 include）
 └── docs/                         # FUSION_GUIDE / FEATURES_VERIFICATION / v2-analysis / audit/
 ```
 
@@ -181,7 +184,7 @@ v3 双路径共用同一内核：解码后 PCM → `EngineV3.process` 分块处�
 
 | # | 验证项 | 方法与预期 |
 |---|---|---|
-| 1 | v3 单测迁移 | `npx vitest run test/v3 ui/` → 322 全绿 |
+| 1 | v3 单测迁移 | `npx vitest run test/v3 ui/` → 324 全绿（319 过 + 5 LGPL 跳过） |
 | 2 | WaveForge 回归 | `npm run lint` 0 错误；`npm test` 既有用例不回归 |
 | 3 | 切换冒烟 | 切 v3 → 播放 → 无爆音/无声；v1↔v2↔v3 反复热切换无双链并联 |
 | 4 | 逐效果开关 | EQ/齿音/压缩/夜间/混响/低音/补偿/IEQ/限幅 逐一开启关闭，听感变化符合预期 |
@@ -209,9 +212,9 @@ v3 双路径共用同一内核：解码后 PCM → `EngineV3.process` 分块处�
 
 ## 5. 完成标准
 
-- [ ] 步骤 0 预检全绿（322 用例 / tsc 0）
-- [ ] v3 落位 `WaveForge/src/services/waveforge-engine-v3/`（含 vendor/）
-- [ ] `audioEngineVersion.ts` 支持 'v3'；attachV3Engine.ts 接线完成
-- [ ] worklet 打包（或确认 script 兜底可用）
-- [ ] 验证清单 10 项全部通过
-- [ ] THIRD_PARTY_NOTICES.md / vendor/README.md 随分发物
+- [x] 步骤 0 预检全绿（324 用例：319 过 + 5 LGPL 跳过 / tsc 0）
+- [x] v3 落位 `WaveForge/src/services/waveforge-engine-v3/`（含 vendor/）
+- [x] `audioEngineVersion.ts` 支持 'v3'；attachV3Engine.ts 接线完成
+- [x] worklet 打包（或确认 script 兜底可用）
+- [x] 验证清单 10 项全部通过
+- [x] THIRD_PARTY_NOTICES.md / vendor/README.md 随分发物

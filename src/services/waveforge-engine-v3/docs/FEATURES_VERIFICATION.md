@@ -2,7 +2,7 @@
 
 > 目的：① 列出本模块实现的功能与代码位置；② 核验代码与效果的正常性（测试证据）；
 > ③ 统计 MIT/LGPL 库使用情况；④ 二次调研 GitHub 上的 MIT/LGPL 候选库（避免造轮子）。
-> 最终验证：**29 个测试文件 / 322 用例全部通过（含 UI 冒烟 9 项），tsc 0 错误**（2026-08 实测）。
+> 最终验证：**29 个测试文件 / 324 用例（319 过 + 5 LGPL 跳过，含 UI 冒烟 10 项），tsc 0 错误**（2026-08 实测；2026-08-18 更新：+2 lowBoostDb 用例、UI 冒烟 +1 场景保留音量断言）。
 
 ---
 
@@ -38,7 +38,7 @@
 | 26 | AudioWorklet 处理器 | `src/worklet/AudioEffectsProcessor.ts` | 设计文档 §2 | （打包期验证） | ✅ 结构正确；融合时 esbuild 打包单文件 |
 | 27 | **引擎宿主/切换接线**（EngineV3Host） | `src/integration/EngineV3Host.ts` | 切换语义同 v2（先断后连/恢复直连/幂等/竞态防护） | integration(9) | ✅ worklet/script 双模式 + 回退；dispose 恢复直连；竞态下不接线；script 通路限幅实测生效 |
 
-**合计 27 项条目（#15 已移除并入 #10，有效 26 项功能）/ 29 测试文件 / 322 用例全绿（含 UI 冒烟 9 项）/ tsc 0 错误。**
+**合计 27 项条目（#15 已移除并入 #10，有效 26 项功能）/ 29 测试文件 / 324 用例（319 过 + 5 LGPL 跳过，含 UI 冒烟 10 项）/ tsc 0 错误。**
 
 > **链路健康审计（2026-08）**：3 个并行审计子代理 + 主代理完成全链路排查（`docs/audit/`：
 > chain-audit / dsp-audit / combo-audit / SUMMARY），发现并修复 12 类问题（含 Convolver 流式 NaN、
@@ -102,7 +102,7 @@ DSPFilters(MIT, biquad TDF2 思路)、kissfft(BSD-3, FFT 蝶形)、stk(MIT 类, 
 ## 4. 交付自检清单
 
 - [x] `npm install` 一键完成（vendor 含 LGPL 原包，离线可用）
-- [x] `npm test` 322/322 通过（29 文件，含 uiSmoke 9 项）
+- [x] `npm test` 319 过 + 5 LGPL 跳过 / 324 用例（29 文件，含 uiSmoke 10 项）
 - [x] `npm run typecheck` 0 错误
 - [x] 融合文档 `docs/FUSION_GUIDE.md` 完整（含 LGPL 合规指引）
 - [x] 许可声明 `THIRD_PARTY_NOTICES.md` + `vendor/README.md`
