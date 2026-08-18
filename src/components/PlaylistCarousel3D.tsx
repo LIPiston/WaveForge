@@ -2,6 +2,8 @@ import type { MusicPlatform } from '../services/platforms'
 import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion, useMotionValue, animate } from 'framer-motion'
 import { Heart, History } from 'lucide-react'
+import { setTvFocus, useTvFocus } from '../tv/tvCore'
+import { isTvModeActive } from '../platform'
 
 interface Playlist {
   id: string | number
@@ -20,13 +22,17 @@ interface PlaylistCarousel3DProps {
   onPlaylistSelect: (playlist: Playlist) => void
   platform: MusicPlatform
   initialFocusedIndex?: number
+  /** TV 紧凑模式：卡片/间距/容器高度按比例缩小，适配遥控器桌面模式常驻显示 */
+  compact?: boolean
 }
 
 const CARD_GAP = 280
 const DRAG_PIXELS_PER_CARD = 150
 const VISIBLE_RADIUS = 4
+// TV 紧凑模式缩放系数：卡片 240→160，间距 280→186，容器 370→~247
+const COMPACT_SCALE = 0.667
 
-function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocusedIndex = 0 }: PlaylistCarousel3DProps) {
+function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocusedIndex = 0, compact = false }: PlaylistCarousel3DProps) {
   const [focusedIndex, setFocusedIndex] = useState(initialFocusedIndex)
   const wheelTimeout = useRef<NodeJS.Timeout | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -40,6 +46,11 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
   const progressPointerStartXRef = useRef(0)
   const isProgressDraggingRef = useRef(false)
   const dragOffsetX = useMotionValue(0)
+  // 鼠标静止点击由容器 finishPointerDrag 已处理（onPlaylistSelect/navigateTo），
+  // 卡片 onClick 会再次触发；用短时标志去重，遥控器合成 click（无 pointer 序列）不受影响。
+  const suppressClickRef = useRef(false)
+  const cardGap = compact ? CARD_GAP * COMPACT_SCALE : CARD_GAP
+  const dragPixelsPerCard = compact ? DRAG_PIXELS_PER_CARD * COMPACT_SCALE : DRAG_PIXELS_PER_CARD
 
   const navigateTo = useCallback((requestedIndex: number) => {
     if (playlists.length === 0) return
@@ -50,13 +61,21 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
     dragOffsetX.stop()
     const distance = nextIndex - currentIndex
     // 邻近切换保留连续位移；大跨度跳转直接换页，避免跨越数百张卡片。
-    dragOffsetX.set(Math.abs(distance) <= VISIBLE_RADIUS ? distance * CARD_GAP : 0)
+    dragOffsetX.set(Math.abs(distance) <= VISIBLE_RADIUS ? distance * cardGap : 0)
     focusedIndexRef.current = nextIndex
     setFocusedIndex(nextIndex)
+    // TV 遥控器：data-tv-arrows="horizontal" 把左右键穿透给本组件导航，
+    // 但 tvCore 的焦点环不会自动跟随，这里把焦点环同步到新激活卡片
+    if (isTvModeActive()) {
+      requestAnimationFrame(() => {
+        const card = containerRef.current?.querySelector<HTMLElement>(`[data-playlist-index="${nextIndex}"]`)
+        if (card) setTvFocus(card)
+      })
+    }
     requestAnimationFrame(() => {
       animate(dragOffsetX, 0, { duration: 0.34, ease: [0.22, 1, 0.36, 1] })
     })
-  }, [dragOffsetX, playlists.length])
+  }, [dragOffsetX, playlists.length, cardGap])
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
@@ -83,14 +102,14 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
     // 因此焦点切换瞬间位置连续，不会出现整卡跳变/闪烁。
     const floatIndex = Math.max(0, Math.min(
       playlists.length - 1,
-      dragStartIndexRef.current - rawDelta / DRAG_PIXELS_PER_CARD
+      dragStartIndexRef.current - rawDelta / dragPixelsPerCard
     ))
     const nextIndex = Math.round(floatIndex)
     if (focusedIndexRef.current !== nextIndex) {
       focusedIndexRef.current = nextIndex
       setFocusedIndex(nextIndex)
     }
-    dragOffsetX.set((focusedIndexRef.current - floatIndex) * CARD_GAP)
+    dragOffsetX.set((focusedIndexRef.current - floatIndex) * cardGap)
   }
 
   const finishPointerDrag = (event?: React.PointerEvent<HTMLDivElement>) => {
@@ -123,6 +142,7 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
     // pressed card here so a stationary click remains reliable after dragging support.
     if (pressedIndex !== null && playlists[pressedIndex]) {
       if (pressedIndex === focusedIndexRef.current) {
+        suppressClickRef.current = true
         onPlaylistSelect(playlists[pressedIndex])
       } else {
         navigateTo(pressedIndex)
@@ -143,11 +163,18 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
     }, 70)
   }, [navigateTo])
 
+  // TV 遥控器：当前焦点元素（keydown 穿透判定 + 外部焦点进入歌单栏自动居中）
+  const tvFocus = useTvFocus()
+
   // 处理键盘方向键
   useEffect(() => {
     let lastTime = 0
     
     const handleKeyDown = (e: KeyboardEvent) => {
+      // TV 遥控器模式：焦点在歌单栏内时 tvCore 的 data-tv-arrows 会把左右键
+      // 穿透给本组件处理（此时才 navigateTo）；焦点在歌单栏外时左右键由 tvCore
+      // 空间导航接管，这里跳过，避免同一按键触发两次导航。
+      if (isTvModeActive() && tvFocus && !containerRef.current?.contains(tvFocus)) return
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault()
         
@@ -161,7 +188,7 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [navigateTo])
+  }, [navigateTo, tvFocus])
 
   // 添加滚轮监听
   useEffect(() => {
@@ -183,6 +210,19 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
     focusedIndexRef.current = clampedIndex
     setFocusedIndex(clampedIndex)
   }, [playlists.length])
+
+  // TV 遥控器：焦点从歌单栏外部（按钮组/顶部模式切换）导航进入某张卡片时，
+  // 把它平滑移到舞台中央（与"点击侧边卡片只居中不打开"交互一致）。
+  // navigateTo 内部会同步焦点环到居中卡片，避免这里的居中与实际焦点错位。
+  useEffect(() => {
+    if (!isTvModeActive()) return
+    const card = tvFocus?.closest?.('[data-playlist-index]')
+    if (!card) return
+    const idx = Number((card as HTMLElement).dataset.playlistIndex)
+    if (Number.isInteger(idx) && idx !== focusedIndexRef.current) {
+      navigateTo(idx)
+    }
+  }, [tvFocus, navigateTo])
 
   useEffect(() => () => {
     if (wheelTimeout.current) clearTimeout(wheelTimeout.current)
@@ -226,8 +266,8 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
         perspective: '1200px',
         cursor: isDragging ? 'grabbing' : 'grab',
         userSelect: 'none',
-        height: '370px',
-        paddingBottom: '48px',
+        height: compact ? `${Math.round(370 * COMPACT_SCALE)}px` : '370px',
+        paddingBottom: compact ? `${Math.round(48 * COMPACT_SCALE)}px` : '48px',
         transform: 'translate3d(0, 0, 0)',
         isolation: 'isolate',
         contain: 'layout paint style',
@@ -243,7 +283,7 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
         // 计算位置和状态
         const scale = isActive ? 1.1 : 1 - Math.abs(distance) * 0.15
         const opacity = isActive ? 1 : Math.max(0.3, 0.6 - Math.abs(distance) * 0.15)
-        const xOffset = distance * 280 // 280px 偏移
+        const xOffset = distance * cardGap // 卡片间距随紧凑模式缩放
         const zIndex = 10 - Math.abs(distance)
         const rotateY = distance > 0 ? -15 : distance < 0 ? 15 : 0 // Y轴旋转
 
@@ -259,7 +299,14 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
             xOffset={xOffset}
             zIndex={zIndex}
             rotateY={rotateY}
+            compact={compact}
             onKeyboardActivate={() => {
+              // 鼠标静止点击已由容器处理（suppressClickRef），跳过避免重复打开；
+              // 遥控器 OK 合成的 click 没有 pointer 序列，正常走这里
+              if (suppressClickRef.current) {
+                suppressClickRef.current = false
+                return
+              }
               if (isActive) {
                 onPlaylistSelect(playlist)
               } else {
@@ -364,9 +411,11 @@ interface PlaylistCardProps {
   zIndex: number
   rotateY: number
   onKeyboardActivate: () => void
+  compact?: boolean
 }
 
-const PlaylistCard = memo(function PlaylistCard({ playlist, platform, index, isActive, scale, opacity, xOffset, zIndex, rotateY, onKeyboardActivate }: PlaylistCardProps) {
+const PlaylistCard = memo(function PlaylistCard({ playlist, platform, index, isActive, scale, opacity, xOffset, zIndex, rotateY, onKeyboardActivate, compact = false }: PlaylistCardProps) {
+  const cardSize = compact ? Math.round(240 * COMPACT_SCALE) : 240
   return (
     <motion.div
       data-playlist-index={index}
@@ -390,11 +439,12 @@ const PlaylistCard = memo(function PlaylistCard({ playlist, platform, index, isA
       style={{
         x: xOffset,
         zIndex,
-        width: '240px',
-        height: '240px',
+        width: `${cardSize}px`,
+        height: `${cardSize}px`,
         transformStyle: 'preserve-3d',
         willChange: 'transform, opacity',
       }}
+      onClick={() => onKeyboardActivate()}
     >
       <motion.div
         className="relative isolate h-full w-full overflow-hidden rounded-[18px]"
@@ -448,12 +498,12 @@ const PlaylistCard = memo(function PlaylistCard({ playlist, platform, index, isA
         />
         
         {/* 歌单信息 */}
-        <div className="absolute bottom-0 left-0 right-0 p-4">
-          <h3 className="text-white font-bold text-base line-clamp-2 mb-1">
+        <div className={`absolute bottom-0 left-0 right-0 ${compact ? 'p-2' : 'p-4'}`}>
+          <h3 className={`text-white font-bold line-clamp-2 mb-1 ${compact ? 'text-xs' : 'text-base'}`}>
             {playlist.name}
           </h3>
           {playlist.trackCount !== undefined && (
-            <p className="text-white/70 text-xs">
+            <p className={`text-white/70 ${compact ? 'text-[10px]' : 'text-xs'}`}>
               {playlist.trackCount} 首歌曲
             </p>
           )}

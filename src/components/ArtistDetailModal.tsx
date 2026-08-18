@@ -10,6 +10,7 @@ import AlbumDetailModal from './AlbumDetailModal'
 import VideoPlayer from './VideoPlayer'
 import ScrollToTop from './ScrollToTop'
 import ScrollToCurrentSong from './ScrollToCurrentSong'
+import { useTvBack } from '../tv/tvCore'
 import SongContextMenu from './SongContextMenu'
 import { getUserPlaylists } from '../services/playlistService'
 import { getReadableAccentColor } from '../utils/desktopAccentColor'
@@ -415,6 +416,11 @@ export default function ArtistDetailModal({
   onOpenArtist,
   onCopyInfo
 }: ArtistDetailModalProps) {
+  // TV 遥控器 BACK：关闭艺人详情弹窗
+  useTvBack(() => {
+    onClose()
+    return true
+  }, [onClose])
   const [artist, setArtist] = useState<Artist | null>(null)
   const [hotSongs, setHotSongs] = useState<Song[]>([])
   const [allSongs, setAllSongs] = useState<Song[]>([])
@@ -935,6 +941,7 @@ export default function ArtistDetailModal({
         }}
       >
         <motion.div
+          data-tv-scope
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           exit={{ scale: 0.9, opacity: 0 }}

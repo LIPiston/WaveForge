@@ -11,6 +11,7 @@ import ScrollToTop from './ScrollToTop'
 import ScrollToCurrentSong from './ScrollToCurrentSong'
 import CommentModal from './CommentModal'
 import DeleteSongModal from './DeleteSongModal'
+import { useTvBack } from '../tv/tvCore'
 
 const DETAIL_ROW_HEIGHT = 60
 const DETAIL_CARD_HEIGHT = 56
@@ -83,6 +84,14 @@ function PlaylistDetailPanel({
   playerTheme = 'dark',
   accentColor = '#ec4899'
 }: PlaylistDetailPanelProps) {
+  // TV 遥控器 BACK：关闭歌单详情面板
+  useTvBack(() => {
+    if (show) {
+      onClose()
+      return true
+    }
+    return false
+  }, [show, onClose])
   const isVip = currentPlatform === 'netease' ? neteaseVip : qqVip
   const [heightVh, setHeightVh] = useState(80) // 从80vh开始，最大90vh
   const [subscribing, setSubscribing] = useState(false)
@@ -427,6 +436,7 @@ function PlaylistDetailPanel({
           >
             {/* 包装容器 - 包含主容器和按钮，使按钮能相对于主容器定位 */}
             <div 
+              data-tv-scope
               className="w-full max-w-4xl h-full relative"
               onClick={(e) => e.stopPropagation()}
             >

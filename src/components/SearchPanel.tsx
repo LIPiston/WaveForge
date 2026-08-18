@@ -4,6 +4,7 @@ import { Search, X, Music, History, Clock, User, Disc, Sparkles, TrendingUp, Lis
 import { searchSongs, searchSuggest, searchArtists, searchAlbums, searchQuick, searchPlaylists, Song, Artist, Album, SearchSuggestion, getProxiedImageUrl, loadAlbumCovers, resolveSongAlbumIdentifier, searchHot } from '../services/musicApi'
 import { mergeFusedSearchResults, type FusedSearchIntent, type MusicPlatform } from '../services/fusedSearch'
 import { isPlatformVisible } from '../services/platforms'
+import { useTvBack } from '../tv/tvCore'
 import CachedImage from './CachedImage'
 import ArtistDetailModal from './ArtistDetailModal'
 import AlbumDetailModal from './AlbumDetailModal'
@@ -95,6 +96,11 @@ export default function SearchPanel({
   onCopyInfo,
   onRestoreConsumed
 }: SearchPanelProps) {
+  // TV 遥控器 BACK：关闭搜索面板
+  useTvBack(() => {
+    onClose()
+    return true
+  }, [onClose])
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
   console.log('🔍 SearchPanel 渲染')
   console.log('  playerTheme:', playerTheme)
@@ -553,6 +559,9 @@ export default function SearchPanel({
             netease: { loggedIn: neteaseSessionActive, vip: neteaseVip },
             qq: { loggedIn: qqSessionActive, vip: qqVip },
             apple: { loggedIn: false, vip: false },
+            spotify: { loggedIn: false, vip: false },
+            kugou: { loggedIn: false, vip: false },
+            soda: { loggedIn: false, vip: false },
           },
         })
         setFusionUnavailablePlatforms(unavailable)
@@ -828,6 +837,7 @@ export default function SearchPanel({
   return (
     <>
     <motion.div
+      data-tv-scope
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}

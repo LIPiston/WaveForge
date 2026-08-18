@@ -4,6 +4,7 @@ import type { CSSProperties, MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Settings } from 'lucide-react'
 import ModeSelectionCards, { type ModeSelectionMode } from './ModeSelectionCards'
+import { useTvBack } from '../tv/tvCore'
 
 export const MODE_SELECTION_PANEL_HEIGHT = 210
 // 切换模式前先让面板和被下移的当前界面完整收回。
@@ -58,6 +59,16 @@ export default function ModeSelectionPanel({
     return (saved as 'dark' | 'light') || 'dark'
   })
   const isLight = playerTheme === 'light'
+
+  // TV 遥控器 BACK：关闭模式选择面板（先收起自定义弹层再收面板）
+  useTvBack(() => {
+    if (showCustomize) {
+      setShowCustomize(false)
+      return true
+    }
+    onClose()
+    return true
+  }, [showCustomize, onClose])
 
   useEffect(() => {
     const handleThemeChange = (e: Event) => setPlayerTheme((e as CustomEvent).detail)
@@ -127,6 +138,7 @@ export default function ModeSelectionPanel({
   return createPortal(
     <motion.div
       key={`mode-selection-panel-${currentMode}`}
+      data-tv-scope
       initial={{ y: '-100%' }}
       animate={{ y: 0 }}
       exit={{ y: '-100%' }}

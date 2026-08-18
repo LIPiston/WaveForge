@@ -10,6 +10,7 @@ import ScrollToCurrentSong from './ScrollToCurrentSong'
 import SongContextMenu from './SongContextMenu'
 import { getUserPlaylists } from '../services/playlistService'
 import { getReadableAccentColor } from '../utils/desktopAccentColor'
+import { useTvBack } from '../tv/tvCore'
 
 interface AlbumDetailModalProps {
   albumId: string | number
@@ -51,6 +52,11 @@ function AlbumDetailModal({
   onOpenArtist,
   onCopyInfo
 }: AlbumDetailModalProps) {
+  // TV 遥控器 BACK：关闭专辑详情弹窗
+  useTvBack(() => {
+    onClose()
+    return true
+  }, [onClose])
   const [album, setAlbum] = useState<Album | null>(null)
   const [songs, setSongs] = useState<Song[]>([])
   const [loading, setLoading] = useState(true)
@@ -228,6 +234,7 @@ function AlbumDetailModal({
         onClick={onClose}
       >
         <motion.div
+          data-tv-scope
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           exit={{ scale: 0.9, opacity: 0 }}
