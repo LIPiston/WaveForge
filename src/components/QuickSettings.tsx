@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { memo, useState, useEffect } from 'react'
 import { SlidersHorizontal, Plus, Minus, X } from 'lucide-react'
+import { useTvBack } from '../tv/tvCore'
 
 interface QuickSettingsProps {
   forceClose?: boolean
@@ -10,7 +11,7 @@ interface QuickSettingsProps {
 
 type CoverPulseMode = 'dynamic' | 'soft' | 'restless'
 type WordByWordEffectMode = 'clear' | 'soft' | 'apple'
-type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious'
+type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'video'
 
 // 大体积设置面板（约 900 行 JSX）：props 均为原语（forceClose/playerTheme/isPureMusic），
 // memo 让 1Hz 播放重渲染（经 ImmersiveControls 传递）不再连带重渲染整个面板
@@ -21,6 +22,15 @@ export default memo(function QuickSettings({
 }: QuickSettingsProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [activeSection, setActiveSection] = useState<'appearance' | 'features'>('appearance')
+
+  // TV 遥控器 BACK：收起快捷设置下拉
+  useTvBack(() => {
+    if (isOpen) {
+      setIsOpen(false)
+      return true
+    }
+    return false
+  }, [isOpen])
 
   const [accentColor, setAccentColor] = useState(() => {
     const saved = localStorage.getItem('accentColor')
@@ -52,7 +62,7 @@ export default memo(function QuickSettings({
       }
 
       const saved = localStorage.getItem('lyricDisplayMode')
-      setLyricDisplayMode(saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' ? saved : 'modern')
+      setLyricDisplayMode(saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' || saved === 'video' ? saved : 'modern')
     }
 
     window.addEventListener('lyricDisplayModeChanged', handleLyricDisplayModeChange)
@@ -118,7 +128,7 @@ export default memo(function QuickSettings({
 
   const [lyricDisplayMode, setLyricDisplayMode] = useState<LyricDisplayMode>(() => {
     const saved = localStorage.getItem('lyricDisplayMode')
-    return saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' ? saved : 'modern'
+    return saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' || saved === 'video' ? saved : 'modern'
   })
 
   const [modernAudioVisualizerEnabled, setModernAudioVisualizerEnabled] = useState(() => {

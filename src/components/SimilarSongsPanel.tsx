@@ -4,6 +4,7 @@ import { X, Music, Play, ListPlus } from 'lucide-react'
 import type { Song } from '../services/musicApi'
 import { getSimilarSongs, getProxiedImageUrl } from '../services/musicApi'
 import SongContextMenu from './SongContextMenu'
+import { useTvBack } from '../tv/tvCore'
 
 interface SimilarSongsPanelProps {
   song: Song
@@ -14,6 +15,11 @@ interface SimilarSongsPanelProps {
 }
 
 function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme }: SimilarSongsPanelProps) {
+  // TV 遥控器 BACK：关闭相似歌曲面板
+  useTvBack(() => {
+    onClose()
+    return true
+  }, [onClose])
   const dark = playerTheme === 'dark'
   const [accentColor, setAccentColor] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
   const [songs, setSongs] = useState<Song[]>([])
@@ -72,6 +78,7 @@ function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme }
 
   return (
     <motion.div
+      data-tv-scope
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}

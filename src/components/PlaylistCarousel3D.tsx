@@ -165,6 +165,9 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
 
   // TV 遥控器：当前焦点元素（keydown 穿透判定 + 外部焦点进入歌单栏自动居中）
   const tvFocus = useTvFocus()
+  // 用 ref 镜像避免 keydown effect 因焦点变化反复重绑定（每次导航焦点都变）
+  const tvFocusRef = useRef<HTMLElement | null>(null)
+  tvFocusRef.current = tvFocus
 
   // 处理键盘方向键
   useEffect(() => {
@@ -174,7 +177,8 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
       // TV 遥控器模式：焦点在歌单栏内时 tvCore 的 data-tv-arrows 会把左右键
       // 穿透给本组件处理（此时才 navigateTo）；焦点在歌单栏外时左右键由 tvCore
       // 空间导航接管，这里跳过，避免同一按键触发两次导航。
-      if (isTvModeActive() && tvFocus && !containerRef.current?.contains(tvFocus)) return
+      const f = tvFocusRef.current
+      if (isTvModeActive() && f && !containerRef.current?.contains(f)) return
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault()
         
@@ -188,7 +192,7 @@ function PlaylistCarousel3D({ playlists, onPlaylistSelect, platform, initialFocu
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [navigateTo, tvFocus])
+  }, [navigateTo])
 
   // 添加滚轮监听
   useEffect(() => {
