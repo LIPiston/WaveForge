@@ -1,6 +1,7 @@
 import { debugLog, isVerboseLogEnabled } from './utils/debugLog'
 import { parseStoredBoolean } from './utils/storage'
 import { isTv, isTvModeActive } from './platform'
+import { useTvBack } from './tv/tvCore'
 import { isPerfModeEfficiency } from './tv/perfMode'
 import { lazy, memo, Suspense, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps } from 'react'
 import AlbumCoverPlayer from './components/AlbumCoverPlayer'
@@ -53,6 +54,15 @@ const LazySearchPanel = lazy(loadSearchPanel)
 const LazyUpNextNotification = lazy(loadUpNextNotification)
 const loadSettingsPanel = () => import('./components/SettingsPanel')
 const LazySettingsPanel = lazy(loadSettingsPanel)
+const loadOobeGuide = () => import('./components/oobe/OobeGuide')
+const LazyOobeGuide = lazy(loadOobeGuide)
+// ────────────────────────────────────────────────────────────────
+// OOBE 1（第一层引导：主题选择 / 隐私条款 / 免责声明）
+// 首次启动且未完成引导时自动弹出（完成即写入 waveforge:oobe-shown，不再打扰）。
+// 设置 → 高级 → "重新启用 OOBE 引导" 可清除标记，下次启动再显示一次。
+// 未来 AI 接力：OOBE 2 = 功能介绍引导，在 OobeGuide 的 welcome 步骤前插入步骤即可。
+// ────────────────────────────────────────────────────────────────
+const OOBE_ENABLED = true
 // 调音室组件的 lazy import 已下沉到各引擎 Adapter 的 renderStudio 内部，
 // App.tsx 不再直接引用调音室组件（统一通过 engineAdapterRef.current.renderStudio 渲染）。
 const loadPlaylistPanel = () => import('./components/PlaylistPanel')
@@ -77,6 +87,7 @@ const loadWallpaperLyrics = () => import('./components/WallpaperLyrics')
 const loadGloriousLyrics = () => import('./components/GloriousLyrics')
 const loadMultidimensionalLyrics = () => import('./components/MultidimensionalLyrics')
 const loadModengPlayer = () => import('./components/ModengPlayerPage')
+const loadBilibiliMvPlayer = () => import('./components/BilibiliMvPlayer')
 const LazyModernAudioVisualizer = lazy(loadModernAudioVisualizer)
 const LazyPlaybackRadialMenu = lazy(loadPlaybackRadialMenu)
 const LazyImmersiveControls = lazy(loadImmersiveControls)
@@ -85,11 +96,13 @@ const LazyWallpaperLyrics: any = lazy(loadWallpaperLyrics)
 const LazyGloriousLyrics: any = lazy(loadGloriousLyrics)
 const LazyMultidimensionalLyrics = lazy(loadMultidimensionalLyrics)
 const LazyModengPlayer: any = lazy(loadModengPlayer)
+const LazyBilibiliMvPlayer: any = lazy(loadBilibiliMvPlayer)
 const loadRemoteControlModal = () => import('./components/RemoteControlModal')
 const LazyRemoteControlModal = lazy(loadRemoteControlModal)
 const loadSongDetailModal = () => import('./components/SongDetailModal')
 const LazySongDetailModal = lazy(loadSongDetailModal)
 import RemoteCursor from './components/RemoteCursor'
+import PlatformLoginNotice from './components/PlatformLoginNotice'
 import SimilarSongsPanel from './components/SimilarSongsPanel'
 import { detectQQMusicVip } from './utils/musicEntitlements'
 import { getQQUserDisplayName } from './utils/qqUser'
@@ -216,11 +229,12 @@ const buildDesktopLyricsWithInterludes = (lyrics: LyricLine[]): DesktopLyricLine
 }
 
 type CoverPulseMode = 'dynamic' | 'soft' | 'restless'
-type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'multidimensional' | 'modeng'
+type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'multidimensional' | 'modeng' | 'video'
 
 const LYRIC_MODE_VISIBILITY_KEY = 'waveforge_visible_lyric_modes'
 const LYRIC_MODE_MODENG_MIGRATED_KEY = 'waveforge_modeng_mode_migrated'
-const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional', 'modeng']
+const LYRIC_MODE_VIDEO_MIGRATED_KEY = 'waveforge_video_mode_migrated'
+const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional', 'modeng', 'video']
 const LYRIC_MODE_NAMES: Record<LyricDisplayMode, string> = {
   modern: '现代',
   immersive: '沉浸式',
@@ -228,6 +242,7 @@ const LYRIC_MODE_NAMES: Record<LyricDisplayMode, string> = {
   glorious: '辉煌',
   multidimensional: '多维',
   modeng: '摩登',
+  video: '看歌',
 }
 
 function loadVisibleLyricModes(): LyricDisplayMode[] {
@@ -247,6 +262,13 @@ function loadVisibleLyricModes(): LyricDisplayMode[] {
             localStorage.setItem(LYRIC_MODE_MODENG_MIGRATED_KEY, '1')
             localStorage.setItem(LYRIC_MODE_VISIBILITY_KEY, JSON.stringify(withModeng))
             return withModeng
+          }
+          // 看歌（B站MV）为新增模式：同样一次性补回
+          if (!withModern.includes('video') && !localStorage.getItem(LYRIC_MODE_VIDEO_MIGRATED_KEY)) {
+            const withVideo = [...withModern, 'video' as LyricDisplayMode]
+            localStorage.setItem(LYRIC_MODE_VIDEO_MIGRATED_KEY, '1')
+            localStorage.setItem(LYRIC_MODE_VISIBILITY_KEY, JSON.stringify(withVideo))
+            return withVideo
           }
           return withModern
         }
@@ -852,7 +874,42 @@ function App() {
   const currentSong = currentIndex >= 0 && currentIndex < playlist.length ? playlist[currentIndex] : null
   const isPlaybackPage = viewMode === 'minimal' && Boolean(currentSong) && !showHome
   const canShowUpNextOnCurrentSurface = isPlaybackPage || showUpNextOutsidePlayer
+
+  // TV 遥控器 BACK 兜底（最低优先级，弹窗/面板的 useTvBack 优先消费）：
+  // 个人中心页回主页、播放页回主页；其他情况不消费（交给原生层）。
+  // 用 ref 读最新状态避免 deps 变化把本处理器顶到栈尾抢在弹窗之前。
+  const backStateRef = useRef({ isPlaybackPage, showProfile })
+  backStateRef.current = { isPlaybackPage, showProfile }
+  useTvBack(() => {
+    if (backStateRef.current.showProfile) {
+      setShowProfile(false)
+      return true
+    }
+    if (backStateRef.current.isPlaybackPage) {
+      setShowHome(true)
+      return true
+    }
+    return false
+  }, [])
+
   const playlistKeys = useMemo(() => playlist.map(getSongKey), [playlist])
+  // 看歌预加载：即将播放的后 2 首歌（预匹配评分高的 B 站视频）
+  const watchUpcomingSongs = useMemo(() => {
+    if (!playlist.length || typeof currentIndex !== 'number' || currentIndex < 0) return []
+    const upcoming: Array<{ songTitle: string; songArtists: string[]; songDuration: number; platform?: string; id?: string | number }> = []
+    for (let offset = 1; offset <= 2; offset += 1) {
+      const song = playlist[currentIndex + offset]
+      if (!song) break
+      upcoming.push({
+        songTitle: song.name,
+        songArtists: (song.artists || []).map((artist: any) => artist.name).filter(Boolean),
+        songDuration: (song.duration || 0) / 1000,
+        platform: song.platform,
+        id: song.id || song.mid,
+      })
+    }
+    return upcoming
+  }, [playlist, currentIndex])
   const deterministicNextIndex = useMemo(
     () => getDeterministicNextIndex(playlistKeys, currentIndex, playMode, queueRevision),
     [playlistKeys, currentIndex, playMode, queueRevision]
@@ -1127,6 +1184,24 @@ function App() {
   const [_qqCookie, setQQCookie] = useState(() => (
     localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
   ))
+  // Spotify：OAuth token 登录
+  const [spotifyLoggedIn, setSpotifyLoggedIn] = useState(() => Boolean(localStorage.getItem('spotify_access_token')))
+  const [spotifyUsername, setSpotifyUsername] = useState(() => localStorage.getItem('spotify_username') || '')
+  const [spotifyAvatar, setSpotifyAvatar] = useState(() => localStorage.getItem('spotify_avatar') || '')
+  const [spotifyUserId, setSpotifyUserId] = useState(() => localStorage.getItem('spotify_user_id') || '')
+  // 酷狗音乐：扫码 cookie 登录（KuGoo 网页会话 或 kg_token 客户端令牌）
+  const [kugouLoggedIn, setKugouLoggedIn] = useState(() => {
+    const cookie = localStorage.getItem('kugou_cookie') || ''
+    return Boolean(cookie && (/KuGoo=/.test(cookie) || /KugooID=/.test(cookie) || /kg_token/.test(cookie)))
+  })
+  const [kugouUsername, setKugouUsername] = useState(() => localStorage.getItem('kugou_username') || '')
+  const [kugouAvatar, setKugouAvatar] = useState(() => localStorage.getItem('kugou_avatar') || '')
+  const [kugouUserId, setKugouUserId] = useState(() => localStorage.getItem('kugou_user_id') || '')
+  // 汽水音乐：抖音扫码 token 登录
+  const [sodaLoggedIn, setSodaLoggedIn] = useState(() => Boolean(localStorage.getItem('soda_token')))
+  const [sodaUsername, setSodaUsername] = useState(() => localStorage.getItem('soda_username') || '')
+  const [sodaAvatar, setSodaAvatar] = useState(() => localStorage.getItem('soda_avatar') || '')
+  const [sodaUserId, setSodaUserId] = useState(() => localStorage.getItem('soda_user_id') || '')
   const [loginRestoreComplete, setLoginRestoreComplete] = useState(false)
   // 登录态发生变化后通知首页、个人中心等依赖平台账号的视图刷新。
   const [authRevision, setAuthRevision] = useState(0)
@@ -2010,6 +2085,8 @@ function App() {
       // Keep the current mode painted until the destination chunk is ready, then let the
       // two prepared roots crossfade. React.lazy must never expose the black app base here.
       void loadTarget().then(() => {
+        // 快速连续切换时，仅执行最新一次请求；但用户点击的模式必须最终生效，
+        // 因此用「最近请求」判断：revision 与当前一致才应用（旧请求自然被丢弃）。
         if (revision !== viewModeChangeRevisionRef.current) return
         applyMode(mode)
       }).catch(error => {
@@ -2076,6 +2153,11 @@ function App() {
     setShowLyricModePanel(false)
     setShowLyricModeCustomize(false)
     setShowLyricModeArrowHint(false)
+    // 切到看歌：记录音频当前播放位置，视频加载后从此处续播（歌↔视频同步的可行近似）
+    if (mode === 'video') {
+      const pos = Number(audioPlayerRef.current?.getAudioElement?.()?.currentTime) || 0
+      setWatchSyncSeek(pos > 0 ? pos : 0)
+    }
     window.requestAnimationFrame(() => {
       setLyricDisplayMode(mode)
       localStorage.setItem('lyricDisplayMode', mode)
@@ -2129,8 +2211,10 @@ function App() {
   const dominantColor = extractedColor || '#3B82F6'
   dominantColorRef.current = dominantColor
   const isVisualTransitioning = isTransitioning || Boolean(transitionToTrack && transitionProgress > 0)
+  // 看歌模式下视频为唯一时间线：automix/无缝/交叉过渡全部失效
+  const effectiveTransitionStrategy = lyricDisplayMode === 'video' ? 'none' : transitionStrategy
   // AutoMix 过渡时，播放页过渡指示显示 AutoMix 以与无缝衔接(Gapless)区分
-  const isAutoMixTransition = autoMixEnabled && transitionStrategy !== 'gapless' && transitionStrategy !== 'none'
+  const isAutoMixTransition = autoMixEnabled && effectiveTransitionStrategy !== 'gapless' && effectiveTransitionStrategy !== 'none'
 
   useEffect(() => {
     const wasTransitioning = wasAudioTransitioningRef.current
@@ -2286,7 +2370,9 @@ function App() {
               ? loadMultidimensionalLyrics()
               : lyricDisplayMode === 'modeng'
                 ? loadModengPlayer()
-                : Promise.resolve(),
+                : lyricDisplayMode === 'video'
+                  ? loadBilibiliMvPlayer()
+                  : Promise.resolve(),
     ])
     const inferredOrigin: PlaybackOrigin = origin
       ? { ...origin, mode: origin.mode || viewMode }
@@ -2337,7 +2423,7 @@ function App() {
   }
 
   // 打开艺人详情
-  const handleOpenArtist = (artistId: string, platform: 'netease' | 'qq' | 'apple') => {
+  const handleOpenArtist = (artistId: string, platform: MusicPlatform) => {
     // 先关闭弹窗（不触发导航栈弹出）
     const hadAlbum = showAlbumDetail && selectedAlbumId
     const hadArtist = showArtistDetail && selectedArtistId
@@ -2360,7 +2446,7 @@ function App() {
   }
 
   // 打开专辑详情
-  const handleOpenAlbum = (albumId: string, platform: 'netease' | 'qq' | 'apple') => {
+  const handleOpenAlbum = (albumId: string, platform: MusicPlatform) => {
     const hadAlbum = showAlbumDetail && selectedAlbumId
     const hadArtist = showArtistDetail && selectedArtistId
     const prevArtist = hadArtist ? { type: 'artist' as const, id: selectedArtistId, platform: selectedArtistPlatform, tab: selectedArtistTab } : null
@@ -3030,16 +3116,19 @@ function App() {
       setIsPlaying(false)
       
       let normalizedSong = normalizeSongCover(song)
-      // Apple 曲目统一转换为可播放载体（网易云/QQ 同款）；队列保留 Apple 版本用于展示，
-      // 音频与 URL 使用载体歌曲。匹配失败提示并自动跳到下一首。
+      // 需要跨平台载体转换的平台：apple（始终）、spotify/kugou/soda（未登录时无自源音源）
+      const needsCarrier = normalizedSong.platform === 'apple'
+        || (normalizedSong.platform === 'spotify' && !localStorage.getItem('spotify_access_token'))
+        || (normalizedSong.platform === 'kugou' && !localStorage.getItem('kugou_cookie'))
+        || (normalizedSong.platform === 'soda' && !localStorage.getItem('soda_token'))
       let audioSong: Song = normalizedSong
-      if (normalizedSong.platform === 'apple') {
+      if (needsCarrier) {
         const resolved = await resolvePlayableSong(normalizedSong)
         if (!resolved) {
           window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '该歌曲在网易云/QQ 未找到可播放版本', type: 'error' } }))
-          const failedAppleLoadRevision = loadRevision
+          const failedLoadRevision = loadRevision
           setTimeout(() => {
-            if (failedAppleLoadRevision !== songLoadRevisionRef.current) return
+            if (failedLoadRevision !== songLoadRevisionRef.current) return
             handleNext()
           }, 2000)
           return
@@ -3339,9 +3428,42 @@ function App() {
     }, 4000)
   }
 
+  // 看歌模式协调：视频播放时暂停音频引擎（视频为唯一时间线），视频让位/切走时恢复
+  const watchPlayerRef = useRef<{ togglePlay: () => boolean } | null>(null)
+  const [watchVideoActive, setWatchVideoActive] = useState(false)
+  /** 切到看歌时的音频续播位置（秒） */
+  const [watchSyncSeek, setWatchSyncSeek] = useState(0)
+  const watchPausedEngineRef = useRef(false)
+
   const handlePlayPause = useCallback(() => {
+    // 看歌模式：有活动视频时由视频接管播放/暂停（引擎保持暂停，避免双声）
+    if (lyricDisplayMode === 'video' && watchPlayerRef.current) {
+      const handled = watchPlayerRef.current.togglePlay()
+      if (handled) return
+    }
     audioPlayerRef.current.togglePlay()
-  }, [])
+  }, [lyricDisplayMode])
+
+  useEffect(() => {
+    if (lyricDisplayMode !== 'video') {
+      // 切出看歌模式：若引擎是因视频而暂停，恢复出声
+      if (watchPausedEngineRef.current && !isPlaying) {
+        watchPausedEngineRef.current = false
+        audioPlayerRef.current.togglePlay()
+      }
+      return
+    }
+    if (watchVideoActive) {
+      if (isPlaying) {
+        watchPausedEngineRef.current = true
+        audioPlayerRef.current.togglePlay()
+      }
+    } else if (watchPausedEngineRef.current && !isPlaying) {
+      // 视频让位（搜索/兜底/切歌）→ 恢复音频引擎继续听
+      watchPausedEngineRef.current = false
+      audioPlayerRef.current.togglePlay()
+    }
+  }, [lyricDisplayMode, watchVideoActive, isPlaying])
 
   // ===== 桌面播放器：独立置顶小窗口的状态桥接 =====
   const isPlayingRef = useRef(isPlaying)
@@ -3530,14 +3652,14 @@ function App() {
     const mediaKeys = window.electron?.mediaKeys
     const mediaSession = 'mediaSession' in navigator ? navigator.mediaSession : null
 
-    const dispatchMediaControl = (action: 'toggle' | 'play' | 'pause' | 'next' | 'prev') => {
+    const dispatchMediaControl = (action: string, payload?: any) => {
       const group = action === 'toggle' || action === 'play' || action === 'pause' ? 'playback' : action
       const now = Date.now()
       const last = lastMediaControlRef.current
       // Windows 有时会同时把同一次按键交给 globalShortcut 与 Media Session。
       if (last?.group === group && now - last.time < 280) return
       lastMediaControlRef.current = { group, time: now }
-      desktopControlHandlerRef.current(action)
+      desktopControlHandlerRef.current(action, payload)
     }
 
     const setMediaSessionHandlers = (enabled: boolean) => {
@@ -3649,6 +3771,10 @@ function App() {
             coverUrl: currentSong.album?.picUrl || '',
           }
         : null,
+      // 时长（秒）：主进程据此把任务栏进度条换算为 0-1
+      duration: currentSong && Number.isFinite(Number(currentSong.duration))
+        ? Math.max(0, Number(currentSong.duration) / 1000)
+        : 0,
     })
   }, [currentSong])
 
@@ -3824,6 +3950,7 @@ function App() {
         window.electron?.desktopPlayer?.pushState({
           spectrum: compactSpectrum,
           progress: (Number(audio?.currentTime) || 0) + lyricOffsetRef.current - 0.2,
+          duration: Number(audio?.duration) || 0,
         })
       }
       if (spectrumWidgetVisible) {
@@ -3850,6 +3977,23 @@ function App() {
       if (timer !== null) window.clearTimeout(timer)
     }
   }, [isPlaying, desktopPlayerWindowEnabled, desktopLyricsWindowEnabled])
+
+  // Windows 任务栏缩略图进度条：小窗/歌词窗口未启用时没有频谱推送路径，
+  // 这里在播放中低频上报 progress+duration，让主进程能刷新任务栏进度（0-1）。
+  useEffect(() => {
+    if (!isPlaying) return
+    const timer = window.setInterval(() => {
+      // 有 overlay 时上面的 tick 已每 100ms 高频推送，无需重复上报
+      if (desktopOverlayActiveRef.current) return
+      const audio = audioPlayer.getAudioElement()
+      if (!audio || audio.paused) return
+      window.electron?.desktopPlayer?.pushState({
+        progress: (Number(audio.currentTime) || 0) + lyricOffsetRef.current - 0.2,
+        duration: Number.isFinite(audio.duration) && (audio.duration ?? 0) > 0 ? audio.duration : 0,
+      })
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [isPlaying])
 
   const handleSeek = useCallback((time: number) => {
     audioPlayerRef.current.seek(time)
@@ -4067,6 +4211,177 @@ function App() {
     setAuthRevision(previous => previous + 1)
     window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'apple' } }))
     addToast('Apple Music 已退出登录', 'info')
+  }
+
+  // Spotify OAuth 授权结果（主进程回调）：持久化 token + 同步登录态
+  useEffect(() => {
+    const bridge = (window as any).electron
+    if (!bridge?.onSpotifyAuthResult) return
+    const unsub = bridge.onSpotifyAuthResult((result: any) => {
+      if (!result?.success || !result.accessToken) return
+      localStorage.setItem('spotify_access_token', result.accessToken)
+      if (result.refreshToken) localStorage.setItem('spotify_refresh_token', result.refreshToken)
+      if (result.username) localStorage.setItem('spotify_username', result.username)
+      if (result.avatar) localStorage.setItem('spotify_avatar', result.avatar)
+      if (result.userId) localStorage.setItem('spotify_user_id', result.userId)
+      setSpotifyLoggedIn(true)
+      if (result.username) setSpotifyUsername(result.username)
+      if (result.avatar) setSpotifyAvatar(result.avatar)
+      setAuthRevision(previous => previous + 1)
+      window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'spotify', userId: result.userId || '' } }))
+      addToast('Spotify 授权成功', 'success')
+    })
+    return () => { try { unsub?.() } catch { /* 忽略 */ } }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 酷狗登录结果（主进程回调）：同步 userId/avatar 等扩展信息
+  useEffect(() => {
+    const bridge = (window as any).electron
+    if (!bridge?.onKugouAuthResult) return
+    const unsub = bridge.onKugouAuthResult((result: any) => {
+      if (!result?.success || !result.cookie) return
+      if (result.username) localStorage.setItem('kugou_username', result.username)
+      if (result.userId) localStorage.setItem('kugou_user_id', result.userId)
+      if (result.avatar) localStorage.setItem('kugou_avatar', result.avatar)
+    })
+    return () => { try { unsub?.() } catch { /* 忽略 */ } }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 酷狗会话自动恢复：应用启动时若 Electron 会话已带 KuGoo 登录态，直接恢复
+  useEffect(() => {
+    const bridge = (window as any).electron
+    if (!bridge?.getKugouSession) return
+    let active = true
+    void bridge.getKugouSession().then((session: any) => {
+      if (!active || !session?.loggedIn || !session.cookie) return
+      localStorage.setItem('kugou_cookie', session.cookie)
+      if (session.username) {
+        setKugouUsername(session.username)
+        localStorage.setItem('kugou_username', session.username)
+      }
+      if (session.userId) localStorage.setItem('kugou_user_id', session.userId)
+      if (session.avatar) localStorage.setItem('kugou_avatar', session.avatar)
+      if (!kugouLoggedIn) {
+        setKugouLoggedIn(true)
+        setAuthRevision(previous => previous + 1)
+        window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'kugou' } }))
+      }
+    }).catch(() => { /* 忽略 */ })
+    return () => { active = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 汽水登录结果（主进程回调）：同步用户名/头像
+  useEffect(() => {
+    const bridge = (window as any).electron
+    if (!bridge?.onSodaAuthResult) return
+    const unsub = bridge.onSodaAuthResult((result: any) => {
+      if (!result?.success || !result.cookie) return
+      if (result.username) {
+        localStorage.setItem('soda_username', result.username)
+        setSodaUsername(result.username)
+      }
+      if (result.avatar) localStorage.setItem('soda_avatar', result.avatar)
+    })
+    return () => { try { unsub?.() } catch { /* 忽略 */ } }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ── 新三平台登录态处理（登录面板写入 localStorage，这里同步 React 状态 + 广播）──
+  const handleSpotifyLogin = (cookie: string, username?: string) => {
+    // Spotify 由主进程 OAuth 写入 token；仅当存在真实 access_token 才算登录（cookie 参数仅作占位）
+    const loggedIn = Boolean(localStorage.getItem('spotify_access_token'))
+    setSpotifyLoggedIn(loggedIn)
+    if (username && loggedIn) {
+      setSpotifyUsername(username)
+      localStorage.setItem('spotify_username', username)
+    }
+    setAuthRevision(previous => previous + 1)
+    window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'spotify' } }))
+    if (loggedIn) addToast('Spotify 登录成功', 'success')
+  }
+  const handleSpotifyLogout = () => {
+    localStorage.removeItem('spotify_access_token')
+    localStorage.removeItem('spotify_refresh_token')
+    localStorage.removeItem('spotify_username')
+    localStorage.removeItem('spotify_avatar')
+    localStorage.removeItem('spotify_user_id')
+    setSpotifyLoggedIn(false)
+    setSpotifyUsername('')
+    setSpotifyAvatar('')
+    setSpotifyUserId('')
+    setAuthRevision(previous => previous + 1)
+    window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'spotify' } }))
+    addToast('Spotify 已退出登录', 'info')
+  }
+  const handleKugouLogin = (cookie: string, username?: string) => {
+    // 仅当 Cookie 含真实登录凭据（KuGoo 会话 或 kg_token）才算登录
+    const loggedIn = Boolean(cookie && (/KuGoo=/.test(cookie) || /KugooID=/.test(cookie) || /kg_token/.test(cookie)))
+    setKugouLoggedIn(loggedIn)
+    if (loggedIn) {
+      localStorage.setItem('kugou_cookie', cookie)
+      if (username) {
+        setKugouUsername(username)
+        localStorage.setItem('kugou_username', username)
+      } else {
+        // 未带回昵称：用代理拉取用户信息自愈
+        void fetch(`http://localhost:3001/api/kugou/user/info?cookie=${encodeURIComponent(cookie)}`, { cache: 'no-store' })
+          .then(res => res.ok ? res.json() : null)
+          .then((info: any) => {
+            if (info?.nickname) {
+              setKugouUsername(info.nickname)
+              localStorage.setItem('kugou_username', info.nickname)
+              if (info.user_id) localStorage.setItem('kugou_user_id', String(info.user_id))
+              if (info.avatar) localStorage.setItem('kugou_avatar', info.avatar)
+            }
+          })
+          .catch(() => { /* 忽略 */ })
+      }
+    }
+    setAuthRevision(previous => previous + 1)
+    window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'kugou' } }))
+    if (loggedIn) addToast('酷狗音乐登录成功', 'success')
+  }
+  const handleKugouLogout = () => {
+    localStorage.removeItem('kugou_cookie')
+    localStorage.removeItem('kugou_username')
+    localStorage.removeItem('kugou_avatar')
+    localStorage.removeItem('kugou_user_id')
+    setKugouLoggedIn(false)
+    setKugouUsername('')
+    setKugouAvatar('')
+    setKugouUserId('')
+    setAuthRevision(previous => previous + 1)
+    window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'kugou' } }))
+    addToast('酷狗音乐已退出登录', 'info')
+  }
+  const handleSodaLogin = (cookie: string, username?: string) => {
+    setSodaLoggedIn(Boolean(cookie))
+    if (cookie) {
+      localStorage.setItem('soda_token', cookie)
+      if (username) {
+        setSodaUsername(username)
+        localStorage.setItem('soda_username', username)
+      }
+    }
+    setAuthRevision(previous => previous + 1)
+    window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'soda' } }))
+    if (cookie) addToast('汽水音乐登录成功', 'success')
+  }
+  const handleSodaLogout = () => {
+    localStorage.removeItem('soda_token')
+    localStorage.removeItem('soda_username')
+    localStorage.removeItem('soda_avatar')
+    localStorage.removeItem('soda_user_id')
+    setSodaLoggedIn(false)
+    setSodaUsername('')
+    setSodaAvatar('')
+    setSodaUserId('')
+    setAuthRevision(previous => previous + 1)
+    window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'soda' } }))
+    addToast('汽水音乐已退出登录', 'info')
   }
 
   const handleRemoveFromFavorites = async (song: Song): Promise<boolean> => {
@@ -4297,6 +4612,12 @@ function App() {
     onNeteaseLogout: typeof handleNeteaseLogout
     onQQLogin: typeof handleQQLogin
     onQQLogout: typeof handleQQLogout
+    onSpotifyLogin: typeof handleSpotifyLogin
+    onSpotifyLogout: typeof handleSpotifyLogout
+    onKugouLogin: typeof handleKugouLogin
+    onKugouLogout: typeof handleKugouLogout
+    onSodaLogin: typeof handleSodaLogin
+    onSodaLogout: typeof handleSodaLogout
     onRemoveQueueItem: typeof handleDesktopQueueRemove
     onMoveQueueItem: typeof handleDesktopQueueMove
     onLoginClick: (platform: 'netease' | 'qq') => void
@@ -4329,6 +4650,12 @@ function App() {
     onNeteaseLogout: handleNeteaseLogout,
     onQQLogin: handleQQLogin,
     onQQLogout: handleQQLogout,
+    onSpotifyLogin: handleSpotifyLogin,
+    onSpotifyLogout: handleSpotifyLogout,
+    onKugouLogin: handleKugouLogin,
+    onKugouLogout: handleKugouLogout,
+    onSodaLogin: handleSodaLogin,
+    onSodaLogout: handleSodaLogout,
     onRemoveQueueItem: handleDesktopQueueRemove,
     onMoveQueueItem: handleDesktopQueueMove,
     onLoginClick: (platform) => {
@@ -4391,6 +4718,12 @@ function App() {
       onNeteaseLogout: () => latest.current.onNeteaseLogout(),
       onQQLogin: (cookie, showToastMessage) => latest.current.onQQLogin(cookie, showToastMessage),
       onQQLogout: () => latest.current.onQQLogout(),
+      onSpotifyLogin: (cookie, username) => latest.current.onSpotifyLogin(cookie, username),
+      onSpotifyLogout: () => latest.current.onSpotifyLogout(),
+      onKugouLogin: (cookie, username) => latest.current.onKugouLogin(cookie, username),
+      onKugouLogout: () => latest.current.onKugouLogout(),
+      onSodaLogin: (cookie, username) => latest.current.onSodaLogin(cookie, username),
+      onSodaLogout: () => latest.current.onSodaLogout(),
       onRemoveQueueItem: (index) => latest.current.onRemoveQueueItem(index),
       onMoveQueueItem: (from, to) => latest.current.onMoveQueueItem(from, to),
       onLoginClick: (platform) => latest.current.onLoginClick(platform),
@@ -4439,12 +4772,15 @@ function App() {
   closePlaylistRef.current = () => setShowPlaylist(false)
   profileSwitchPlatformRef.current = () => {
     // 已登录平台间轮换（Apple 登录态由 token 判定；被隐藏的平台不参与轮换）
-    const order: MusicPlatform[] = ['netease', 'qq', 'apple']
+    const order: MusicPlatform[] = ['netease', 'qq', 'apple', 'spotify', 'kugou', 'soda']
     const loggedIn = {
       netease: neteaseLoggedIn,
       qq: qqLoggedIn,
       apple: appleLoggedIn,
-    }
+      spotify: spotifyLoggedIn,
+      kugou: kugouLoggedIn,
+      soda: sodaLoggedIn,
+    } as Record<MusicPlatform, boolean>
     const candidates = order.filter(platform => loggedIn[platform] && isPlatformVisible(platform))
     if (candidates.length <= 1) return
     const next = candidates[(candidates.indexOf(profileInitialPlatform) + 1) % candidates.length] || candidates[0]
@@ -4453,7 +4789,10 @@ function App() {
   profileLogoutRef.current = (platform) => {
     if (platform === 'netease') handleNeteaseLogout()
     else if (platform === 'qq') handleQQLogout()
-    else handleAppleLogout()
+    else if (platform === 'apple') handleAppleLogout()
+    else if (platform === 'spotify') handleSpotifyLogout()
+    else if (platform === 'kugou') handleKugouLogout()
+    else if (platform === 'soda') handleSodaLogout()
   }
   smartReorderRef.current = () => { void handleSmartReorder() }
   playlistSongSelectRef.current = (index) => {
@@ -4483,6 +4822,16 @@ function App() {
 
       {/* 遥控器虚拟鼠标 overlay（顶层挂载，任何模式下都可用） */}
       <RemoteCursor />
+
+      {/* 首次平台登录风险提示（自包含，首次登录后弹出一次） */}
+      <PlatformLoginNotice playerTheme={playerTheme} />
+
+      {/* OOBE 1（主题/隐私/免责引导）：首次启动且未完成时自动弹出 */}
+      {OOBE_ENABLED && (
+        <Suspense fallback={null}>
+          <LazyOobeGuide playerTheme={playerTheme} enabled={OOBE_ENABLED} />
+        </Suspense>
+      )}
 
       {/* 全局弹层：遥控器 / 歌曲详情（任何模式下都能打开） */}
       <AnimatePresence>
@@ -4611,6 +4960,15 @@ function App() {
               appleUsername={appleUsername}
               appleAvatar={appleAvatar}
               appleStorefront={appleStorefront}
+              spotifyLoggedIn={spotifyLoggedIn}
+              spotifyUsername={spotifyUsername}
+              spotifyAvatar={spotifyAvatar}
+              kugouLoggedIn={kugouLoggedIn}
+              kugouUsername={kugouUsername}
+              kugouAvatar={kugouAvatar}
+              sodaLoggedIn={sodaLoggedIn}
+              sodaUsername={sodaUsername}
+              sodaAvatar={sodaAvatar}
               onLoginClick={(platform) => {
                 // Apple 走独立 token 登录面板；网易云/QQ 走原有扫码/密钥登录
                 if (platform === 'apple') {
@@ -4686,8 +5044,20 @@ function App() {
               appleUsername={appleUsername}
               onAppleLoginClick={() => setShowAppleLogin(true)}
               onAppleLogout={handleAppleLogout}
+              spotifyLoggedIn={spotifyLoggedIn}
+              spotifyUserId={spotifyUserId}
+              spotifyUsername={spotifyUsername}
+              kugouLoggedIn={kugouLoggedIn}
+              kugouUserId={kugouUserId}
+              kugouUsername={kugouUsername}
+              sodaLoggedIn={sodaLoggedIn}
+              sodaUserId={sodaUserId}
+              sodaUsername={sodaUsername}
               onNeteaseLogin={viewCallbacks.onNeteaseLogin}
               onQQLogin={viewCallbacks.onQQLogin}
+              onSpotifyLogin={viewCallbacks.onSpotifyLogin}
+              onKugouLogin={viewCallbacks.onKugouLogin}
+              onSodaLogin={viewCallbacks.onSodaLogin}
               onPlayNext={viewCallbacks.onPlayNext}
               onAddToFavorites={viewCallbacks.onAddToFavorites}
               onRemoveFromFavorites={viewCallbacks.onRemoveFromFavorites}
@@ -4814,6 +5184,18 @@ function App() {
           appleUsername,
           onAppleLogin: handleAppleLogin,
           onAppleLogout: handleAppleLogout,
+          spotifyLoggedIn,
+          spotifyUsername,
+          onSpotifyLogin: viewCallbacks.onSpotifyLogin,
+          onSpotifyLogout: viewCallbacks.onSpotifyLogout,
+          kugouLoggedIn,
+          kugouUsername,
+          onKugouLogin: viewCallbacks.onKugouLogin,
+          onKugouLogout: viewCallbacks.onKugouLogout,
+          sodaLoggedIn,
+          sodaUsername,
+          onSodaLogin: viewCallbacks.onSodaLogin,
+          onSodaLogout: viewCallbacks.onSodaLogout,
           playerTheme,
             } as any)} />
         </Suspense>
@@ -4908,9 +5290,27 @@ function App() {
               appleEmail={appleEmail}
               onAppleLoginClick={() => setShowAppleLogin(true)}
               onAppleLogout={handleAppleLogout}
+              spotifyLoggedIn={spotifyLoggedIn}
+              spotifyUsername={spotifyUsername}
+              spotifyAvatar={spotifyAvatar}
+              spotifyUserId={spotifyUserId}
+              kugouLoggedIn={kugouLoggedIn}
+              kugouUsername={kugouUsername}
+              kugouAvatar={kugouAvatar}
+              kugouUserId={kugouUserId}
+              sodaLoggedIn={sodaLoggedIn}
+              sodaUsername={sodaUsername}
+              sodaAvatar={sodaAvatar}
+              sodaUserId={sodaUserId}
               onNeteaseLoginClick={viewCallbacks.onNeteaseLoginClick}
               onQQLoginClick={viewCallbacks.onQQLoginClick}
               onAppleProfileClick={() => setShowAppleLogin(true)}
+              onLoginClick={(platform) => {
+                // 新平台（Spotify/酷狗/汽水）：走通用登录弹窗（LoginView 委托到对应面板）
+                if (platform === 'apple') { setShowAppleLogin(true); return }
+                setLoginPlatform(platform)
+                setShowLogin(true)
+              }}
               onSearchClick={viewCallbacks.onSearchClick}
               onRemoteClick={viewCallbacks.onRemoteClick}
               onSettingsClick={viewCallbacks.onSettingsClick}
@@ -4956,9 +5356,10 @@ function App() {
                 onCopyInfo={handleCopyInfo}
                 onContextMenuOpen={handlePlaybackContextMenuOpen}
               />
-              {/* 沉浸模式控制按钮 - 右上角 */}
-              <LazyImmersiveControls
-                onHomeClick={handlePlayerHome}
+              {/* 沉浸模式控制按钮 - 右上角（看歌模式隐藏，看歌自带右下按钮组） */}
+              {lyricDisplayMode !== 'video' && (
+                <LazyImmersiveControls
+                  onHomeClick={handlePlayerHome}
                 onOpenMixingStudio={(anchorRect) => {
                   if (anchorRect) {
                     mixingStudioAnchorRef.current = { x: anchorRect.x, y: anchorRect.y, width: anchorRect.width, height: anchorRect.height }
@@ -4974,6 +5375,7 @@ function App() {
                 playerTheme={playerTheme}
                 isPureMusic={isPureMusic}
               />
+              )}
 
               {!isPureMusic && (
                 <>
@@ -5054,6 +5456,7 @@ function App() {
                                   ['glorious', '辉煌', `linear-gradient(118deg, #080713 0%, ${dominantColor || '#6f5cff'} 50%, #090911 78%, #101522 100%)`],
                                   ['multidimensional', '多维', `linear-gradient(145deg, #05060c 0%, ${dominantColor || '#6657ff'} 48%, #0b1b2a 72%, #030409 100%)`],
                                   ['modeng', '摩登', `linear-gradient(120deg, #3a3a3c 0%, #232325 45%, #101012 100%)`],
+                                  ['video', '看歌', `linear-gradient(120deg, #f8a5c2 0%, #fb7299 45%, #2d1b3d 100%)`],
                                 ] as const)
                                   .filter(([mode]) => effectiveVisibleLyricModes.includes(mode))
                                   .map(([mode, label, background]) => (
@@ -5360,8 +5763,6 @@ function App() {
                     romanEnabled={romanEnabled}
                     isTransitioning={isVisualTransitioning}
                     onSeek={audioPlayer.seek}
-                    pulseStore={audioPulseStore}
-                    analyzerStore={audioAnalyzer}
                   />
                 </motion.div>
               ) : lyricDisplayMode === 'glorious' ? (
@@ -5426,6 +5827,43 @@ function App() {
                     playMode={playMode}
                     onPlayModeChange={handlePlayModeChange}
                     duration={duration}
+                  />
+                </motion.div>
+              ) : lyricDisplayMode === 'video' ? (
+                <motion.div
+                  key="video-lyrics-player"
+                  initial={{ opacity: 0, filter: 'blur(10px)' }}
+                  animate={{ opacity: isLyricsTransitioning ? 0 : 1, filter: 'blur(0px)' }}
+                  exit={{ opacity: 0, filter: 'blur(10px)' }}
+                  transition={{ duration: 0.4, ease: [0.4, 0, 0.2, 1] }}
+                  className="flex-1 w-full min-h-0 relative"
+                >
+                  <LazyBilibiliMvPlayer
+                    ref={watchPlayerRef}
+                    songTitle={currentSong.name}
+                    songArtist={currentSong.artists.map((artist: any) => artist.name).join(', ')}
+                    songArtists={currentSong.artists.map((artist: any) => artist.name)}
+                    songDuration={(currentSong.duration || 0) / 1000}
+                    coverUrl={displayCoverUrl}
+                    platform={currentSong.platform}
+                    songId={currentSong.id || currentSong.mid}
+                    playerTheme={playerTheme}
+                    onNext={handleNext}
+                    onPrevious={handlePrevious}
+                    onBackToAudio={() => handleLyricDisplayModeChange('modern')}
+                    onVideoActiveChange={setWatchVideoActive}
+                    onHomeClick={handlePlayerHome}
+                    onOpenMixingStudio={(anchorRect: { x: number; y: number; width: number; height: number }) => {
+                      if (anchorRect) {
+                        mixingStudioAnchorRef.current = { x: anchorRect.x, y: anchorRect.y, width: anchorRect.width, height: anchorRect.height }
+                      }
+                      setShowMixingStudio(true)
+                    }}
+                    onOpenPlaylist={() => setShowPlaylist(true)}
+                    onToggleFavorite={() => { void handlePlaybackToggleFavorite(currentSong, currentSongLiked) }}
+                    liked={currentSongLiked}
+                    upcomingSongs={watchUpcomingSongs}
+                    initialSeekSeconds={watchSyncSeek}
                   />
                 </motion.div>
               ) : (
@@ -5542,8 +5980,8 @@ function App() {
             )}
           </AnimatePresence>
 
-          {/* 全局播放器 - 固定在底部（摩登模式自带控制条，不渲染全局控制条） */}
-          {currentSong && !showHome && lyricDisplayMode !== 'modeng' && (
+          {/* 全局播放器 - 固定在底部（摩登/看歌模式自带控制条，不渲染全局控制条） */}
+          {currentSong && !showHome && lyricDisplayMode !== 'modeng' && lyricDisplayMode !== 'video' && (
             <LivePlayerControls
                       playbackTimeStore={audioPlayer.playbackTimeStore}
               isPlaying={isPlaying}
@@ -5688,9 +6126,12 @@ function App() {
             <LazyLoginView
             platform={loginPlatform}
             onCancel={() => setShowLogin(false)}
-            onLoginSuccess={(cookie) => {
+            onLoginSuccess={(cookie, username) => {
               if (loginPlatform === 'netease') handleNeteaseLogin(cookie)
-              else handleQQLogin(cookie)
+              else if (loginPlatform === 'qq') handleQQLogin(cookie)
+              else if (loginPlatform === 'spotify') handleSpotifyLogin(cookie, username)
+              else if (loginPlatform === 'kugou') handleKugouLogin(cookie, username)
+              else if (loginPlatform === 'soda') handleSodaLogin(cookie, username)
               setShowLogin(false)
             }}
             />

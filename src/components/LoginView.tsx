@@ -1,13 +1,18 @@
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Music, RefreshCw, Copy, Check, ExternalLink } from 'lucide-react'
 import type { MusicPlatform } from '../services/platforms'
 import GlobalToast from './GlobalToast'
 
+// 新平台登录面板（组件外声明，避免条件内 lazy 造成重挂载）
+const KugouLoginPanel = lazy(() => import('./KugouLoginPanel').then(m => ({ default: m.default })))
+const SpotifyLoginPanel = lazy(() => import('./SpotifyLoginPanel').then(m => ({ default: m.default })))
+const SodaLoginPanel = lazy(() => import('./SodaLoginPanel').then(m => ({ default: m.default })))
+
 interface LoginViewProps {
   platform: MusicPlatform
   onCancel: () => void
-  onLoginSuccess: (cookie: string) => void
+  onLoginSuccess: (cookie: string, username?: string) => void
 }
 
 export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginViewProps) {
@@ -271,6 +276,29 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
       case 'expired':
         return 'text-red-400'
     }
+  }
+
+  // 新三平台（Spotify/酷狗/汽水）：复用各自登录面板（简化登录）
+  if (platform === 'kugou' || platform === 'spotify' || platform === 'soda') {
+    if (platform === 'kugou') {
+      return (
+        <Suspense fallback={null}>
+          <KugouLoginPanel onClose={onCancel} onLoginSuccess={(cookie: string) => onLoginSuccess(cookie)} />
+        </Suspense>
+      )
+    }
+    if (platform === 'spotify') {
+      return (
+        <Suspense fallback={null}>
+          <SpotifyLoginPanel onClose={onCancel} onLoginSuccess={(username?: string) => onLoginSuccess('spotify-logged', username)} />
+        </Suspense>
+      )
+    }
+    return (
+      <Suspense fallback={null}>
+        <SodaLoginPanel onClose={onCancel} onLoginSuccess={(token: string) => onLoginSuccess(token)} />
+      </Suspense>
+    )
   }
 
   return (

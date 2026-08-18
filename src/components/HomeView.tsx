@@ -6,7 +6,7 @@ import { usePerfMode } from '../tv/perfMode'
 import { Play, Music, TrendingUp, Flame, Clock, LogOut, Crown, User, Heart, MonitorSmartphone, Search, Settings, History } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier, getSongUrl } from '../services/musicApi'
 import type { MusicPlatform } from '../services/platforms'
-import { getVisiblePlatforms, PLATFORM_VISIBILITY_EVENT } from '../services/platforms'
+import { getVisiblePlatforms, PLATFORM_VISIBILITY_EVENT, PLATFORM_ORDER_EVENT } from '../services/platforms'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
 import { getCachedUserPlaylists, getUserPlaylists, streamNeteasePlaylistTracks } from '../services/playlistService'
@@ -53,8 +53,25 @@ interface HomeViewProps {
   onAppleLoginClick?: () => void
   onAppleLogout?: () => void
   onAppleProfileClick?: () => void
+  spotifyLoggedIn?: boolean
+  spotifyUsername?: string
+  spotifyAvatar?: string
+  spotifyUserId?: string
+  kugouLoggedIn?: boolean
+  kugouUsername?: string
+  kugouAvatar?: string
+  kugouUserId?: string
+  sodaLoggedIn?: boolean
+  sodaUsername?: string
+  sodaAvatar?: string
+  sodaUserId?: string
+  onSpotifyLogout?: () => void
+  onKugouLogout?: () => void
+  onSodaLogout?: () => void
   onNeteaseLoginClick: () => void
   onQQLoginClick: () => void
+  /** 通用登录入口（新平台：Spotify/酷狗/汽水） */
+  onLoginClick?: (platform: MusicPlatform) => void
   onProfileClick: (platform: MusicPlatform, initialTab?: 'created' | 'subscribed' | 'detail' | 'recent') => void
   onSearchClick: () => void
   onRemoteClick: () => void
@@ -211,8 +228,24 @@ function HomeView({
   onAppleLoginClick,
   onAppleLogout,
   onAppleProfileClick,
+  spotifyLoggedIn = false,
+  spotifyUsername = '',
+  spotifyAvatar,
+  spotifyUserId = '',
+  kugouLoggedIn = false,
+  kugouUsername = '',
+  kugouAvatar,
+  kugouUserId = '',
+  sodaLoggedIn = false,
+  sodaUsername = '',
+  sodaAvatar,
+  sodaUserId = '',
+  onSpotifyLogout,
+  onKugouLogout,
+  onSodaLogout,
   onNeteaseLoginClick,
   onQQLoginClick,
+  onLoginClick,
   onProfileClick,
   onSearchClick,
   onRemoteClick,
@@ -236,12 +269,16 @@ function HomeView({
     const saved = localStorage.getItem('selectedPlatform')
     return (saved === 'qq' || saved === 'netease' || saved === 'apple') ? saved : 'netease'
   })
-  // 可见平台（设置中可隐藏不常用的平台）
+  // 可见平台（设置中可隐藏不常用的平台 / 调整顺序）
   const [visiblePlatforms, setVisiblePlatforms] = useState<MusicPlatform[]>(() => getVisiblePlatforms())
   useEffect(() => {
     const sync = () => setVisiblePlatforms(getVisiblePlatforms())
     window.addEventListener(PLATFORM_VISIBILITY_EVENT, sync)
-    return () => window.removeEventListener(PLATFORM_VISIBILITY_EVENT, sync)
+    window.addEventListener(PLATFORM_ORDER_EVENT, sync)
+    return () => {
+      window.removeEventListener(PLATFORM_VISIBILITY_EVENT, sync)
+      window.removeEventListener(PLATFORM_ORDER_EVENT, sync)
+    }
   }, [])
   useEffect(() => {
     // 当前平台被隐藏时切换到第一个可见平台
@@ -262,6 +299,12 @@ function HomeView({
   ))
   const [loading, setLoading] = useState(true)
   const [playlistLoading, setPlaylistLoading] = useState(false)
+  // 平台切换器操作提示：15 秒后渐隐
+  const [switcherHintVisible, setSwitcherHintVisible] = useState(true)
+  useEffect(() => {
+    const t = setTimeout(() => setSwitcherHintVisible(false), 15000)
+    return () => clearTimeout(t)
+  }, [])
   
   // Playlist management state
   const [showCreatePlaylist, setShowCreatePlaylist] = useState(false)
@@ -292,6 +335,23 @@ function HomeView({
     const saved = localStorage.getItem('homeModules_apple')
     return saved ? sanitizeHomeModules(saved, 'apple') : getDefaultHomeModules('apple', appleLoggedIn || false)
   })
+
+  // Spotify / 酷狗 / 汽水：暂无平台专属模块，state 保持空数组（首页主卡区自动降级）
+  const [spotifyModules] = useState<HomeModuleType[]>(() => {
+    const saved = localStorage.getItem('homeModules_spotify')
+    return saved ? sanitizeHomeModules(saved, 'spotify') : getDefaultHomeModules('spotify', false)
+  })
+  const [kugouModules] = useState<HomeModuleType[]>(() => {
+    const saved = localStorage.getItem('homeModules_kugou')
+    return saved ? sanitizeHomeModules(saved, 'kugou') : getDefaultHomeModules('kugou', false)
+  })
+  const [sodaModules] = useState<HomeModuleType[]>(() => {
+    const saved = localStorage.getItem('homeModules_soda')
+    return saved ? sanitizeHomeModules(saved, 'soda') : getDefaultHomeModules('soda', false)
+  })
+  const [currentSpotifyIndex] = useState(0)
+  const [currentKugouIndex] = useState(0)
+  const [currentSodaIndex] = useState(0)
   
   // 恢复上次选择的卡片索引（会话级别，重启后重置为0）
   const [currentNeteaseIndex, setCurrentNeteaseIndex] = useState(() => {
@@ -319,9 +379,15 @@ function HomeView({
     ? neteaseModules[currentNeteaseIndex]
     : platform === 'qq'
       ? qqModules[currentQQIndex]
-      : appleModules[currentAppleIndex]
+      : platform === 'apple'
+        ? appleModules[currentAppleIndex]
+        : platform === 'spotify'
+          ? spotifyModules[currentSpotifyIndex]
+          : platform === 'kugou'
+            ? kugouModules[currentKugouIndex]
+            : sodaModules[currentSodaIndex]
   // 当前平台生效的首页模块（简约模式主卡循环）
-  const activeModules = platform === 'netease' ? neteaseModules : platform === 'qq' ? qqModules : appleModules
+  const activeModules = platform === 'netease' ? neteaseModules : platform === 'qq' ? qqModules : platform === 'apple' ? appleModules : platform === 'spotify' ? spotifyModules : platform === 'kugou' ? kugouModules : sodaModules
   const initialModuleSnapshot = initialModuleId
     ? getHomeModuleSessionSnapshot(getHomeModuleSessionKey(
         initialModuleId,
@@ -1376,12 +1442,12 @@ function HomeView({
   ) => {
     const definition = HOME_MODULE_BY_ID[moduleId]
     const modulePlatform = definition.platform
-    const loggedIn = modulePlatform === 'netease' ? neteaseLoggedIn : modulePlatform === 'qq' ? qqLoggedIn : (appleLoggedIn || false)
+    const loggedIn = modulePlatform === 'netease' ? neteaseLoggedIn : modulePlatform === 'qq' ? qqLoggedIn : modulePlatform === 'apple' ? (appleLoggedIn || false) : modulePlatform === 'spotify' ? (spotifyLoggedIn || false) : modulePlatform === 'kugou' ? (kugouLoggedIn || false) : (sodaLoggedIn || false)
 
     if (definition.loginRequired && !loggedIn) {
       setModuleSongs([])
       setModulePlaylists([])
-      setModuleError(`登录${modulePlatform === 'netease' ? '网易云音乐' : modulePlatform === 'qq' ? 'QQ 音乐' : 'Apple Music'}后即可加载${definition.name}`)
+      setModuleError(`登录${modulePlatform === 'netease' ? '网易云音乐' : modulePlatform === 'qq' ? 'QQ 音乐' : modulePlatform === 'apple' ? 'Apple Music' : modulePlatform === 'spotify' ? 'Spotify' : modulePlatform === 'kugou' ? '酷狗音乐' : '汽水音乐（抖音）'}后即可加载${definition.name}`)
       return
     }
 
@@ -1458,9 +1524,12 @@ function HomeView({
       case 'netease_hot_songs':
       case 'netease_rising_songs':
       case 'qq_hot_songs':
-      case 'qq_rising_songs': {
+      case 'qq_rising_songs':
+      case 'kugou_hot_songs':
+      case 'soda_hot_songs':
+      case 'spotify_hot_songs': {
         const rising = moduleId.endsWith('rising_songs')
-        const pattern = rising ? /飙升|上升/ : /热歌|流行指数/
+        const pattern = rising ? /飙升|上升/ : /热歌|TOP500|流行指数|热门|抖音/
         const chart = payload.charts.find(item => pattern.test(item.name)) || payload.charts[rising ? 1 : 0]
         if (chart) {
           songs = (await fetchExploreChart(chart, signal)).songs
@@ -1468,6 +1537,15 @@ function HomeView({
         }
         break
       }
+      case 'kugou_new_songs':
+      case 'soda_new_songs':
+      case 'spotify_new_songs':
+        songs = payload.newSongs.length > 0 ? payload.newSongs : payload.dailySongs
+        break
+      case 'kugou_playlists':
+      case 'spotify_playlists':
+        playlists = payload.playlists
+        break
     }
 
     playlists = playlists.map(item => ({
@@ -1514,6 +1592,12 @@ function HomeView({
         await loadModuleData(qqModules[currentQQIndex], abortController.signal, shouldForceRefresh)
       } else if (platform === 'apple' && appleModules.length > 0) {
         await loadModuleData(appleModules[currentAppleIndex], abortController.signal, shouldForceRefresh)
+      } else if (platform === 'spotify' && spotifyModules.length > 0) {
+        await loadModuleData(spotifyModules[currentSpotifyIndex], abortController.signal, shouldForceRefresh)
+      } else if (platform === 'kugou' && kugouModules.length > 0) {
+        await loadModuleData(kugouModules[currentKugouIndex], abortController.signal, shouldForceRefresh)
+      } else if (platform === 'soda' && sodaModules.length > 0) {
+        await loadModuleData(sodaModules[currentSodaIndex], abortController.signal, shouldForceRefresh)
       }
     }
     
@@ -1528,15 +1612,24 @@ function HomeView({
     currentNeteaseIndex,
     currentQQIndex,
     currentAppleIndex,
+    currentSpotifyIndex,
+    currentKugouIndex,
+    currentSodaIndex,
     forceReload,
     neteaseLoggedIn,
     qqLoggedIn,
     appleLoggedIn,
+    spotifyLoggedIn,
+    kugouLoggedIn,
+    sodaLoggedIn,
     neteaseUserId,
     qqUserId,
     neteaseModules,
     qqModules,
     appleModules,
+    spotifyModules,
+    kugouModules,
+    sodaModules,
     authRevision
   ])
 
@@ -1627,8 +1720,8 @@ function HomeView({
 
 
   const loadUserPlaylists = async (forceRefresh = false) => {
-    const loggedIn = platform === 'netease' ? neteaseLoggedIn : platform === 'qq' ? qqLoggedIn : (appleLoggedIn || false)
-    const currentUserId = platform === 'netease' ? neteaseUserId : platform === 'qq' ? qqUserId : ''
+    const loggedIn = platform === 'netease' ? neteaseLoggedIn : platform === 'qq' ? qqLoggedIn : platform === 'apple' ? (appleLoggedIn || false) : platform === 'spotify' ? (spotifyLoggedIn || false) : platform === 'kugou' ? (kugouLoggedIn || false) : (sodaLoggedIn || false)
+    const currentUserId = platform === 'netease' ? neteaseUserId : platform === 'qq' ? qqUserId : platform === 'spotify' ? (spotifyUserId || '') : platform === 'kugou' ? (kugouUserId || '') : platform === 'soda' ? (sodaUserId || '') : ''
     const currentUsername = platform === 'netease' ? neteaseUsername : qqUsername
 
     if (!loggedIn) {
@@ -1725,7 +1818,7 @@ function HomeView({
   const currentHomeModule = currentHomeModuleId ? HOME_MODULE_BY_ID[currentHomeModuleId] : undefined
   const currentHomeModuleNeedsLogin = Boolean(
     currentHomeModule?.loginRequired && (
-      platform === 'netease' ? !neteaseLoggedIn : platform === 'qq' ? !qqLoggedIn : !(appleLoggedIn || false)
+      platform === 'netease' ? !neteaseLoggedIn : platform === 'qq' ? !qqLoggedIn : platform === 'apple' ? !(appleLoggedIn || false) : platform === 'spotify' ? !(spotifyLoggedIn || false) : platform === 'kugou' ? !(kugouLoggedIn || false) : !(sodaLoggedIn || false)
     )
   )
 
@@ -1734,7 +1827,13 @@ function HomeView({
       ? neteaseModules[currentNeteaseIndex]
       : platform === 'qq'
         ? qqModules[currentQQIndex]
-        : appleModules[currentAppleIndex]
+        : platform === 'apple'
+          ? appleModules[currentAppleIndex]
+          : platform === 'spotify'
+            ? spotifyModules[currentSpotifyIndex]
+            : platform === 'kugou'
+              ? kugouModules[currentKugouIndex]
+              : sodaModules[currentSodaIndex]
     if (!currentModule) return
 
     // 取消上一次刷新的在途请求，避免旧响应覆盖新内容
@@ -1765,11 +1864,22 @@ function HomeView({
     }
   }
 
-  const isLoggedIn = platform === 'netease' ? neteaseLoggedIn : platform === 'qq' ? qqLoggedIn : (appleLoggedIn || false)
-  const username = platform === 'netease' ? neteaseUsername : platform === 'qq' ? qqUsername : (appleUsername || '')
-  const avatar = platform === 'netease' ? neteaseAvatar : platform === 'qq' ? qqAvatar : appleAvatar
+  const isLoggedIn = platform === 'netease' ? neteaseLoggedIn : platform === 'qq' ? qqLoggedIn : platform === 'apple' ? (appleLoggedIn || false) : platform === 'spotify' ? (spotifyLoggedIn || false) : platform === 'kugou' ? (kugouLoggedIn || false) : (sodaLoggedIn || false)
+  const username = platform === 'netease' ? neteaseUsername : platform === 'qq' ? qqUsername : platform === 'apple' ? (appleUsername || '') : platform === 'spotify' ? (spotifyUsername || '') : platform === 'kugou' ? (kugouUsername || '') : (sodaUsername || '')
+  const avatar = platform === 'netease' ? neteaseAvatar : platform === 'qq' ? qqAvatar : platform === 'apple' ? appleAvatar : platform === 'spotify' ? spotifyAvatar : platform === 'kugou' ? kugouAvatar : sodaAvatar
   const userId = platform === 'netease' ? neteaseUserId : platform === 'qq' ? qqUserId : ''
   const isVip = platform === 'netease' ? neteaseVip : platform === 'qq' ? qqVip : false
+
+  // 平台登录入口：netease/qq 走原有点击回调，新平台走通用 onLoginClick（打开对应登录面板）
+  const handlePlatformLoginClick = () => {
+    if (platform === 'netease') { onNeteaseLoginClick(); return }
+    if (platform === 'qq') { onQQLoginClick(); return }
+    if (platform === 'apple') { onAppleLoginClick?.(); return }
+    onLoginClick?.(platform)
+  }
+  // 平台登录按钮文案/配色
+  const platformLoginLabel = platform === 'netease' ? '网易云登录' : platform === 'qq' ? 'QQ音乐登录' : platform === 'apple' ? 'Apple Music 登录' : platform === 'spotify' ? 'Spotify 登录' : platform === 'kugou' ? '酷狗音乐登录' : '汽水音乐登录'
+  const platformLoginColor = platform === 'netease' ? 'bg-red-600 hover:bg-red-700' : platform === 'qq' ? 'bg-green-600 hover:bg-green-700' : platform === 'apple' ? 'bg-pink-600 hover:bg-pink-700' : platform === 'spotify' ? 'bg-[#1DB954] hover:bg-[#17a74b]' : platform === 'kugou' ? 'bg-orange-500 hover:bg-orange-600' : 'bg-sky-500 hover:bg-sky-600'
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -1780,6 +1890,11 @@ function HomeView({
     const controller = new AbortController()
     const loadSummary = async () => {
       try {
+        // 新三平台（Spotify/酷狗/汽水）无最近播放汇总，置空展示
+        if (platform === 'spotify' || platform === 'kugou' || platform === 'soda') {
+          setRecentPlaybackSummary({ covers: [], count: 0 })
+          return
+        }
         // Apple：最近播放走 amp-api（需登录 token）
         if (platform === 'apple') {
           const tracks = await getAppleRecentPlayed(100)
@@ -2093,12 +2208,9 @@ function HomeView({
               setThemePanelSettled(false)
               setShowThemePanel(false)
               setShowUpArrowHint(false)
-              // 必须等当前界面从 MODE_SELECTION_PANEL_HEIGHT 完整回到 0 再切根视图，
-              // 否则退出中的 transform 会在跨模式淡入时形成顶部空栏。
-              window.setTimeout(() => {
-                localStorage.setItem('viewMode', mode)
-                window.dispatchEvent(new CustomEvent('viewModeChanged', { detail: mode }))
-              }, MODE_SELECTION_CLOSE_MS)
+              // 立即切换（面板收起动画由 AnimatePresence 处理，无需延迟等待）
+              localStorage.setItem('viewMode', mode)
+              window.dispatchEvent(new CustomEvent('viewModeChanged', { detail: mode }))
             }}
           />
         )}
@@ -2249,7 +2361,7 @@ function HomeView({
                   </div>
                   <button
                     onClick={currentHomeModuleNeedsLogin
-                      ? (platform === 'netease' ? onNeteaseLoginClick : platform === 'qq' ? onQQLoginClick : onAppleLoginClick)
+                      ? handlePlatformLoginClick
                       : refreshCurrentHomeModule}
                     className="rounded-full bg-white px-4 py-2 text-xs font-medium text-black transition-transform hover:scale-105 active:scale-95"
                   >
@@ -2446,16 +2558,10 @@ function HomeView({
                 <Music className={`w-16 h-16 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                 <p className={`mb-4 ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}`}>登录后查看你的歌单</p>
                 <button
-                  onClick={platform === 'netease' ? onNeteaseLoginClick : platform === 'qq' ? onQQLoginClick : onAppleLoginClick}
-                  className={`px-6 py-3 ${
-                    platform === 'netease' 
-                      ? 'bg-red-600 hover:bg-red-700' 
-                      : platform === 'qq'
-                        ? 'bg-green-600 hover:bg-green-700'
-                        : 'bg-pink-600 hover:bg-pink-700'
-                  } text-white rounded-full font-medium transition-colors`}
+                  onClick={handlePlatformLoginClick}
+                  className={`px-6 py-3 ${platformLoginColor} text-white rounded-full font-medium transition-colors`}
                 >
-                  {platform === 'netease' ? '网易云登录' : platform === 'qq' ? 'QQ音乐登录' : 'Apple Music 登录'}
+                  {platformLoginLabel}
                 </button>
               </div>
             ) : playlistLoading && userPlaylists.length === 0 ? (
@@ -2611,60 +2717,76 @@ function HomeView({
             <h2 className={`text-xl font-bold ${playerTheme === 'dark' ? 'text-white' : 'text-black/85'}`}>个人信息</h2>
           </div>
 
-          {/* Platform switcher */}
+          {/* Platform switcher：可拖拽药丸轮播（当前平台始终居中，最多显 3 个，首尾留空） */}
           <div className="px-6 pt-4 pb-2">
-            <div className="flex gap-2 relative">
-              {visiblePlatforms.map(key => {
-                const dotColor = key === 'netease' ? 'bg-red-500' : key === 'qq' ? 'bg-green-500' : 'bg-pink-500'
-                const label = key === 'netease' ? '网易云' : key === 'qq' ? 'QQ音乐' : 'Apple'
-                const activeIndex = visiblePlatforms.indexOf(platform)
-                return (
-                  <motion.button
-                    key={key}
-                    onClick={() => setPlatform(key)}
-                    className={`flex-1 px-2 py-2.5 rounded-xl text-sm font-medium relative z-10 ${
-                      platform === key
-                        ? playerTheme === 'dark' ? 'text-white' : 'text-black/85'
-                        : playerTheme === 'dark' ? 'text-white/60' : 'text-black/50'
-                    }`}
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                  >
-                    <div className="flex items-center justify-center gap-1.5">
-                      <motion.div 
+            <div className="relative mx-auto overflow-hidden rounded-full p-1"
+              style={{
+                width: 240,
+                background: playerTheme === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+                border: `1px solid ${playerTheme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)'}`,
+              }}
+            >
+              {/* 液态玻璃高亮：固定视口中央（第二个槽位），平台滑过时被覆盖；backdrop-blur 液态质感 */}
+              <motion.div
+                className="absolute top-1 bottom-1 rounded-full shadow-lg"
+                style={{
+                  width: 80,
+                  left: 80, // 固定居中（视口 240 / 3 = 80 的中间槽）
+                  background: playerTheme === 'dark'
+                    ? 'linear-gradient(135deg, rgba(255,255,255,0.28), rgba(255,255,255,0.12))'
+                    : 'linear-gradient(135deg, rgba(255,255,255,0.95), rgba(255,255,255,0.75))',
+                  backdropFilter: `blur(${cardBlurAmount}px) saturate(160%)`,
+                  WebkitBackdropFilter: `blur(${cardBlurAmount}px) saturate(160%)`,
+                  boxShadow: playerTheme === 'dark'
+                    ? '0 4px 18px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.25)'
+                    : '0 4px 20px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.9)',
+                  border: `1px solid ${playerTheme === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.8)'}`,
+                }}
+              />
+              {/* 可拖拽内容条：当前项 x = -(索引-1)*80 → 当前项落在视口中心（被液态玻璃覆盖） */}
+              <motion.div
+                className="relative flex"
+                drag="x"
+                dragConstraints={{ left: -(visiblePlatforms.length - 1) * 80, right: 0 }}
+                dragElastic={0.1}
+                onDragEnd={(_, info) => {
+                  const idx = visiblePlatforms.indexOf(platform)
+                  const delta = Math.round(info.offset.x / 80)
+                  const nextIdx = Math.max(0, Math.min(visiblePlatforms.length - 1, idx - delta))
+                  if (nextIdx !== idx) setPlatform(visiblePlatforms[nextIdx])
+                }}
+                animate={{ x: -(visiblePlatforms.indexOf(platform) - 1) * 80 }}
+                transition={{ type: 'spring', stiffness: 340, damping: 36 }}
+              >
+                {visiblePlatforms.map(key => {
+                  const dotColor = key === 'netease' ? 'bg-red-500' : key === 'qq' ? 'bg-green-500' : key === 'apple' ? 'bg-pink-500' : key === 'spotify' ? 'bg-[#1DB954]' : key === 'kugou' ? 'bg-orange-500' : 'bg-sky-500'
+                  const label = key === 'netease' ? '网易云' : key === 'qq' ? 'QQ音乐' : key === 'apple' ? 'Apple' : key === 'spotify' ? 'Spotify' : key === 'kugou' ? '酷狗' : '汽水'
+                  const active = platform === key
+                  return (
+                    <motion.button
+                      key={key}
+                      onClick={() => setPlatform(key)}
+                      className={`flex-shrink-0 w-[80px] py-2 text-sm font-semibold relative z-10 flex items-center justify-center gap-1.5 transition-colors ${
+                        active
+                          ? playerTheme === 'dark' ? 'text-white' : 'text-black/90'
+                          : playerTheme === 'dark' ? 'text-white/45' : 'text-black/35'
+                      }`}
+                    >
+                      <motion.span
                         className={`w-2 h-2 rounded-full ${dotColor}`}
-                        animate={{ scale: platform === key ? [1, 1.2, 1] : 1 }}
+                        animate={{ scale: active ? [1, 1.3, 1] : 1, opacity: active ? 1 : 0.5 }}
                         transition={{ duration: 0.3 }}
                       />
                       {label}
-                    </div>
-                  </motion.button>
-                )
-              })}
-              
-              {/* 滑动背景（按可见平台动态定位） */}
-              <motion.div
-                className="absolute top-0 h-full rounded-xl shadow-lg"
-                style={{
-                  background: playerTheme === 'dark' ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.65)',
-                  backdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
-                  WebkitBackdropFilter: `blur(${cardBlurAmount}px) saturate(180%)`,
-                  boxShadow: playerTheme === 'dark' ? '0 4px 16px rgba(255, 255, 255, 0.1)' : '0 4px 16px rgba(0, 0, 0, 0.08)'
-                }}
-                animate={{
-                  left: `${(visiblePlatforms.indexOf(platform) >= 0 ? visiblePlatforms.indexOf(platform) : 0) * (100 / visiblePlatforms.length)}%`,
-                  width: `${100 / visiblePlatforms.length}%`
-                }}
-                transition={{
-                  type: 'spring',
-                  stiffness: 300,
-                  damping: 30
-                }}
-              />
+                    </motion.button>
+                  )
+                })}
+              </motion.div>
             </div>
+            <div className={`mt-2 text-center text-[10px] tracking-wide transition-opacity duration-1000 ${switcherHintVisible ? 'opacity-100' : 'opacity-0'} ${playerTheme === 'dark' ? 'text-white/25' : 'text-black/25'}`}>左右拖动切换平台</div>
           </div>
 
-          {isLoggedIn && (
+          {isLoggedIn && (platform === 'netease' || platform === 'qq' || platform === 'apple') && (
             <div className="px-6 pt-5">
               <motion.button
                 type="button"
@@ -2786,7 +2908,7 @@ function HomeView({
 
 
                   <button
-                    onClick={platform === 'netease' ? onNeteaseLogout : platform === 'qq' ? onQQLogout : onAppleLogout}
+                    onClick={platform === 'netease' ? onNeteaseLogout : platform === 'qq' ? onQQLogout : platform === 'apple' ? (onAppleLogout || (() => {})) : platform === 'spotify' ? (onSpotifyLogout || (() => {})) : platform === 'kugou' ? (onKugouLogout || (() => {})) : (onSodaLogout || (() => {}))}
                     className={`w-full px-6 py-3 rounded-full font-medium transition-all flex items-center justify-center gap-2 ${playerTheme === 'dark' ? 'bg-white/10 hover:bg-white/20 text-white' : 'bg-black/10 hover:bg-black/15 text-black/80'}`}
                   >
                     <LogOut className="w-4 h-4" />

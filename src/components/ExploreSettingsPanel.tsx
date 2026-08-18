@@ -50,6 +50,9 @@ export interface ExplorePreferences {
   netease: ExplorePlatformPreferences
   qq: ExplorePlatformPreferences
   apple: ExplorePlatformPreferences
+  spotify: ExplorePlatformPreferences
+  kugou: ExplorePlatformPreferences
+  soda: ExplorePlatformPreferences
 }
 
 export const EXPLORE_SECTION_LABELS: Record<ExploreSectionId, string> = {
@@ -64,11 +67,15 @@ export const EXPLORE_SECTION_LABELS: Record<ExploreSectionId, string> = {
 
 const BASE_ORDER: ExploreSectionId[] = ['discover', 'journey', 'playlists', 'charts', 'newSongs', 'channels']
 const APPLE_ORDER: ExploreSectionId[] = ['discover', 'playlists', 'charts', 'newSongs', 'albums']
+const THIRD_PARTY_ORDER: ExploreSectionId[] = ['discover', 'playlists', 'charts', 'newSongs', 'albums']
 const PLATFORM_ORDER: Record<ExplorePlatform, ExploreSectionId[]> = {
   netease: BASE_ORDER,
   qq: BASE_ORDER,
   // Apple 与网易云/QQ 共享探索 UI，按能力表提供可用区块（无旅程/频道）
   apple: APPLE_ORDER,
+  spotify: THIRD_PARTY_ORDER,
+  kugou: THIRD_PARTY_ORDER,
+  soda: THIRD_PARTY_ORDER,
 }
 
 const DEFAULT_PLATFORM_PREFS = {
@@ -87,29 +94,23 @@ const DEFAULT_PLATFORM_PREFS = {
   enhancedApi: true,
 }
 
-export const createDefaultExplorePreferences = (): ExplorePreferences => ({
-  netease: {
-    order: [...PLATFORM_ORDER.netease],
-    hidden: [],
-    ...DEFAULT_PLATFORM_PREFS,
-  },
-  qq: {
-    order: [...PLATFORM_ORDER.qq],
-    hidden: [],
-    ...DEFAULT_PLATFORM_PREFS,
-  },
-  apple: {
-    order: [],
-    hidden: [],
-    ...DEFAULT_PLATFORM_PREFS,
-  },
-})
+export const createDefaultExplorePreferences = (): ExplorePreferences => {
+  const all = {} as ExplorePreferences
+  for (const platform of Object.keys(PLATFORM_ORDER) as ExplorePlatform[]) {
+    all[platform] = {
+      order: [...PLATFORM_ORDER[platform]],
+      hidden: [],
+      ...DEFAULT_PLATFORM_PREFS,
+    }
+  }
+  return all
+}
 
 export function normalizeExplorePreferences(input: unknown): ExplorePreferences {
   const defaults = createDefaultExplorePreferences()
   const raw = input && typeof input === 'object' ? input as Partial<Record<ExplorePlatform, Partial<ExplorePlatformPreferences>>> : {}
 
-  for (const platform of ['netease', 'qq', 'apple'] as ExplorePlatform[]) {
+  for (const platform of Object.keys(PLATFORM_ORDER) as ExplorePlatform[]) {
     const source = raw[platform] || {}
     const defaultOrder = PLATFORM_ORDER[platform]
     const validOrder = Array.isArray(source.order)
@@ -121,7 +122,7 @@ export function normalizeExplorePreferences(input: unknown): ExplorePreferences 
       : []
     let normalizedOrder = [...validOrder, ...missing]
     // 旧版本网易云没有旅程板块，QQ 旧偏好也可能缺失；升级后统一放在“为你发现”之后。
-    // （Apple 不支持旅程，不做此迁移）
+    // （Apple 等不支持旅程，不做此迁移）
     if (defaultOrder.includes('journey') && !validOrder.includes('journey')) {
       normalizedOrder = normalizedOrder.filter(item => item !== 'journey')
       normalizedOrder.splice(Math.max(0, normalizedOrder.indexOf('discover') + 1), 0, 'journey')

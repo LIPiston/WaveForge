@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Music, Play, Clock, Crown, Heart, Info, Radio } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier } from '../services/musicApi'
+import { getPlatformCapabilities } from '../services/platforms'
 import type { MusicPlatform } from '../services/platforms'
 import { subscribePlaylist } from '../services/playlistService'
 import { useState, useRef, useEffect, useCallback, useMemo, memo, type UIEvent } from 'react'
@@ -593,6 +594,7 @@ function PlaylistDetailPanel({
                           播放全部
                         </motion.button>
                       )}
+                      {/* 智能播放：仅网易云（无其他平台接口） */}
                       {(playlist.platform === 'netease' || currentPlatform === 'netease') && songs.length > 0 && (
                         <motion.button
                           whileHover={{ scale: 1.05 }}
@@ -608,7 +610,7 @@ function PlaylistDetailPanel({
                           智能播放
                         </motion.button>
                       )}
-                      {currentPlatform !== 'apple' && playlist.platform !== 'apple' && (
+                      {getPlatformCapabilities(playlist.platform || currentPlatform).subscribePlaylist && (
                       <motion.button
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}

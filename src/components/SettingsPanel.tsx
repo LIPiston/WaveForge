@@ -1,12 +1,16 @@
 import React, { memo, useState, useEffect, useRef } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, Trash2, ChevronLeft, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone, Gamepad2, Eye, EyeOff } from 'lucide-react'
+import { motion, AnimatePresence, Reorder } from 'framer-motion'
+import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, ChevronLeft, Trash2, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone, Gamepad2, Eye, EyeOff, FileText, Music } from 'lucide-react'
 import LoginButton from './LoginButton'
 import type { AppleUserInfo } from '../services/appleAuth'
 import {
   MUSIC_PLATFORMS,
+  PLATFORM_LABELS,
   PLATFORM_VISIBILITY_EVENT,
+  PLATFORM_ORDER_EVENT,
   getHiddenPlatforms,
+  getPlatformOrder,
+  setPlatformOrder,
   setPlatformHidden,
   type MusicPlatform,
 } from '../services/platforms'
@@ -16,11 +20,12 @@ import AudioQualitySettingsModal from './AudioQualitySettingsModal'
 import RemoteControlSettingsModal from './RemoteControlSettingsModal'
 import RemoteControlGuideModal from './RemoteControlGuideModal'
 import CacheClearModal from './CacheClearModal'
+import LegalAgreement from './legal/LegalAgreement'
+import { LocaleSwitcher, type LocaleCode } from '../i18n'
 import packageInfo from '../../package.json'
 import { getVersionDisplay } from '../services/versionInfo'
 import { getDebugPanelVisible, setDebugPanelVisible } from '../tv/debugStore'
 import { isTvModeActive } from '../platform'
-import sponsorData from '../data/afdianSponsors.generated.json'
 import {
   loadPlaybackShortcutSettings,
   savePlaybackShortcutSettings,
@@ -37,6 +42,17 @@ import {
   getAppleMusicSettings,
   type AppleMusicSettings,
 } from '../services/appleMusic'
+import BilibiliLoginPanel from './BilibiliLoginPanel'
+import BilibiliProfileModal from './BilibiliProfileModal'
+import {
+  isBilibiliLoggedIn,
+  getStoredBilibiliUser,
+  getBilibiliRemainingDays,
+  clearBilibiliLocal,
+  clearBilibiliLoginExpiry,
+  logoutBilibiliServer,
+  resolveBiliPic,
+} from '../services/bilibiliApi'
 
 type UpdateCheckState = {
   status: 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'error'
@@ -58,9 +74,6 @@ const audioQualityLabel = (quality: AudioQualityPreference) => ({
 }[quality])
 
 const appLogoUrl = new URL('../../logo.png', import.meta.url).href
-const afdianLogoUrl = new URL('../assets/afdian-logo.png', import.meta.url).href
-type SponsorEntry = { id: string; name: string; avatar?: string; tier: string; tierName?: string; firstSponsoredAt?: number }
-const sponsorSupporters = sponsorData.supporters as SponsorEntry[]
 
 const compareVersions = (left: string, right: string) => {
   const parse = (value: string) => value.replace(/^v/i, '').split(/[.-]/).slice(0, 3).map(part => Number(part) || 0)
@@ -92,6 +105,19 @@ interface SettingsPanelProps {
   appleUsername: string
   onAppleLogin: (user: AppleUserInfo | null) => void
   onAppleLogout: () => void
+  // 新三平台登录态
+  spotifyLoggedIn: boolean
+  spotifyUsername: string
+  onSpotifyLogin: (cookie: string, username?: string) => void
+  onSpotifyLogout: () => void
+  kugouLoggedIn: boolean
+  kugouUsername: string
+  onKugouLogin: (cookie: string, username?: string) => void
+  onKugouLogout: () => void
+  sodaLoggedIn: boolean
+  sodaUsername: string
+  onSodaLogin: (cookie: string, username?: string) => void
+  onSodaLogout: () => void
   playerTheme?: 'light' | 'dark'
 }
 
@@ -113,6 +139,18 @@ function SettingsPanel({
   appleUsername,
   onAppleLogin,
   onAppleLogout,
+  spotifyLoggedIn,
+  spotifyUsername,
+  onSpotifyLogin,
+  onSpotifyLogout,
+  kugouLoggedIn,
+  kugouUsername,
+  onKugouLogin,
+  onKugouLogout,
+  sodaLoggedIn,
+  sodaUsername,
+  onSodaLogin,
+  onSodaLogout,
   playerTheme = 'dark',
 }: SettingsPanelProps) {
   const [activeTab, setActiveTab] = useState<'tv' | 'account' | 'advanced' | 'personalization' | 'about'>('account')
@@ -154,6 +192,14 @@ function SettingsPanel({
       setPlatformHidden(platform, false)
     }
   }
+
+  // 平台排序（设置-账号：用户自定义顺序，三模式继承）
+  const [platformOrder, setPlatformOrderState] = useState<MusicPlatform[]>(() => getPlatformOrder())
+  useEffect(() => {
+    const sync = () => setPlatformOrderState(getPlatformOrder())
+    window.addEventListener(PLATFORM_ORDER_EVENT, sync)
+    return () => window.removeEventListener(PLATFORM_ORDER_EVENT, sync)
+  }, [])
   
   const [wordByWordLyrics, setWordByWordLyrics] = useState(() => {
     const saved = localStorage.getItem('wordByWordLyrics')
@@ -198,7 +244,7 @@ function SettingsPanel({
       return false
     }
   })
-  // TV：识别码 + 兑换码
+  // TV：识别码 + 测试码
   const [tvRedeemCode, setTvRedeemCode] = useState('')
   const [showTvRedeemModal, setShowTvRedeemModal] = useState(false)
   const [showTvDeviceId, setShowTvDeviceId] = useState(false)
@@ -225,6 +271,34 @@ function SettingsPanel({
   // ── Apple Music 设置 ──
   const [appleMusic, setAppleMusic] = useState<AppleMusicSettings>(() => getAppleMusicSettings())
 
+  // ── 哔哩哔哩「看歌」账号 ──
+  const [biliLoggedIn, setBiliLoggedIn] = useState(() => isBilibiliLoggedIn())
+  const [biliUser, setBiliUser] = useState(() => getStoredBilibiliUser())
+  const [biliRemainingDays, setBiliRemainingDays] = useState(() => getBilibiliRemainingDays())
+  const [showBiliLogin, setShowBiliLogin] = useState(false)
+  const [showBiliProfile, setShowBiliProfile] = useState(false)
+
+  const refreshBiliAuth = () => {
+    setBiliLoggedIn(isBilibiliLoggedIn())
+    setBiliUser(getStoredBilibiliUser())
+    setBiliRemainingDays(getBilibiliRemainingDays())
+  }
+
+  const handleBiliLogout = () => {
+    clearBilibiliLocal()
+    clearBilibiliLoginExpiry()
+    void logoutBilibiliServer().catch(() => undefined)
+    refreshBiliAuth()
+    window.dispatchEvent(new CustomEvent('bilibili-auth-changed', { detail: { loggedIn: false } }))
+  }
+
+  useEffect(() => {
+    const onBiliAuthChanged = () => refreshBiliAuth()
+    window.addEventListener('bilibili-auth-changed', onBiliAuthChanged as EventListener)
+    return () => window.removeEventListener('bilibili-auth-changed', onBiliAuthChanged as EventListener)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const updateAppleMusic = (patch: Partial<AppleMusicSettings>) => {
     const next = { ...appleMusic, ...patch }
     setAppleMusic(next)
@@ -247,7 +321,7 @@ function SettingsPanel({
 
   const [crossPlatformFallbackEnabled, setCrossPlatformFallbackEnabled] = useState(() => {
     const saved = localStorage.getItem('crossPlatformFallbackEnabled')
-    return parseStoredBoolean(saved, true)
+    return parseStoredBoolean(saved, false)
   })
   const [hideHomeAccountId, setHideHomeAccountId] = useState(() => (
     parseStoredBoolean(localStorage.getItem('hideHomeAccountId'), false)
@@ -372,6 +446,8 @@ function SettingsPanel({
   
   // 法律声明弹窗状态
   const [showLegalModal, setShowLegalModal] = useState(false)
+  // 法律声明弹窗语言（右上角切换）
+  const [legalLocale, setLegalLocale] = useState<LocaleCode>('zh-CN')
   const [showDeviceIdModal, setShowDeviceIdModal] = useState(false)
   const [showDeviceInfo, setShowDeviceInfo] = useState(false)
   const [showRedeemModal, setShowRedeemModal] = useState(false)
@@ -380,6 +456,56 @@ function SettingsPanel({
   const [deviceState, setDeviceState] = useState<DeviceState>({ status: 'idle', deviceId: '', grants: [] })
   const [redeemCode, setRedeemCode] = useState('')
   const [redeemMessage, setRedeemMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null)
+
+  // 灰色歌曲跨平台补全：开启前必须阅读免责声明并等待倒计时结束
+  const [showFallbackDisclaimer, setShowFallbackDisclaimer] = useState(false)
+  const [fallbackCountdown, setFallbackCountdown] = useState(20)
+
+  useEffect(() => {
+    if (!showFallbackDisclaimer || fallbackCountdown <= 0) return
+    const timer = window.setTimeout(() => setFallbackCountdown(value => value - 1), 1000)
+    return () => window.clearTimeout(timer)
+  }, [showFallbackDisclaimer, fallbackCountdown])
+
+  const confirmFallbackEnable = () => {
+    setCrossPlatformFallbackEnabled(true)
+    localStorage.setItem('crossPlatformFallbackEnabled', JSON.stringify(true))
+    setShowFallbackDisclaimer(false)
+    window.dispatchEvent(new CustomEvent('showToast', {
+      detail: { message: '已开启灰色歌曲跨平台补全', type: 'success' },
+    }))
+  }
+
+  // 删除识别码与测试码：确认弹窗（10 秒倒计时）
+  const [showDeleteLicenseModal, setShowDeleteLicenseModal] = useState(false)
+  const [deleteLicenseCountdown, setDeleteLicenseCountdown] = useState(10)
+
+  useEffect(() => {
+    if (!showDeleteLicenseModal || deleteLicenseCountdown <= 0) return
+    const timer = window.setTimeout(() => setDeleteLicenseCountdown(value => value - 1), 1000)
+    return () => window.clearTimeout(timer)
+  }, [showDeleteLicenseModal, deleteLicenseCountdown])
+
+  const confirmDeleteLicense = async () => {
+    setShowDeleteLicenseModal(false)
+    try {
+      const result = await window.electron?.deviceLicense?.reset()
+      if (result?.success) {
+        window.dispatchEvent(new CustomEvent('showToast', {
+          detail: { message: '已删除识别码与测试码，本机将生成新的设备标识', type: 'success' },
+        }))
+        void loadDeviceState()
+      } else {
+        window.dispatchEvent(new CustomEvent('showToast', {
+          detail: { message: result?.error || '删除失败，请重试', type: 'error' },
+        }))
+      }
+    } catch {
+      window.dispatchEvent(new CustomEvent('showToast', {
+        detail: { message: '删除失败，请重试', type: 'error' },
+      }))
+    }
+  }
 
   const loadDeviceState = async () => {
     // TV：设备识别码 = Android 系统 ANDROID_ID（原生桥提供），无桌面端授权/兑换体系
@@ -472,7 +598,7 @@ function SettingsPanel({
     }
   }
 
-  // ── TV：识别码 + 兑换码（走设备内置 Node 后端，RSA 公钥签名验证） ──
+  // ── TV：识别码 + 测试码（走设备内置 Node 后端，RSA 公钥签名验证） ──
   // 识别码：真机为 Android ANDROID_ID（原生桥）；浏览器 ?tv=1 调试用本地模拟 ID。
   const getTvDeviceId = () => {
     const native = (window as any).WaveForgeNative
@@ -513,7 +639,7 @@ function SettingsPanel({
   const tvRedeem = async () => {
     const code = tvRedeemCode.trim()
     if (!code) {
-      setTvRedeemState({ status: 'idle', message: '请输入兑换码' })
+      setTvRedeemState({ status: 'idle', message: '请输入测试码' })
       return
     }
     setTvRedeemState({ status: 'redeeming', message: null })
@@ -526,13 +652,13 @@ function SettingsPanel({
       const data = await res.json()
       if (data.ok) {
         setTvLicense({ deviceId: data.deviceId || tvLicense.deviceId, grants: data.grants || [] })
-        setTvRedeemState({ status: 'idle', message: data.message || '兑换成功' })
+        setTvRedeemState({ status: 'idle', message: data.message || '测试码验证成功' })
         setTvRedeemCode('')
       } else {
-        setTvRedeemState({ status: 'idle', message: data.error || '兑换失败' })
+        setTvRedeemState({ status: 'idle', message: data.error || '测试码验证失败' })
       }
     } catch {
-      setTvRedeemState({ status: 'idle', message: '兑换失败，请重试' })
+      setTvRedeemState({ status: 'idle', message: '测试码验证失败，请重试' })
     }
   }
   const toggleTvAutoOpenRemote = (enabled: boolean) => {
@@ -584,14 +710,14 @@ function SettingsPanel({
 
   const redeemDeviceCode = async () => {
     if (!redeemCode.trim()) {
-      setRedeemMessage({ type: 'error', text: '请输入兑换码' })
+      setRedeemMessage({ type: 'error', text: '请输入测试码' })
       return
     }
-    setRedeemMessage({ type: 'info', text: '正在验证兑换码…' })
+    setRedeemMessage({ type: 'info', text: '正在验证测试码…' })
     try {
       const result = await window.electron?.deviceLicense?.redeem(redeemCode.trim())
       if (!result) {
-        setRedeemMessage({ type: 'error', text: '暂时无法提交兑换码' })
+        setRedeemMessage({ type: 'error', text: '暂时无法提交测试码' })
       } else if (result.success) {
         setDeviceState(previous => ({ ...previous, status: 'ready', grants: result.grants }))
         setRedeemCode('')
@@ -599,7 +725,7 @@ function SettingsPanel({
         setShowRedeemModal(false)
         window.dispatchEvent(new CustomEvent('showToast', {
           detail: {
-            message: result.message || '兑换码验证成功',
+            message: result.message || '测试码验证成功',
             type: 'success',
           },
         }))
@@ -607,8 +733,8 @@ function SettingsPanel({
         setRedeemMessage({ type: 'error', text: result.error })
       }
     } catch (error) {
-      console.error('兑换码验证失败:', error)
-      setRedeemMessage({ type: 'error', text: '兑换码验证失败，请重试' })
+      console.error('测试码验证失败:', error)
+      setRedeemMessage({ type: 'error', text: '测试码验证失败，请重试' })
     }
   }
 
@@ -1470,7 +1596,7 @@ function SettingsPanel({
                           className={`w-full rounded-xl border ${borderColor} ${hoverBg} ${textPrimary} px-5 py-3.5 font-semibold flex items-center justify-center gap-2 transition-colors`}
                         >
                           <CheckCircle2 className="w-4 h-4" />
-                          兑换码验证
+                          测试码验证
                         </button>
                         {tvLicense.grants.length > 0 && (
                           <div className="mt-3 space-y-1.5">
@@ -1495,156 +1621,156 @@ function SettingsPanel({
                 <div className="space-y-6">
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>音乐平台账号</h3>
-                    <p className={`${textSecondary} text-sm mb-6`}>
+                    <p className={`${textSecondary} text-sm mb-1`}>
                       登录后可以播放VIP歌曲、获取个人歌单
                     </p>
-                    
+                    <p className={`${textTertiary} text-xs mb-6`}>
+                      可拖拽平台卡片对平台进行显示排序
+                    </p>
+
                     <div className="space-y-4">
-                      {/* NetEase login */}
+                    {/* 平台账号卡片（按住卡片上下拖拽调整顺序，隐藏的平台不参与排序） */}
+                    <Reorder.Group axis="y" values={platformOrder} onReorder={(next) => {
+                      const valid = next.filter((p, i, arr) => MUSIC_PLATFORMS.includes(p) && arr.indexOf(p) === i)
+                      setPlatformOrder(valid)
+                      setPlatformOrderState(valid)
+                    }} className="space-y-4">
+                      {platformOrder.map(p => {
+                        const hidden = hiddenPlatforms.includes(p)
+                        const isNetease = p === 'netease'
+                        const isQQ = p === 'qq'
+                        const isApple = p === 'apple'
+                        const isSpotify = p === 'spotify'
+                        const isKugou = p === 'kugou'
+                        const label = PLATFORM_LABELS[p]
+                        const sub = isNetease ? '使用手机扫码登录' : isQQ ? '使用网页扫码登录' : isApple ? '使用网页登录' : isSpotify ? '使用 OAuth 授权登录' : isKugou ? '使用网页登录' : '使用抖音扫码登录'
+                        const iconBg = isNetease ? 'bg-red-600' : isQQ ? 'bg-green-600' : isApple ? 'bg-pink-600' : isSpotify ? 'bg-[#1DB954]' : isKugou ? 'bg-[#FF7A00]' : 'bg-[#38BDF8]'
+                        const iconSrc = isNetease ? 'https://s1.music.126.net/style/favicon.ico' : isQQ ? 'https://y.qq.com/favicon.ico' : isApple ? 'https://www.apple.com/favicon.ico' : ''
+                        const iconFallback = isNetease ? '%E7%BD%91' : isQQ ? 'QQ' : isApple ? '%E8%8B%B9' : ''
+                        const loggedIn = isNetease ? neteaseLoggedIn : isQQ ? qqLoggedIn : isApple ? appleLoggedIn : isSpotify ? spotifyLoggedIn : isKugou ? kugouLoggedIn : sodaLoggedIn
+                        const username = isNetease ? neteaseUsername : isQQ ? qqUsername : isApple ? appleUsername : isSpotify ? spotifyUsername : isKugou ? kugouUsername : sodaUsername
+                        const onLogin = isNetease ? onNeteaseLogin : isQQ ? onQQLogin : isApple ? (() => undefined) : isSpotify ? onSpotifyLogin : isKugou ? onKugouLogin : onSodaLogin
+                        const onLogout = isNetease ? onNeteaseLogout : isQQ ? onQQLogout : isApple ? onAppleLogout : isSpotify ? onSpotifyLogout : isKugou ? onKugouLogout : onSodaLogout
+                        return (
+                          <Reorder.Item key={p} value={p} className="relative">
+                            <motion.div
+                              layout
+                              animate={{ opacity: hidden ? 0.45 : 1, scale: hidden ? 0.98 : 1 }}
+                              transition={{ duration: 0.25 }}
+                              className={`${bgCard} rounded-xl p-4 border ${borderColor} relative cursor-grab active:cursor-grabbing`}
+                            >
+                              {/* 隐藏平台小眼睛（右上角） */}
+                              <button
+                                type="button"
+                                onClick={() => togglePlatformVisibility(p, !hidden)}
+                                className="absolute top-3 right-3 p-1.5 rounded-lg transition-colors hover:bg-white/10"
+                                aria-label={hidden ? `显示${label}` : `隐藏${label}`}
+                                title={hidden ? '显示平台' : '隐藏平台'}
+                              >
+                                {hidden
+                                  ? <EyeOff className="w-4 h-4 text-white/40" />
+                                  : <Eye className="w-4 h-4 text-white/40" />}
+                              </button>
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 ${iconBg} flex items-center justify-center`}>
+                                    {iconSrc ? (
+                                      <img
+                                        src={iconSrc}
+                                        alt={label}
+                                        className="w-6 h-6"
+                                        onError={(e) => {
+                                          e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ctext x="50" y="70" text-anchor="middle" fill="white" font-size="45" font-weight="bold"%3E' + iconFallback + '%3C/text%3E%3C/svg%3E'
+                                        }}
+                                      />
+                                    ) : (
+                                      <Music className="w-5 h-5 text-white" />
+                                    )}
+                                  </div>
+                                  <div>
+                                    <div className={`${textPrimary} font-medium`}>{label}</div>
+                                    <div className={`${textTertiary} text-xs`}>{sub}</div>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="mt-4">
+                                <LoginButton
+                                  platform={p}
+                                  isLoggedIn={loggedIn}
+                                  username={username}
+                                  onLogin={onLogin}
+                                  onLogout={onLogout}
+                                  onAppleLogin={isApple ? onAppleLogin : undefined}
+                                  playerTheme={playerTheme}
+                                />
+                              </div>
+                            </motion.div>
+                          </Reorder.Item>
+                        )
+                      })}
+                    </Reorder.Group>
+                      {/* 哔哩哔哩「看歌」登录 */}
                       <motion.div
                         layout
-                        animate={{ opacity: hiddenPlatforms.includes('netease') ? 0.45 : 1, scale: hiddenPlatforms.includes('netease') ? 0.98 : 1 }}
+                        animate={{ opacity: 1, scale: 1 }}
                         transition={{ duration: 0.25 }}
                         className={`${bgCard} rounded-xl p-4 border ${borderColor} relative`}
                       >
-                        {/* 隐藏平台小眼睛（右上角） */}
-                        <button
-                          type="button"
-                          onClick={() => togglePlatformVisibility('netease', !hiddenPlatforms.includes('netease'))}
-                          className="absolute top-3 right-3 p-1.5 rounded-lg transition-colors hover:bg-white/10"
-                          aria-label={hiddenPlatforms.includes('netease') ? '显示网易云音乐' : '隐藏网易云音乐'}
-                          title={hiddenPlatforms.includes('netease') ? '显示平台' : '隐藏平台'}
-                        >
-                          {hiddenPlatforms.includes('netease')
-                            ? <EyeOff className="w-4 h-4 text-white/40" />
-                            : <Eye className="w-4 h-4 text-white/40" />}
-                        </button>
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-red-600 flex items-center justify-center">
-                              <img 
-                                src="https://s1.music.126.net/style/favicon.ico"
-                                alt="网易云音乐"
-                                className="w-6 h-6"
-                                onError={(e) => {
-                                  e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='70' text-anchor='middle' fill='white' font-size='50' font-weight='bold'%3E网%3C/text%3E%3C/svg%3E"
-                                }}
-                              />
+                            <div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 flex items-center justify-center" style={{ backgroundColor: '#FB7299' }}>
+                              <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M17.813 4.653h.854c1.51.054 2.769.578 3.773 1.574 1.004.995 1.524 2.249 1.56 3.76v7.36c-.036 1.51-.556 2.765-1.56 3.761-1.004.996-2.263 1.52-3.773 1.574h-.854c-1.51-.054-2.769-.578-3.773-1.574-.996-.996-1.51-2.251-1.542-3.76v-1.804h-4.996v1.804c-.032 1.509-.546 2.764-1.542 3.76-1.004.996-2.263 1.52-3.773 1.574h-.854C1.75 20.554.491 20.03-.513 19.034c-1.004-.996-1.524-2.251-1.56-3.76v-7.36c.036-1.511.556-2.765 1.56-3.761C.49 2.157 1.75 1.633 3.26 1.58h.854c1.51.054 2.769.578 3.773 1.574.996.996 1.51 2.251 1.542 3.76v1.804h4.996V6.914c.032-1.509.546-2.764 1.542-3.76 1.004-.996 2.263-1.52 3.773-1.574z" />
+                              </svg>
                             </div>
                             <div>
-                              <div className={`${textPrimary} font-medium`}>网易云音乐</div>
-                              <div className={`${textTertiary} text-xs`}>使用手机扫码登录</div>
+                              <div className={`${textPrimary} font-medium`}>哔哩哔哩</div>
+                              <div className={`${textTertiary} text-xs`}>看歌模式 · 扫码登录解锁 1080P</div>
                             </div>
                           </div>
+                          {biliLoggedIn && (
+                            <span className="text-xs font-medium text-green-500">已登录</span>
+                          )}
                         </div>
-                        <div className="mt-4">
-                          <LoginButton
-                            platform="netease"
-                            isLoggedIn={neteaseLoggedIn}
-                            username={neteaseUsername}
-                            onLogin={onNeteaseLogin}
-                            onLogout={onNeteaseLogout}
-                            playerTheme={playerTheme}
-                          />
-                        </div>
-                      </motion.div>
-
-                      {/* QQ音乐登录 */}
-                      <motion.div
-                        layout
-                        animate={{ opacity: hiddenPlatforms.includes('qq') ? 0.45 : 1, scale: hiddenPlatforms.includes('qq') ? 0.98 : 1 }}
-                        transition={{ duration: 0.25 }}
-                        className={`${bgCard} rounded-xl p-4 border ${borderColor} relative`}
-                      >
-                        {/* 隐藏平台小眼睛（右上角） */}
-                        <button
-                          type="button"
-                          onClick={() => togglePlatformVisibility('qq', !hiddenPlatforms.includes('qq'))}
-                          className="absolute top-3 right-3 p-1.5 rounded-lg transition-colors hover:bg-white/10"
-                          aria-label={hiddenPlatforms.includes('qq') ? '显示QQ音乐' : '隐藏QQ音乐'}
-                          title={hiddenPlatforms.includes('qq') ? '显示平台' : '隐藏平台'}
-                        >
-                          {hiddenPlatforms.includes('qq')
-                            ? <EyeOff className="w-4 h-4 text-white/40" />
-                            : <Eye className="w-4 h-4 text-white/40" />}
-                        </button>
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-green-600 flex items-center justify-center">
-                              <img 
-                                src="https://y.qq.com/favicon.ico"
-                                alt="QQ音乐"
-                                className="w-6 h-6"
-                                onError={(e) => {
-                                  e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='70' text-anchor='middle' fill='white' font-size='45' font-weight='bold'%3EQQ%3C/text%3E%3C/svg%3E"
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <div className={`${textPrimary} font-medium`}>QQ音乐</div>
-                              <div className={`${textTertiary} text-xs`}>使用网页扫码登录</div>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="mt-4">
-                          <LoginButton
-                            platform="qq"
-                            isLoggedIn={qqLoggedIn}
-                            username={qqUsername}
-                            onLogin={onQQLogin}
-                            onLogout={onQQLogout}
-                            playerTheme={playerTheme}
-                          />
-                        </div>
-                      </motion.div>
-
-                      {/* Apple Music 登录 */}
-                      <motion.div
-                        layout
-                        animate={{ opacity: hiddenPlatforms.includes('apple') ? 0.45 : 1, scale: hiddenPlatforms.includes('apple') ? 0.98 : 1 }}
-                        transition={{ duration: 0.25 }}
-                        className={`${bgCard} rounded-xl p-4 border ${borderColor} relative`}
-                      >
-                        {/* 隐藏平台小眼睛（右上角） */}
-                        <button
-                          type="button"
-                          onClick={() => togglePlatformVisibility('apple', !hiddenPlatforms.includes('apple'))}
-                          className="absolute top-3 right-3 p-1.5 rounded-lg transition-colors hover:bg-white/10"
-                          aria-label={hiddenPlatforms.includes('apple') ? '显示Apple Music' : '隐藏Apple Music'}
-                          title={hiddenPlatforms.includes('apple') ? '显示平台' : '隐藏平台'}
-                        >
-                          {hiddenPlatforms.includes('apple')
-                            ? <EyeOff className="w-4 h-4 text-white/40" />
-                            : <Eye className="w-4 h-4 text-white/40" />}
-                        </button>
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-pink-600 flex items-center justify-center">
-                              <img 
-                                src="https://www.apple.com/favicon.ico"
-                                alt="Apple Music"
-                                className="w-6 h-6"
-                                onError={(e) => {
-                                  e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='70' text-anchor='middle' fill='white' font-size='45' font-weight='bold'%3E苹%3C/text%3E%3C/svg%3E"
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <div className={`${textPrimary} font-medium`}>Apple Music</div>
-                              <div className={`${textTertiary} text-xs`}>使用网页登录</div>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="mt-4">
-                          <LoginButton
-                            platform="apple"
-                            isLoggedIn={appleLoggedIn}
-                            username={appleUsername}
-                            onLogin={() => undefined}
-                            onLogout={onAppleLogout}
-                            onAppleLogin={onAppleLogin}
-                            playerTheme={playerTheme}
-                          />
+                        <div className="mt-4 flex items-center gap-3">
+                          {biliLoggedIn ? (
+                            <>
+                              {biliUser?.face && (
+                                <img src={resolveBiliPic(biliUser.face)} alt="" className="w-8 h-8 rounded-full bg-white/10 flex-shrink-0" />
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <div className={`${textPrimary} text-sm truncate`}>{biliUser?.uname || '哔哩哔哩用户'}</div>
+                                <div className={`${textTertiary} text-xs`}>
+                                  {biliUser?.vipType ? '大会员 · ' : ''}
+                                  {biliRemainingDays != null ? `登录有效期约 ${biliRemainingDays} 天` : '已登录'}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleBiliLogout}
+                                className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors hover:bg-white/10 text-white/70"
+                              >
+                                退出登录
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowBiliProfile(true)}
+                                className="px-3 py-1.5 rounded-lg text-xs font-medium text-white transition-transform hover:scale-105"
+                                style={{ backgroundColor: "#FB7299" }}
+                              >
+                                个人中心
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setShowBiliLogin(true)}
+                              className="px-4 py-1.5 rounded-lg text-sm font-medium text-white transition-transform hover:scale-105"
+                              style={{ backgroundColor: '#FB7299' }}
+                            >
+                              扫码登录
+                            </button>
+                          )}
                         </div>
                       </motion.div>
                     </div>
@@ -1708,10 +1834,10 @@ function SettingsPanel({
                           <Headphones className="w-5 h-5" style={{ color: accentColor }} />
                         </div>
                         <div className="text-left min-w-0">
-                          <div className={`${textPrimary} font-medium`}>QQ音乐与网易云播放音质</div>
-                          <div className={`${textSecondary} text-sm truncate`}>
-                            QQ音乐：{audioQualityLabel(audioQualitySettings.qq)} · 网易云：{audioQualityLabel(audioQualitySettings.netease)}
-                          </div>
+                        <div className={`${textPrimary} font-medium`}>各平台播放音质</div>
+                        <div className={`${textSecondary} text-sm truncate`}>
+                          网易云：{audioQualityLabel(audioQualitySettings.netease)} · QQ音乐：{audioQualityLabel(audioQualitySettings.qq)} · Spotify：{audioQualityLabel(audioQualitySettings.spotify)} · 酷狗：{audioQualityLabel(audioQualitySettings.kugou)} · 汽水：{audioQualityLabel(audioQualitySettings.soda)}
+                        </div>
                         </div>
                       </div>
                       <ChevronRight className={`w-5 h-5 ${textTertiary} flex-shrink-0 group-hover:translate-x-1 transition-transform`} />
@@ -2632,8 +2758,14 @@ function SettingsPanel({
                             checked={crossPlatformFallbackEnabled}
                             onChange={(event) => {
                               const enabled = event.target.checked
-                              setCrossPlatformFallbackEnabled(enabled)
-                              localStorage.setItem('crossPlatformFallbackEnabled', JSON.stringify(enabled))
+                              if (enabled) {
+                                // 开启前先弹出免责声明，确认后才真正启用
+                                setFallbackCountdown(20)
+                                setShowFallbackDisclaimer(true)
+                              } else {
+                                setCrossPlatformFallbackEnabled(false)
+                                localStorage.setItem('crossPlatformFallbackEnabled', JSON.stringify(false))
+                              }
                             }}
                             className="sr-only peer"
                           />
@@ -3008,6 +3140,30 @@ function SettingsPanel({
                       </div>
                     </button>
                   </div>
+
+                  {/* 重新启用 OOBE（首次启动）引导动画 */}
+                  <button
+                    onClick={() => {
+                      try { localStorage.removeItem('waveforge:oobe-shown') } catch { /* ignore */ }
+                      window.dispatchEvent(new CustomEvent('showToast', {
+                        detail: { message: '您在重启软件后将进入 OOBE 引导', type: 'info' },
+                      }))
+                    }}
+                    className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} ${hoverBg} transition-all text-left`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${accentColor}20` }}>
+                          <Sparkles className="w-5 h-5" style={{ color: accentColor }} />
+                        </div>
+                        <div>
+                          <div className={`${textPrimary} font-medium mb-1`}>重新启用 OOBE（首次启动）引导动画</div>
+                          <div className={`${textSecondary} text-sm`}>清除完成标记，重启软件后将再次显示首次启动引导</div>
+                        </div>
+                      </div>
+                      <ChevronRight className={`w-5 h-5 ${textSecondary}`} />
+                    </div>
+                  </button>
                 </div>
               )}
 
@@ -3026,24 +3182,26 @@ function SettingsPanel({
                         </span>
                       </div>
 
-                      <div className={`rounded-xl border ${borderColor} p-4 flex items-center gap-4`}>
-                        <img src={appLogoUrl} alt="WaveForge" className="w-14 h-14 rounded-xl object-cover shadow-lg shrink-0" />
-                        <div className="min-w-0">
-                          <p className={`text-xs ${textTertiary} mb-1`}>开发者</p>
-                          <p className={`text-lg font-semibold leading-6 ${textPrimary}`}>Yoshino / Castorice</p>
-                          <p className={`text-lg font-semibold leading-6 ${textPrimary}`}>IceFire_Icer</p>
-                          <p className={`text-sm leading-6 ${textSecondary} mt-1`}>WaveForge 澜音工坊的开发与维护</p>
+                      <div className={`rounded-xl border ${borderColor} p-4 relative`}>
+                        <div className="flex items-center gap-4 pr-10">
+                          <img src={appLogoUrl} alt="WaveForge" className="w-14 h-14 rounded-xl object-cover shadow-lg shrink-0" />
+                          <div className="min-w-0">
+                            <p className={`text-xs ${textTertiary} mb-1`}>开发者</p>
+                            <p className={`text-lg font-semibold leading-6 ${textPrimary}`}>Yoshino / Castorice</p>
+                            <p className={`text-lg font-semibold leading-6 ${textPrimary}`}>IceFire_Icer</p>
+                            <p className={`text-sm leading-6 ${textSecondary} mt-1`}>WaveForge 澜音工坊的开发与维护</p>
+                          </div>
                         </div>
+                        <button
+                          onClick={() => openExternal('https://www.afdian.com/a/Kirito666233')}
+                          title="支持 WaveForge"
+                          aria-label="支持 WaveForge"
+                          className="absolute top-3 right-3 w-9 h-9 rounded-full flex items-center justify-center text-white transition-all hover:scale-110 hover:shadow-md"
+                          style={{ background: `linear-gradient(135deg, ${accentColor}, #ff5b9d)`, boxShadow: `0 6px 16px ${accentColor}24` }}
+                        >
+                          <Heart className="w-4 h-4" fill="currentColor" />
+                        </button>
                       </div>
-                      <button
-                        onClick={() => openExternal('https://www.afdian.com/a/Kirito666233')}
-                        className="mt-3 w-full rounded-xl px-4 py-3 text-white font-semibold flex items-center justify-center gap-2 transition-all hover:-translate-y-0.5 hover:shadow-lg"
-                        style={{ background: `linear-gradient(135deg, ${accentColor}, #ff5b9d)`, boxShadow: `0 10px 28px ${accentColor}24` }}
-                      >
-                        <Heart className="w-4 h-4" fill="currentColor" />
-                        <span>赞助 WaveForge</span>
-                        <ExternalLink className="w-3.5 h-3.5 opacity-80" />
-                      </button>
 
                       <div className={`mt-4 pt-4 border-t ${borderColor}`}>
                         <div>
@@ -3081,6 +3239,22 @@ function SettingsPanel({
                     </div>
                   </section>
 
+                  <button
+                    onClick={() => setShowLegalModal(true)}
+                    className={`w-full group flex items-center justify-between gap-3 rounded-xl border px-4 py-3.5 transition-all hover:-translate-y-0.5 hover:shadow-lg ${playerTheme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-white/10' : 'border-black/10 bg-black/5 hover:bg-black/10'}`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: `${accentColor}20`, color: accentColor }}>
+                        <FileText className="w-4 h-4" />
+                      </div>
+                      <div className="text-left min-w-0">
+                        <div className={`font-semibold truncate ${textPrimary}`}>法律声明 / 用户协议</div>
+                        <div className={`text-xs ${textTertiary} mt-0.5 truncate`}>使用本软件即表示您已阅读并同意相关条款</div>
+                      </div>
+                    </div>
+                    <ChevronRight className={`w-4 h-4 shrink-0 opacity-50 group-hover:translate-x-0.5 group-hover:opacity-90 transition-all`} style={{ color: accentColor }} />
+                  </button>
+
                   <section className={`${bgCard} rounded-2xl border ${borderColor} p-5`}>
                     <div className="flex items-start gap-4">
                       <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: `${accentColor}20`, color: accentColor }}><Users className="w-5 h-5" /></div>
@@ -3090,43 +3264,6 @@ function SettingsPanel({
                         <p className={`mt-1.5 text-sm leading-6 ${textSecondary}`}>感谢各位朋友们对软件的喜爱与鼓励。</p>
                       </div>
                     </div>
-                  </section>
-
-                  <section className={`${bgCard} rounded-2xl border ${borderColor} p-5 sm:p-6`}>
-                    <div className="flex items-start justify-between gap-4 mb-5">
-                      <div>
-                        <div className="flex items-center gap-2"><Gift className="w-5 h-5" style={{ color: accentColor }} /><h3 className={`text-lg font-semibold ${textPrimary}`}>赞助名单</h3></div>
-                        <p className={`text-sm ${textSecondary} mt-1.5`}>感谢每一位支持 WaveForge 的朋友</p>
-                      </div>
-                      <button
-                        onClick={() => openExternal('https://www.afdian.com/a/Kirito666233')}
-                        className={`shrink-0 rounded-xl border ${borderColor} ${hoverBg} ${textPrimary} px-3 py-2 inline-flex items-center gap-2 transition-colors`}
-                        title="前往爱发电"
-                      >
-                        <img src={afdianLogoUrl} alt="爱发电" className="w-6 h-6 object-contain" />
-                        <span className="text-sm font-medium">爱发电</span>
-                        <ExternalLink className="w-3.5 h-3.5 opacity-60" />
-                      </button>
-                    </div>
-                    {sponsorSupporters.length > 0 ? (
-                      <div className="grid grid-cols-1 gap-3">
-                        {sponsorSupporters.map((supporter, index) => (
-                          <div key={supporter.id} className={`rounded-xl border ${borderColor} p-3 flex items-center gap-3`}>
-                            <div className="w-9 h-9 rounded-full overflow-hidden shrink-0 flex items-center justify-center text-xs font-bold text-white" style={{ backgroundColor: accentColor }}>
-                              {supporter.avatar ? <img src={supporter.avatar} alt="" className="w-full h-full object-cover" /> : supporter.name.slice(0, 1)}
-                            </div>
-                            <div className="min-w-0 flex-1"><p className={`font-medium truncate ${textPrimary}`}>{index + 1}. {supporter.name}</p><p className={`text-xs ${textTertiary} truncate`}>{supporter.tierName || `¥${supporter.tier} 档位`}</p></div>
-                            <BadgeCheck className="w-4 h-4 shrink-0" style={{ color: accentColor }} />
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className={`rounded-xl border border-dashed ${borderColor} p-6 text-center`}>
-                        <Heart className={`w-6 h-6 mx-auto mb-2 ${textTertiary}`} />
-                        <p className={`text-sm ${textSecondary}`}>当前暂时没有可展示的赞助者</p>
-                        <p className={`text-xs ${textTertiary} mt-1`}>赞助名单会随 WaveForge 正式版本更新。</p>
-                      </div>
-                    )}
                   </section>
 
                   {!isTvModeActive() && (
@@ -3158,7 +3295,17 @@ function SettingsPanel({
                         className={`w-full rounded-xl border ${borderColor} ${hoverBg} ${textPrimary} px-5 py-3.5 font-semibold flex items-center justify-center gap-2 transition-colors`}
                       >
                         <CheckCircle2 className="w-4 h-4" />
-                        兑换码验证
+                        测试码验证
+                      </button>
+                      <button
+                        onClick={() => {
+                          setDeleteLicenseCountdown(10)
+                          setShowDeleteLicenseModal(true)
+                        }}
+                        className={`w-full mt-2 rounded-xl border ${borderColor} ${hoverBg} ${textPrimary} px-5 py-3.5 font-semibold flex items-center justify-center gap-2 transition-colors ${playerTheme === 'dark' ? 'hover:text-red-400 hover:border-red-400/40' : 'hover:text-red-600 hover:border-red-500/40'}`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        删除识别码与测试码
                       </button>
                       {deviceState.grants.length > 0 && (
                         <div className="mt-4 flex flex-wrap gap-2">
@@ -3174,9 +3321,8 @@ function SettingsPanel({
                   </section>
                   )}
 
-                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-1">
+                  <div className="flex items-center justify-center px-1">
                     <p className={`${textTertiary} text-xs`}>© 2026 WaveForge. All rights reserved.</p>
-                    <button onClick={() => setShowLegalModal(true)} className={`px-5 py-2.5 rounded-xl ${playerTheme === 'dark' ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'} ${textPrimary} text-sm font-medium transition-colors`}>法律声明</button>
                   </div>
                 </div>
               )}
@@ -3213,6 +3359,9 @@ function SettingsPanel({
         qqVip={qqVip}
         neteaseLoggedIn={neteaseLoggedIn}
         qqLoggedIn={qqLoggedIn}
+        spotifyLoggedIn={spotifyLoggedIn}
+        kugouLoggedIn={kugouLoggedIn}
+        sodaLoggedIn={sodaLoggedIn}
       />
 
       {/* 远程遥控器设置弹窗 */}
@@ -3229,7 +3378,7 @@ function SettingsPanel({
         playerTheme={playerTheme}
       />
       
-      {/* 兑换码验证弹窗 */}
+      {/* 测试码验证弹窗 */}
       {showRedeemModal && (
         <motion.div
           initial={{ opacity: 0 }}
@@ -3255,10 +3404,10 @@ function SettingsPanel({
             } shadow-2xl overflow-hidden`}
           >
             <div className={`px-5 py-4 border-b ${playerTheme === 'dark' ? 'border-zinc-800' : 'border-gray-200'}`}>
-              <h2 className={`text-lg font-bold ${textPrimary}`}>兑换码验证</h2>
+              <h2 className={`text-lg font-bold ${textPrimary}`}>测试码验证</h2>
             </div>
             <div className="px-5 py-5">
-              <p className={`text-sm leading-6 ${textSecondary}`}>请将获取到的兑换码粘贴在下方</p>
+              <p className={`text-sm leading-6 ${textSecondary}`}>请将获取到的测试码粘贴在下方</p>
               <div className="mt-4 flex items-stretch gap-3">
                 <input
                   autoFocus
@@ -3327,7 +3476,22 @@ function SettingsPanel({
       {/* 设备配置检查弹窗（TV 端性能模式选择） */}
       <DeviceInfoModal show={showDeviceInfo} onClose={() => setShowDeviceInfo(false)} playerTheme={playerTheme} />
 
-      {/* TV：兑换码验证弹窗（参考 PC 端，无粘贴按钮） */}
+      {/* 哔哩哔哩「看歌」扫码登录弹窗 */}
+      {showBiliProfile && (
+        <BilibiliProfileModal onClose={() => setShowBiliProfile(false)} playerTheme={playerTheme} />
+      )}
+
+      {showBiliLogin && (
+        <BilibiliLoginPanel
+          onClose={() => setShowBiliLogin(false)}
+          onLoginSuccess={() => {
+            setShowBiliLogin(false)
+            refreshBiliAuth()
+          }}
+        />
+      )}
+
+      {/* TV：测试码验证弹窗（参考 PC 端，无粘贴按钮） */}
       {showTvRedeemModal && (
         <motion.div
           initial={{ opacity: 0 }}
@@ -3350,10 +3514,10 @@ function SettingsPanel({
             className={`w-full max-w-md rounded-2xl border shadow-2xl overflow-hidden ${playerTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'}`}
           >
             <div className={`px-5 py-4 border-b ${playerTheme === 'dark' ? 'border-zinc-800' : 'border-gray-200'}`}>
-              <h2 className={`text-lg font-bold ${textPrimary}`}>兑换码验证</h2>
+              <h2 className={`text-lg font-bold ${textPrimary}`}>测试码验证</h2>
             </div>
             <div className="px-5 py-5">
-              <p className={`text-sm leading-6 ${textSecondary}`}>请将获取到的兑换码输入在下方</p>
+              <p className={`text-sm leading-6 ${textSecondary}`}>请将获取到的测试码输入在下方</p>
               <div className="mt-4 flex items-stretch gap-3">
                 <input
                   autoFocus
@@ -3519,94 +3683,161 @@ function SettingsPanel({
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
             onClick={(e) => e.stopPropagation()}
-            className={`${playerTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'} rounded-2xl border shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col`}
+            className={`${playerTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'} rounded-2xl border shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-hidden flex flex-col`}
+          >
+            {/* 标题栏 */}
+            <div className={`flex items-center justify-between gap-3 px-6 py-4 border-b ${playerTheme === 'dark' ? 'border-zinc-800' : 'border-gray-200'}`}>
+              <h2 className={`text-xl font-bold ${textPrimary}`}>法律声明与用户协议</h2>
+              <div className="flex items-center gap-2">
+                <LocaleSwitcher locale={legalLocale} onChange={setLegalLocale} theme={playerTheme} accentColor={accentColor} />
+                <button
+                  onClick={() => setShowLegalModal(false)}
+                  className={`p-2 rounded-lg ${hoverBg} transition-colors`}
+                >
+                  <X className={`w-5 h-5 ${textSecondary}`} />
+                </button>
+              </div>
+            </div>
+            
+            {/* 内容区域 */}
+            <div className="flex-1 overflow-y-auto px-6 py-6 sm:px-8">
+              <LegalAgreement theme={playerTheme} locale={legalLocale} />
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+      {/* 灰色歌曲跨平台补全：开启前免责声明弹窗 */}
+      {showFallbackDisclaimer && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0, 0, 0, 0.75)' }}
+          onClick={() => setShowFallbackDisclaimer(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.9, opacity: 0 }}
+            onClick={(e) => e.stopPropagation()}
+            className={`${playerTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'} rounded-2xl border shadow-2xl max-w-lg w-full overflow-hidden flex flex-col`}
           >
             {/* 标题栏 */}
             <div className={`flex items-center justify-between px-6 py-4 border-b ${playerTheme === 'dark' ? 'border-zinc-800' : 'border-gray-200'}`}>
-              <h2 className={`text-xl font-bold ${textPrimary}`}>法律声明</h2>
+              <h2 className={`text-lg font-bold ${textPrimary}`}>灰色歌曲跨平台补全 · 免责声明</h2>
               <button
-                onClick={() => setShowLegalModal(false)}
+                onClick={() => setShowFallbackDisclaimer(false)}
                 className={`p-2 rounded-lg ${hoverBg} transition-colors`}
               >
                 <X className={`w-5 h-5 ${textSecondary}`} />
               </button>
             </div>
-            
+
             {/* 内容区域 */}
-            <div className="flex-1 overflow-y-auto px-6 py-6">
+            <div className="flex-1 overflow-y-auto px-6 py-5">
               <div className={`space-y-4 ${textSecondary} text-sm leading-relaxed`}>
                 <section>
-                  <h3 className={`text-base font-semibold ${textPrimary} mb-2`}>1. 软件使用声明</h3>
+                  <h3 className={`text-base font-semibold ${textPrimary} mb-2`}>开启前请仔细阅读</h3>
                   <p>
-                    WaveForge 是一款免费开源的音乐播放器软件。本软件按"现状"提供，不提供任何形式的明示或暗示保证，
-                    包括但不限于适销性、特定用途的适用性和非侵权性的保证。
+                    "灰色歌曲跨平台补全"会在网易云音乐官方未返回播放链接时，从其他公开音乐源匹配并播放同一首歌。开启该功能即表示您已知悉并同意以下内容：
                   </p>
                 </section>
-                
-                <section>
-                  <h3 className={`text-base font-semibold ${textPrimary} mb-2`}>2. 免责声明</h3>
-                  <p>
-                    在任何情况下，软件作者或版权持有人均不对任何索赔、损害或其他责任负责，无论这些追责来自合同、
-                    侵权或其他行为中，还是产生于、源于或有关于本软件以及本软件的使用或其他处置。
-                  </p>
-                </section>
-                
-                <section>
-                  <h3 className={`text-base font-semibold ${textPrimary} mb-2`}>3. 第三方服务</h3>
-                  <p>
-                    本软件集成了第三方音乐平台的 API 服务（包括但不限于网易云音乐、QQ音乐等）。
-                    用户使用这些服务时需遵守相应平台的服务条款和使用协议。本软件不对第三方服务的可用性、
-                    准确性或合法性承担任何责任。
-                  </p>
-                </section>
-                
-                <section>
-                  <h3 className={`text-base font-semibold ${textPrimary} mb-2`}>4. 版权声明</h3>
-                  <p>
-                    本软件播放的所有音乐内容的版权归原作者及其版权所有者所有。用户应当尊重知识产权，
-                    仅将本软件用于个人学习和研究目的。任何商业使用或侵犯版权的行为均与本软件及其开发者无关。
-                  </p>
-                </section>
-                
-                <section>
-                  <h3 className={`text-base font-semibold ${textPrimary} mb-2`}>5. 用户责任</h3>
-                  <p>
-                    用户应当合法使用本软件，不得利用本软件从事任何违反法律法规的活动。用户因使用本软件
-                    而产生的一切后果由用户自行承担，与本软件开发者无关。
-                  </p>
-                </section>
-                
-                <section>
-                  <h3 className={`text-base font-semibold ${textPrimary} mb-2`}>6. 隐私保护</h3>
-                  <p>
-                    本软件尊重用户隐私。软件不会主动收集、存储或传输用户的个人信息。用户登录第三方平台时，
-                    相关凭证仅存储在本地设备，不会上传到任何服务器。
-                  </p>
-                </section>
-                
-                <section>
-                  <h3 className={`text-base font-semibold ${textPrimary} mb-2`}>7. 开源许可</h3>
-                  <p>
-                    本软件基于开源许可发布，具体许可条款请参阅项目源代码仓库。使用、修改或分发本软件时，
-                    请遵守相应的开源许可协议。
-                  </p>
-                </section>
-                
-                <section>
-                  <h3 className={`text-base font-semibold ${textPrimary} mb-2`}>8. 更新与变更</h3>
-                  <p>
-                    本法律声明可能会不定期更新。继续使用本软件即表示您接受更新后的声明内容。
-                    重大变更将在软件更新说明中告知用户。
-                  </p>
-                </section>
-                
-                <div className={`mt-6 p-4 rounded-lg ${playerTheme === 'dark' ? 'bg-zinc-800/50' : 'bg-gray-100'}`}>
-                  <p className={`text-xs ${textTertiary}`}>
-                    最后更新时间：2026年7月<br />
-                    如有任何疑问，请通过 GitHub 或 Gitee 仓库联系开发者。
-                  </p>
+                <ul className={`list-disc pl-5 space-y-1.5`}>
+                  <li>本功能属于第三方客户端的跨平台音源匹配，未获得各音乐平台的授权，可能违反相关平台的服务条款（如网易云音乐《服务条款》第 8.5 条、QQ音乐《服务许可协议》第 5.1.1 条等），可能导致账号风控、功能受限或账号封禁；</li>
+                  <li>匹配到的音源可能与原曲在版本、歌手、音质、歌词等方面存在差异，仅供个人非商业性试听，其版权归原权利人所有；</li>
+                  <li>本功能仅补全免费但受版权或地区影响的歌曲，不会绕过 VIP、付费专辑等平台付费权限；</li>
+                  <li>因使用本功能产生的账号风险与相关纠纷，均由您自行与相关平台解决，软件开发者不承担任何责任。</li>
+                </ul>
+                <div className={`rounded-lg p-3 text-xs ${playerTheme === 'dark' ? 'bg-zinc-800/50' : 'bg-gray-100'} ${textTertiary}`}>
+                  请仔细阅读以上内容。确认开启后，本软件将在本地保存您的选择；您可随时在设置中关闭该功能。
                 </div>
               </div>
+            </div>
+
+            {/* 底部按钮 */}
+            <div className={`flex items-center justify-end gap-3 px-6 py-4 border-t ${playerTheme === 'dark' ? 'border-zinc-800' : 'border-gray-200'}`}>
+              <button
+                onClick={() => setShowFallbackDisclaimer(false)}
+                className={`px-5 py-2.5 rounded-xl ${playerTheme === 'dark' ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'} ${textPrimary} text-sm font-medium transition-colors`}
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmFallbackEnable}
+                disabled={fallbackCountdown > 0}
+                className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition-all ${fallbackCountdown > 0 ? 'opacity-50 cursor-not-allowed' : 'hover:-translate-y-0.5 hover:shadow-lg'}`}
+                style={{ backgroundColor: accentColor, boxShadow: fallbackCountdown > 0 ? undefined : `0 10px 28px ${accentColor}24` }}
+              >
+                确定{fallbackCountdown > 0 ? `（${fallbackCountdown}）` : ''}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+      {/* 删除识别码与测试码：确认弹窗（10 秒倒计时） */}
+      {showDeleteLicenseModal && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0, 0, 0, 0.75)' }}
+          onClick={() => setShowDeleteLicenseModal(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.9, opacity: 0 }}
+            onClick={(e) => e.stopPropagation()}
+            className={`${playerTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'} rounded-2xl border shadow-2xl max-w-lg w-full overflow-hidden flex flex-col`}
+          >
+            {/* 标题栏 */}
+            <div className={`flex items-center justify-between px-6 py-4 border-b ${playerTheme === 'dark' ? 'border-zinc-800' : 'border-gray-200'}`}>
+              <h2 className={`text-lg font-bold ${textPrimary}`}>删除识别码与测试码</h2>
+              <button
+                onClick={() => setShowDeleteLicenseModal(false)}
+                className={`p-2 rounded-lg ${hoverBg} transition-colors`}
+              >
+                <X className={`w-5 h-5 ${textSecondary}`} />
+              </button>
+            </div>
+
+            {/* 内容区域 */}
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className={`space-y-4 ${textSecondary} text-sm leading-relaxed`}>
+                <section>
+                  <h3 className={`text-base font-semibold ${textPrimary} mb-2`}>请仔细阅读以下说明</h3>
+                  <p>点击"确定"后将执行以下操作，且<strong className={textPrimary}>不可撤销</strong>：</p>
+                </section>
+                <ul className={`list-disc pl-5 space-y-1.5`}>
+                  <li>删除保存在您本机的<strong className={textPrimary}>设备识别码</strong>（Windows 注册表与应用数据目录中的记录）；</li>
+                  <li>删除本机记录的全部<strong className={textPrimary}>已兑换测试码</strong>与授权记录（兑换机制数据一并清除）；</li>
+                  <li>下次启动本软件时会生成<strong className={textPrimary}>全新的设备标识</strong>，此前获得的测试码因与旧设备绑定将<strong className={textPrimary}>全部失效</strong>；</li>
+                  <li>如需恢复原授权，需要<strong className={textPrimary}>卸载并重新安装</strong>本软件后重新获取测试码。</li>
+                </ul>
+                <div className={`rounded-lg p-3 text-xs ${playerTheme === 'dark' ? 'bg-zinc-800/50' : 'bg-gray-100'} ${textTertiary}`}>
+                  识别码与测试码均仅存储于您的本机，不包含任何个人身份信息，也不会被上传。若您仍希望移除，请确认后继续。
+                </div>
+              </div>
+            </div>
+
+            {/* 底部按钮 */}
+            <div className={`flex items-center justify-end gap-3 px-6 py-4 border-t ${playerTheme === 'dark' ? 'border-zinc-800' : 'border-gray-200'}`}>
+              <button
+                onClick={() => setShowDeleteLicenseModal(false)}
+                className={`px-5 py-2.5 rounded-xl ${playerTheme === 'dark' ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'} ${textPrimary} text-sm font-medium transition-colors`}
+              >
+                取消
+              </button>
+              <button
+                onClick={() => void confirmDeleteLicense()}
+                disabled={deleteLicenseCountdown > 0}
+                className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition-all ${deleteLicenseCountdown > 0 ? 'opacity-50 cursor-not-allowed' : 'hover:-translate-y-0.5 hover:shadow-lg'}`}
+                style={{ backgroundColor: '#ef4444', boxShadow: deleteLicenseCountdown > 0 ? undefined : '0 10px 28px rgba(239, 68, 68, 0.24)' }}
+              >
+                确定{deleteLicenseCountdown > 0 ? `（${deleteLicenseCountdown}）` : ''}
+              </button>
             </div>
           </motion.div>
         </motion.div>

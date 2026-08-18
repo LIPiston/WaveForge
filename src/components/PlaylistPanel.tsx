@@ -16,7 +16,7 @@ interface PlaylistPanelProps {
   onSongSelect: (index: number) => void
   neteaseVip?: boolean
   qqVip?: boolean
-  currentPlatform?: 'netease' | 'qq'
+  currentPlatform?: 'netease' | 'qq' | 'apple' | 'spotify' | 'kugou' | 'soda'
   onSmartReorder?: () => void
   isSmartReordering?: boolean
   smartReorderProgress?: { completed: number; total: number }

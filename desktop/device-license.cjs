@@ -113,7 +113,7 @@ function writeStoredCodes(app, codes) {
 
 function decodeBase64Url(value) {
   if (typeof value !== 'string' || !value || !/^[A-Za-z0-9_-]+$/.test(value)) {
-    throw new Error('兑换码格式不正确')
+    throw new Error('测试码格式不正确')
   }
   return Buffer.from(value, 'base64url')
 }
@@ -124,33 +124,33 @@ function hashDeviceId(deviceId) {
 
 function verifyCode(code, deviceId) {
   const normalized = String(code || '').trim()
-  if (!normalized || normalized.length > MAX_CODE_LENGTH) throw new Error('兑换码为空或长度不正确')
+  if (!normalized || normalized.length > MAX_CODE_LENGTH) throw new Error('测试码为空或长度不正确')
   const parts = normalized.split('.')
-  if (parts.length !== 3 || parts[0] !== CODE_PREFIX) throw new Error('兑换码格式不正确')
+  if (parts.length !== 3 || parts[0] !== CODE_PREFIX) throw new Error('测试码格式不正确')
 
   const payloadBuffer = decodeBase64Url(parts[1])
   const signature = decodeBase64Url(parts[2])
-  if (!payloadBuffer.length || payloadBuffer.length > 2048 || signature.length !== 64) throw new Error('兑换码格式不正确')
+  if (!payloadBuffer.length || payloadBuffer.length > 2048 || signature.length !== 64) throw new Error('测试码格式不正确')
   const verified = crypto.verify(null, payloadBuffer, LICENSE_PUBLIC_KEY, signature)
-  if (!verified) throw new Error('兑换码签名无效')
+  if (!verified) throw new Error('测试码签名无效')
 
   let payload
   try {
     payload = JSON.parse(payloadBuffer.toString('utf8'))
   } catch {
-    throw new Error('兑换码内容损坏')
+    throw new Error('测试码内容损坏')
   }
 
   if (payload?.v !== 1 || typeof payload.feature !== 'string' || !payload.feature.trim()) {
-    throw new Error('兑换码版本或功能信息无效')
+    throw new Error('测试码版本或功能信息无效')
   }
-  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(payload.feature)) throw new Error('兑换码功能标识无效')
-  if (payload.deviceHash !== hashDeviceId(deviceId)) throw new Error('此兑换码不属于当前设备')
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(payload.feature)) throw new Error('测试码功能标识无效')
+  if (payload.deviceHash !== hashDeviceId(deviceId)) throw new Error('此测试码不属于当前设备')
 
   const now = Math.floor(Date.now() / 1000)
-  if (!Number.isInteger(payload.issuedAt) || payload.issuedAt <= 0 || payload.issuedAt > now + 300) throw new Error('兑换码签发时间无效')
+  if (!Number.isInteger(payload.issuedAt) || payload.issuedAt <= 0 || payload.issuedAt > now + 300) throw new Error('测试码签发时间无效')
   if (payload.expiresAt != null && (!Number.isInteger(payload.expiresAt) || payload.expiresAt <= payload.issuedAt || payload.expiresAt <= now)) {
-    throw new Error('兑换码已过期')
+    throw new Error('测试码已过期')
   }
 
   return {
@@ -198,11 +198,48 @@ function redeem(app, code) {
   }
 }
 
+function deleteRegistryValue(name) {
+  if (process.platform !== 'win32') return
+  try {
+    execFileSync(getRegExe(), ['DELETE', REGISTRY_KEY, '/v', name, '/f'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+  } catch {
+    // 值不存在时忽略
+  }
+}
+
+/**
+ * 删除设备授权相关全部本地数据（不可逆）：
+ * - 注册表：DeviceId（识别码）与 RedeemedCodes（历史测试码，旧版存储）
+ * - 应用数据目录：device-license.json（兜底文件，含识别码与已兑换测试码）
+ * 下次调用 getState 时会生成全新的设备标识，旧测试码因设备绑定将全部失效。
+ */
+function resetDeviceLicense(app) {
+  const hadRegistry = readRegistryValue(DEVICE_VALUE) !== null || readRegistryValue(LEGACY_CODES_VALUE) !== null
+  deleteRegistryValue(DEVICE_VALUE)
+  deleteRegistryValue(LEGACY_CODES_VALUE)
+
+  const filePath = fallbackPath(app)
+  const hadFile = fs.existsSync(filePath)
+  if (hadFile) {
+    try {
+      fs.unlinkSync(filePath)
+    } catch (error) {
+      console.warn('[DeviceLicense] Failed to remove fallback file:', error.message)
+    }
+  }
+  return { success: true, removed: { registry: hadRegistry, file: hadFile } }
+}
+
 module.exports = {
   REGISTRY_KEY,
   getState,
   getOrCreateDeviceId,
   redeem,
+  resetDeviceLicense,
   verifyCode,
   hashDeviceId,
 }

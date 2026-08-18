@@ -125,7 +125,7 @@ document.cookie
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-8"
+        className="fixed inset-0 z-50 flex items-center justify-center p-8"
         data-tv-scope
         onClick={onClose}
       >

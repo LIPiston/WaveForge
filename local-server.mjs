@@ -17,6 +17,7 @@ import { decryptQrc } from './server/qrc-decoder.mjs'
 import { getCommentMutationMessage, isCommentMutationSuccessful } from './server/comment-api-utils.mjs'
 import { registerHazardRoutes } from './server/hazard-api.mjs'
 import { registerLocationRoutes } from './server/location-api.mjs'
+import { registerBilibiliRoutes } from './server/bilibili-api.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -942,6 +943,7 @@ app.use(express.json({ limit: '12mb' }))
 app.use(express.urlencoded({ extended: true, limit: '12mb' }))
 registerHazardRoutes(app)
 registerLocationRoutes(app)
+registerBilibiliRoutes(app)
 
 const fetchLocationProvider = async (url, normalize) => {
   const controller = new AbortController()
@@ -5013,6 +5015,303 @@ app.get('/api/qq/suggest', async (req, res) => {
   }
 })
 
+// ── 酷狗音乐（kugou.com）代理路由 ─────────────────────────────
+// 公开接口（搜索）由前端 kugouService 直连；以下为需登录的接口（播放直链/歌词）。
+
+/** 酷狗播放数据（wwwapi.kugou.com r=play/getdata，需 kg_token cookie） */
+app.get('/api/kugou/song/url', async (req, res) => {
+  try {
+    const { hash, cookie } = req.query
+    if (!hash) return res.status(400).json({ error: '请提供歌曲 hash' })
+    const kgCookie = cookie ? String(cookie).replace(/^['"]|['"]$/g, '') : ''
+    if (!kgCookie) return res.status(401).json({ error: '酷狗未登录，无法获取播放地址' })
+
+    const url = new URL('https://wwwapi.kugou.com/yy/index.php')
+    url.searchParams.set('r', 'play/getdata')
+    url.searchParams.set('hash', String(hash))
+    url.searchParams.set('dfid', '3H3Ubg0U12Ae3h3Y2D1vQ2XD')
+    url.searchParams.set('appid', '1014')
+    url.searchParams.set('mid', '0')
+    url.searchParams.set('platid', '4')
+
+    const resp = await fetch(url.toString(), {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        Referer: 'https://www.kugou.com/',
+        Cookie: kgCookie,
+      },
+      signal: AbortSignal.timeout(8000),
+    })
+    const text = await resp.text()
+    let json = null
+    try { json = JSON.parse(text) } catch { json = null }
+    const data = json?.data || null
+    if (!data || !data.play_url) {
+      return res.status(403).json({ error: `酷狗播放获取失败（${json?.err_code ?? resp.status}），请确认已登录` })
+    }
+    res.json({ url: data.play_url, songName: data.song_name, author: data.author })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/** 酷狗歌词（需 kg_token cookie） */
+app.get('/api/kugou/lyric', async (req, res) => {
+  try {
+    const { hash, cookie } = req.query
+    if (!hash) return res.status(400).json({ error: '请提供歌曲 hash' })
+    const kgCookie = cookie ? String(cookie).replace(/^['"]|['"]$/g, '') : ''
+    if (!kgCookie) return res.status(401).json({ error: '酷狗未登录' })
+
+    const url = new URL('https://wwwapi.kugou.com/yy/index.php')
+    url.searchParams.set('r', 'play/getdata')
+    url.searchParams.set('hash', String(hash))
+    url.searchParams.set('dfid', '3H3Ubg0U12Ae3h3Y2D1vQ2XD')
+    url.searchParams.set('appid', '1014')
+    url.searchParams.set('mid', '0')
+    url.searchParams.set('platid', '4')
+
+    const resp = await fetch(url.toString(), {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        Referer: 'https://www.kugou.com/',
+        Cookie: kgCookie,
+      },
+      signal: AbortSignal.timeout(8000),
+    })
+    const text = await resp.text()
+    let json = null
+    try { json = JSON.parse(text) } catch { json = null }
+    const data = json?.data || null
+    if (!data) return res.status(403).json({ error: `酷狗歌词获取失败（${json?.err_code ?? resp.status}）` })
+    res.json({ lyric: data.lyrics || '', translation: data.trans || '' })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// ── 酷狗公开接口代理（kugou.com 不返回 CORS 头，渲染进程需经本地服务转发）────────
+
+const KG_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+
+/** 酷狗搜索（songsearch.kugou.com/song_search_v2） */
+app.get('/api/kugou/search', async (req, res) => {
+  try {
+    const { keyword, limit = '30' } = req.query
+    if (!keyword) return res.status(400).json({ error: '请提供关键词' })
+    const url = new URL('https://songsearch.kugou.com/song_search_v2')
+    url.searchParams.set('keyword', String(keyword))
+    url.searchParams.set('page', '1')
+    url.searchParams.set('pagesize', String(limit))
+    url.searchParams.set('platform', 'WebFilter')
+    const resp = await fetch(url.toString(), {
+      headers: { 'User-Agent': KG_UA, Referer: 'https://www.kugou.com/' },
+      signal: AbortSignal.timeout(10000),
+    })
+    const json = await resp.json()
+    res.json(json?.data?.lists || [])
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/** 酷狗榜单分类列表（m.kugou.com/rank/list） */
+app.get('/api/kugou/rank/list', async (_req, res) => {
+  try {
+    const resp = await fetch('https://m.kugou.com/rank/list?json=true&page=1&pagesize=20', {
+      headers: { 'User-Agent': KG_UA },
+      signal: AbortSignal.timeout(10000),
+    })
+    const json = await resp.json()
+    const list = json?.rank?.list || json?.list || []
+    const ranks = list.map(item => ({
+      rankid: String(item.rankid || item.rank_id || ''),
+      rankname: String(item.rankname || ''),
+      img: item.banner_9 || item.img_9 || item.album_img_9 || '',
+      classify: item.classify,
+      playTimes: item.play_times,
+    })).filter(item => item.rankid && item.rankname)
+    res.json(ranks)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/** 酷狗榜单歌曲（m.kugou.com/rank/info） */
+app.get('/api/kugou/rank/info', async (req, res) => {
+  try {
+    const { rankid = '8888', page = '1', pagesize = '30' } = req.query
+    const url = new URL('https://m.kugou.com/rank/info/')
+    url.searchParams.set('rankid', String(rankid))
+    url.searchParams.set('page', String(page))
+    url.searchParams.set('pagesize', String(pagesize))
+    url.searchParams.set('json', 'true')
+    const resp = await fetch(url.toString(), {
+      headers: { 'User-Agent': KG_UA },
+      signal: AbortSignal.timeout(10000),
+    })
+    const json = await resp.json()
+    const info = json?.info || {}
+    const rawSongs = json?.songs?.list || json?.songs || []
+    const songs = rawSongs.map(song => ({
+      hash: String(song.hash || ''),
+      filename: String(song.filename || ''),
+      album_id: String(song.album_id || song.albumId || ''),
+      album_audio_id: String(song.album_audio_id || ''),
+      album_img: String(song.album_img || ''),
+      duration: Number(song.duration || 0),
+      rank: Number(song.rank || 0),
+    }))
+    res.json({ rankname: String(info.rankname || ''), songs })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/** 酷狗歌单列表（m.kugou.com/plist/index） */
+app.get('/api/kugou/playlist/list', async (req, res) => {
+  try {
+    const { page = '1', pagesize = '24' } = req.query
+    const url = new URL('https://m.kugou.com/plist/index')
+    url.searchParams.set('json', 'true')
+    url.searchParams.set('page', String(page))
+    url.searchParams.set('pagesize', String(pagesize))
+    const resp = await fetch(url.toString(), {
+      headers: { 'User-Agent': KG_UA },
+      signal: AbortSignal.timeout(10000),
+    })
+    const json = await resp.json()
+    const info = json?.plist?.list?.info || []
+    const playlists = info.map(item => ({
+      specialid: String(item.specialid || ''),
+      name: String(item.specialname || item.name || ''),
+      img: String(item.img || item.icon || ''),
+      playcount: Number(item.playcount || 0),
+      songcount: Number(item.songcount || 0),
+      songs: Array.isArray(item.songs) ? item.songs.map(s => ({
+        hash: String(s.hash || ''),
+        filename: String(s.filename || ''),
+      })) : [],
+    })).filter(item => item.specialid && item.name)
+    res.json(playlists)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/** 酷狗歌单详情（m.kugou.com/plist/list/{specialid}，HTML 内嵌歌曲行） */
+app.get('/api/kugou/playlist/detail', async (req, res) => {
+  try {
+    const { specialid, page = '1', pagesize = '50' } = req.query
+    if (!specialid) return res.status(400).json({ error: '请提供歌单 ID' })
+    const resp = await fetch(`https://m.kugou.com/plist/list/${String(specialid)}/?json=true&page=${page}&pagesize=${pagesize}`, {
+      headers: { 'User-Agent': KG_UA },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(12000),
+    })
+    // 酷狗移动端页面为 GBK 编码，需按页面字符集解码，否则中文乱码
+    const charset = (resp.headers.get('content-type') || '').match(/charset=([a-z0-9-]+)/i)?.[1]?.toLowerCase() || ''
+    const buffer = Buffer.from(await resp.arrayBuffer())
+    const text = charset === 'gbk' || charset === 'gb2312'
+      ? new TextDecoder('gbk').decode(buffer)
+      : buffer.toString('utf8')
+    let json = null
+    try { json = JSON.parse(text) } catch { json = null }
+    let songs = []
+    let name = ''
+    let img = ''
+    if (json && json.info) {
+      // JSON 响应（移动端接口）
+      const info = json.info || {}
+      name = String(info.specialname || info.name || '')
+      img = String(info.img || '')
+      const rawSongs = json.songs?.list || json.songs || []
+      songs = rawSongs.map(song => ({
+        hash: String(song.hash || ''),
+        filename: String(song.filename || ''),
+        album_id: String(song.album_id || song.albumId || ''),
+        duration: Number(song.duration || 0),
+        album_img: String(song.album_img || ''),
+      })).filter(song => song.hash && song.filename)
+    } else {
+      // HTML 响应：解析歌曲列表行（<a data="hash|时长" title="歌手 - 歌名">）
+      const titleMatch = text.match(/<title>([^<]*?)_精选集[^<]*<\/title>/) || text.match(/<title>([^<]*?)<\/title>/)
+      name = titleMatch ? titleMatch[1].trim() : ''
+      const imgMatch = text.match(/class="cover"[^>]*src="([^"]+)"/) || text.match(/<img[^>]*class="[^"]*cover[^"]*"[^>]*src="([^"]+)"/)
+      if (imgMatch) img = imgMatch[1]
+      const rowRe = /<a\s+title="([^"]+)"[^>]*href="[^"]*"[^>]*data="([A-Fa-f0-9]+)\|(\d+)"/g
+      let m
+      const seen = new Set()
+      while ((m = rowRe.exec(text)) !== null) {
+        const hash = m[2].toUpperCase()
+        if (seen.has(hash)) continue
+        seen.add(hash)
+        songs.push({
+          hash,
+          filename: m[1].trim(),
+          duration: Math.round(Number(m[3]) / 1000),
+          album_id: '',
+          album_img: '',
+        })
+        if (songs.length >= Number(pagesize)) break
+      }
+    }
+    if (songs.length === 0) return res.status(404).json({ error: '歌单不存在或已失效' })
+    res.json({ specialname: name, img, songs })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/** 酷狗用户信息（www.kugou.com r=user/getinfo，需登录 cookie） */
+app.get('/api/kugou/user/info', async (req, res) => {
+  try {
+    const cookie = req.query.cookie ? String(req.query.cookie).replace(/^['"]|['"]$/g, '') : ''
+    const url = new URL('https://www.kugou.com/yy/index.php')
+    url.searchParams.set('r', 'user/getinfo')
+    const resp = await fetch(url.toString(), {
+      headers: { 'User-Agent': KG_UA, Referer: 'https://www.kugou.com/', ...(cookie ? { Cookie: cookie } : {}) },
+      signal: AbortSignal.timeout(8000),
+    })
+    const json = await resp.json()
+    const data = json?.data || json?.user_info || json?.user || {}
+    res.json({
+      nickname: data.nickname || data.user_name || data.userName || data.name || '',
+      user_id: data.user_id || data.userid || data.id || '',
+      avatar: data.avatar || data.head_img || data.headimg || data.user_pic || '',
+    })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/** 酷狗用户歌单（www.kugou.com r=user/getplaylist，需登录 cookie） */
+app.get('/api/kugou/user/playlist', async (req, res) => {
+  try {
+    const cookie = req.query.cookie ? String(req.query.cookie).replace(/^['"]|['"]$/g, '') : ''
+    const url = new URL('https://www.kugou.com/yy/index.php')
+    url.searchParams.set('r', 'user/getplaylist')
+    url.searchParams.set('page', '1')
+    url.searchParams.set('pagesize', '100')
+    const resp = await fetch(url.toString(), {
+      headers: { 'User-Agent': KG_UA, Referer: 'https://www.kugou.com/', ...(cookie ? { Cookie: cookie } : {}) },
+      signal: AbortSignal.timeout(8000),
+    })
+    const json = await resp.json()
+    const lists = json?.data?.list || json?.data || []
+    const playlists = lists.map(item => ({
+      specialid: String(item.specialid || item.id || ''),
+      name: String(item.specialname || item.name || ''),
+      img: String(item.img || item.cover || ''),
+      songcount: Number(item.songcount || 0),
+      playcount: Number(item.playcount || 0),
+    })).filter(item => item.specialid && item.name)
+    res.json(playlists)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
 app.get('/api/qq/song/url', async (req, res) => {
   try {
     const { mid, id, cookie } = req.query
@@ -8988,38 +9287,6 @@ async function callQQRelationList(method, start, num, cookie) {
   return resp.data?.req_0 || resp.data
 }
 
-// QQ 每日签到（music.musichallSignIn.SignIn，需登录 cookie）
-app.get('/api/qq/signin', async (req, res) => {
-  try {
-    const { cookie } = req.query
-    if (!cookie) return res.status(401).json({ result: 500, error: '请先登录 QQ 音乐' })
-    const parsedCookie = parseQQCookie(cookie)
-    const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || '').replace(/\D/g, '')
-    const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
-    if (!musicId || !musicKey) throw new Error('QQ 登录凭证缺少 uin 或 qm_keyst，请重新登录')
-
-    const payload = {
-      comm: {
-        ct: 24, cv: 4747474, platform: 'yqq.json', uin: musicId, qq: musicId,
-        authst: musicKey,
-        tmeLoginType: Number(parsedCookie.tmeLoginType) || Number(parsedCookie.login_type) || undefined,
-        g_tk: qqHash33(musicKey), format: 'json', inCharset: 'utf-8', outCharset: 'utf-8',
-        notice: 0, need_new_code: 1
-      },
-      req_0: { module: 'music.musichallSignIn.SignIn', method: 'MusicSignIn', param: { signinId: 1, force: '0' } }
-    }
-    const resp = await axios.post('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
-      headers: { ...QQ_HEADERS, Cookie: cookie, 'Content-Type': 'application/json' },
-      validateStatus: () => true
-    })
-    const d = resp.data?.req_0 || resp.data
-    res.json({ result: Number(d.code) === 0 ? 100 : Number(d.code), data: d, error: d?.message || d?.submsg || (Number(d.code) !== 0 ? `签到失败（代码 ${d.code}）` : undefined) })
-  } catch (error) {
-    console.error('[QQ每日签到] 操作失败:', error?.message || error)
-    res.status(502).json({ result: 500, error: error?.message || '签到失败' })
-  }
-})
-
 // QQ 关注用户列表
 app.get('/api/qq/user/follows', async (req, res) => {
   try {
@@ -9625,20 +9892,7 @@ app.get('/api/netease/simi/mv', async (req, res) => {
   }
 })
 
-// 网易云每日签到
-app.get('/api/netease/daily/signin', async (req, res) => {
-  try {
-    const { type = 0, cookie } = req.query
-    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
-    if (!NeteaseAPI || !NeteaseAPI.daily_signin) return res.status(500).json({ error: 'API 未初始化' })
-    const result = await callNeteaseAPIWithRetry(NeteaseAPI.daily_signin, { type: Number(type), cookie: String(cookie) })
-    const body = result.body || result
-    res.json(body)
-  } catch (error) {
-    console.error('[网易云每日签到] 获取失败:', error)
-    res.status(502).json({ error: error.message })
-  }
-})
+// 网易云每日签到已移除（自动签到类功能下线）
 
 // 网易云相关博客（网易云 App 歌曲详情"相关博客"，原生 POST 表单 + cookie 过风控）
 app.get('/api/netease/song/blog', async (req, res) => {
@@ -10042,36 +10296,6 @@ app.get('/api/netease/vip/info', async (req, res) => {
     res.json(body)
   } catch (error) {
     console.error('[网易云VIP信息] 获取失败:', error)
-    res.status(502).json({ error: error.message })
-  }
-})
-
-// 网易云黑胶乐签打卡（VIP 每日签到）
-app.post('/api/netease/vip/sign', async (req, res) => {
-  try {
-    const { cookie } = { ...req.query, ...(req.body || {}) }
-    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
-    if (!NeteaseAPI || !NeteaseAPI.vip_sign) return res.status(500).json({ error: 'API 未初始化' })
-    const result = await callNeteaseAPIWithRetry(NeteaseAPI.vip_sign, { cookie: String(cookie) })
-    const body = result.body || result
-    res.json(body)
-  } catch (error) {
-    console.error('[网易云黑胶乐签] 操作失败:', error)
-    res.status(502).json({ error: error.message })
-  }
-})
-
-// 网易云黑胶乐签签到信息
-app.get('/api/netease/vip/sign-info', async (req, res) => {
-  try {
-    const { cookie } = req.query
-    if (!cookie) return res.status(401).json({ code: 301, error: '请先登录网易云音乐' })
-    if (!NeteaseAPI || !NeteaseAPI.vip_sign_info) return res.status(500).json({ error: 'API 未初始化' })
-    const result = await callNeteaseAPIWithRetry(NeteaseAPI.vip_sign_info, { cookie: String(cookie) })
-    const body = result.body || result
-    res.json(body)
-  } catch (error) {
-    console.error('[网易云黑胶乐签信息] 获取失败:', error)
     res.status(502).json({ error: error.message })
   }
 })

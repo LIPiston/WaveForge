@@ -9,14 +9,17 @@
  * 3. 平台级工具函数（标签 / cookie / 播放载体判定）
  */
 
-export type MusicPlatform = 'netease' | 'qq' | 'apple'
+export type MusicPlatform = 'netease' | 'qq' | 'apple' | 'spotify' | 'kugou' | 'soda'
 
-export const MUSIC_PLATFORMS: readonly MusicPlatform[] = ['netease', 'qq', 'apple']
+export const MUSIC_PLATFORMS: readonly MusicPlatform[] = ['netease', 'qq', 'apple', 'spotify', 'kugou', 'soda']
 
 export const PLATFORM_LABELS: Record<MusicPlatform, string> = {
   netease: '网易云音乐',
   qq: 'QQ音乐',
   apple: 'Apple Music',
+  spotify: 'Spotify',
+  kugou: '酷狗音乐',
+  soda: '汽水音乐',
 }
 
 export function platformLabel(platform: MusicPlatform | string | undefined | null): string {
@@ -100,7 +103,7 @@ const NETEASE_CAPABILITIES: PlatformCapabilities = {
   newSongs: true,
   albums: true,
   mv: true,
-  signin: true,
+  signin: false,
   social: true,
   rank: true,
   cloudDisk: true,
@@ -115,7 +118,7 @@ const NETEASE_CAPABILITIES: PlatformCapabilities = {
 
 const QQ_CAPABILITIES: PlatformCapabilities = {
   ...NETEASE_CAPABILITIES,
-  signin: true,
+  signin: false,
   social: true,
   // QQ 无听歌排行 / 云盘
   rank: false,
@@ -159,14 +162,157 @@ const APPLE_CAPABILITIES: PlatformCapabilities = {
   audioQuality: false,
 }
 
+const SPOTIFY_CAPABILITIES: PlatformCapabilities = {
+  login: true,
+  profile: true,
+  userPlaylists: true,
+  createPlaylist: true,
+  deletePlaylist: true,
+  addTracksToPlaylist: true,
+  subscribePlaylist: false,
+  likedSongs: true,
+  likeSong: true,
+  explore: true,
+  // Spotify 官方 API：new releases / featured playlists / categories / 榜单
+  exploreSections: ['discover', 'playlists', 'charts', 'newSongs', 'albums'],
+  search: true,
+  searchSuggest: false,
+  lyrics: true, // 官方无歌词，走 Lrclib/AMLL 兜底
+  comments: false,
+  dailyRecommend: true,
+  charts: true,
+  channels: false,
+  newSongs: true,
+  albums: true,
+  mv: false,
+  signin: false,
+  social: false,
+  rank: false,
+  cloudDisk: false,
+  recentPlayed: true,
+  artistDetail: true,
+  albumDetail: true,
+  similarSongs: false,
+  radio: false,
+  playAsCarrier: true, // 已登录可用官方流（premium），未登录降级跨平台
+  audioQuality: false,
+}
+
+const KUGOU_CAPABILITIES: PlatformCapabilities = {
+  login: true,
+  profile: true,
+  userPlaylists: true,
+  createPlaylist: true,
+  deletePlaylist: true,
+  addTracksToPlaylist: true,
+  subscribePlaylist: true,
+  likedSongs: true,
+  likeSong: true,
+  explore: true,
+  exploreSections: ['discover', 'playlists', 'charts', 'newSongs', 'albums'],
+  search: true,
+  searchSuggest: false,
+  lyrics: true,
+  comments: false,
+  dailyRecommend: true,
+  charts: true,
+  channels: false,
+  newSongs: true,
+  albums: true,
+  mv: true,
+  signin: false, // 酷狗签到接口未实现
+  social: false,
+  rank: false, // 酷狗听歌排行未实现
+  cloudDisk: false,
+  recentPlayed: true,
+  artistDetail: true,
+  albumDetail: true,
+  similarSongs: false,
+  radio: false, // 酷狗 FM 未实现
+  playAsCarrier: true,
+  audioQuality: true,
+}
+
+const SODA_CAPABILITIES: PlatformCapabilities = {
+  login: true,
+  profile: true,
+  userPlaylists: true,
+  createPlaylist: true,
+  deletePlaylist: true,
+  addTracksToPlaylist: true,
+  subscribePlaylist: true,
+  likedSongs: true,
+  likeSong: true,
+  explore: true,
+  exploreSections: ['discover', 'playlists', 'charts', 'newSongs', 'albums'],
+  search: true,
+  searchSuggest: false,
+  lyrics: true,
+  comments: false,
+  dailyRecommend: true,
+  charts: true,
+  channels: false,
+  newSongs: true,
+  albums: true,
+  mv: false,
+  signin: false, // 汽水签到接口未实现
+  social: false,
+  rank: false, // 汽水听歌排行未实现
+  cloudDisk: false,
+  recentPlayed: true,
+  artistDetail: true,
+  albumDetail: true,
+  similarSongs: false,
+  radio: false, // 汽水 FM 未实现
+  playAsCarrier: true,
+  audioQuality: true,
+}
+
 export const PLATFORM_CAPABILITIES: Record<MusicPlatform, PlatformCapabilities> = {
   netease: NETEASE_CAPABILITIES,
   qq: QQ_CAPABILITIES,
   apple: APPLE_CAPABILITIES,
+  spotify: SPOTIFY_CAPABILITIES,
+  kugou: KUGOU_CAPABILITIES,
+  soda: SODA_CAPABILITIES,
 }
 
 export function getPlatformCapabilities(platform: MusicPlatform): PlatformCapabilities {
   return PLATFORM_CAPABILITIES[platform] || NETEASE_CAPABILITIES
+}
+
+// ─────────────────────────── 平台排序（用户自定义，三模式继承） ───────────────────────────
+
+const PLATFORM_ORDER_KEY = 'waveforge:platformOrder'
+export const PLATFORM_ORDER_EVENT = 'waveforge-platform-order-changed'
+
+/** 用户自定义平台顺序（缺省 = MUSIC_PLATFORMS 默认顺序） */
+export function getPlatformOrder(): MusicPlatform[] {
+  try {
+    const raw = localStorage.getItem(PLATFORM_ORDER_KEY)
+    if (!raw) return [...MUSIC_PLATFORMS]
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return [...MUSIC_PLATFORMS]
+    const valid = parsed.filter((p): p is MusicPlatform => MUSIC_PLATFORMS.includes(p as MusicPlatform))
+    // 补全缺失平台，去重
+    const set = new Set(valid)
+    const merged = [...valid, ...MUSIC_PLATFORMS.filter(p => !set.has(p))]
+    return merged
+  } catch {
+    return [...MUSIC_PLATFORMS]
+  }
+}
+
+/** 保存用户平台顺序（触发 PLATFORM_ORDER_EVENT） */
+export function setPlatformOrder(order: MusicPlatform[]): void {
+  const valid = order.filter((p, i, arr) => MUSIC_PLATFORMS.includes(p) && arr.indexOf(p) === i)
+  if (valid.length === 0) return
+  try {
+    localStorage.setItem(PLATFORM_ORDER_KEY, JSON.stringify(valid))
+    window.dispatchEvent(new CustomEvent(PLATFORM_ORDER_EVENT, { detail: { order: valid } }))
+  } catch {
+    // 忽略
+  }
 }
 
 // ─────────────────────────── 平台可见性（隐藏平台） ───────────────────────────
@@ -188,10 +334,11 @@ export function getHiddenPlatforms(): MusicPlatform[] {
   }
 }
 
-/** 当前应显示的平台列表（至少保留一个平台，防止切换器失效） */
+/** 当前应显示的平台列表（按用户自定义顺序，至少保留一个平台） */
 export function getVisiblePlatforms(): MusicPlatform[] {
   const hidden = new Set(getHiddenPlatforms())
-  const visible = MUSIC_PLATFORMS.filter(platform => !hidden.has(platform))
+  const order = getPlatformOrder()
+  const visible = order.filter(platform => !hidden.has(platform))
   return visible.length > 0 ? visible : ['netease']
 }
 
@@ -214,11 +361,14 @@ export function setPlatformHidden(platform: MusicPlatform, hidden: boolean): voi
   window.dispatchEvent(new CustomEvent(PLATFORM_VISIBILITY_EVENT, { detail: { hidden: nextHidden } }))
 }
 
-/** 平台 cookie（apple 无需 cookie，登录走 Developer Token / Media-User-Token） */
+/** 平台 cookie/token（spotify 走 OAuth token，apple 走 Developer Token + Media-User-Token） */
 export function getPlatformCookie(platform: MusicPlatform): string {
   if (platform === 'qq') {
     return localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
   }
   if (platform === 'apple') return ''
+  if (platform === 'spotify') return localStorage.getItem('spotify_access_token') || ''
+  if (platform === 'kugou') return localStorage.getItem('kugou_cookie') || ''
+  if (platform === 'soda') return localStorage.getItem('soda_token') || ''
   return localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
 }

@@ -143,7 +143,7 @@ export interface ElectronAPI {
       enabled: boolean
       registrations: Record<string, boolean>
     }>
-    onControl: (callback: (action: 'toggle' | 'next' | 'prev') => void) => () => void
+    onControl: (callback: (action: string, payload?: any) => void) => () => void
   }
   audio: {
     getSystemVolume: () => Promise<{ success: boolean; volume: number }>
@@ -176,6 +176,14 @@ export interface ElectronAPI {
   appleFetchProfile: (profileUrl: string) => Promise<{ ok: boolean; status: number; html?: string; error?: string }>
   /** Apple 账号页面（Apple ID / Apple Account，带全量会话 cookie 解析名字与头像） */
   appleFetchAccount: (cookies: string) => Promise<{ ok: boolean; status: number; html?: string; error?: string }>
+  /** 酷狗音乐登录（Electron 弹窗扫码，抓 kg_token） */
+  openKugouLoginWindow: () => Promise<{ success: boolean; cookie?: string; error?: string }>
+  /** Spotify OAuth 授权（Electron 弹窗） */
+  openSpotifyLogin: () => Promise<{ success: boolean; username?: string; error?: string }>
+  /** Spotify 授权完成回调 */
+  onSpotifyAuthResult: (callback: (result: { success: boolean; accessToken?: string; refreshToken?: string; username?: string; avatar?: string; userId?: string; error?: string }) => void) => () => void
+  /** 汽水音乐登录（Electron 弹窗扫码，抓 token） */
+  openSodaLogin: () => Promise<{ success: boolean; token?: string; username?: string; error?: string }>
   /** 渲染进程日志转发到主进程控制台（后台窗口可见） */
   log: (message: string) => void
   wallpaper: {
@@ -191,6 +199,7 @@ export interface ElectronAPI {
     copyDeviceId: () => Promise<DeviceIdentityResult>
     readClipboard?: () => Promise<{ success: true; text: string } | { success: false; error: string }>
     redeem: (code: string) => Promise<DeviceRedeemResult>
+    reset: () => Promise<{ success: boolean; removed?: { registry: boolean; file: boolean }; error?: string }>
   }
   render: {
     transition: (plan: TransitionPlan, sourceAudioPath: string, targetAudioPath: string) => Promise<{ 
@@ -242,7 +251,7 @@ export interface ElectronAPI {
       partial: Partial<
         Pick<
           DesktopPlayerSnapshot,
-          'song' | 'lyric' | 'playing' | 'spectrum' | 'accentColor' | 'playlist' | 'currentIndex' | 'progress' | 'hasTranslation' | 'hasRomaji' | 'volume' | 'muted' | 'page'
+          'song' | 'lyric' | 'playing' | 'spectrum' | 'accentColor' | 'playlist' | 'currentIndex' | 'progress' | 'duration' | 'hasTranslation' | 'hasRomaji' | 'volume' | 'muted' | 'page'
         >
       >
     ) => void
@@ -371,6 +380,7 @@ export interface DesktopPlayerSnapshot {
   playlist: DesktopPlayerPlaylistItem[]
   currentIndex: number
   progress: number
+  duration: number
   hasTranslation: boolean
   hasRomaji: boolean
   volume: number

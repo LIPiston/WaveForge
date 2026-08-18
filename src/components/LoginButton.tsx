@@ -6,12 +6,15 @@ import type { AppleUserInfo } from '../services/appleAuth'
 import LoginPanel from './LoginPanel'
 import QQLoginPanel from './QQLoginPanel'
 import AppleLoginPanel from './AppleLoginPanel'
+import KugouLoginPanel from './KugouLoginPanel'
+import SpotifyLoginPanel from './SpotifyLoginPanel'
+import SodaLoginPanel from './SodaLoginPanel'
 
 interface LoginButtonProps {
   platform: MusicPlatform
   isLoggedIn: boolean
   username?: string
-  onLogin: (cookie: string) => void
+  onLogin: (cookie: string, username?: string) => void
   onLogout: () => void
   /** Apple 登录成功/退出的回调（user 为 null 表示面板内退出） */
   onAppleLogin?: (user: AppleUserInfo | null) => void
@@ -21,15 +24,21 @@ interface LoginButtonProps {
 export default function LoginButton({ platform, isLoggedIn, username, onLogin, onLogout, onAppleLogin, playerTheme = 'dark' }: LoginButtonProps) {
   const [showLoginPanel, setShowLoginPanel] = useState(false)
   
-  const platformName = platform === 'netease' ? '网易云' : platform === 'qq' ? 'QQ音乐' : 'Apple Music'
+  const platformName = platform === 'netease' ? '网易云' : platform === 'qq' ? 'QQ音乐' : platform === 'apple' ? 'Apple Music' : platform === 'spotify' ? 'Spotify' : platform === 'kugou' ? '酷狗音乐' : '汽水音乐'
   const platformColor = platform === 'netease'
     ? 'bg-red-600 hover:bg-red-700'
     : platform === 'qq'
       ? 'bg-green-600 hover:bg-green-700'
-      : 'bg-pink-600 hover:bg-pink-700'
+      : platform === 'apple'
+        ? 'bg-pink-600 hover:bg-pink-700'
+        : platform === 'spotify'
+          ? 'bg-[#1DB954] hover:bg-[#17a74b]'
+          : platform === 'kugou'
+            ? 'bg-orange-500 hover:bg-orange-600'
+            : 'bg-sky-500 hover:bg-sky-600'
 
-  const handleLoginSuccess = (cookie: string) => {
-    onLogin(cookie)
+  const handleLoginSuccess = (cookie: string, extraUsername?: string) => {
+    onLogin(cookie, extraUsername)
     setShowLoginPanel(false)
   }
 
@@ -89,6 +98,34 @@ export default function LoginButton({ platform, isLoggedIn, username, onLogin, o
           }}
         />
       )}
+
+      {showLoginPanel && platform === 'kugou' && (
+        <KugouLoginPanel
+          onClose={() => setShowLoginPanel(false)}
+          onLoginSuccess={handleLoginSuccess}
+        />
+      )}
+
+      {showLoginPanel && platform === 'spotify' && (
+        <SpotifyLoginPanel
+          onClose={() => setShowLoginPanel(false)}
+          onLoginSuccess={(username) => {
+            onLogin('spotify-logged', username)
+            setShowLoginPanel(false)
+          }}
+        />
+      )}
+
+      {showLoginPanel && platform === 'soda' && (
+        <SodaLoginPanel
+          onClose={() => setShowLoginPanel(false)}
+          onLoginSuccess={(token) => {
+            onLogin(token)
+            setShowLoginPanel(false)
+          }}
+        />
+      )}
     </>
   )
 }
+

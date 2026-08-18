@@ -170,8 +170,36 @@ async function fetchUserPlaylists(
   userId: string,
   username?: string
 ): Promise<any[]> {
-  if (!userId.trim()) return []
   console.log('🌐 从服务器获取用户歌单列表')
+  
+  // Spotify：我的歌单（token 驱动，无需 userId）
+  if (platform === 'spotify') {
+    const { fetchSpotifyMyPlaylists } = await import('./spotifyService')
+    const playlists = await fetchSpotifyMyPlaylists(50)
+    return playlists.map(p => ({
+      id: p.id,
+      name: p.name,
+      coverImgUrl: p.coverUrl || '',
+      trackCount: 0,
+      platform: 'spotify',
+    }))
+  }
+  // 酷狗：用户歌单（需登录 cookie，经代理）
+  if (platform === 'kugou') {
+    const { fetchKugouUserPlaylists } = await import('./kugouService')
+    const playlists = await fetchKugouUserPlaylists()
+    return playlists.map(p => ({
+      id: p.specialid,
+      name: p.name,
+      coverImgUrl: p.coverUrl || '',
+      trackCount: p.songcount || 0,
+      playCount: p.playcount || 0,
+      platform: 'kugou',
+    }))
+  }
+  // 汽水：暂无用户歌单接口，返回空（不报错）
+  if (platform === 'soda') return []
+  if (!userId.trim()) return []
   
   // 获取 cookie（如果有）
   const cookie = platform === 'qq' 
@@ -345,7 +373,8 @@ export async function getUserPlaylists(
   username?: string,
   options: PlaylistOptions = {}
 ): Promise<any[]> {
-  if (!userId.trim()) return []
+  // Spotify 用 token 拉歌单，不依赖 userId；其余平台需要 userId
+  if (platform !== 'spotify' && !userId.trim()) return []
   const cacheKey = getUserPlaylistsCacheKey(platform, userId)
   const bypassCache = options.forceRefresh || options.skipCache
   const requestGeneration = cacheGeneration
@@ -405,6 +434,30 @@ export async function getPlaylistDetail(
 ): Promise<any> {
   console.log(`🌐 从服务器获取歌单详情: ${playlistId}`)
   const devMode = localStorage.getItem('developerMode') === 'true'
+  // Spotify：官方 API 歌单详情（前端直连）
+  if (platform === 'spotify') {
+    const { fetchSpotifyPlaylist, spotifyTrackToSong } = await import('./spotifyService')
+    const tracks = await fetchSpotifyPlaylist(playlistId)
+    return {
+      playlist: { id: playlistId, name: 'Spotify 歌单' },
+      tracks: tracks.map(t => spotifyTrackToSong(t)),
+      privileges: { 1: true, 0: true },
+    }
+  }
+  // 酷狗：本地代理歌单详情（尽力而为，失败返回空）
+  if (platform === 'kugou') {
+    const { fetchKugouPlaylistDetail, kugouTrackToSong } = await import('./kugouService')
+    const tracks = await fetchKugouPlaylistDetail(playlistId)
+    return {
+      playlist: { id: playlistId, name: '酷狗歌单' },
+      tracks: tracks.map(t => kugouTrackToSong(t)),
+      privileges: { 1: true, 0: true },
+    }
+  }
+  // 汽水音乐：暂不支持歌单详情
+  if (platform === 'soda') {
+    return { playlist: { id: playlistId, name: '汽水歌单' }, tracks: [], privileges: {} }
+  }
   const url = platform === 'netease'
     ? `http://localhost:3001/api/netease/playlist/detail?id=${encodeURIComponent(playlistId)}&cookie=${encodeURIComponent(localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || '')}`
     : `http://localhost:3001/api/qq/playlist/detail?id=${playlistId}&devMode=${devMode}&cookie=${encodeURIComponent(localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || '')}`

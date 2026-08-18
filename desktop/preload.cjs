@@ -36,7 +36,7 @@ contextBridge.exposeInMainWorld('electron', {
   mediaKeys: {
     setEnabled: (enabled) => ipcRenderer.invoke('media-keys:set-enabled', enabled),
     onControl: (callback) => {
-      const listener = (_event, action) => callback(action)
+      const listener = (_event, action, payload) => callback(action, payload)
       ipcRenderer.on('global-media-key', listener)
       return () => ipcRenderer.removeListener('global-media-key', listener)
     },
@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld('electron', {
     copyDeviceId: () => ipcRenderer.invoke('device-license:copy-id'),
     readClipboard: () => ipcRenderer.invoke('device-license:read-clipboard'),
     redeem: (code) => ipcRenderer.invoke('device-license:redeem', code),
+    reset: () => ipcRenderer.invoke('device-license:reset'),
   },
   
   // AutoMix 本地分析与缓存
@@ -136,6 +137,34 @@ contextBridge.exposeInMainWorld('electron', {
   
   // QQ 音乐登录
   openQQLoginWindow: () => ipcRenderer.invoke('open-qq-login-window'),
+  // 酷狗音乐登录（Electron 弹窗扫码，抓 kg_token/KuGoo）
+  openKugouLoginWindow: () => ipcRenderer.invoke('open-kugou-login-window'),
+  // 读取当前会话的酷狗登录态（启动时自动恢复）
+  getKugouSession: () => ipcRenderer.invoke('get-kugou-session'),
+  // Spotify OAuth 授权（Electron 弹窗）
+  openSpotifyLogin: () => ipcRenderer.invoke('open-spotify-login'),
+  // 汽水音乐登录（Electron 弹窗扫码，抓 token）
+  openSodaLogin: () => ipcRenderer.invoke('open-soda-login'),
+  // 汽水音乐（抖音）数据桥：隐藏窗口导航抖音搜索页抓取音乐卡片
+  sodaScrapeSearch: (keyword) => ipcRenderer.invoke('soda-scrape-search', keyword),
+  // Spotify 授权完成后回调（主进程返回 token/用户名）
+  onSpotifyAuthResult: (callback) => {
+    const listener = (_event, result) => callback(result)
+    ipcRenderer.on('spotify-auth-result', listener)
+    return () => ipcRenderer.removeListener('spotify-auth-result', listener)
+  },
+  // 酷狗登录完成后回调（主进程返回用户名/ID/头像）
+  onKugouAuthResult: (callback) => {
+    const listener = (_event, result) => callback(result)
+    ipcRenderer.on('kugou-auth-result', listener)
+    return () => ipcRenderer.removeListener('kugou-auth-result', listener)
+  },
+  // 汽水登录完成后回调（主进程返回用户名/头像）
+  onSodaAuthResult: (callback) => {
+    const listener = (_event, result) => callback(result)
+    ipcRenderer.on('soda-auth-result', listener)
+    return () => ipcRenderer.removeListener('soda-auth-result', listener)
+  },
 
   // Apple Music 网页一键登录：内置窗口登录 Apple ID，自动抓取凭据
   appleLogin: () => ipcRenderer.invoke('apple-login'),

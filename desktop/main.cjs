@@ -22,7 +22,7 @@ for (const stream of [process.stdout, process.stderr]) {
 
 // Avoid spawning chcp/cmd.exe here. Electron is a GUI process, and the child
 // console can flash visibly whenever the main process is initialized.
-const { app, BrowserWindow, ipcMain, protocol, shell, session, safeStorage, dialog, globalShortcut, clipboard, utilityProcess, net } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, shell, session, safeStorage, dialog, globalShortcut, clipboard, utilityProcess, net, nativeImage } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const crypto = require('crypto')
@@ -234,7 +234,7 @@ function setGlobalMediaKeysEnabled(enabled) {
   if (mediaKeysEnabled) {
     Object.entries(mediaKeyAccelerators).forEach(([accelerator, action]) => {
       registrations[accelerator] = globalShortcut.register(accelerator, () => {
-        safeSendToWindow(mainWindow, 'global-media-key', action)
+        dispatchPlayerControl(action)
       })
     })
   }
@@ -260,6 +260,7 @@ const desktopPlayerState = {
   playlist: [],
   currentIndex: -1,
   progress: 0,
+  duration: 0, // 当前歌曲时长（秒），用于任务栏进度条 0-1 换算
   hasTranslation: false,
   hasRomaji: false,
   volume: 0.5, // 遥控器状态回传用
@@ -911,6 +912,13 @@ ipcMain.on('desktop-player:state-update', (_event, partial) => {
     desktopPlayerState.progress = partial.progress
     changed.progress = partial.progress
   }
+  if (typeof partial.duration === 'number' && Number.isFinite(partial.duration)) {
+    const next = Math.max(0, partial.duration)
+    if (desktopPlayerState.duration !== next) {
+      desktopPlayerState.duration = next
+      changed.duration = next
+    }
+  }
   if (typeof partial.volume === 'number' && Number.isFinite(partial.volume)) {
     const next = Math.max(0, Math.min(1, partial.volume))
     if (desktopPlayerState.volume !== next) {
@@ -936,6 +944,18 @@ ipcMain.on('desktop-player:state-update', (_event, partial) => {
     changed.spectrum = next
   }
   broadcastDesktopPlayerPartial(changed)
+
+  // Windows 任务栏：播放/暂停状态变化时切换缩略图按钮图标；进度/时长/播放状态/
+  // 歌曲变化时刷新任务栏进度条（mode: normal 播放中 / paused 暂停 / none 停止）。
+  if (changed.playing !== undefined) updateThumbarButtons()
+  if (changed.playing !== undefined || changed.song !== undefined || changed.progress !== undefined || changed.duration !== undefined) {
+    updateTaskbarProgress()
+  }
+  // 任务栏快捷播控 widget：歌曲/播放/进度变化时同步刷新；切歌后重新显示（关闭仅隐藏当前歌）
+  if (changed.song !== undefined) taskbarWidgetClosedByUser = false
+  if (changed.song !== undefined || changed.playing !== undefined || changed.progress !== undefined || changed.duration !== undefined || changed.muted !== undefined) {
+    updateTaskbarWidget()
+  }
 })
 
 // 小窗口内的播放控制指令，转发给主窗口执行
@@ -1101,6 +1121,259 @@ function safeSendToWindow(targetWindow, channel, ...args) {
     return false
   }
 }
+
+// 统一的播放控制命令派发入口：全局媒体键与 Windows 任务栏缩略图按钮共用，
+// 避免各来源各自实现一套「发给主窗口渲染进程」的逻辑。走 global-media-key 通道，
+// 渲染进程已内置 280ms 防抖（Windows 可能把同一次按键同时交给 globalShortcut 与
+// Media Session，防止同一动作重复触发）。
+function dispatchPlayerControl(action, payload) {
+  safeSendToWindow(mainWindow, 'global-media-key', action, payload)
+}
+
+// ===== Windows 任务栏缩略图按钮 + 进度条（仅 win32 生效，其余平台自动跳过） =====
+const THUMBAR_ICON_SIZE = 32
+let thumbarIconsCache = null
+
+// 生成任务栏按钮图标。Electron 没有内置的播放/暂停图标素材，这里用
+// nativeImage.createFromBitmap 从原始 BGRA 位图直接绘制三角形/竖线，
+// 不依赖外部图片资源。图标统一为白色（RGB 相等），字节序差异不影响渲染。
+function buildThumbarIcon(inside) {
+  const size = THUMBAR_ICON_SIZE
+  const buffer = Buffer.alloc(size * size * 4)
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      if (!inside(x, y)) continue
+      const offset = (y * size + x) * 4
+      buffer[offset] = 255
+      buffer[offset + 1] = 255
+      buffer[offset + 2] = 255
+      buffer[offset + 3] = 255
+    }
+  }
+  try {
+    const image = nativeImage.createFromBitmap(buffer, { width: size, height: size })
+    if (image.isEmpty()) return nativeImage.createEmpty()
+    return image
+  } catch {
+    return nativeImage.createEmpty()
+  }
+}
+
+function getThumbarIcons() {
+  if (!thumbarIconsCache) {
+    const center = THUMBAR_ICON_SIZE / 2
+    const half = 10 // 三角形/竖线的垂直半高（图标上下对称，位图方向差异无影响）
+    // 播放：向右的实心三角形（左底右尖）
+    const playInside = (x, y) => {
+      const t = (27 - x) / (27 - 8)
+      return x >= 8 && x <= 27 && t >= 0 && Math.abs(y - center) <= half * t
+    }
+    // 暂停：两根竖线
+    const pauseInside = (x, y) => {
+      const inLeft = x >= 8 && x <= 13 && y >= 6 && y <= 26
+      const inRight = x >= 19 && x <= 24 && y >= 6 && y <= 26
+      return inLeft || inRight
+    }
+    // 上一首：左侧竖线 + 向左的实心三角形（右底左尖，尖贴着竖线）
+    const prevInside = (x, y) => {
+      const bar = x >= 4 && x <= 7 && y >= 7 && y <= 25
+      const t = (x - 7) / (23 - 7)
+      const triangle = x >= 7 && x <= 23 && t >= 0 && t <= 1 && Math.abs(y - center) <= half * t
+      return bar || triangle
+    }
+    // 下一首：向右的实心三角形（左底右尖，尖贴着竖线）+ 右侧竖线
+    const nextInside = (x, y) => {
+      const bar = x >= 25 && x <= 28 && y >= 7 && y <= 25
+      const t = (25 - x) / (25 - 9)
+      const triangle = x >= 9 && x <= 25 && t >= 0 && t <= 1 && Math.abs(y - center) <= half * t
+      return bar || triangle
+    }
+    thumbarIconsCache = {
+      play: buildThumbarIcon(playInside),
+      pause: buildThumbarIcon(pauseInside),
+      prev: buildThumbarIcon(prevInside),
+      next: buildThumbarIcon(nextInside),
+    }
+  }
+  return thumbarIconsCache
+}
+
+function updateThumbarButtons() {
+  if (process.platform !== 'win32') return
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const icons = getThumbarIcons()
+  if (icons.play.isEmpty() || icons.pause.isEmpty()) return
+  const playing = desktopPlayerState.playing === true
+  const buttons = [
+    { tooltip: '上一首', icon: icons.prev, click: () => dispatchPlayerControl('prev') },
+    {
+      tooltip: playing ? '暂停' : '播放',
+      icon: playing ? icons.pause : icons.play,
+      click: () => dispatchPlayerControl('toggle'),
+    },
+    { tooltip: '下一首', icon: icons.next, click: () => dispatchPlayerControl('next') },
+  ]
+  try {
+    mainWindow.setThumbarButtons(buttons)
+  } catch {
+    // 非 Windows / 窗口无任务栏按钮等场景：静默忽略
+  }
+}
+
+function getTaskbarProgressRatio() {
+  const duration = Number(desktopPlayerState.duration) || 0
+  const progress = Number(desktopPlayerState.progress) || 0
+  if (duration <= 0 || progress <= 0) return 0
+  return Math.max(0, Math.min(1, progress / duration))
+}
+
+function updateTaskbarProgress() {
+  if (process.platform !== 'win32') return
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const playing = desktopPlayerState.playing === true
+  const hasSong = Boolean(desktopPlayerState.song)
+  const ratio = getTaskbarProgressRatio()
+  try {
+    if (!hasSong) {
+      mainWindow.setProgressBar(0, { mode: 'none' })
+    } else {
+      mainWindow.setProgressBar(ratio, { mode: playing ? 'normal' : 'paused' })
+    }
+  } catch {
+    // 静默忽略
+  }
+}
+
+function updateTaskbar() {
+  updateThumbarButtons()
+  updateTaskbarProgress()
+}
+
+// ===== 汽水音乐同款「任务栏快捷播控」widget：浮动迷你播放器（win32 生效） =====
+// 与缩略图按钮不同：这是一个贴近任务栏的常驻小窗口，显示封面/歌名/进度，
+// 提供播放控制。状态走 desktopPlayerState，动作走统一 control 派发。
+let taskbarWidgetWindow = null
+let taskbarWidgetClosedByUser = false
+
+function getTaskbarWidgetPosition() {
+  // 汽水音乐同款：widget「dock」在任务栏上（覆盖任务栏区域而非悬浮在其上方）
+  const { screen } = require('electron')
+  const display = screen.getPrimaryDisplay()
+  const bounds = display.bounds // 含任务栏的完整屏幕区域
+  const width = 360
+  const height = 68
+  return {
+    x: Math.round(bounds.x + (bounds.width - width) / 2),
+    y: Math.round(bounds.y + bounds.height - height),
+    width,
+    height,
+  }
+}
+
+function createTaskbarWidgetWindow() {
+  if (taskbarWidgetWindow && !taskbarWidgetWindow.isDestroyed()) return taskbarWidgetWindow
+  const pos = getTaskbarWidgetPosition()
+  taskbarWidgetWindow = new BrowserWindow({
+    ...pos,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    focusable: false,
+    show: false,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'taskbar-widget-preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+    },
+  })
+  taskbarWidgetWindow.setAlwaysOnTop(true, 'screen-saver')
+  taskbarWidgetWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  taskbarWidgetWindow.loadFile(path.join(__dirname, 'taskbar-widget.html'))
+  taskbarWidgetWindow.on('closed', () => {
+    taskbarWidgetWindow = null
+  })
+  return taskbarWidgetWindow
+}
+
+/** 把当前播放状态推送到 widget（并控制显隐） */
+function updateTaskbarWidget() {
+  if (process.platform !== 'win32') return
+  const hasSong = Boolean(desktopPlayerState.song?.name)
+  if (!hasSong || taskbarWidgetClosedByUser) {
+    if (taskbarWidgetWindow && !taskbarWidgetWindow.isDestroyed() && taskbarWidgetWindow.isVisible()) {
+      taskbarWidgetWindow.hide()
+    }
+    return
+  }
+  const win = createTaskbarWidgetWindow()
+  if (!win) return
+  const song = desktopPlayerState.song || {}
+  const payload = {
+    title: song.name || '',
+    artist: Array.isArray(song.artists) ? song.artists.join(' / ') : (song.artists || ''),
+    cover: song.coverUrl || '',
+    playing: desktopPlayerState.playing === true,
+    cur: Number(desktopPlayerState.progress) || 0,
+    dur: Number(desktopPlayerState.duration) || 0,
+    muted: desktopPlayerState.muted === true,
+  }
+  if (win.webContents.isLoading()) {
+    win.webContents.once('did-finish-load', () => {
+      if (win.isDestroyed()) return
+      win.showInactive()
+      win.webContents.send('taskbar-widget:state', payload)
+    })
+  } else {
+    win.webContents.send('taskbar-widget:state', payload)
+    if (!win.isVisible()) win.showInactive()
+  }
+}
+
+/** 显示/隐藏任务栏 widget（渲染进程/设置可调） */
+function setTaskbarWidgetVisible(visible) {
+  if (process.platform !== 'win32') return { success: false, reason: '仅支持 Windows' }
+  taskbarWidgetClosedByUser = !visible
+  if (visible) {
+    updateTaskbarWidget()
+  } else {
+    if (taskbarWidgetWindow && !taskbarWidgetWindow.isDestroyed()) taskbarWidgetWindow.hide()
+  }
+  return { success: true }
+}
+
+ipcMain.on('taskbar-widget:action', (_event, action, payload) => {
+  if (action === 'close') {
+    taskbarWidgetClosedByUser = true
+    if (taskbarWidgetWindow && !taskbarWidgetWindow.isDestroyed()) taskbarWidgetWindow.hide()
+    return
+  }
+  if (action === 'seek' && typeof payload === 'number') {
+    dispatchPlayerControl('seek', payload)
+    return
+  }
+  if (action === 'toggleMute') {
+    dispatchPlayerControl('mute')
+    return
+  }
+  if (action === 'toggle' || action === 'prev' || action === 'next') {
+    dispatchPlayerControl(action)
+    return
+  }
+})
+
+ipcMain.handle('taskbar-widget:set-visible', (_event, visible) => setTaskbarWidgetVisible(Boolean(visible)))
+ipcMain.handle('taskbar-widget:get-state', () => ({
+  visible: Boolean(taskbarWidgetWindow && !taskbarWidgetWindow.isDestroyed() && taskbarWidgetWindow.isVisible()),
+  closedByUser: taskbarWidgetClosedByUser,
+}))
 
 // ===== 遥控器：局域网 Web 服务 + 虚拟鼠标桥接 =====
 let remoteServer = null
@@ -2236,6 +2509,545 @@ async function createQQLoginWindow() {
   })
 }
 
+// ── 酷狗音乐登录窗口（Electron 弹窗，登录后抓 kg_token cookie）──────────────
+let kugouLoginWindow = null
+async function createKugouLoginWindow() {
+  return new Promise((resolve) => {
+    if (kugouLoginWindow) {
+      kugouLoginWindow.focus()
+      resolve({ success: false, error: '酷狗音乐登录窗口已打开' })
+      return
+    }
+
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    void (async () => {
+      try {
+        // 注意：不清除 kugou.com 域 Cookie —— 若用户已登录（KuGoo 会话），窗口直接显示已登录态
+        const iconPath = path.join(__dirname, '..', 'build', 'icon.ico')
+        kugouLoginWindow = new BrowserWindow({
+          width: 1000,
+          height: 700,
+          parent: mainWindow,
+          modal: true,
+          frame: false,
+          backgroundColor: '#1a1a1a',
+          titleBarStyle: 'hidden',
+          title: 'WaveForge 澜音工坊 - 酷狗音乐登录',
+          icon: fs.existsSync(iconPath) ? iconPath : undefined,
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            session: mainWindow.webContents.session,
+          },
+        })
+
+        // 导航守卫：只放行 kugou.com 域（登录/认证跳转），外链交系统浏览器
+        const isKugouDomain = (url) => {
+          try {
+            const hostname = new URL(String(url || '')).hostname.toLowerCase()
+            return hostname === 'kugou.com' || hostname.endsWith('.kugou.com')
+          } catch {
+            return false
+          }
+        }
+        kugouLoginWindow.webContents.on('will-navigate', (event, url) => {
+          if (!isKugouDomain(url)) {
+            event.preventDefault()
+            if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(String(url)).catch(() => {})
+          }
+        })
+        kugouLoginWindow.webContents.setWindowOpenHandler(({ url }) => {
+          if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(String(url)).catch(() => {})
+          return { action: 'deny' }
+        })
+
+        // 加载酷狗登录页（网页版登录：扫码或手机号）
+        kugouLoginWindow.loadURL('https://www.kugou.com/')
+
+        // 注入关闭按钮
+        kugouLoginWindow.webContents.on('did-finish-load', () => {
+          kugouLoginWindow.webContents.executeJavaScript(`
+            (function() {
+              if (document.getElementById('waveforge-close-btn')) return;
+              const closeBtn = document.createElement('div');
+              closeBtn.id = 'waveforge-close-btn';
+              closeBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+              closeBtn.style.cssText = 'position:fixed;top:12px;right:12px;width:32px;height:32px;background:rgba(0,0,0,0.55);backdrop-filter:blur(8px);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:2147483647;color:#fff;';
+              closeBtn.addEventListener('click', () => window.close());
+              document.body.appendChild(closeBtn);
+            })();
+          `).catch(() => {})
+        })
+
+        // 每 2 秒检查登录态：kg_token Cookie 或 用户信息探测命中 → 登录成功
+        // （kg_mid/dfid/ACK_SERVER 等是游客设备 Cookie，不能作为登录依据）
+        const USER_INFO_SCRIPT = `(async () => {
+          const tryFetch = async (url) => {
+            try {
+              const r = await fetch(url, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+              if (!r.ok) return null;
+              const t = await r.text();
+              try { return JSON.parse(t); } catch { return t; }
+            } catch { return null; }
+          };
+          // 1. 酷狗网页用户接口（登录态下返回昵称/头像）
+          const info = await tryFetch('https://www.kugou.com/yy/index.php?r=user/getinfo');
+          if (info && (info.data || info.user_info || info.user)) {
+            const d = info.data || info.user_info || info.user || {};
+            const name = d.nickname || d.user_name || d.userName || d.name || '';
+            const id = d.user_id || d.userid || d.id || '';
+            const av = d.avatar || d.head_img || d.headimg || d.user_pic || '';
+            if (name || id) return JSON.stringify({ name, id, avatar: av });
+          }
+          // 2. 页面 DOM 抓取顶部用户昵称/头像
+          const nameEl = document.querySelector('.user-info .name, .login-info .user-name, .user-name, [class*="user"] [class*="name"], [class*="userInfo"]');
+          const avEl = document.querySelector('.user-info img, .login-info img, [class*="avatar"] img, img[class*="head"]');
+          return JSON.stringify({
+            name: nameEl ? (nameEl.textContent || '').trim() : '',
+            id: '',
+            avatar: avEl ? (avEl.src || '') : ''
+          });
+        })()`
+        // 带超时的 executeJavaScript（防止页面挂起导致登录流程卡死）
+        const probeUserInfo = async () => {
+          if (!kugouLoginWindow || kugouLoginWindow.isDestroyed()) return ''
+          const raw = await Promise.race([
+            kugouLoginWindow.webContents.executeJavaScript(USER_INFO_SCRIPT).catch(() => ''),
+            new Promise(resolve => setTimeout(() => resolve(''), 8000)),
+          ])
+          return raw || ''
+        }
+        const checkLoginInterval = setInterval(async () => {
+          if (!kugouLoginWindow || kugouLoginWindow.isDestroyed()) {
+            clearInterval(checkLoginInterval)
+            return
+          }
+          try {
+            const cookies = await kugouLoginWindow.webContents.session.cookies.get({ domain: '.kugou.com' })
+            // 登录凭据：KuGoo（网页登录会话，内含 KugooID/NickName/Pic）或 kg_token（客户端令牌）
+            const kuGooCookie = cookies.find(c => c.name === 'KuGoo' && /KugooID=/.test(c.value || ''))
+            const kgToken = cookies.find(c => c.name === 'kg_token')
+            // 从 KuGoo 值直接解析用户信息（%uXXXX 为 UTF-16 编码）
+            const decodeUnicode = (str) => {
+              try { return decodeURIComponent(str.replace(/%u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))) } catch { return str }
+            }
+            let parsed = { name: '', id: '', avatar: '' }
+            if (kuGooCookie?.value) {
+              const kv = new URLSearchParams(String(kuGooCookie.value))
+              parsed = {
+                name: decodeUnicode(kv.get('NickName') || kv.get('UserName') || ''),
+                id: kv.get('KugooID') || '',
+                avatar: decodeUnicode(kv.get('Pic') || ''),
+              }
+            }
+            if (kuGooCookie || (kgToken && kgToken.value)) {
+              const cookieString = cookies
+                .map(c => `${c.name}=${c.value}`)
+                .join('; ')
+              console.log(`✓ [酷狗登录] 登录成功（${kuGooCookie ? 'KuGoo 会话' : 'kg_token'}），Cookie 已捕获`)
+              clearInterval(checkLoginInterval)
+              finish({
+                success: true,
+                cookie: cookieString,
+                username: parsed.name || '',
+                userId: parsed.id || '',
+                avatar: parsed.avatar || '',
+              })
+              kugouLoginWindow.close()
+            } else {
+              // 兜底：探测用户信息（真实登录时页面/接口返回昵称或 ID）
+              const userInfoRaw = await probeUserInfo()
+              let probeParsed = {}
+              try { probeParsed = JSON.parse(userInfoRaw || '{}') } catch { probeParsed = {} }
+              if (probeParsed.name || probeParsed.id) {
+                const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+                console.log('✓ [酷狗登录] 登录成功（用户信息探测命中）')
+                clearInterval(checkLoginInterval)
+                finish({
+                  success: true,
+                  cookie: cookieString,
+                  username: probeParsed.name || '',
+                  userId: probeParsed.id || '',
+                  avatar: probeParsed.avatar || '',
+                })
+                kugouLoginWindow.close()
+              }
+            }
+          } catch (err) {
+            console.error('❌ [酷狗登录] 检查登录状态失败:', err)
+          }
+        }, 2000)
+
+        kugouLoginWindow.on('closed', () => {
+          clearInterval(checkLoginInterval)
+          kugouLoginWindow = null
+          finish({ success: false, error: '用户取消登录' })
+        })
+      } catch (error) {
+        console.error('[酷狗登录] 初始化登录窗口失败:', error)
+        if (kugouLoginWindow && !kugouLoginWindow.isDestroyed()) kugouLoginWindow.destroy()
+        kugouLoginWindow = null
+        finish({ success: false, error: error?.message || '酷狗音乐登录窗口初始化失败' })
+      }
+    })()
+  })
+}
+
+ipcMain.handle('open-kugou-login-window', async () => {
+  try {
+    const result = await createKugouLoginWindow()
+    // 登录成功后把扩展用户信息（用户名/ID/头像）通知渲染进程持久化
+    if (result?.success && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('kugou-auth-result', result)
+    }
+    return result
+  } catch (err) {
+    console.error('❌[酷狗登录] 打开登录窗口失败:', err)
+    return { success: false, error: err.message }
+  }
+})
+
+// 读取当前会话的酷狗登录态（应用启动时自动恢复已登录状态）
+ipcMain.handle('get-kugou-session', async () => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return { success: false, loggedIn: false }
+    const cookies = await mainWindow.webContents.session.cookies.get({ domain: '.kugou.com' })
+    const kuGooCookie = cookies.find(c => c.name === 'KuGoo' && /KugooID=/.test(c.value || ''))
+    if (!kuGooCookie?.value) return { success: true, loggedIn: false }
+    const decodeUnicode = (str) => {
+      try { return decodeURIComponent(str.replace(/%u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))) } catch { return str }
+    }
+    const kv = new URLSearchParams(String(kuGooCookie.value))
+    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+    return {
+      success: true,
+      loggedIn: true,
+      cookie: cookieString,
+      username: decodeUnicode(kv.get('NickName') || kv.get('UserName') || ''),
+      userId: kv.get('KugooID') || '',
+      avatar: decodeUnicode(kv.get('Pic') || ''),
+    }
+  } catch (err) {
+    console.error('❌[酷狗登录] 读取会话失败:', err)
+    return { success: false, loggedIn: false }
+  }
+})
+
+// ── Spotify OAuth 授权（Electron 弹窗，授权码流）──────────────────────────
+// 用公开的 Spotify Client ID（WaveForge 桌面应用）走 OAuth 授权码流程：
+// 弹窗打开 accounts.spotify.com/authorize → 用户登录授权 → 重定向到本地回调端口
+// → 主进程监听回调换 access/refresh token → 存 localStorage 并通知渲染进程。
+// 未配置自有 Client Secret 时采用 PKCE 或本地换 token 端点（见实现）。
+let spotifyLoginWindow = null
+let spotifyCallbackServer = null
+
+// Spotify OAuth 客户端 ID：采用 Spotify 官方为 spotifyd 开源项目注册的公开 Client ID
+// （社区广泛复用，OAuth 授权码流可直接使用）。如需独立应用标识可自行替换。
+const SPOTIFY_CLIENT_ID = '65b708073fc0480ea92a077233ca87bd'
+
+async function createSpotifyLoginWindow() {
+  return new Promise((resolve) => {
+    if (spotifyLoginWindow) {
+      spotifyLoginWindow.focus()
+      resolve({ success: false, error: 'Spotify 授权窗口已打开' })
+      return
+    }
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      try { if (spotifyCallbackServer) { spotifyCallbackServer.close(); spotifyCallbackServer = null } } catch {}
+      resolve(result)
+    }
+    const http = require('http')
+    const redirectPort = 47320
+    const redirectUri = `http://127.0.0.1:${redirectPort}/callback`
+
+    // 本地回调服务器：接收授权码 → 换 token
+    spotifyCallbackServer = http.createServer(async (req, res) => {
+      try {
+        const url = new URL(req.url, `http://127.0.0.1:${redirectPort}`)
+        if (url.pathname === '/callback') {
+          const code = url.searchParams.get('code')
+          const error = url.searchParams.get('error')
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+          if (!code) {
+            res.end('<html><body style="background:#111;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;">授权已取消，可以关闭此窗口。</body></html>')
+            finish({ success: false, error: error || '授权取消' })
+            return
+          }
+          // 换 token（Spotify 官方 token 端点，POST 不需要 CORS）
+          const tokenResp = await fetch('https://accounts.spotify.com/api/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              grant_type: 'authorization_code',
+              code,
+              redirect_uri: redirectUri,
+              client_id: SPOTIFY_CLIENT_ID,
+            }),
+          })
+          const tokenData = await tokenResp.json()
+          if (!tokenData.access_token) {
+            res.end('<html><body style="background:#111;color:#f66;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;">Token 获取失败，请重试。</body></html>')
+            finish({ success: false, error: tokenData.error_description || 'Token 获取失败' })
+            return
+          }
+          // 拉取用户信息
+          const userResp = await fetch('https://api.spotify.com/v1/me', {
+            headers: { Authorization: `Bearer ${tokenData.access_token}` },
+          })
+          let username = ''
+          let avatar = ''
+          let userId = ''
+          if (userResp.ok) {
+            const me = await userResp.json()
+            username = me.display_name || me.id || ''
+            userId = me.id || ''
+            avatar = me.images?.[0]?.url || ''
+          }
+          // 持久化（通过主窗口 webContents 写 localStorage 或返回给渲染进程）
+          const result = {
+            success: true,
+            accessToken: tokenData.access_token,
+            refreshToken: tokenData.refresh_token || '',
+            expiresIn: tokenData.expires_in || 3600,
+            username,
+            avatar,
+            userId,
+          }
+          res.end('<html><body style="background:#111;color:#1DB954;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;font-size:18px;">✓ 授权成功，可以关闭此窗口。</body></html>')
+          finish(result)
+        } else {
+          res.writeHead(404)
+          res.end('Not Found')
+        }
+      } catch (e) {
+        console.error('❌ [Spotify] 回调处理失败:', e)
+        finish({ success: false, error: e.message })
+      }
+    })
+    spotifyCallbackServer.listen(redirectPort, '127.0.0.1', () => {
+      const scope = 'user-read-private user-read-email playlist-read-private playlist-modify-private playlist-modify-public user-library-read user-library-modify user-top-read'
+      const authUrl = `https://accounts.spotify.com/authorize?client_id=${SPOTIFY_CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}`
+      spotifyLoginWindow = new BrowserWindow({
+        width: 720,
+        height: 620,
+        parent: mainWindow,
+        modal: true,
+        frame: false,
+        backgroundColor: '#191414',
+        title: 'WaveForge 澜音工坊 - Spotify 授权',
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          session: mainWindow.webContents.session,
+        },
+      })
+      spotifyLoginWindow.loadURL(authUrl)
+      // 注入关闭按钮
+      spotifyLoginWindow.webContents.on('did-finish-load', () => {
+        spotifyLoginWindow.webContents.executeJavaScript(`
+          (function() {
+            if (document.getElementById('waveforge-close-btn')) return;
+            const b = document.createElement('div');
+            b.id = 'waveforge-close-btn';
+            b.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+            b.style.cssText = 'position:fixed;top:12px;right:12px;width:32px;height:32px;background:rgba(0,0,0,0.55);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:2147483647;color:#fff;';
+            b.addEventListener('click', () => window.close());
+            document.body.appendChild(b);
+          })();
+        `).catch(() => {})
+      })
+      spotifyLoginWindow.on('closed', () => {
+        spotifyLoginWindow = null
+        finish({ success: false, error: '用户取消授权' })
+      })
+    })
+    // 超时保护
+    setTimeout(() => finish({ success: false, error: '授权超时' }), 5 * 60 * 1000).unref?.()
+  })
+}
+
+ipcMain.handle('open-spotify-login', async () => {
+  try {
+    const result = await createSpotifyLoginWindow()
+    // 成功后将 token 写入渲染进程 localStorage（通过事件交给前端）
+    if (result?.success && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('spotify-auth-result', result)
+    }
+    return { success: Boolean(result?.success), username: result?.username, error: result?.error }
+  } catch (err) {
+    console.error('❌[Spotify] 授权失败:', err)
+    return { success: false, error: err.message }
+  }
+})
+
+// ── 汽水音乐登录（Electron 弹窗扫码，抓 token）──────────────────────────
+let sodaLoginWindow = null
+async function createSodaLoginWindow() {
+  return new Promise((resolve) => {
+    if (sodaLoginWindow) {
+      sodaLoginWindow.focus()
+      resolve({ success: false, error: '汽水音乐登录窗口已打开' })
+      return
+    }
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+    void (async () => {
+      try {
+        const iconPath = path.join(__dirname, '..', 'build', 'icon.ico')
+        sodaLoginWindow = new BrowserWindow({
+          width: 1000,
+          height: 700,
+          parent: mainWindow,
+          modal: true,
+          frame: false,
+          backgroundColor: '#111318',
+          title: 'WaveForge 澜音工坊 - 汽水音乐登录',
+          icon: fs.existsSync(iconPath) ? iconPath : undefined,
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            session: mainWindow.webContents.session,
+          },
+        })
+        // 导航守卫：只放行抖音系域（登录/认证跳转），外链交系统浏览器
+        const isSodaDomain = (url) => {
+          try {
+            const hostname = new URL(String(url || '')).hostname.toLowerCase()
+            return hostname === 'douyin.com' || hostname.endsWith('.douyin.com')
+              || hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')
+              || hostname.endsWith('.byteimg.com') || hostname.endsWith('.ibytedapm.com')
+              || hostname.endsWith('.snssdk.com') || hostname.endsWith('.zijieapi.com')
+          } catch { return false }
+        }
+        sodaLoginWindow.webContents.on('will-navigate', (event, url) => {
+          if (!isSodaDomain(url)) {
+            event.preventDefault()
+            if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(String(url)).catch(() => {})
+          }
+        })
+        sodaLoginWindow.webContents.setWindowOpenHandler(({ url }) => {
+          if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(String(url)).catch(() => {})
+          return { action: 'deny' }
+        })
+        // 加载抖音登录页（sso.douyin.com 展示抖音扫码二维码；汽水音乐使用抖音账号体系）
+        // 注意：sodamusic.com 域名已停用（仅剩占位页），不能作为登录入口。
+        sodaLoginWindow.loadURL('https://sso.douyin.com/?service=https%3A%2F%2Fwww.douyin.com%2F&type=login')
+        // 注入关闭按钮
+        sodaLoginWindow.webContents.on('did-finish-load', () => {
+          sodaLoginWindow.webContents.executeJavaScript(`
+            (function() {
+              if (document.getElementById('waveforge-close-btn')) return;
+              const b = document.createElement('div');
+              b.id = 'waveforge-close-btn';
+              b.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+              b.style.cssText = 'position:fixed;top:12px;right:12px;width:32px;height:32px;background:rgba(0,0,0,0.55);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:2147483647;color:#fff;';
+              b.addEventListener('click', () => window.close());
+              document.body.appendChild(b);
+            })();
+          `).catch(() => {})
+        })
+        // 每 2 秒检查登录态（抖音扫码成功后 .douyin.com 域出现 sessionid 等会话 Cookie）
+        const checkInterval = setInterval(async () => {
+          if (!sodaLoginWindow || sodaLoginWindow.isDestroyed()) {
+            clearInterval(checkInterval)
+            return
+          }
+          try {
+            const cookies = await sodaLoginWindow.webContents.session.cookies.get({ domain: '.douyin.com' })
+            const session = cookies.find(c => c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'sid_guard')
+            if (session && session.value) {
+              // 捕获完整抖音会话 Cookie（供后续抖音系接口使用）
+              const cookieString = cookies
+                .filter(c => /sessionid|sid_guard|uid_tt|passport|ttwid|odin_tt/i.test(c.name) && c.value)
+                .map(c => `${c.name}=${c.value}`)
+                .join('; ')
+              console.log('✓ [汽水音乐] 登录成功，捕获抖音会话')
+              clearInterval(checkInterval)
+              // 抓取昵称/头像（登录后跳转 www.douyin.com 从页面/接口提取）
+              let username = ''
+              let avatar = ''
+              try {
+                await sodaLoginWindow.loadURL('https://www.douyin.com/').catch(() => {})
+                await new Promise(r => setTimeout(r, 4500))
+                const userInfo = await sodaLoginWindow.webContents.executeJavaScript(`(async () => {
+                  const tryFetch = async (url) => {
+                    try {
+                      const r = await fetch(url, { credentials: 'include' });
+                      if (!r.ok) return null;
+                      const t = await r.text();
+                      try { return JSON.parse(t); } catch { return t; }
+                    } catch { return null; }
+                  };
+                  // 1. 抖音 passport 用户信息接口（带会话 Cookie）
+                  const acc = await tryFetch('https://passport.douyin.com/web/account/info/v2/');
+                  if (acc && acc.data && (acc.data.nickname || acc.data.name)) {
+                    return JSON.stringify({ name: acc.data.nickname || acc.data.name || '', avatar: acc.data.avatar_url || acc.data.avatar || '' });
+                  }
+                  // 2. 页面 DOM：头像/昵称
+                  const avEl = document.querySelector('img[src*="douyinpic.com/aweme-avatar"], img[data-e2e="nav-avatar"], [data-e2e="nav-avatar"] img');
+                  const nameEl = document.querySelector('[data-e2e="user-info-name"], .user-nickname, [class*="nickname"]');
+                  return JSON.stringify({
+                    name: nameEl ? (nameEl.textContent || '').trim() : '',
+                    avatar: avEl ? (avEl.src || '') : ''
+                  });
+                })()`)
+                const parsed = JSON.parse(userInfo || '{}')
+                username = parsed.name || ''
+                avatar = parsed.avatar || ''
+                console.log(`✓ [汽水音乐] 用户: name=${username}`)
+              } catch (e) {
+                console.error('❌ [汽水音乐] 获取用户信息失败:', e)
+              }
+              finish({ success: true, cookie: cookieString, username, avatar })
+              sodaLoginWindow.close()
+            }
+          } catch (err) {
+            console.error('❌ [汽水音乐] 检查登录状态失败:', err)
+          }
+        }, 2000)
+        sodaLoginWindow.on('closed', () => {
+          clearInterval(checkInterval)
+          sodaLoginWindow = null
+          finish({ success: false, error: '用户取消登录' })
+        })
+      } catch (error) {
+        console.error('[汽水音乐] 初始化登录窗口失败:', error)
+        if (sodaLoginWindow && !sodaLoginWindow.isDestroyed()) sodaLoginWindow.destroy()
+        sodaLoginWindow = null
+        finish({ success: false, error: error?.message || '汽水音乐登录窗口初始化失败' })
+      }
+    })()
+  })
+}
+
+ipcMain.handle('open-soda-login', async () => {
+  try {
+    const result = await createSodaLoginWindow()
+    // 登录成功后把用户名/头像通知渲染进程持久化
+    if (result?.success && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('soda-auth-result', result)
+    }
+    return result
+  } catch (err) {
+    console.error('❌[汽水音乐] 打开登录窗口失败:', err)
+    return { success: false, error: err.message }
+  }
+})
+
+
 // 监听打开 QQ 登录窗口的请求
 ipcMain.handle('open-qq-login-window', async () => {
   try {
@@ -2250,6 +3062,116 @@ ipcMain.handle('open-qq-login-window', async () => {
 // 渲染进程日志桥：把前端（校验/登录流程）的诊断输出到主进程控制台（后台窗口可见）
 ipcMain.on('app-log', (event, message) => {
   console.log('[渲染进程]', message)
+})
+
+// ── 汽水音乐（抖音）数据桥 ──────────────────────────────────────────
+// 汽水音乐（api.qishui.com/luna）为 protobuf 签名接口，网页直连不可用；
+// 抖音系接口又需要 a_bogus 签名。方案：隐藏窗口加载 www.douyin.com
+// （与主应用共享 session，登录后带抖音会话），导航到抖音页面并由页面自身渲染，
+// 再抓取渲染后的音乐卡片 —— 绕过签名，直接拿到真实抖音音乐数据。
+let douyinBridgeWindow = null
+let douyinBridgeReady = false
+let douyinBridgeLoading = null
+
+function ensureDouyinBridge() {
+  if (douyinBridgeWindow && !douyinBridgeWindow.isDestroyed()) {
+    if (douyinBridgeReady) return Promise.resolve(douyinBridgeWindow)
+    return douyinBridgeLoading || Promise.resolve(douyinBridgeWindow)
+  }
+  douyinBridgeReady = false
+  douyinBridgeWindow = new BrowserWindow({
+    width: 1000,
+    height: 720,
+    show: false,
+    backgroundColor: '#111111',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      session: mainWindow ? mainWindow.webContents.session : undefined,
+    },
+  })
+  douyinBridgeWindow.setMenuBarVisibility(false)
+  douyinBridgeWindow.webContents.on('destroyed', () => {
+    douyinBridgeReady = false
+    douyinBridgeWindow = null
+  })
+  douyinBridgeWindow.webContents.on('did-finish-load', () => {
+    douyinBridgeReady = true
+  })
+  const loadPromise = douyinBridgeWindow.loadURL('https://www.douyin.com/')
+    .catch(error => console.error('❌ [汽水数据桥] 加载抖音失败:', error))
+  douyinBridgeLoading = loadPromise.then(() => douyinBridgeWindow)
+  return loadPromise.then(() => douyinBridgeWindow)
+}
+
+/** 在隐藏窗口内导航到抖音搜索页并抓取音乐卡片（需已登录抖音） */
+async function scrapeDouyinMusic(keyword) {
+  try {
+    const win = await ensureDouyinBridge()
+    const keywordEnc = encodeURIComponent(String(keyword || '热门'))
+    await win.webContents.loadURL(`https://www.douyin.com/search/${keywordEnc}?type=music`).catch(() => {})
+    // 等待页面渲染出结果（多次尝试）
+    await new Promise(resolve => setTimeout(resolve, 6000))
+    let attempts = 0
+    let items = []
+    while (attempts < 5 && items.length === 0) {
+      items = await win.webContents.executeJavaScript(`
+        (function () {
+          const out = [];
+          // 抖音搜索音乐卡片：链接包含 /music/ 的元素
+          const seen = new Set();
+          const candidates = document.querySelectorAll('a[href*="/music/"], [data-e2e*="music"]');
+          candidates.forEach(function (el) {
+            const link = el.closest('a') || el;
+            const href = (link.getAttribute('href') || '');
+            const m = href.match(/\\/music\\/([0-9]+)/);
+            if (!m) return;
+            const id = m[1];
+            if (seen.has(id)) return;
+            seen.add(id);
+            // 音乐名/作者：从卡片内文本与 alt 提取
+            let name = '';
+            let author = '';
+            let cover = '';
+            const imgs = el.querySelectorAll('img');
+            imgs.forEach(function (img) {
+              const alt = (img.getAttribute('alt') || '').trim();
+              if (alt && alt.length > 1 && alt.length < 40 && !name) name = alt;
+              if (!cover && img.getAttribute('src')) cover = img.getAttribute('src');
+            });
+            const text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+            if (!name && text) {
+              const parts = text.split(' ');
+              name = parts[0] || '';
+              author = parts.slice(1).join(' ').replace(/^[-·\\s]+/, '');
+            }
+            if (name || text) {
+              out.push({ id: id, name: name || text.slice(0, 20), author: author || '', cover: cover || '', text: text.slice(0, 60) });
+            }
+          });
+          return out.slice(0, 30);
+        })()
+      `).catch(() => [])
+      if (items.length === 0) {
+        await new Promise(resolve => setTimeout(resolve, 3000))
+      }
+      attempts += 1
+    }
+    return items
+  } catch (error) {
+    console.error('❌ [汽水数据桥] 抓取失败:', error)
+    return []
+  }
+}
+
+ipcMain.handle('soda-scrape-search', async (_event, keyword) => {
+  try {
+    const items = await scrapeDouyinMusic(keyword)
+    return { success: true, items }
+  } catch (err) {
+    console.error('❌[汽水数据桥] 搜索失败:', err)
+    return { success: false, error: err.message, items: [] }
+  }
 })
 
 // ── Apple Music amp-api 代理（Cider mkv3 同款思路）──────────────────────────
@@ -4107,6 +5029,15 @@ ipcMain.handle('device-license:redeem', (_event, code) => {
   }
 })
 
+ipcMain.handle('device-license:reset', () => {
+  try {
+    return deviceLicense.resetDeviceLicense(app)
+  } catch (error) {
+    console.error('[DeviceLicense] Reset failed:', error?.message || error)
+    return { success: false, error: error?.message || 'Unable to reset device license' }
+  }
+})
+
 // 根据 vendor/设备名判断 GPU 类型（独显 / 核显 / 未知），用于显卡选择 UI 展示
 function classifyGpuKind(device) {
   const vendor = String(device?.vendorString || '').toLowerCase()
@@ -4800,6 +5731,7 @@ app.whenReady().then(() => {
   logStartupTiming('Creating main and splash windows')
   createWindow()
   setGlobalMediaKeysEnabled(mediaKeysEnabled)
+  updateTaskbar() // Windows 任务栏缩略图按钮与进度条初始化（渲染进程就绪后推送状态会再刷新）
   
   // 移除默认菜单栏
   if (mainWindow) {

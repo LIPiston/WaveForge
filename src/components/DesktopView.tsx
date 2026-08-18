@@ -72,6 +72,16 @@ interface DesktopViewProps {
   appleUsername?: string
   onAppleLoginClick?: () => void
   onAppleLogout?: () => void
+  // 新三平台登录态
+  spotifyLoggedIn?: boolean
+  spotifyUserId?: string
+  spotifyUsername?: string
+  kugouLoggedIn?: boolean
+  kugouUserId?: string
+  kugouUsername?: string
+  sodaLoggedIn?: boolean
+  sodaUserId?: string
+  sodaUsername?: string
   
   // VIP状态
   neteaseVip: boolean
@@ -80,6 +90,9 @@ interface DesktopViewProps {
   // 登录回调
   onNeteaseLogin: (cookie: string) => void
   onQQLogin: (cookie: string) => void
+  onSpotifyLogin?: (cookie: string, username?: string) => void
+  onKugouLogin?: (cookie: string, username?: string) => void
+  onSodaLogin?: (cookie: string, username?: string) => void
 
   onPlayNext?: (song: Song) => void
   onAddToFavorites?: (song: Song) => void
@@ -157,10 +170,22 @@ function DesktopView({
   appleLoggedIn = false,
   appleUsername = '',
   onAppleLoginClick,
+  spotifyLoggedIn = false,
+  spotifyUserId = '',
+  spotifyUsername = '',
+  kugouLoggedIn = false,
+  kugouUserId = '',
+  kugouUsername = '',
+  sodaLoggedIn = false,
+  sodaUserId = '',
+  sodaUsername = '',
   neteaseVip,
   qqVip,
   onNeteaseLogin,
   onQQLogin,
+  onSpotifyLogin,
+  onKugouLogin,
+  onSodaLogin,
   onPlayNext,
   onAddToFavorites,
   onRemoveFromFavorites,
@@ -252,7 +277,7 @@ function DesktopView({
   const alarmIntervalRef = useRef<number | null>(null)
   const playbackWasActiveRef = useRef(isPlaying)
   const [showLogin, setShowLogin] = useState(false) // 登录面板
-  const [loginPlatform, setLoginPlatform] = useState<'netease' | 'qq'>('netease') // 登录平台
+  const [loginPlatform, setLoginPlatform] = useState<MusicPlatform>('netease') // 登录平台
 
   useEffect(() => {
     if (showSettings) setSettingsModuleMounted(true)
@@ -754,12 +779,18 @@ function DesktopView({
 
   // 加载用户歌单
   useEffect(() => {
-    const activeUserId = currentPlatform === 'netease' ? neteaseUserId : currentPlatform === 'qq' ? qqUserId : ''
+    const activeUserId = currentPlatform === 'netease' ? neteaseUserId : currentPlatform === 'qq' ? qqUserId : currentPlatform === 'spotify' ? (spotifyUserId || '') : currentPlatform === 'kugou' ? (kugouUserId || '') : currentPlatform === 'soda' ? (sodaUserId || '') : ''
     const isPlatformLoggedIn = currentPlatform === 'netease'
       ? Boolean(neteaseLoggedIn && neteaseUserId)
       : currentPlatform === 'qq'
         ? Boolean(qqLoggedIn && qqUserId)
-        : Boolean(appleLoggedIn)
+        : currentPlatform === 'apple'
+          ? Boolean(appleLoggedIn)
+          : currentPlatform === 'spotify'
+            ? Boolean(spotifyLoggedIn)
+            : currentPlatform === 'kugou'
+              ? Boolean(kugouLoggedIn)
+              : Boolean(sodaLoggedIn)
     const loadSignature = `${currentPlatform}:${isPlatformLoggedIn ? activeUserId : 'logged-out'}:${authRevision}`
 
     if (playlistLoadSignatureRef.current === loadSignature) {
@@ -820,6 +851,19 @@ function DesktopView({
           }))
           console.log(`✅ QQ音乐歌单加载成功: ${playlistData.length}个`)
           setPlaylists(playlistData)
+        } else if (currentPlatform === 'spotify' || currentPlatform === 'kugou' || currentPlatform === 'soda') {
+          console.log(`🔄 桌面模式加载${currentPlatform}歌单...`)
+          const data = await getUserPlaylists(currentPlatform, activeUserId, currentPlatform === 'spotify' ? spotifyUsername : undefined)
+          const playlistData = data.map((p: any) => ({
+            ...p,
+            id: p.id,
+            name: p.name,
+            coverImgUrl: p.coverImgUrl || p.coverUrl || '',
+            trackCount: p.trackCount || 0,
+            platform: currentPlatform,
+          }))
+          console.log(`✅ ${currentPlatform}歌单加载成功: ${playlistData.length}个`)
+          setPlaylists(playlistData)
         }
       } catch (error) {
         console.error('❌ 加载歌单失败:', error)
@@ -830,7 +874,7 @@ function DesktopView({
     }
     
     loadPlaylists()
-  }, [currentPlatform, neteaseLoggedIn, qqLoggedIn, appleLoggedIn, neteaseUserId, qqUserId, neteaseUsername, qqUsername, authRevision])
+  }, [currentPlatform, neteaseLoggedIn, qqLoggedIn, appleLoggedIn, spotifyLoggedIn, kugouLoggedIn, sodaLoggedIn, neteaseUserId, qqUserId, spotifyUserId, kugouUserId, sodaUserId, neteaseUsername, qqUsername, spotifyUsername, authRevision])
   // 加载最近播放歌曲（桌面模式仅显示歌曲，与简约模式同源）
   useEffect(() => {
     const isPlatformLoggedIn = currentPlatform === 'netease'
@@ -2011,7 +2055,46 @@ function DesktopView({
                     </motion.button>
                   </>
                 )}
-                {((currentPlatform === 'netease' && neteaseLoggedIn) || (currentPlatform === 'qq' && qqLoggedIn) || (currentPlatform === 'apple' && appleLoggedIn)) && (
+                {currentPlatform === 'spotify' && !spotifyLoggedIn && (
+                  <>
+                    <p className="text-white/60 mb-2">请先登录 Spotify</p>
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => { setLoginPlatform('spotify'); setShowLogin(true) }}
+                      className="px-6 py-2 rounded-full bg-[#1DB954]/90 hover:bg-[#1DB954] text-white transition-all"
+                    >
+                      登录 Spotify
+                    </motion.button>
+                  </>
+                )}
+                {currentPlatform === 'kugou' && !kugouLoggedIn && (
+                  <>
+                    <p className="text-white/60 mb-2">请先登录酷狗音乐</p>
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => { setLoginPlatform('kugou'); setShowLogin(true) }}
+                      className="px-6 py-2 rounded-full bg-orange-500/90 hover:bg-orange-500 text-white transition-all"
+                    >
+                      登录酷狗音乐
+                    </motion.button>
+                  </>
+                )}
+                {currentPlatform === 'soda' && !sodaLoggedIn && (
+                  <>
+                    <p className="text-white/60 mb-2">请先登录汽水音乐</p>
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => { setLoginPlatform('soda'); setShowLogin(true) }}
+                      className="px-6 py-2 rounded-full bg-sky-500/90 hover:bg-sky-500 text-white transition-all"
+                    >
+                      登录汽水音乐
+                    </motion.button>
+                  </>
+                )}
+                {((currentPlatform === 'netease' && neteaseLoggedIn) || (currentPlatform === 'qq' && qqLoggedIn) || (currentPlatform === 'apple' && appleLoggedIn) || (currentPlatform === 'spotify' && spotifyLoggedIn) || (currentPlatform === 'kugou' && kugouLoggedIn) || (currentPlatform === 'soda' && sodaLoggedIn)) && (
                   <p className="text-white/60">暂无歌单</p>
                 )}
               </div>
@@ -2419,11 +2502,17 @@ function DesktopView({
           <LazyLoginView
             platform={loginPlatform}
             onCancel={() => setShowLogin(false)}
-            onLoginSuccess={(cookie) => {
+            onLoginSuccess={(cookie, username) => {
               if (loginPlatform === 'netease') {
                 onNeteaseLogin(cookie)
-              } else {
+              } else if (loginPlatform === 'qq') {
                 onQQLogin(cookie)
+              } else if (loginPlatform === 'spotify') {
+                onSpotifyLogin?.(cookie, username)
+              } else if (loginPlatform === 'kugou') {
+                onKugouLogin?.(cookie, username)
+              } else if (loginPlatform === 'soda') {
+                onSodaLogin?.(cookie, username)
               }
               setShowLogin(false)
             }}

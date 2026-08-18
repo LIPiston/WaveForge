@@ -795,6 +795,12 @@ export class AudioEffectsEngine {
     } catch {
       // 忽略存储失败
     }
+    // 通知外部监听者（如看歌视频音效引擎）实时同步设置
+    try {
+      window.dispatchEvent(new CustomEvent('waveforge:audio-effects-changed', { detail: this.settings }))
+    } catch {
+      // 忽略
+    }
   }
 
   // 供 UI 一次性导入完整设置（预设导入/恢复）
