@@ -21,6 +21,7 @@ import {
 } from '../services/playlistService'
 import type { MusicPlatform } from '../services/platforms'
 import { getAppleAuthState } from '../services/appleAuth'
+import { getPlatformRemainingDays } from '../services/loginExpiry'
 import { getAppleLibraryPlaylists, getAppleRecentPlayed, appleLibraryTrackToSong, createApplePlaylist, deleteApplePlaylist, getApplePlaylistTracks, getAppleCatalogPlaylistTracks, getAppleLibrarySongs, getApplePlaylistFirstTrackArtwork, appleSongToSong, APPLE_LIBRARY_ID, isAppleLovedPlaylistName } from '../services/appleCatalog'
 import { detectQQMusicVip } from '../utils/musicEntitlements'
 
@@ -63,6 +64,19 @@ interface UserDetail {
   // Apple 特有字段
   email?: string       // Apple ID 邮箱
   realName?: string    // 账单真实姓名
+  billingAddress?: string // 账单寄送地址
+  country?: string     // 国家或地区
+  paymentType?: string // 付款类型
+  accountBalance?: string // Apple 账户余额
+  birthdayStr?: string // 出生日期（account.apple.com，字符串形式）
+  language?: string    // 语言
+  twoFactor?: string   // 双重认证
+  trustedDevices?: string // 受信任设备数
+  passwordUpdated?: string // 密码上次更新
+  notificationEmail?: string // 通知电子邮件
+  signInWithApple?: string // 通过 Apple 登录的 App 数
+  devices?: Array<{ name: string; model: string; icon?: string }> // 关联设备
+  icons?: Record<string, string> // 账户页信息图标（登录时抓取存本地）
   // 网易云特有字段
   eventCount?: number      // 动态数
   newFollows?: number      // 新关注数
@@ -1490,11 +1504,24 @@ function ProfileView({
       setUserDetail({
         nickname: state.name || 'Apple Music 用户',
         avatarUrl: state.avatarUrl || '',
-        userId: '',
+        userId: '', // Apple 无数字 ID，用户 ID 由 Apple ID 邮箱承担（见下方 email 卡片）
         vipType: 0,
-        // Apple ID 邮箱与账单真实姓名（仅资料展示，不当显示名）
+        // Apple ID 邮箱/账单/账户资料（仅资料展示，不当显示名）
         email: state.email,
         realName: state.realName,
+        billingAddress: state.billingAddress,
+        country: state.country,
+        paymentType: state.paymentType,
+        accountBalance: state.accountBalance,
+        birthdayStr: state.birthday,
+        language: state.language,
+        twoFactor: state.twoFactor,
+        trustedDevices: state.trustedDevices,
+        passwordUpdated: state.passwordUpdated,
+        notificationEmail: state.notificationEmail,
+        signInWithApple: state.signInWithApple,
+        devices: state.devices,
+        icons: state.icons,
       })
       if (!state.loggedIn) {
         setCreatedPlaylists([])
@@ -2537,7 +2564,28 @@ function ProfileView({
                 )}
                 {activeTab === 'detail' && userDetail && (
                   <div className="max-w-2xl mx-auto">
-                    <div className="flex flex-col items-center mb-8">
+                    <div className="relative flex flex-col items-center mb-8">
+                      {/* 登录有效期（用户信息右上角） */}
+                      {(() => {
+                        const remaining = getPlatformRemainingDays(platform)
+                        if (remaining === null) return null
+                        const expired = remaining <= 0
+                        return (
+                          <p
+                            className={`absolute top-0 right-0 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs ${expired ? 'bg-amber-400/15 text-amber-300' : 'bg-white/5 text-white/40'}`}
+                            title={expired ? '登录已过期，请重新登录' : `登录有效期剩余约 ${remaining} 天，到期后需重新登录`}
+                          >
+                            {expired ? (
+                              <>
+                                <RefreshCw className="h-3.5 w-3.5" />
+                                登录已过期，请重新登录
+                              </>
+                            ) : (
+                              <>登录有效期剩余约 {remaining} 天</>
+                            )}
+                          </p>
+                        )
+                      })()}
                       {/* 大头像 */}
                       <div className="w-32 h-32 rounded-full overflow-hidden mb-4 border-4 border-white/20">
                         {userDetail.avatarUrl ? (
@@ -2570,7 +2618,8 @@ function ProfileView({
                       <div className="grid grid-cols-2 gap-4">
                         <div className="bg-white/5 rounded-lg p-4">
                           <div className="text-white/50 text-sm mb-1">用户ID</div>
-                          <div className="text-white font-medium">{userDetail.userId}</div>
+                          {/* Apple 无数字 ID：用户 ID 即 Apple ID 邮箱 */}
+                          <div className="text-white font-medium break-all">{platform === 'apple' ? userDetail.email || userDetail.userId : userDetail.userId}</div>
                         </div>
 
                         {/* Apple：Apple ID 邮箱 */}
@@ -2589,13 +2638,148 @@ function ProfileView({
                           </div>
                         )}
 
+                        {/* Apple：出生日期 */}
+                        {userDetail.birthdayStr && platform === 'apple' && (
+                          <div className="bg-white/5 rounded-lg p-4 relative overflow-hidden">
+                            {userDetail.icons?.birthday && (
+                              <span
+                                className="absolute top-3 right-3 h-9 w-9 opacity-25"
+                                style={{ backgroundColor: accentColor, WebkitMaskImage: `url(${userDetail.icons.birthday})`, maskImage: `url(${userDetail.icons.birthday})`, WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat', WebkitMaskPosition: 'center', maskPosition: 'center', WebkitMaskSize: 'contain', maskSize: 'contain' }}
+                              />
+                            )}
+                            <div className="text-white/50 text-sm mb-1">出生日期</div>
+                            <div className="text-white font-medium">{userDetail.birthdayStr}</div>
+                          </div>
+                        )}
+
+                        {/* Apple：国家或地区 */}
+                        {userDetail.country && platform === 'apple' && (
+                          <div className="bg-white/5 rounded-lg p-4 relative overflow-hidden">
+                            {userDetail.icons?.country && (
+                              <span
+                                className="absolute top-3 right-3 h-9 w-9 opacity-25"
+                                style={{ backgroundColor: accentColor, WebkitMaskImage: `url(${userDetail.icons.country})`, maskImage: `url(${userDetail.icons.country})`, WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat', WebkitMaskPosition: 'center', maskPosition: 'center', WebkitMaskSize: 'contain', maskSize: 'contain' }}
+                              />
+                            )}
+                            <div className="text-white/50 text-sm mb-1">国家或地区</div>
+                            <div className="text-white font-medium">{userDetail.country}</div>
+                          </div>
+                        )}
+
+                        {/* Apple：语言 */}
+                        {userDetail.language && platform === 'apple' && (
+                          <div className="bg-white/5 rounded-lg p-4 relative overflow-hidden">
+                            {userDetail.icons?.language && (
+                              <span
+                                className="absolute top-3 right-3 h-9 w-9 opacity-25"
+                                style={{ backgroundColor: accentColor, WebkitMaskImage: `url(${userDetail.icons.language})`, maskImage: `url(${userDetail.icons.language})`, WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat', WebkitMaskPosition: 'center', maskPosition: 'center', WebkitMaskSize: 'contain', maskSize: 'contain' }}
+                              />
+                            )}
+                            <div className="text-white/50 text-sm mb-1">语言</div>
+                            <div className="text-white font-medium">{userDetail.language}</div>
+                          </div>
+                        )}
+
+                        {/* Apple：账单寄送地址（仅资料展示） */}
+                        {userDetail.billingAddress && platform === 'apple' && (
+                          <div className="bg-white/5 rounded-lg p-4 col-span-2">
+                            <div className="text-white/50 text-sm mb-1">账单寄送地址</div>
+                            <div className="text-white font-medium break-all">{userDetail.billingAddress}</div>
+                          </div>
+                        )}
+
+                        {/* Apple：付款类型 */}
+                        {userDetail.paymentType && platform === 'apple' && (
+                          <div className="bg-white/5 rounded-lg p-4">
+                            <div className="text-white/50 text-sm mb-1">付款类型</div>
+                            <div className="text-white font-medium break-all">{userDetail.paymentType}</div>
+                          </div>
+                        )}
+
+                        {/* Apple：账户余额 */}
+                        {userDetail.accountBalance && platform === 'apple' && (
+                          <div className="bg-white/5 rounded-lg p-4">
+                            <div className="text-white/50 text-sm mb-1">Apple 账户余额</div>
+                            <div className="text-white font-medium">{userDetail.accountBalance}</div>
+                          </div>
+                        )}
+
                         {userDetail.level !== undefined && (
                           <div className="bg-white/5 rounded-lg p-4">
                             <div className="text-white/50 text-sm mb-1">等级</div>
                             <div className="text-white font-medium">Lv.{userDetail.level}</div>
                           </div>
                         )}
-                        
+
+                        {/* Apple：账户安全（登录与安全性页） */}
+                        {(userDetail.twoFactor || userDetail.trustedDevices || userDetail.passwordUpdated || userDetail.notificationEmail || userDetail.signInWithApple) && platform === 'apple' && (
+                          <>
+                            {/* 第一行：双重认证（左） + 通过 Apple 登录（右） */}
+                            {userDetail.twoFactor && (
+                              <div className="bg-white/5 rounded-lg p-4 relative overflow-hidden">
+                                {/* 主题色图标（右上角，融入卡片） */}
+                                {userDetail.icons?.security && (
+                                  <span
+                                    className="absolute top-3 right-3 h-9 w-9 object-contain opacity-25"
+                                    style={{ backgroundColor: accentColor, WebkitMaskImage: `url(${userDetail.icons.security})`, maskImage: `url(${userDetail.icons.security})`, WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat', WebkitMaskPosition: 'center', maskPosition: 'center', WebkitMaskSize: 'contain', maskSize: 'contain' }}
+                                  />
+                                )}
+                                <div className="text-white/50 text-sm mb-1">双重认证</div>
+                                <div className="text-white font-medium">{userDetail.twoFactor}</div>
+                              </div>
+                            )}
+                            {userDetail.signInWithApple && (
+                              <div className="bg-white/5 rounded-lg p-4 relative overflow-hidden">
+                                {userDetail.icons?.apple && (
+                                  <span
+                                    className="absolute top-3 right-3 h-9 w-9 object-contain opacity-25"
+                                    style={{ backgroundColor: accentColor, WebkitMaskImage: `url(${userDetail.icons.apple})`, maskImage: `url(${userDetail.icons.apple})`, WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat', WebkitMaskPosition: 'center', maskPosition: 'center', WebkitMaskSize: 'contain', maskSize: 'contain' }}
+                                  />
+                                )}
+                                <div className="text-white/50 text-sm mb-1">通过 Apple 登录</div>
+                                <div className="text-white font-medium break-all">{userDetail.signInWithApple}</div>
+                              </div>
+                            )}
+                            {/* 第二行：受信任设备（仅当无 signInWithApple 时，否则单独成行） */}
+                            {userDetail.trustedDevices && !userDetail.signInWithApple && (
+                              <div className="bg-white/5 rounded-lg p-4 relative overflow-hidden">
+                                {userDetail.icons?.security && (
+                                  <span
+                                    className="absolute top-3 right-3 h-9 w-9 object-contain opacity-25"
+                                    style={{ backgroundColor: accentColor, WebkitMaskImage: `url(${userDetail.icons.security})`, maskImage: `url(${userDetail.icons.security})`, WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat', WebkitMaskPosition: 'center', maskPosition: 'center', WebkitMaskSize: 'contain', maskSize: 'contain' }}
+                                  />
+                                )}
+                                <div className="text-white/50 text-sm mb-1">受信任设备</div>
+                                <div className="text-white font-medium">{userDetail.trustedDevices} 台</div>
+                              </div>
+                            )}
+                            {userDetail.passwordUpdated && (
+                              <div className="bg-white/5 rounded-lg p-4 col-span-2 relative overflow-hidden">
+                                {userDetail.icons?.password && (
+                                  <span
+                                    className="absolute top-3 right-3 h-9 w-9 object-contain opacity-25"
+                                    style={{ backgroundColor: accentColor, WebkitMaskImage: `url(${userDetail.icons.password})`, maskImage: `url(${userDetail.icons.password})`, WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat', WebkitMaskPosition: 'center', maskPosition: 'center', WebkitMaskSize: 'contain', maskSize: 'contain' }}
+                                  />
+                                )}
+                                <div className="text-white/50 text-sm mb-1">密码上次更新</div>
+                                <div className="text-white font-medium">{userDetail.passwordUpdated}</div>
+                              </div>
+                            )}
+                            {userDetail.notificationEmail && (
+                              <div className="bg-white/5 rounded-lg p-4 col-span-2 relative overflow-hidden">
+                                {userDetail.icons?.notification && (
+                                  <span
+                                    className="absolute top-3 right-3 h-9 w-9 object-contain opacity-25"
+                                    style={{ backgroundColor: accentColor, WebkitMaskImage: `url(${userDetail.icons.notification})`, maskImage: `url(${userDetail.icons.notification})`, WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat', WebkitMaskPosition: 'center', maskPosition: 'center', WebkitMaskSize: 'contain', maskSize: 'contain' }}
+                                  />
+                                )}
+                                <div className="text-white/50 text-sm mb-1">通知电子邮件</div>
+                                <div className="text-white font-medium break-all">{userDetail.notificationEmail}</div>
+                              </div>
+                            )}
+                          </>
+                        )}
+
                         {/* QQ音乐：听歌等级 */}
                         {userDetail.listenLevel && platform === 'qq' && (
                           <div className="bg-white/5 rounded-lg p-4">

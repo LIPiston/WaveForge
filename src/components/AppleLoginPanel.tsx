@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { CheckCircle2, ChevronDown, KeyRound, Link2, Loader2, LogOut, Music, ShieldCheck, X } from 'lucide-react'
-import { validateAppleLogin, clearAppleLogin, saveAppleLogin, getAppleAuthState, resolveAppleAccountName, resolveAppleAccountProfile, type AppleUserInfo } from '../services/appleAuth'
+import { validateAppleLogin, clearAppleLogin, saveAppleLogin, getAppleAuthState, resolveAppleAccountName, resolveAppleAccountProfile, generateInitialsAvatar, type AppleUserInfo } from '../services/appleAuth'
 import { ensureAppleWebDevToken } from '../services/appleMusicToken'
+import { recordLogin, clearLoginExpiry } from '../services/loginExpiry'
 
 const STOREFRONTS = [
   { code: 'cn', label: '中国大陆 (cn)' },
@@ -51,7 +52,8 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
 
   useEffect(() => () => { mountedRef.current = false }, [])
 
-  const completeLogin = async (dev: string, media: string, accountInfo?: { name?: string; avatarUrl?: string; email?: string; realName?: string }) => {
+  type AccountInfo = Partial<AppleUserInfo>
+  const completeLogin = async (dev: string, media: string, accountInfo?: AccountInfo) => {
     if (!dev || !media) {
       setStatus({ ok: false, message: '请先填写 Developer Token 与 Media-User-Token' })
       return
@@ -71,15 +73,40 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
         // 忽略
       }
       if (result.ok && result.user) {
-        const finalUser = accountInfo
-          ? { ...result.user, name: accountInfo.name || result.user.name, avatarUrl: accountInfo.avatarUrl || result.user.avatarUrl, email: accountInfo.email || result.user.email, realName: accountInfo.realName || result.user.realName }
-          : result.user
+        // 界面提取的字段优先覆盖 validateAppleLogin 的结果（多源合并）
+        const finalUser: AppleUserInfo = { ...result.user, ...(accountInfo || {}) }
+        if (!finalUser.name) finalUser.name = result.user.name
+        if (!finalUser.avatarUrl) finalUser.avatarUrl = result.user.avatarUrl
+        // 兜底：显示名仍是占位"Apple Music 用户"但已有账单真名时，用真名 + 其 monogram 头像
+        // （避免出现 "Apple Music 用户" → 首字母 "A" 的尴尬头像）
+        if (finalUser.name === 'Apple Music 用户' && finalUser.realName) {
+          finalUser.name = finalUser.realName
+          finalUser.avatarUrl = generateInitialsAvatar(finalUser.realName)
+        }
+        // 若头像缺失，用当前显示名生成 monogram（账单真名优先）
+        if (!finalUser.avatarUrl) {
+          finalUser.avatarUrl = generateInitialsAvatar(finalUser.realName || finalUser.name || '?')
+        }
         localStorage.setItem('appleDeveloperToken', dev)
         localStorage.setItem('appleMediaUserToken', media)
         // 持久化昵称/头像/storefront：不存则重启后判定为未登录，需要重新登录
         saveAppleLogin(finalUser)
-        setCurrentUser({ loggedIn: true, name: finalUser.name, avatarUrl: finalUser.avatarUrl, email: finalUser.email, realName: finalUser.realName, storefront: finalUser.storefront })
+        // 记录登录有效期：dev-token 是 JWT 有真实 exp，优先用真实值（media-token 会话用默认预估）
+        let appleExpiresAt: number | undefined
+        try {
+          const parts = dev.split('.')
+          if (parts.length === 3) {
+            const payload = JSON.parse(decodeURIComponent(escape(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))))
+            if (payload && typeof payload.exp === 'number') appleExpiresAt = payload.exp * 1000
+          }
+        } catch { /* 解析失败用默认 */ }
+        recordLogin('apple', appleExpiresAt)
+        setCurrentUser({ loggedIn: true, name: finalUser.name, avatarUrl: finalUser.avatarUrl, email: finalUser.email, realName: finalUser.realName, billingAddress: finalUser.billingAddress, country: finalUser.country, paymentType: finalUser.paymentType, accountBalance: finalUser.accountBalance, birthday: finalUser.birthday, language: finalUser.language, twoFactor: finalUser.twoFactor, trustedDevices: finalUser.trustedDevices, passwordUpdated: finalUser.passwordUpdated, notificationEmail: finalUser.notificationEmail, signInWithApple: finalUser.signInWithApple, devices: finalUser.devices, icons: finalUser.icons, storefront: finalUser.storefront })
         setStatus({ ok: true, message: `登录成功：${finalUser.name}` })
+        // 隐私知情选择已移至登录窗口内（主进程 askAppleAccountConsent 弹窗）。
+        // 这里根据主进程返回的 consent 决定最终展示形态：
+        // - consent === 'accept'：完整账户资料（昵称/头像/个人信息）已抓取
+        // - consent === 'reject'：仅账单 Apple ID + 账单真实姓名 + monogram 头像
         onLoginSuccess(finalUser)
       } else {
         setStatus({ ok: false, message: result.error || '登录失败' })
@@ -100,12 +127,13 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
     if (autoLoading) return
     setAutoLoading(true)
     setStatus(null)
-    // 兜底：无论哪一步卡住，90 秒后强制退出转圈状态并提示
+    // 兜底：登录窗口含用户交互（Apple 账户同意/拒绝弹窗、账户登录、2FA），
+    // 等待可长达数分钟；仅当窗口真正卡死超过 6 分钟才强制退出并提示。
     const autoTimeoutId = window.setTimeout(() => {
       if (!mountedRef.current) return
       setStatus({ ok: false, message: '登录流程超时，请重试（可先手动获取开发者令牌）' })
       setAutoLoading(false)
-    }, 90000)
+    }, 6 * 60 * 1000)
     try {
       const result = await window.electron!.appleLogin()
       if (!mountedRef.current) return
@@ -119,21 +147,65 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
         return
       }
       setMediaToken(media)
-      // 0) 向 Apple 账号体系要真实名字/头像：buy.itunes 账号信息 + Apple 账号资料页
-      // 0) 名字/头像/邮箱：界面提取（web 播放器侧边栏 + 账户摘要）优先级最高，其余接口兜底
-      const accountInfo: { name?: string; avatarUrl?: string; email?: string; realName?: string } = {}
+      // 名字/头像/邮箱：界面提取（account.apple.com 个人信息页 + web 播放器侧边栏 + 账户摘要）优先级最高
+      const accountInfo: AccountInfo = {}
       try {
         const domName = (result as any).name
         const domAvatar = (result as any).avatar
         const domEmail = (result as any).email
         const domRealName = (result as any).realName
-        // 昵称（侧边栏提取）→ 显示名；邮箱/真名只做资料数据，不当显示名
+        const domBilling = (result as any).billingAddress
+        const domCountry = (result as any).country
+        const domPayment = (result as any).paymentType
+        const domBalance = (result as any).accountBalance
+        const domBirthday = (result as any).birthday
+        const domLanguage = (result as any).language
+        const domTwoFactor = (result as any).twoFactor
+        const domTrustedDevices = (result as any).trustedDevices
+        const domPasswordUpdated = (result as any).passwordUpdated
+        const domNotificationEmail = (result as any).notificationEmail
+        const domSignInWithApple = (result as any).signInWithApple
+        const domDevices = (result as any).devices
+        const domIcons = (result as any).icons
+        // 昵称/头像（个人信息页）→ 显示名；其余字段只做资料数据，不当显示名
         if (domName) accountInfo.name = domName
         if (domAvatar) accountInfo.avatarUrl = domAvatar
         if (domEmail) accountInfo.email = domEmail
         if (domRealName) accountInfo.realName = domRealName
+        if (domBilling) accountInfo.billingAddress = domBilling
+        if (domCountry) accountInfo.country = domCountry
+        if (domPayment) accountInfo.paymentType = domPayment
+        if (domBalance) accountInfo.accountBalance = domBalance
+        if (domBirthday) accountInfo.birthday = domBirthday
+        if (domLanguage) accountInfo.language = domLanguage
+        if (domTwoFactor) accountInfo.twoFactor = domTwoFactor
+        if (domTrustedDevices) accountInfo.trustedDevices = domTrustedDevices
+        if (domPasswordUpdated) accountInfo.passwordUpdated = domPasswordUpdated
+        if (domNotificationEmail) accountInfo.notificationEmail = domNotificationEmail
+        if (domSignInWithApple) accountInfo.signInWithApple = domSignInWithApple
+        if (domDevices && Array.isArray(domDevices) && domDevices.length) accountInfo.devices = domDevices
+        if (domIcons && typeof domIcons === 'object' && Object.keys(domIcons).length) accountInfo.icons = domIcons
       } catch {
         // 忽略
+      }
+      // 隐私知情选择在登录窗口内完成（主进程 askAppleAccountConsent）：
+      // 用户拒绝时强制降级——仅保留账单 Apple ID/真实姓名，头像用账单名生成的 monogram，
+      // 丢弃 account.apple.com 抓取的昵称/头像/个人信息/设备等。
+      const consent = (result as any).consent
+      if (consent === 'reject') {
+        const realName = accountInfo.realName || ''
+        accountInfo.name = realName || 'Apple Music 用户'
+        accountInfo.avatarUrl = generateInitialsAvatar(realName || accountInfo.name || '?')
+        accountInfo.birthday = undefined
+        accountInfo.language = undefined
+        accountInfo.twoFactor = undefined
+        accountInfo.trustedDevices = undefined
+        accountInfo.passwordUpdated = undefined
+        accountInfo.notificationEmail = undefined
+        accountInfo.signInWithApple = undefined
+        accountInfo.devices = undefined
+        accountInfo.icons = undefined
+        console.log(`[Apple登录] 用户拒绝展示账户信息，使用账单姓名：${realName || 'Apple Music 用户'}`)
       }
       try {
         const cookies = (result as any).cookies
@@ -195,6 +267,8 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
     clearAppleLogin()
     localStorage.removeItem('appleDeveloperToken')
     localStorage.removeItem('appleMediaUserToken')
+    localStorage.removeItem('appleAccountFullEnabled')
+    clearLoginExpiry('apple')
     setCurrentUser({ loggedIn: false, name: '', storefront })
     setStatus({ ok: true, message: '已退出登录' })
     onLoginSuccess(null)

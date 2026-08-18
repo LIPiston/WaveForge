@@ -20,6 +20,32 @@ export interface AppleUserInfo {
   email?: string
   /** 账单真实姓名（账户摘要提取，仅个人中心展示，不当显示名） */
   realName?: string
+  /** 账单寄送地址（账户摘要提取，仅个人中心展示） */
+  billingAddress?: string
+  /** 国家或地区（账户摘要提取） */
+  country?: string
+  /** 付款类型（账户摘要提取） */
+  paymentType?: string
+  /** Apple 账户余额（账户摘要提取） */
+  accountBalance?: string
+  /** 出生日期（account.apple.com 个人信息页） */
+  birthday?: string
+  /** 语言（account.apple.com 个人信息页） */
+  language?: string
+  /** 双重认证（account.apple.com 登录与安全性页） */
+  twoFactor?: string
+  /** 受信任设备数（account.apple.com 登录与安全性页） */
+  trustedDevices?: string
+  /** 密码上次更新（account.apple.com 登录与安全性页） */
+  passwordUpdated?: string
+  /** 通知电子邮件（account.apple.com 登录与安全性页） */
+  notificationEmail?: string
+  /** 通过 Apple 登录的 App 数（account.apple.com 登录与安全性页） */
+  signInWithApple?: string
+  /** 关联设备列表（account.apple.com 设备页） */
+  devices?: Array<{ name: string; model: string; icon?: string }>
+  /** 账户页信息图标（登录时一次性抓取存本地，展示时直接使用） */
+  icons?: Record<string, string>
 }
 
 export const AMP_API = 'https://amp-api.music.apple.com/v1'
@@ -55,11 +81,32 @@ export function getAppleCredentials(): AppleCredentials {
   }
 }
 
-export function getAppleAuthState(): { loggedIn: boolean; name: string; avatarUrl?: string; email?: string; realName?: string; storefront: string } {
+export function getAppleAuthState(): { loggedIn: boolean; name: string; avatarUrl?: string; email?: string; realName?: string; billingAddress?: string; country?: string; paymentType?: string; accountBalance?: string; birthday?: string; language?: string; twoFactor?: string; trustedDevices?: string; passwordUpdated?: string; notificationEmail?: string; signInWithApple?: string; devices?: Array<{ name: string; model: string; icon?: string }>; icons?: Record<string, string>; storefront: string } {
   const name = localStorage.getItem('appleAccountName') || ''
   const avatarUrl = localStorage.getItem('appleAvatarUrl') || undefined
   const email = localStorage.getItem('appleAccountEmail') || undefined
   const realName = localStorage.getItem('appleAccountRealName') || undefined
+  const billingAddress = localStorage.getItem('appleAccountBillingAddress') || undefined
+  const country = localStorage.getItem('appleAccountCountry') || undefined
+  const paymentType = localStorage.getItem('appleAccountPaymentType') || undefined
+  const accountBalance = localStorage.getItem('appleAccountBalance') || undefined
+  const birthday = localStorage.getItem('appleAccountBirthday') || undefined
+  const language = localStorage.getItem('appleAccountLanguage') || undefined
+  const twoFactor = localStorage.getItem('appleAccountTwoFactor') || undefined
+  const trustedDevices = localStorage.getItem('appleAccountTrustedDevices') || undefined
+  const passwordUpdated = localStorage.getItem('appleAccountPasswordUpdated') || undefined
+  const notificationEmail = localStorage.getItem('appleAccountNotificationEmail') || undefined
+  const signInWithApple = localStorage.getItem('appleAccountSignInWithApple') || undefined
+  let devices: Array<{ name: string; model: string; icon?: string }> | undefined
+  try {
+    const raw = localStorage.getItem('appleAccountDevices')
+    if (raw) devices = JSON.parse(raw)
+  } catch { /* 忽略 */ }
+  let icons: Record<string, string> | undefined
+  try {
+    const raw = localStorage.getItem('appleAccountIcons')
+    if (raw) icons = JSON.parse(raw)
+  } catch { /* 忽略 */ }
   const storefront = localStorage.getItem('appleStorefront') || 'cn'
   const credentials = getAppleCredentials()
   return {
@@ -68,6 +115,19 @@ export function getAppleAuthState(): { loggedIn: boolean; name: string; avatarUr
     avatarUrl,
     email,
     realName,
+    billingAddress,
+    country,
+    paymentType,
+    accountBalance,
+    birthday,
+    language,
+    twoFactor,
+    trustedDevices,
+    passwordUpdated,
+    notificationEmail,
+    signInWithApple,
+    devices,
+    icons,
     storefront,
   }
 }
@@ -77,6 +137,19 @@ export function clearAppleLogin(): void {
   localStorage.removeItem('appleAvatarUrl')
   localStorage.removeItem('appleAccountEmail')
   localStorage.removeItem('appleAccountRealName')
+  localStorage.removeItem('appleAccountBillingAddress')
+  localStorage.removeItem('appleAccountCountry')
+  localStorage.removeItem('appleAccountPaymentType')
+  localStorage.removeItem('appleAccountBalance')
+  localStorage.removeItem('appleAccountBirthday')
+  localStorage.removeItem('appleAccountLanguage')
+  localStorage.removeItem('appleAccountTwoFactor')
+  localStorage.removeItem('appleAccountTrustedDevices')
+  localStorage.removeItem('appleAccountPasswordUpdated')
+  localStorage.removeItem('appleAccountNotificationEmail')
+  localStorage.removeItem('appleAccountSignInWithApple')
+  localStorage.removeItem('appleAccountDevices')
+  localStorage.removeItem('appleAccountIcons')
 }
 
 export function saveAppleLogin(user: AppleUserInfo): void {
@@ -85,6 +158,23 @@ export function saveAppleLogin(user: AppleUserInfo): void {
   if (user.storefront) localStorage.setItem('appleStorefront', user.storefront)
   if (user.email) localStorage.setItem('appleAccountEmail', user.email)
   if (user.realName) localStorage.setItem('appleAccountRealName', user.realName)
+  if (user.billingAddress) localStorage.setItem('appleAccountBillingAddress', user.billingAddress)
+  if (user.country) localStorage.setItem('appleAccountCountry', user.country)
+  if (user.paymentType) localStorage.setItem('appleAccountPaymentType', user.paymentType)
+  if (user.accountBalance) localStorage.setItem('appleAccountBalance', user.accountBalance)
+  if (user.birthday) localStorage.setItem('appleAccountBirthday', user.birthday)
+  if (user.language) localStorage.setItem('appleAccountLanguage', user.language)
+  if (user.twoFactor) localStorage.setItem('appleAccountTwoFactor', user.twoFactor)
+  if (user.trustedDevices) localStorage.setItem('appleAccountTrustedDevices', user.trustedDevices)
+  if (user.passwordUpdated) localStorage.setItem('appleAccountPasswordUpdated', user.passwordUpdated)
+  if (user.notificationEmail) localStorage.setItem('appleAccountNotificationEmail', user.notificationEmail)
+  if (user.signInWithApple) localStorage.setItem('appleAccountSignInWithApple', user.signInWithApple)
+  if (user.devices && user.devices.length) {
+    try { localStorage.setItem('appleAccountDevices', JSON.stringify(user.devices)) } catch { /* 忽略 */ }
+  }
+  if (user.icons && Object.keys(user.icons).length) {
+    try { localStorage.setItem('appleAccountIcons', JSON.stringify(user.icons)) } catch { /* 忽略 */ }
+  }
 }
 
 const appleFetch = async (path: string, credentials: AppleCredentials, timeoutMs = 8000): Promise<any | null> => {
@@ -190,10 +280,29 @@ export async function validateAppleLogin(
   }
 }
 
-/** 首字母头像：彩色圆 + 首字母（SVG data URL，保证头像槽永不为空） */
-export function generateInitialsAvatar(name: string, bg = '#fa2d48'): string {
-  const initial = ((name || '?').trim().charAt(0) || '?').toUpperCase()
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="128" height="128" rx="64" fill="${bg}"/><text x="64" y="64" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="52" font-weight="600" fill="#fff" text-anchor="middle" dominant-baseline="central">${initial}</text></svg>`
+/**
+ * Apple 官方 monogram（首字母头像）规则：
+ * - 英文名：有空格取各单词首字母（Oea Per → OP）；无空格取前两个字母（Oewwq → OE）
+ * - 中文/韩文/日文等非空格分隔语言：取第一个字符（芳乃213 → 芳）
+ * - 底色为 Apple 官方灰色系，字为淡白色
+ */
+export function generateInitialsAvatar(name: string, bg = '#8e8e93'): string {
+  const clean = (name || '').trim().replace(/\s+/g, ' ')
+  if (!clean) return ''
+  const isCJK = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u3400-\u4dbf]/.test(clean)
+  let initials = ''
+  if (isCJK) {
+    // 中文/韩文/日文：取第一个字符
+    initials = clean.charAt(0)
+  } else if (clean.includes(' ')) {
+    // 英文有空格：取各单词首字母（最多 2 个）
+    initials = clean.split(' ').map(w => w.charAt(0)).join('').toUpperCase().slice(0, 2)
+  } else {
+    // 英文无空格：取前两个字母
+    initials = clean.slice(0, 2).toUpperCase()
+  }
+  if (!initials) initials = (clean.charAt(0) || '?').toUpperCase()
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="128" height="128" rx="64" fill="${bg}"/><text x="64" y="64" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="48" font-weight="500" fill="#ffffff" text-anchor="middle" dominant-baseline="central">${initials}</text></svg>`
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
 

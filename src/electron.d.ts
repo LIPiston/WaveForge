@@ -164,7 +164,7 @@ export interface ElectronAPI {
   openQQLoginWindow: () => Promise<{ success: boolean; cookie?: string; error?: string }>
   openQQSkillKeyWindow: () => Promise<{ success: boolean; apiKey?: string; error?: string }>
   /** Apple Music 网页一键登录：内置窗口登录 Apple ID，自动抓取 media-user-token 与 Developer Token */
-  appleLogin: () => Promise<{ success: boolean; mediaUserToken?: string; developerToken?: string; error?: string }>
+  appleLogin: () => Promise<{ success: boolean; mediaUserToken?: string; developerToken?: string; name?: string; email?: string; realName?: string; avatar?: string; billingAddress?: string; country?: string; paymentType?: string; accountBalance?: string; birthday?: string; language?: string; twoFactor?: string; trustedDevices?: string; passwordUpdated?: string; notificationEmail?: string; signInWithApple?: string; devices?: Array<{ name: string; model: string; icon?: string }>; icons?: Record<string, string>; error?: string }>
   /** 从 Apple 网页前端资源获取可用的 Developer Token（免密钥，约 70 天有效） */
   appleFetchDevToken: () => Promise<{ success: boolean; token?: string; expiresAt?: number; error?: string }>
   /** amp-api 代理（渲染进程直连会被 CORS 拦截，改由主进程请求） */

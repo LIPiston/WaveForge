@@ -2474,22 +2474,37 @@ function stopAppleFinalizeOverlay() {
 async function extractICloudProfile(win, appleSession) {
   try {
     console.log('[Apple登录] 静默跳转 iCloud 提取资料…')
+    // 先绑定 did-finish-load（SSO 重定向可能多次触发），loadURL 后等页面就绪再轮询
+    let finishedResolve = null
+    const onFinished = () => { if (finishedResolve) { finishedResolve(); finishedResolve = null } }
+    win.webContents.on('did-finish-load', onFinished)
+    const finished = new Promise(resolve => {
+      finishedResolve = resolve
+      setTimeout(() => { if (finishedResolve) { finishedResolve(); finishedResolve = null } }, 20000)
+    })
     await win.loadURL('https://www.icloud.com.cn/')
-    // 等 SSO 重定向 + SPA 渲染（最多约 12 秒）；以「名字」出现作为渲染完成标志
-    const deadline = Date.now() + 12000
+    await finished
+    win.webContents.removeListener('did-finish-load', onFinished)
+    const deadline = Date.now() + 15000
     let info = null
     while (Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 1000))
+      await new Promise(resolve => setTimeout(resolve, 1200))
       if (!win || win.isDestroyed()) return null
       info = await win.webContents.executeJavaScript(`
         (function () {
           var result = { name: '', email: '', avatar: '', needLogin: false };
           function clean(t) { return (t || '').replace(/\\s+/g, ' ').trim(); }
           var all = clean(document.body && document.body.textContent);
-          // SSO 未自动登录的标志：登录表单（密码框 / "登录"按钮）
-          if (document.querySelector('input[type="password"]')
-              || document.querySelector('input[type="email"]')
-              || (all.indexOf('登录') !== -1 && all.length < 4000)) {
+          // SSO 未自动登录的标志：登录表单（密码框 / 邮箱框 / 登录按钮 / 验证码）
+          var pwdInputs = document.querySelectorAll('input[type="password"]');
+          var emailInputs = document.querySelectorAll('input[type="email"], input[type="text"][autocomplete="username"], input[name*="account"], input[name*="login"], input[name*="user"], input[placeholder*="密码"], input[placeholder*="账号"], input[placeholder*="Apple ID"], input[placeholder*="验证码"]');
+          var loginBtns = document.querySelectorAll('button, [role="button"], a, input[type="submit"]');
+          var hasLoginBtn = false;
+          for (var lb = 0; lb < loginBtns.length; lb++) {
+            var lbt = clean(loginBtns[lb].textContent) + ' ' + clean(loginBtns[lb].getAttribute('value')) + ' ' + clean(loginBtns[lb].getAttribute('aria-label'));
+            if (/^登录$|^继续$|^登录$|sign in|sign-in|continue|log in|登录 Apple|验证|获取验证码/i.test(lbt)) { hasLoginBtn = true; break; }
+          }
+          if (pwdInputs.length > 0 || emailInputs.length > 0 || hasLoginBtn) {
             result.needLogin = true;
             return result;
           }
@@ -2507,12 +2522,12 @@ async function extractICloudProfile(win, appleSession) {
             }
           }
           // 名字：「账户信息」区块内的短文本（排除邮箱/订阅词/占位文案）
-          if (all.indexOf('账户信息') !== -1 || all.indexOf('Account Information') !== -1) {
+          if (all.indexOf('账户信息') !== -1 || all.indexOf('Account Information') !== -1 || /Account Information/i.test(all)) {
             var headings = document.querySelectorAll('h1,h2,h3,h4,[role="heading"]');
             var section = null;
             for (var h = 0; h < headings.length; h++) {
               var ht = clean(headings[h].textContent);
-              if (ht === '账户信息' || ht === 'Account Information') { section = headings[h].parentElement; break; }
+              if (ht === '账户信息' || /^account information$/i.test(ht)) { section = headings[h].parentElement; break; }
             }
             var candidates = [];
             if (section) {
@@ -2521,7 +2536,7 @@ async function extractICloudProfile(win, appleSession) {
                 var t = clean(nodes[n].textContent);
                 if (t.length >= 1 && t.length <= 30
                     && !/@/.test(t)
-                    && !/iCloud\\+|方案|储存空间|订阅|设置|账户信息|你的个人资料|个人资料图像|恢复|退出|签名/i.test(t)
+                    && !/iCloud\\+|方案|储存空间|订阅|设置|账户信息|你的个人资料|个人资料图像|恢复|退出|签名|account information|plan|storage|subscription|settings|profile photo|recovery/i.test(t)
                     && /[\\u4e00-\\u9fa5A-Za-z]/.test(t)) {
                   candidates.push(t);
                 }
@@ -2542,6 +2557,12 @@ async function extractICloudProfile(win, appleSession) {
         } catch (e) {}
         return null
       }
+      // 诊断：记录本轮 URL 与页面摘要（便于排查 iCloud 停留状态）
+      try {
+        const curUrl = await win.webContents.getURL()
+        const bodyText = await win.webContents.executeJavaScript('(document.body && document.body.textContent || "").replace(/\\s+/g," ").slice(0,150)').catch(() => '')
+        console.log(`[Apple登录] iCloud 提取中… URL=${curUrl} 页面=${bodyText}`)
+      } catch (e) {}
     }
     if (!info || typeof info !== 'object') return null
     const name = String(info.name || '').trim()
@@ -2577,8 +2598,359 @@ async function extractICloudProfile(win, appleSession) {
   } catch (e) {
     console.log(`[Apple登录] iCloud 资料提取失败（跳过，不影响登录）：${e && e.message ? e.message : e}`)
     return null
+  } finally {
+    win.webContents.removeListener('did-finish-load', onFinished)
   }
   // 遮罩由调用方 startAppleFinalizeOverlay 管理，窗口关闭时随 finish() 清理
+}
+
+// 从按钮提取语义 SVG 图标（排除右箭头/关闭等纯装饰图标），转 data URL 并注入白色 fill
+// 注入到提取脚本中的页面侧函数
+const APPLE_ICON_EXTRACTOR = `
+  function wfAppleIcon(btn) {
+    var svgs = btn.querySelectorAll('svg');
+    for (var i = 0; i < svgs.length; i++) {
+      var s = svgs[i];
+      var vb = s.getAttribute('viewBox') || '';
+      var w = parseFloat(s.getAttribute('width')) || 0;
+      var h = parseFloat(s.getAttribute('height')) || 0;
+      // 跳过纯箭头（窄长条 viewBox 如 "0 0 9 48"）与 X 关闭（14x14 十字）
+      if (/0 0 9 48|0 0 17 48|0 0 14 44/.test(vb)) continue;
+      if (vb === '0 0 14 14' && w <= 14 && h <= 14) continue; // 关闭 X
+      var html = s.outerHTML || '';
+      if (html.length < 80 || html.length > 4000) continue;
+      // 标准化为正方形 viewBox（取宽高最大值居中），保证在固定容器下占满
+      var vbMatch = vb.match(/^(-?[\\d.]+)\\s+(-?[\\d.]+)\\s+(-?[\\d.]+)\\s+(-?[\\d.]+)$/);
+      var out = html;
+      if (vbMatch) {
+        var vx = parseFloat(vbMatch[1]), vy = parseFloat(vbMatch[2]);
+        var vw = parseFloat(vbMatch[3]), vh = parseFloat(vbMatch[4]);
+        var side = Math.max(vw, vh);
+        var cx = vx + vw / 2, cy = vy + vh / 2;
+        var nvb = (cx - side / 2) + ' ' + (cy - side / 2) + ' ' + side + ' ' + side;
+        out = out.replace(/viewBox="[^"]*"/, 'viewBox="' + nvb + '"');
+      }
+      // 不注入 fill：渲染端用 CSS mask 按主题色填充（保留原始 path，去掉可能的 fill/stroke/width/height 干扰）
+      out = out.replace(/\s*fill="[^"]*"/g, '').replace(/\s*stroke="[^"]*"/g, '')
+        .replace(/\s*width="[^"]*"/g, '').replace(/\s*height="[^"]*"/g, '');
+      return 'data:image/svg+xml;utf8,' + encodeURIComponent(out);
+    }
+    return '';
+  }
+`
+
+// ── Apple 账户资料提取（account.apple.com，与 AM 同属 apple.com 域）────
+// 注意：AM 登录会话（music.apple.com 域）不会自动带出 account.apple.com 的登录态。
+// 用户同意后跳转到 account.apple.com，若未登录则停留登录页让用户完成登录（Apple 会预填邮箱），
+// 登录成功后自动抓取：昵称 / 邮箱 / 真实头像(data URL) / 出生日期 / 国家或地区 / 语言。
+async function extractAppleAccountProfile(win, appleSession) {
+  try {
+    console.log('[Apple登录] 访问 Apple 账户个人信息页…')
+    await win.loadURL('https://account.apple.com/account/manage/section/information')
+    // 等页面加载完成（SPA 渲染；若需登录，用户完成登录后自动进入。最多等 10 分钟）
+    const deadline = Date.now() + 10 * 60 * 1000
+    let info = null
+    let loginPrompted = false
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1200))
+      if (!win || win.isDestroyed()) return null
+      info = await win.webContents.executeJavaScript(`
+        ${APPLE_ICON_EXTRACTOR}
+        (function () {
+          var result = { name: '', email: '', avatar: '', birthday: '', country: '', language: '', icons: {}, needLogin: false };
+          function clean(t) { return (t || '').replace(/\\s+/g, ' ').trim(); }
+          var all = clean(document.body && document.body.textContent);
+          // 未登录标志：出现"登录"链接且无"退出登录"，且主区未渲染出个人信息
+          if (all.indexOf('退出登录') === -1 && (all.indexOf('登录') !== -1 || all.indexOf('Sign in') !== -1)) {
+            if (!document.querySelector('h1')) { result.needLogin = true; return result; }
+          }
+          // 头像：alt="描述文件" 的图（真实账户照片，data URL）
+          var imgs = document.querySelectorAll('img');
+          for (var i = 0; i < imgs.length; i++) {
+            var alt = clean(imgs[i].getAttribute('alt') || '');
+            var src = imgs[i].currentSrc || imgs[i].src || '';
+            if ((alt.indexOf('描述文件') !== -1 || /profile|avatar|photo/i.test(alt)) && src) {
+              result.avatar = src;
+              break;
+            }
+          }
+          // 出生日期 / 国家或地区 / 语言（个人信息页各按钮标题，同时抓左侧图标）
+          var btns = document.querySelectorAll('button, [role="button"]');
+          for (var b = 0; b < btns.length; b++) {
+            var bt = clean(btns[b].textContent);
+            var bm = bt.match(/^(姓名|出生日期|国家或地区|语言)\\s*(.*)$/);
+            if (bm) {
+              var val = bm[2];
+              var icon = wfAppleIcon(btns[b]);
+              if (bm[1] === '姓名' && val && !result.name) result.name = val;
+              else if (bm[1] === '出生日期' && val) { result.birthday = val; if (icon) result.icons.birthday = icon; }
+              else if (bm[1] === '国家或地区' && val) { result.country = val; if (icon) result.icons.country = icon; }
+              else if (bm[1] === '语言' && val) { result.language = val; if (icon) result.icons.language = icon; }
+            }
+          }
+          // 邮箱
+          var emailMatch = all.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/);
+          if (emailMatch) result.email = emailMatch[0];
+          return result;
+        })()
+      `).catch(() => null)
+      if (info && typeof info === 'object' && String(info.name || '').trim() && String(info.avatar || '').trim()) break
+      if (info && typeof info === 'object' && info.needLogin) {
+        // 未登录：移除处理中遮罩（让登录表单可见），提示用户在当前窗口完成 Apple 账户登录
+        // （Apple 会识别 AM 会话预填邮箱），然后继续轮询等待登录成功。
+        win.webContents.executeJavaScript('(function(){var e=document.getElementById("waveforge-apple-processing");if(e&&e.parentNode)e.parentNode.removeChild(e);var c=document.getElementById("waveforge-apple-consent");if(c&&c.parentNode)c.parentNode.removeChild(c);})()').catch(() => {})
+        if (!loginPrompted) {
+          loginPrompted = true
+          console.log('[Apple登录] account.apple.com 未登录，等待用户在当前窗口完成登录…')
+          win.webContents.executeJavaScript(`
+            (function () {
+              if (document.getElementById('waveforge-account-login-hint')) return;
+              var el = document.createElement('div');
+              el.id = 'waveforge-account-login-hint';
+              el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483646;background:rgba(10,10,12,0.92);color:#fff;padding:14px 20px;font:600 13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;display:flex;align-items:center;justify-content:center;gap:10px;border-bottom:1px solid rgba(255,255,255,0.12);';
+              el.innerHTML = '<span style="color:#fa2d48;font-size:16px;">●</span> 请在下方完成 Apple 账户登录（邮箱已预填），登录后将自动获取您的账户资料';
+              document.body.appendChild(el);
+            })()
+          `).catch(() => {})
+        }
+        continue
+      }
+    }
+    if (!info || typeof info !== 'object') return null
+    // 登录成功：移除登录提示条，显示"正在获取用户信息…"（抓取/写入期间不回到原始页面）
+    win.webContents.executeJavaScript('(function(){var e=document.getElementById("waveforge-account-login-hint");if(e&&e.parentNode)e.parentNode.removeChild(e);})()').catch(() => {})
+    showAppleOverlay(win, '正在获取用户信息…')
+    const name = String(info.name || '').trim()
+    const email = String(info.email || '').trim()
+    const avatar = String(info.avatar || '').trim()
+    const birthday = String(info.birthday || '').trim()
+    const country = String(info.country || '').trim()
+    const language = String(info.language || '').trim()
+    if (!name && !avatar) return null
+    if (name) console.log(`[Apple登录] Apple 账户昵称：${name}`)
+    if (email) console.log(`[Apple登录] Apple 账户邮箱：${email}`)
+    if (avatar) console.log(`[Apple登录] Apple 账户头像已抓取（${avatar.startsWith('data:') ? 'data URL' : 'URL'}，${avatar.length} 字符）`)
+    if (birthday) console.log(`[Apple登录] 出生日期：${birthday}`)
+    const icons = (info.icons && typeof info.icons === 'object') ? info.icons : {}
+    if (Object.keys(icons).length) console.log(`[Apple登录] 个人信息页图标已抓取：${Object.keys(icons).join('、')}`)
+    return { name, email, avatarUrl: avatar, birthday, country, language, icons }
+  } catch (e) {
+    console.log(`[Apple登录] Apple 账户资料提取失败（跳过，不影响登录）：${e && e.message ? e.message : e}`)
+    return null
+  }
+}
+
+// account.apple.com 设备页：提取设备列表（设备名 + 型号）
+async function extractAppleDevices(win) {
+  try {
+    await win.loadURL('https://account.apple.com/account/manage/section/devices')
+    const deadline = Date.now() + 12000
+    let devices = null
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1200))
+      if (!win || win.isDestroyed()) return []
+      devices = await win.webContents.executeJavaScript(`
+        ${APPLE_ICON_EXTRACTOR}
+        (function () {
+          var result = [];
+          // 设备型号模式（排除付款方式/家庭成员等非设备项）
+          var modelRe = /Mac|iPhone|iPad|iPod|Windows|Apple\\s*TV|Watch|AirPods|Studio|Pro|Mini|Air|Phone|Book|Vision/i;
+          var btns = document.querySelectorAll('button, [role="button"]');
+          for (var b = 0; b < btns.length; b++) {
+            var h = btns[b].querySelector('h1,h2,h3,h4,[role="heading"]');
+            var title = h ? (h.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+            if (!title) continue;
+            var model = '';
+            var generics = btns[b].querySelectorAll('div, span, p, [role="generic"]');
+            for (var g = 0; g < generics.length; g++) {
+              var t = (generics[g].textContent || '').replace(/\\s+/g, ' ').trim();
+              if (t && t !== title) { model = t; break; }
+            }
+            // 仅接受：标题或型号包含设备特征，且标题不含付款/家庭成员标识
+            if (/支付|Pay|UnionPay|银联|家庭|成员|（我）/.test(title)) continue;
+            if (!modelRe.test(title + ' ' + model)) continue;
+            var icon = wfAppleIcon(btns[b]);
+            result.push({ name: title, model: model, icon: icon });
+          }
+          return result;
+        })()
+      `).catch(() => null)
+      if (devices && Array.isArray(devices) && devices.length > 0) break
+    }
+    if (!devices || !Array.isArray(devices)) return []
+    const list = devices.filter(d => d && d.name).slice(0, 30)
+    if (list.length) console.log(`[Apple登录] 设备列表：${list.length} 台（${list.slice(0, 3).map(d => d.name).join('、')}…）`)
+    return list
+  } catch (e) {
+    console.log(`[Apple登录] 设备提取失败（跳过）：${e && e.message ? e.message : e}`)
+    return []
+  }
+}
+
+// account.apple.com 登录与安全性页：提取安全信息（双重认证/受信任设备等）
+async function extractAppleSecurity(win) {
+  try {
+    await win.loadURL('https://account.apple.com/account/manage/section/security')
+    const deadline = Date.now() + 12000
+    let info = null
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1200))
+      if (!win || win.isDestroyed()) return null
+      info = await win.webContents.executeJavaScript(`
+        ${APPLE_ICON_EXTRACTOR}
+        (function () {
+          var result = { twoFactor: '', trustedDevices: '', passwordUpdated: '', notificationEmail: '', recovery: '', legacyContact: '', signInWithApple: '', icons: {} };
+          var btns = document.querySelectorAll('button, [role="button"]');
+          for (var b = 0; b < btns.length; b++) {
+            var t = (btns[b].textContent || '').replace(/\\s+/g, ' ').trim();
+            var m = t.match(/^账户安全\\s*(.*)$/);
+            if (m && m[1]) {
+              var sec = m[1];
+              var two = sec.match(/(双重认证|two-factor)/i);
+              var dev = sec.match(/(\\d+)\\s*台受信任设备|(\\d+)\\s*trusted devices/i);
+              if (two) result.twoFactor = two[0];
+              if (dev) result.trustedDevices = dev[1] || dev[2];
+              var icon = wfAppleIcon(btns[b]);
+              if (icon) result.icons.security = icon;
+              continue;
+            }
+            m = t.match(/^密码\\s*(.*)$/);
+            if (m && m[1]) { result.passwordUpdated = m[1]; var icon2 = wfAppleIcon(btns[b]); if (icon2) result.icons.password = icon2; }
+            m = t.match(/^通知电子邮件\\s*(\\S+@\\S+)/);
+            if (m) { result.notificationEmail = m[1]; var icon3 = wfAppleIcon(btns[b]); if (icon3) result.icons.notification = icon3; }
+            m = t.match(/^账户恢复\\s*(.*)$/);
+            if (m && m[1]) { result.recovery = m[1]; var icon4 = wfAppleIcon(btns[b]); if (icon4) result.icons.recovery = icon4; }
+            m = t.match(/^遗产联系人\\s*(.*)$/);
+            if (m && m[1]) { result.legacyContact = m[1]; var icon5 = wfAppleIcon(btns[b]); if (icon5) result.icons.legacy = icon5; }
+            m = t.match(/^通过 Apple 登录\\s*(.*)$/);
+            if (m && m[1]) { result.signInWithApple = m[1]; var icon6 = wfAppleIcon(btns[b]); if (icon6) result.icons.apple = icon6; }
+          }
+          return result;
+        })()
+      `).catch(() => null)
+      if (info && typeof info === 'object' && (info.twoFactor || info.trustedDevices || info.signInWithApple)) break
+    }
+    if (!info || typeof info !== 'object') return null
+    if (info.twoFactor) console.log(`[Apple登录] 双重认证：${info.twoFactor}`)
+    if (info.trustedDevices) console.log(`[Apple登录] 受信任设备：${info.trustedDevices} 台`)
+    if (info.signInWithApple) console.log(`[Apple登录] 通过 Apple 登录：${info.signInWithApple}`)
+    return info
+  } catch (e) {
+    console.log(`[Apple登录] 安全信息提取失败（跳过）：${e && e.message ? e.message : e}`)
+    return null
+  }
+}
+
+// 在登录窗口内显示"处理中"遮罩（抓取数据等耗时操作期间，避免停留在原始页面）
+function showAppleOverlay(win, text) {
+  if (!win || win.isDestroyed()) return
+  win.webContents.executeJavaScript(`
+    (function () {
+      var text = ${JSON.stringify(text || '正在获取用户信息…')};
+      if (document.getElementById('waveforge-apple-consent')) {
+        // 已存在弹窗遮罩（同意/拒绝后切换为处理中）：更新文案
+        var card = document.getElementById('waveforge-apple-consent');
+        card.innerHTML =
+          '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;color:#fff;font:500 14px/1.4 -apple-system,BlinkMacSystemFont,\\"Segoe UI\\",\\"PingFang SC\\",\\"Microsoft YaHei\\",sans-serif;">' +
+          '<div style="width:36px;height:36px;border-radius:50%;border:3px solid rgba(255,255,255,0.18);border-top-color:#fa2d48;animation:wf-consent-spin 0.9s linear infinite;"></div>' +
+          '<div style="opacity:0.75;">' + text + '</div>' +
+          '</div>';
+        return;
+      }
+      var el = document.createElement('div');
+      el.id = 'waveforge-apple-processing';
+      el.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(10,10,12,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;color:#fff;font:500 14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;';
+      el.innerHTML =
+        '<div style="width:36px;height:36px;border-radius:50%;border:3px solid rgba(255,255,255,0.18);border-top-color:#fa2d48;animation:wf-consent-spin 0.9s linear infinite;"></div>' +
+        '<div style="opacity:0.75;">' + text + '</div>';
+      if (!document.getElementById('wf-consent-spin-style')) {
+        var st = document.createElement('style');
+        st.id = 'wf-consent-spin-style';
+        st.textContent = '@keyframes wf-consent-spin{to{transform:rotate(360deg)}}';
+        (document.head || document.documentElement).appendChild(st);
+      }
+      document.body.appendChild(el);
+    })()
+  `).catch(() => {})
+}
+
+// ── Apple 账户信息展示确认弹窗（登录窗口内，用户同意才继续抓取 account.apple.com）────
+// 在 AM 登录窗口内注入一个深色弹窗：告知用户已获取的 Apple ID/账单信息，
+// 询问是否同意登录 Apple 账户以展示完整信息（昵称/头像/个人信息）。
+// 同意 → 继续抓取 account.apple.com；拒绝 → 使用账单真名 + monogram 头像。
+// 通过轮询窗口变量等待用户选择（无 IPC 往返，简单可靠）。
+async function askAppleAccountConsent(win, billingName) {
+  try {
+    // 清理旧状态
+    await win.webContents.executeJavaScript('window.__wfAppleAccountChoice = ""').catch(() => {})
+    await win.webContents.executeJavaScript(`
+      (function () {
+        if (document.getElementById('waveforge-apple-consent')) {
+          document.getElementById('waveforge-apple-consent').remove();
+        }
+        var overlay = document.createElement('div');
+        overlay.id = 'waveforge-apple-consent';
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(10,10,12,0.88);display:flex;align-items:center;justify-content:center;padding:24px;';
+        var card = document.createElement('div');
+        card.style.cssText = 'max-width:430px;width:100%;background:#14141c;border:1px solid rgba(255,255,255,0.12);border-radius:20px;padding:28px 26px;color:#fff;font:500 14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 24px 80px rgba(0,0,0,0.6);';
+        card.innerHTML =
+          '<div style="font-size:17px;font-weight:700;margin-bottom:6px;">Apple 账户信息</div>' +
+          '<div style="font-size:12px;color:rgba(255,255,255,0.45);margin-bottom:16px;">隐私知情选择</div>' +
+          '<div style="color:rgba(255,255,255,0.78);font-size:13px;line-height:1.7;">' +
+          'Apple Music 登录本身并不包含您的头像与昵称。我们已获取您的 Apple ID 与账单信息。' +
+          '若您同意，我们将进一步读取您的 Apple 账户资料（昵称、头像、个人信息）用于完整展示。' +
+          '</div>' +
+          '<div style="margin-top:14px;padding:12px 14px;background:rgba(255,255,255,0.05);border-radius:12px;font-size:12.5px;color:rgba(255,255,255,0.55);line-height:1.7;">' +
+          '所有数据仅保存在本机，不会向云端或任何平台传播泄露。拒绝后仍可正常使用 Apple Music 功能，仅隐藏账户资料。' +
+          '</div>' +
+          '<div style="display:flex;gap:10px;margin-top:22px;">' +
+          '<button id="wf-consent-reject" style="flex:1;padding:11px 0;border-radius:12px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.14);color:#fff;font-size:14px;font-weight:600;cursor:pointer;">拒绝登录</button>' +
+          '<button id="wf-consent-accept" style="flex:1;padding:11px 0;border-radius:12px;background:#fa2d48;border:none;color:#fff;font-size:14px;font-weight:700;cursor:pointer;">同意登录</button>' +
+          '</div>';
+        overlay.appendChild(card);
+        document.body.appendChild(overlay);
+        // 点击后：记录选择并把弹窗内容切换为"正在获取用户信息…"（遮罩常驻，避免回到 AM 界面）
+        function wfShowProcessing(text) {
+          var o = document.getElementById('waveforge-apple-consent');
+          if (!o) return;
+          o.innerHTML =
+            '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;color:#fff;font:500 14px/1.4 -apple-system,BlinkMacSystemFont,\\"Segoe UI\\",\\"PingFang SC\\",\\"Microsoft YaHei\\",sans-serif;">' +
+            '<div style="width:36px;height:36px;border-radius:50%;border:3px solid rgba(255,255,255,0.18);border-top-color:#fa2d48;animation:wf-consent-spin 0.9s linear infinite;"></div>' +
+            '<div style="opacity:0.75;">' + text + '</div>' +
+            '</div>';
+          if (!document.getElementById('wf-consent-spin-style')) {
+            var st = document.createElement('style');
+            st.id = 'wf-consent-spin-style';
+            st.textContent = '@keyframes wf-consent-spin{to{transform:rotate(360deg)}}';
+            (document.head || document.documentElement).appendChild(st);
+          }
+        }
+        document.getElementById('wf-consent-accept').addEventListener('click', function () {
+          window.__wfAppleAccountChoice = 'accept';
+          wfShowProcessing('正在获取用户信息…');
+        });
+        document.getElementById('wf-consent-reject').addEventListener('click', function () {
+          window.__wfAppleAccountChoice = 'reject';
+          wfShowProcessing('正在写入数据，请稍后…');
+        });
+      })()
+    `).catch(() => {})
+    // 轮询等待用户选择（最多 5 分钟，超时视为拒绝）
+    const deadline = Date.now() + 5 * 60 * 1000
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 300))
+      if (!win || win.isDestroyed()) return 'reject'
+      const choice = await win.webContents.executeJavaScript('window.__wfAppleAccountChoice || ""').catch(() => '')
+      if (choice === 'accept' || choice === 'reject') {
+        console.log(`[Apple登录] 用户${choice === 'accept' ? '同意' : '拒绝'}展示 Apple 账户信息`)
+        return choice
+      }
+    }
+    return 'reject'
+  } catch (e) {
+    console.log(`[Apple登录] 账户信息确认弹窗异常（按拒绝处理）：${e && e.message ? e.message : e}`)
+    return 'reject'
+  }
 }
 
 async function createAppleLoginWindow() {
@@ -2822,10 +3194,9 @@ async function createAppleLoginWindow() {
               }
               if (appleDevTokenCapture || (mediaTokenFoundAt && Date.now() - mediaTokenFoundAt > 8000)) {
                 clearInterval(checkInterval)
-                // 登录成功即进入收尾阶段：常驻遮罩立即盖住窗口（用户只看到"正在获取用户信息…"，
-                // 全程不感知侧边栏提取 / iCloud 静默登录 / 账户摘要等内部跳转）。
+                // 加载动画已注释（用户需要观察完整登录流程）；确认无残留遮罩
                 stopAppleFinalizeOverlay()
-                startAppleFinalizeOverlay(appleLoginWindow)
+                // startAppleFinalizeOverlay(appleLoginWindow)
                 if (appleDevTokenCapture) {
                   // 诊断日志：打印捕获到的 token 声明，便于排查兼容性
                   // （新版令牌声明为 root_https_origin，旧版为 root）
@@ -2910,6 +3281,21 @@ async function createAppleLoginWindow() {
                 let domName = ''
                 let domAvatar = ''
                 let domBillingName = ''
+                // 账户摘要补充字段（仅本地存储，用于用户同意登录 Apple 账户页后的互补展示）
+                let appleBillingAddress = ''
+                let appleCountry = ''
+                let applePaymentType = ''
+                let appleAccountBalance = ''
+                // Apple 账户页补充字段（个人信息页：出生日期/语言；安全页；设备页）
+                let appleBirthday = ''
+                let appleAccountLanguage = ''
+                let appleTwoFactor = ''
+                let appleTrustedDevices = ''
+                let applePasswordUpdated = ''
+                let appleNotificationEmail = ''
+                let appleSignInWithApple = ''
+                // Apple 账户页信息图标（登录时一次性抓取，存入本地，展示时直接使用）
+                let appleIcons = {}
                 for (let domAttempt = 0; domAttempt < 12; domAttempt += 1) {
                   try {
                     const info = await extractSidebarUser()
@@ -2926,26 +3312,20 @@ async function createAppleLoginWindow() {
                 if (domName) console.log(`[Apple登录] 从界面提取到账号名：${domName}`)
                 if (domAvatar) console.log(`[Apple登录] 从界面提取到头像：${domAvatar.slice(0, 120)}…`)
 
-                // iCloud 资料提取：登录窗口同会话静默跳转 iCloud（Apple ID SSO 自动登录），
-                // 拿最「正宗」的账号名（昵称）+ 头像 + 邮箱，不引导用户单独登录 iCloud。
-                // 始终尝试：iCloud 是昵称/头像最权威来源，成功则覆盖侧边栏提取值。
-                // 遮罩已在收尾起点启动，覆盖此后的所有内部跳转。
+                // Apple 账户资料提取：仅在用户同意后执行（见下方弹窗逻辑）。
+                // account.apple.com 与 AM 同属 apple.com 域，SSO 会话直接生效，实测无需二次登录。
                 let domEmail = ''
+                let appleConsent = 'reject' // 用户是否同意展示 Apple 账户信息（默认拒绝）
                 {
-                  // 提前记下当前 storefront（iCloud 导航会覆盖窗口 URL，账户摘要页需要它）
+                  // 提前记下当前 storefront（账户摘要页需要它，导航会覆盖窗口 URL）
                   const preUrl = (await appleLoginWindow.webContents.getURL()) || ''
                   const preSf = (preUrl.match(/\/([a-z]{2})\//) || [])[1] || 'cn'
-                  const icloud = await extractICloudProfile(appleLoginWindow, appleSession)
-                  if (icloud) {
-                    if (icloud.name) domName = icloud.name
-                    if (icloud.avatarUrl) domAvatar = icloud.avatarUrl
-                    if (icloud.email && !domEmail) domEmail = icloud.email
-                  }
                   appleLoginWindow.__wfAppleStorefront = preSf
                 }
 
-                // 邮箱/真实姓名：导航到「账户设置」页，从"账户摘要"里提取（iCloud 已给邮箱则只补真名）
-                if (!domEmail || !domBillingName) {
+                // 账户摘要提取：导航到「账户设置」页，从"账户摘要"里提取 Apple ID/真实姓名/账单地址等
+                // （CommerceKit 与 AM 网页登录连通，登录窗口登录后可直接读取，无需额外认证）
+                {
                   try {
                     const currentUrl = (await appleLoginWindow.webContents.getURL()) || ''
                     const sfMatch = currentUrl.match(/\/([a-z]{2})\//)
@@ -2955,46 +3335,129 @@ async function createAppleLoginWindow() {
                     await new Promise(resolve => setTimeout(resolve, 4500))
                     const accountInfo = await appleLoginWindow.webContents.executeJavaScript(`
                       (function () {
-                        var result = { email: '', name: '' };
+                        var result = { email: '', realName: '', billingAddress: '', country: '', paymentType: '', accountBalance: '' };
                         function textOf(el) { return el && el.textContent ? el.textContent.replace(/\\s+/g, ' ').trim() : ''; }
                         var iframes = document.querySelectorAll('iframe');
                         var doc = document;
                         for (var i = 0; i < iframes.length; i++) {
                           try { if (iframes[i].contentDocument) { doc = iframes[i].contentDocument; break; } } catch (e) {}
                         }
-                        var all = textOf(doc.body) || '';
-                        var emailMatch = all.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/);
-                        if (emailMatch) result.email = emailMatch[0];
-                        var regions = doc.querySelectorAll('[role="region"]');
-                        for (var j = 0; j < regions.length; j++) {
-                          var rt = textOf(regions[j]);
-                          if (rt.indexOf('账单寄送地址') !== -1 || rt.indexOf('Billing Address') !== -1) {
-                            var items = regions[j].querySelectorAll('li, [role="listitem"]');
-                            for (var k = 0; k < items.length; k++) {
-                              var lt = textOf(items[k]);
-                              if (lt && lt.length >= 1 && lt.length <= 30 && !/@/.test(lt) && !/支付|¥|元/.test(lt)) { result.name = lt; break; }
-                            }
-                            if (!result.name) {
-                              var lines = rt.split(/[，,。\\n]/).map(function (s) { return s.trim(); }).filter(Boolean);
-                              for (var m = 0; m < lines.length; m++) {
-                                if (lines[m].length >= 1 && lines[m].length <= 30 && !/@/.test(lines[m]) && lines[m] !== '账单寄送地址' && !/支付|¥/.test(lines[m])) { result.name = lines[m]; break; }
+                        // 字段标签 → 紧随其后的 list/listitem 值（账户摘要区结构：generic 标签 + list 值）
+                        function valuesAfter(label) {
+                          var nodes = doc.querySelectorAll('div, span, h2, h3, h4, p, [role="generic"]');
+                          for (var n = 0; n < nodes.length; n++) {
+                            var t = textOf(nodes[n]);
+                            if (t === label || t === label + ' ' || t === label) {
+                              // 找到标签，取其后的兄弟 list
+                              var el = nodes[n];
+                              var next = el.nextElementSibling;
+                              if (next) {
+                                if (next.tagName === 'UL' || next.tagName === 'OL' || next.querySelector) {
+                                  var items = next.querySelectorAll ? next.querySelectorAll('li, [role="listitem"]') : [];
+                                  if (items.length) {
+                                    var vals = [];
+                                    for (var k = 0; k < items.length; k++) {
+                                      var lt = textOf(items[k]);
+                                      if (lt) vals.push(lt);
+                                    }
+                                    if (vals.length) return vals;
+                                  }
+                                }
+                                // 标签和 list 之间可能有包裹层，往上找一层
+                                var parent = next.parentElement || el.parentElement;
+                                var items2 = parent ? parent.querySelectorAll('li, [role="listitem"]') : [];
+                                var vals2 = [];
+                                for (var m = 0; m < items2.length; m++) {
+                                  var l2 = textOf(items2[m]);
+                                  if (l2 && l2 !== t) vals2.push(l2);
+                                }
+                                if (vals2.length) return vals2;
                               }
                             }
-                            break;
                           }
+                          return [];
                         }
+                        // 邮箱：Apple 账户 行的第一个 listitem
+                        var appleAccount = valuesAfter('Apple 账户');
+                        if (appleAccount.length) {
+                          var em = (appleAccount[0] || '').match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/);
+                          if (em) result.email = em[0];
+                        }
+                        // 真实姓名 + 账单地址（第一行是姓名，其余为地址；本地存储备用）
+                        var billing = valuesAfter('账单寄送地址');
+                        if (billing.length) {
+                          result.realName = billing[0];
+                          result.billingAddress = billing.slice(1).join('，');
+                        }
+                        // 国家/地区
+                        var country = valuesAfter('国家或地区');
+                        if (country.length) result.country = country[0];
+                        // 付款类型
+                        var payment = valuesAfter('付款类型');
+                        if (payment.length) result.paymentType = payment[0];
+                        // Apple 账户余额
+                        var balance = valuesAfter('Apple 账户余额');
+                        if (balance.length) result.accountBalance = balance[0];
                         return result;
                       })()
                     `)
                     if (accountInfo && typeof accountInfo === 'object') {
                       domEmail = String(accountInfo.email || '').trim()
-                      domBillingName = String(accountInfo.name || '').trim()
+                      domBillingName = String(accountInfo.realName || '').trim()
+                      appleBillingAddress = String(accountInfo.billingAddress || '').trim()
+                      appleCountry = String(accountInfo.country || '').trim()
+                      applePaymentType = String(accountInfo.paymentType || '').trim()
+                      appleAccountBalance = String(accountInfo.accountBalance || '').trim()
                     }
-                    if (domEmail) console.log(`[Apple登录] 从账户摘要提取到邮箱：${domEmail}`)
+                    if (domEmail) console.log(`[Apple登录] 从账户摘要提取到 Apple ID：${domEmail}`)
                     if (domBillingName) console.log(`[Apple登录] 从账户摘要提取到真实姓名：${domBillingName}`)
+                    if (appleBillingAddress) console.log(`[Apple登录] 账单地址已存本地：${appleBillingAddress}`)
                   } catch (e) {
                     console.log(`[Apple登录] 账户摘要提取失败：${e && e.message ? e.message : e}`)
                   }
+                }
+
+                // ── 账户信息展示确认弹窗（登录窗口内）──
+                // 用户同意 → 继续抓取 account.apple.com（昵称/头像/个人信息/设备）；
+                // 用户拒绝 → 仅使用账单 Apple ID + 账单真实姓名 + monogram 头像。
+                if (!domEmail && !domBillingName) {
+                  // 账单信息都没抓到（异常情况），默认按拒绝处理，不弹窗打扰
+                  appleConsent = 'reject'
+                } else {
+                  appleConsent = await askAppleAccountConsent(appleLoginWindow, domBillingName || '')
+                }
+
+                // 用户同意后：抓取 account.apple.com 完整账户资料（SSO 会话直接生效，无需二次登录）
+                if (appleConsent === 'accept') {
+                  console.log('[Apple登录] 用户同意，开始抓取 Apple 账户资料…')
+                  const accountProfile = await extractAppleAccountProfile(appleLoginWindow, appleSession)
+                  if (accountProfile) {
+                    if (accountProfile.name) domName = accountProfile.name
+                    if (accountProfile.avatarUrl) domAvatar = accountProfile.avatarUrl
+                    if (accountProfile.email && !domEmail) domEmail = accountProfile.email
+                    if (accountProfile.birthday) appleBirthday = accountProfile.birthday
+                    if (accountProfile.country && !appleCountry) appleCountry = accountProfile.country
+                    if (accountProfile.language) appleAccountLanguage = accountProfile.language
+                    if (accountProfile.icons && typeof accountProfile.icons === 'object') {
+                      appleIcons = { ...appleIcons, ...accountProfile.icons }
+                    }
+                  }
+                  // 登录与安全性页（双重认证/受信任设备等 + 图标）
+                  const accountSecurity = await extractAppleSecurity(appleLoginWindow)
+                  if (accountSecurity) {
+                    if (accountSecurity.twoFactor) appleTwoFactor = accountSecurity.twoFactor
+                    if (accountSecurity.trustedDevices) appleTrustedDevices = accountSecurity.trustedDevices
+                    if (accountSecurity.passwordUpdated) applePasswordUpdated = accountSecurity.passwordUpdated
+                    if (accountSecurity.notificationEmail) appleNotificationEmail = accountSecurity.notificationEmail
+                    if (accountSecurity.signInWithApple) appleSignInWithApple = accountSecurity.signInWithApple
+                    if (accountSecurity.icons && typeof accountSecurity.icons === 'object') {
+                      appleIcons = { ...appleIcons, ...accountSecurity.icons }
+                    }
+                  }
+                } else {
+                  console.log('[Apple登录] 用户拒绝，使用账单姓名 + monogram 头像')
+                  // 拒绝时不抓取 Apple 账户资料；头像由渲染端用账单真实姓名生成 monogram
+                  domAvatar = ''
                 }
 
                 const result = {
@@ -3003,10 +3466,24 @@ async function createAppleLoginWindow() {
                   developerToken: appleDevTokenCapture || undefined,
                   cookies: appleCookies || undefined,
                   allCookies: allCookies || undefined,
-                  name: domName || undefined,
+                  // 显示名兜底：侧边栏昵称 → 账单真实姓名（比"Apple Music 用户"更有辨识度）
+                  name: domName || domBillingName || undefined,
                   email: domEmail || undefined,
                   realName: domBillingName || undefined,
                   avatar: domAvatar || undefined,
+                  billingAddress: appleBillingAddress || undefined,
+                  country: appleCountry || undefined,
+                  paymentType: applePaymentType || undefined,
+                  accountBalance: appleAccountBalance || undefined,
+                  birthday: appleBirthday || undefined,
+                  language: appleAccountLanguage || undefined,
+                  twoFactor: appleTwoFactor || undefined,
+                  trustedDevices: appleTrustedDevices || undefined,
+                  passwordUpdated: applePasswordUpdated || undefined,
+                  notificationEmail: appleNotificationEmail || undefined,
+                  signInWithApple: appleSignInWithApple || undefined,
+                  icons: (Object.keys(appleIcons).length ? appleIcons : undefined),
+                  consent: appleConsent,
                 }
                 finish(result)
                 if (appleLoginWindow && !appleLoginWindow.isDestroyed()) appleLoginWindow.close()

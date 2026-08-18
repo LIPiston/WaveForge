@@ -1,11 +1,10 @@
 import React, { memo, useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, Trash2, ChevronLeft, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone, Gamepad2 } from 'lucide-react'
+import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, Trash2, ChevronLeft, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone, Gamepad2, Eye, EyeOff } from 'lucide-react'
 import LoginButton from './LoginButton'
 import type { AppleUserInfo } from '../services/appleAuth'
 import {
   MUSIC_PLATFORMS,
-  PLATFORM_LABELS,
   PLATFORM_VISIBILITY_EVENT,
   getHiddenPlatforms,
   setPlatformHidden,
@@ -36,7 +35,6 @@ import {
 } from '../services/audioQualitySettings'
 import {
   getAppleMusicSettings,
-  testAppleMusicLink,
   type AppleMusicSettings,
 } from '../services/appleMusic'
 
@@ -139,6 +137,23 @@ function SettingsPanel({
     window.addEventListener(PLATFORM_VISIBILITY_EVENT, sync)
     return () => window.removeEventListener(PLATFORM_VISIBILITY_EVENT, sync)
   }, [])
+
+  // 平台卡片右上角小眼睛：切换隐藏当前平台（至少保留一个，隐藏第三个时 toast 提示）
+  const togglePlatformVisibility = (platform: MusicPlatform, currentlyVisible: boolean) => {
+    if (currentlyVisible) {
+      // 隐藏：若当前可见平台只有这一个，则不允许（toast 提示）
+      const visibleCount = MUSIC_PLATFORMS.filter(p => !hiddenPlatforms.includes(p)).length
+      if (visibleCount <= 1) {
+        window.dispatchEvent(new CustomEvent('showToast', {
+          detail: { message: '您至少需要保留一个平台以正常使用本软件', type: 'info' }
+        }))
+        return
+      }
+      setPlatformHidden(platform, true)
+    } else {
+      setPlatformHidden(platform, false)
+    }
+  }
   
   const [wordByWordLyrics, setWordByWordLyrics] = useState(() => {
     const saved = localStorage.getItem('wordByWordLyrics')
@@ -185,6 +200,8 @@ function SettingsPanel({
   })
   // TV：识别码 + 兑换码
   const [tvRedeemCode, setTvRedeemCode] = useState('')
+  const [showTvRedeemModal, setShowTvRedeemModal] = useState(false)
+  const [showTvDeviceId, setShowTvDeviceId] = useState(false)
   const [tvRedeemState, setTvRedeemState] = useState<{ status: 'idle' | 'redeeming'; message: string | null }>({ status: 'idle', message: null })
   const [tvLicense, setTvLicense] = useState<{ deviceId: string; grants: Array<{ feature: string; label: string; expiresAt?: number }> }>({ deviceId: '', grants: [] })
   const [playbackShortcutSettings, setPlaybackShortcutSettings] = useState(loadPlaybackShortcutSettings)
@@ -207,8 +224,6 @@ function SettingsPanel({
 
   // ── Apple Music 设置 ──
   const [appleMusic, setAppleMusic] = useState<AppleMusicSettings>(() => getAppleMusicSettings())
-  const [appleTestStatus, setAppleTestStatus] = useState<{ ok: boolean; message: string } | null>(null)
-  const [appleTestState, setAppleTestState] = useState<'idle' | 'testing'>('idle')
 
   const updateAppleMusic = (patch: Partial<AppleMusicSettings>) => {
     const next = { ...appleMusic, ...patch }
@@ -222,14 +237,13 @@ function SettingsPanel({
     localStorage.setItem('appleDuetColors', JSON.stringify(next.duetColors))
   }
 
-  const runAppleTest = async () => {
-    setAppleTestState('testing')
-    setAppleTestStatus(null)
-    // 用经典曲目做连通性验证：晴天 - 周杰伦（iTunes + am-lyrics 均有收录）
-    const result = await testAppleMusicLink('晴天', '周杰伦')
-    setAppleTestStatus({ ok: result.ok, message: result.message })
-    setAppleTestState('idle')
-  }
+  // 登录 Apple Music 后自动开启 Apple Music 歌词
+  useEffect(() => {
+    if (appleLoggedIn && !appleMusic.enabled) {
+      updateAppleMusic({ enabled: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appleLoggedIn])
 
   const [crossPlatformFallbackEnabled, setCrossPlatformFallbackEnabled] = useState(() => {
     const saved = localStorage.getItem('crossPlatformFallbackEnabled')
@@ -1080,11 +1094,12 @@ function SettingsPanel({
         {/* 设置面板 */}
         <motion.div
             key="settings-panel"
+            data-tv-scope
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-            className="fixed right-0 top-0 h-full w-full max-w-md z-50 shadow-2xl overflow-hidden"
+            className={`fixed right-0 top-0 h-full w-full z-50 shadow-2xl overflow-hidden ${isTvModeActive() ? 'max-w-2xl' : 'max-w-md'}`}
           >
             {/* 液态玻璃背景层 - 增强版 */}
             <div className="absolute inset-0">
@@ -1427,60 +1442,36 @@ function SettingsPanel({
                     </div>
                   </div>
 
-                  {/* 设备识别码与兑换 */}
+                  {/* 设备授权（与 PC 端关于页统一设计） */}
                   <div>
-                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>设备识别码与功能兑换</h3>
-                    <div className={`${bgCard} rounded-2xl border ${borderColor} p-4`}>
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className={`${textPrimary} font-medium`}>本机识别码</div>
-                          <div className={`${textSecondary} text-sm mt-0.5 break-all`}>{tvLicense.deviceId || '加载中…'}</div>
+                    <div className={`${bgCard} rounded-2xl border ${borderColor} p-5`}>
+                      <div className="flex items-start gap-4 mb-4">
+                        <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: `${accentColor}20`, color: accentColor }}>
+                          <KeyRound className="w-5 h-5" />
                         </div>
-                        <button
-                          onClick={async () => {
-                            try {
-                              await navigator.clipboard.writeText(tvLicense.deviceId)
-                              window.dispatchEvent(new CustomEvent('showToast', {
-                                detail: { message: '识别码已复制', type: 'success' },
-                              }))
-                            } catch {
-                              // ignore
-                            }
-                          }}
-                          className="shrink-0 rounded-xl px-3 py-2 text-sm font-medium transition-colors border flex items-center gap-1.5"
-                          style={{ borderColor: borderColor }}
-                        >
-                          <Copy className="w-4 h-4" />
-                          复制
-                        </button>
+                        <div className="min-w-0">
+                          <h3 className={`text-lg font-semibold ${textPrimary}`}>设备授权</h3>
+                          <p className={`text-sm ${textSecondary} mt-1.5 leading-6`}>仅用作设备标识，不会收集关于您设备的任何信息</p>
+                        </div>
                       </div>
+                      <button
+                        onClick={() => setShowTvDeviceId(true)}
+                        disabled={!tvLicense.deviceId}
+                        className="w-full rounded-xl px-5 py-3.5 text-white font-semibold flex items-center justify-center gap-2 transition-all hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0"
+                        style={{ backgroundColor: accentColor, boxShadow: `0 10px 28px ${accentColor}24` }}
+                      >
+                        <Copy className="w-4 h-4" />
+                        获取识别码
+                      </button>
 
                       <div className="mt-4 pt-4 border-t" style={{ borderColor: borderColor }}>
-                        <div className={`${textPrimary} text-sm font-medium mb-1`}>兑换隐藏功能</div>
-                        <div className={`${textSecondary} text-xs mb-3`}>输入兑换码解锁 TV 端专属功能（向开发者获取）</div>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            value={tvRedeemCode}
-                            onChange={(event) => setTvRedeemCode(event.target.value)}
-                            placeholder="输入兑换码（WF1.…）"
-                            className="flex-1 min-w-0 rounded-xl border px-3 py-2 text-sm outline-none bg-transparent"
-                            style={{ borderColor: borderColor, color: playerTheme === 'dark' ? '#fff' : '#000' }}
-                          />
-                          <button
-                            onClick={() => void tvRedeem()}
-                            disabled={tvRedeemState.status === 'redeeming'}
-                            className="shrink-0 rounded-xl px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-                            style={{ backgroundColor: accentColor }}
-                          >
-                            {tvRedeemState.status === 'redeeming' ? '兑换中…' : '兑换'}
-                          </button>
-                        </div>
-                        {tvRedeemState.message && (
-                          <div className={`mt-2 text-xs ${tvRedeemState.message.includes('成功') ? 'text-green-400' : 'text-red-400'}`}>
-                            {tvRedeemState.message}
-                          </div>
-                        )}
+                        <button
+                          onClick={() => setShowTvRedeemModal(true)}
+                          className={`w-full rounded-xl border ${borderColor} ${hoverBg} ${textPrimary} px-5 py-3.5 font-semibold flex items-center justify-center gap-2 transition-colors`}
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          兑换码验证
+                        </button>
                         {tvLicense.grants.length > 0 && (
                           <div className="mt-3 space-y-1.5">
                             {tvLicense.grants.map((grant) => (
@@ -1510,7 +1501,24 @@ function SettingsPanel({
                     
                     <div className="space-y-4">
                       {/* NetEase login */}
-                      <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                      <motion.div
+                        layout
+                        animate={{ opacity: hiddenPlatforms.includes('netease') ? 0.45 : 1, scale: hiddenPlatforms.includes('netease') ? 0.98 : 1 }}
+                        transition={{ duration: 0.25 }}
+                        className={`${bgCard} rounded-xl p-4 border ${borderColor} relative`}
+                      >
+                        {/* 隐藏平台小眼睛（右上角） */}
+                        <button
+                          type="button"
+                          onClick={() => togglePlatformVisibility('netease', !hiddenPlatforms.includes('netease'))}
+                          className="absolute top-3 right-3 p-1.5 rounded-lg transition-colors hover:bg-white/10"
+                          aria-label={hiddenPlatforms.includes('netease') ? '显示网易云音乐' : '隐藏网易云音乐'}
+                          title={hiddenPlatforms.includes('netease') ? '显示平台' : '隐藏平台'}
+                        >
+                          {hiddenPlatforms.includes('netease')
+                            ? <EyeOff className="w-4 h-4 text-white/40" />
+                            : <Eye className="w-4 h-4 text-white/40" />}
+                        </button>
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-red-600 flex items-center justify-center">
@@ -1539,10 +1547,27 @@ function SettingsPanel({
                             playerTheme={playerTheme}
                           />
                         </div>
-                      </div>
+                      </motion.div>
 
                       {/* QQ音乐登录 */}
-                      <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                      <motion.div
+                        layout
+                        animate={{ opacity: hiddenPlatforms.includes('qq') ? 0.45 : 1, scale: hiddenPlatforms.includes('qq') ? 0.98 : 1 }}
+                        transition={{ duration: 0.25 }}
+                        className={`${bgCard} rounded-xl p-4 border ${borderColor} relative`}
+                      >
+                        {/* 隐藏平台小眼睛（右上角） */}
+                        <button
+                          type="button"
+                          onClick={() => togglePlatformVisibility('qq', !hiddenPlatforms.includes('qq'))}
+                          className="absolute top-3 right-3 p-1.5 rounded-lg transition-colors hover:bg-white/10"
+                          aria-label={hiddenPlatforms.includes('qq') ? '显示QQ音乐' : '隐藏QQ音乐'}
+                          title={hiddenPlatforms.includes('qq') ? '显示平台' : '隐藏平台'}
+                        >
+                          {hiddenPlatforms.includes('qq')
+                            ? <EyeOff className="w-4 h-4 text-white/40" />
+                            : <Eye className="w-4 h-4 text-white/40" />}
+                        </button>
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-green-600 flex items-center justify-center">
@@ -1571,10 +1596,27 @@ function SettingsPanel({
                             playerTheme={playerTheme}
                           />
                         </div>
-                      </div>
+                      </motion.div>
 
                       {/* Apple Music 登录 */}
-                      <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                      <motion.div
+                        layout
+                        animate={{ opacity: hiddenPlatforms.includes('apple') ? 0.45 : 1, scale: hiddenPlatforms.includes('apple') ? 0.98 : 1 }}
+                        transition={{ duration: 0.25 }}
+                        className={`${bgCard} rounded-xl p-4 border ${borderColor} relative`}
+                      >
+                        {/* 隐藏平台小眼睛（右上角） */}
+                        <button
+                          type="button"
+                          onClick={() => togglePlatformVisibility('apple', !hiddenPlatforms.includes('apple'))}
+                          className="absolute top-3 right-3 p-1.5 rounded-lg transition-colors hover:bg-white/10"
+                          aria-label={hiddenPlatforms.includes('apple') ? '显示Apple Music' : '隐藏Apple Music'}
+                          title={hiddenPlatforms.includes('apple') ? '显示平台' : '隐藏平台'}
+                        >
+                          {hiddenPlatforms.includes('apple')
+                            ? <EyeOff className="w-4 h-4 text-white/40" />
+                            : <Eye className="w-4 h-4 text-white/40" />}
+                        </button>
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-pink-600 flex items-center justify-center">
@@ -1589,7 +1631,7 @@ function SettingsPanel({
                             </div>
                             <div>
                               <div className={`${textPrimary} font-medium`}>Apple Music</div>
-                              <div className={`${textTertiary} text-xs`}>使用 Developer Token + Media-User-Token 登录</div>
+                              <div className={`${textTertiary} text-xs`}>使用网页登录</div>
                             </div>
                           </div>
                         </div>
@@ -1604,38 +1646,10 @@ function SettingsPanel({
                             playerTheme={playerTheme}
                           />
                         </div>
-                      </div>
+                      </motion.div>
                     </div>
 
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
-                      <div className={`${textPrimary} font-medium`}>隐藏平台</div>
-                      <div className={`${textTertiary} text-xs mt-1`}>
-                        在平台切换器中隐藏不常用的平台（默认全部显示，至少保留一个）
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {MUSIC_PLATFORMS.map(platform => {
-                          const visible = !hiddenPlatforms.includes(platform)
-                          const dotColor = platform === 'netease' ? 'bg-red-500' : platform === 'qq' ? 'bg-green-500' : 'bg-pink-500'
-                          return (
-                            <button
-                              key={platform}
-                              type="button"
-                              onClick={() => setPlatformHidden(platform, visible)}
-                              className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all flex items-center gap-1.5 border ${
-                                visible
-                                  ? playerTheme === 'dark' ? 'text-white/85' : 'text-black/80'
-                                  : `${textTertiary} opacity-60 line-through`
-                              } ${visible ? (platform === 'netease' ? 'border-red-500/40 bg-red-500/10' : platform === 'qq' ? 'border-green-500/40 bg-green-500/10' : 'border-pink-500/40 bg-pink-500/10') : `${borderColor} ${bgCard}`}`}
-                            >
-                              <span className={`w-2 h-2 rounded-full ${visible ? dotColor : 'bg-current'}`} />
-                              {PLATFORM_LABELS[platform]}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </div>
-
-                    <div className={`${bgCard} mt-6 rounded-xl p-4 border ${borderColor}`}>
                       <div className="flex items-center justify-between gap-4">
                         <div className="min-w-0">
                           <div className={`${textPrimary} font-medium`}>隐藏主页账号ID信息</div>
@@ -2664,6 +2678,30 @@ function SettingsPanel({
                       </div>
                     </div>
 
+                    {/* 启用 Apple Music 歌词（已登录 AM 才可开启；登录后自动开启） */}
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className={`${textPrimary} font-medium mb-1`}>启用 Apple Music 歌词</div>
+                          <div className={`${textSecondary} text-sm`}>
+                            {appleLoggedIn
+                              ? 'Apple 逐音节歌词与翻译（登录 Apple Music 后自动启用）'
+                              : '需先登录 Apple Music 账号后才可启用'}
+                          </div>
+                        </div>
+                        <label className={`relative inline-flex items-center ${appleLoggedIn ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                          <input
+                            type="checkbox"
+                            checked={appleMusic.enabled}
+                            disabled={!appleLoggedIn}
+                            onChange={(e) => updateAppleMusic({ enabled: e.target.checked })}
+                            className="sr-only peer"
+                          />
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: appleMusic.enabled ? accentColor : '' }}></div>
+                        </label>
+                      </div>
+                    </div>
+
                     {/* 自适应最佳歌词 */}
                     {thirdPartyLyricsEnabled && (
                       <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`}>
@@ -2758,151 +2796,6 @@ function SettingsPanel({
                           ))}
                         </div>
                       </div>
-                    )}
-                  </div>
-                  
-                  {/* Apple Music */}
-                  <div>
-                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>Apple Music</h3>
-                    <p className={`${textSecondary} text-sm mb-6`}>
-                      Apple Music 歌词为 TTML 逐音节格式，支持对唱（按演唱者着色）与翻译。未配置凭证时自动使用社区 AMLL 库（Apple 原版歌词，免登录）。
-                    </p>
-
-                    {/* 启用 */}
-                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`}>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className={`${textPrimary} font-medium mb-1`}>启用 Apple Music 歌词</div>
-                          <div className={`${textSecondary} text-sm`}>iTunes 匹配歌曲后，优先使用 Apple 逐字歌词与高清封面</div>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={appleMusic.enabled}
-                            onChange={(e) => updateAppleMusic({ enabled: e.target.checked })}
-                            className="sr-only peer"
-                          />
-                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: appleMusic.enabled ? accentColor : '' }}></div>
-                        </label>
-                      </div>
-                    </div>
-
-                    {appleMusic.enabled && (
-                      <>
-                        {/* 凭证 */}
-                        <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`}>
-                          <div className={`${textPrimary} font-medium mb-1`}>AMP API 凭证（可选）</div>
-                          <div className={`${textSecondary} text-sm mb-3`}>
-                            填写后可直连 Apple 官方接口获取多语言翻译。不填则自动使用社区 AMLL 库（绝大多数歌曲可命中）。
-                          </div>
-                          <div className="space-y-3">
-                            <div>
-                              <label className={`${textTertiary} text-xs mb-1 block`}>开发者 Token（Authorization: Bearer …）</label>
-                              <input
-                                type="password"
-                                value={appleMusic.developerToken}
-                                onChange={(e) => updateAppleMusic({ developerToken: e.target.value })}
-                                placeholder="eyJhbGciOi…"
-                                className={`w-full rounded-lg border ${borderColor} bg-transparent px-3 py-2 text-sm outline-none ${textPrimary}`}
-                                style={{ borderColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.12)' }}
-                              />
-                            </div>
-                            <div>
-                              <label className={`${textTertiary} text-xs mb-1 block`}>Media-User-Token（需 Apple Music 账号）</label>
-                              <input
-                                type="password"
-                                value={appleMusic.mediaUserToken}
-                                onChange={(e) => updateAppleMusic({ mediaUserToken: e.target.value })}
-                                placeholder="AwAAAB…"
-                                className={`w-full rounded-lg border ${borderColor} bg-transparent px-3 py-2 text-sm outline-none ${textPrimary}`}
-                                style={{ borderColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.12)' }}
-                              />
-                            </div>
-                            <div className="grid grid-cols-2 gap-3">
-                              <div>
-                                <label className={`${textTertiary} text-xs mb-1 block`}>商店（Storefront）</label>
-                                <select
-                                  value={appleMusic.storefront}
-                                  onChange={(e) => updateAppleMusic({ storefront: e.target.value })}
-                                  className={`w-full rounded-lg border ${borderColor} bg-transparent px-3 py-2 text-sm outline-none ${textPrimary}`}
-                                >
-                                  <option value="cn">中国大陆 (cn)</option>
-                                  <option value="hk">香港 (hk)</option>
-                                  <option value="tw">台湾 (tw)</option>
-                                  <option value="us">美国 (us)</option>
-                                  <option value="jp">日本 (jp)</option>
-                                  <option value="kr">韩国 (kr)</option>
-                                  <option value="gb">英国 (gb)</option>
-                                </select>
-                              </div>
-                              <div>
-                                <label className={`${textTertiary} text-xs mb-1 block`}>歌词语言</label>
-                                <select
-                                  value={appleMusic.lyricLang}
-                                  onChange={(e) => updateAppleMusic({ lyricLang: e.target.value })}
-                                  className={`w-full rounded-lg border ${borderColor} bg-transparent px-3 py-2 text-sm outline-none ${textPrimary}`}
-                                >
-                                  <option value="zh-hans-cn">简体中文</option>
-                                  <option value="zh-hant-tw">繁体中文（台湾）</option>
-                                  <option value="zh-hant-hk">繁体中文（香港）</option>
-                                  <option value="en-us">英语（美）</option>
-                                  <option value="en-gb">英语（英）</option>
-                                </select>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <button
-                                type="button"
-                                onClick={() => void runAppleTest()}
-                                disabled={appleTestState === 'testing'}
-                                className={`rounded-lg px-4 py-2 text-sm font-medium transition-all disabled:opacity-50 ${appleTestState === 'testing' ? 'opacity-60' : ''}`}
-                                style={{ backgroundColor: accentColor, color: '#fff' }}
-                              >
-                                {appleTestState === 'testing' ? '测试中…' : '测试 Apple Music 连接'}
-                              </button>
-                              {appleTestStatus && (
-                                <span className={`text-xs ${appleTestStatus.ok ? 'text-emerald-400' : 'text-amber-400'}`}>
-                                  {appleTestStatus.message}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* 封面与对唱 */}
-                        <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`}>
-                          <div className="flex items-center justify-between mb-3">
-                            <div>
-                              <div className={`${textPrimary} font-medium mb-1`}>优先 Apple 高清封面</div>
-                              <div className={`${textSecondary} text-sm`}>命中 Apple 曲目时，封面替换为 iTunes 高清封面并启用律动粒子动效</div>
-                            </div>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={appleMusic.preferAppleCover}
-                                onChange={(e) => updateAppleMusic({ preferAppleCover: e.target.checked })}
-                                className="sr-only peer"
-                              />
-                              <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: appleMusic.preferAppleCover ? accentColor : '' }}></div>
-                            </label>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <div className={`${textPrimary} font-medium mb-1`}>对唱歌词按演唱者着色</div>
-                              <div className={`${textSecondary} text-sm`}>Apple 对唱/多声部歌词中，不同演唱者的词以不同色相区分</div>
-                            </div>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={appleMusic.duetColors}
-                                onChange={(e) => updateAppleMusic({ duetColors: e.target.checked })}
-                                className="sr-only peer"
-                              />
-                              <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: appleMusic.duetColors ? accentColor : '' }}></div>
-                            </label>
-                          </div>
-                        </div>
-                      </>
                     )}
                   </div>
 
@@ -3433,6 +3326,120 @@ function SettingsPanel({
 
       {/* 设备配置检查弹窗（TV 端性能模式选择） */}
       <DeviceInfoModal show={showDeviceInfo} onClose={() => setShowDeviceInfo(false)} playerTheme={playerTheme} />
+
+      {/* TV：兑换码验证弹窗（参考 PC 端，无粘贴按钮） */}
+      {showTvRedeemModal && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          data-tv-scope
+          className="fixed inset-0 z-[10000] flex items-center justify-center p-4"
+          style={{ background: playerTheme === 'dark' ? 'rgba(0,0,0,0.75)' : 'rgba(0,0,0,0.5)' }}
+          onClick={() => {
+            setShowTvRedeemModal(false)
+            setTvRedeemCode('')
+            setTvRedeemState({ status: 'idle', message: null })
+          }}
+        >
+          <motion.div
+            initial={{ scale: 0.94, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.94, opacity: 0 }}
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-md rounded-2xl border shadow-2xl overflow-hidden ${playerTheme === 'dark' ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'}`}
+          >
+            <div className={`px-5 py-4 border-b ${playerTheme === 'dark' ? 'border-zinc-800' : 'border-gray-200'}`}>
+              <h2 className={`text-lg font-bold ${textPrimary}`}>兑换码验证</h2>
+            </div>
+            <div className="px-5 py-5">
+              <p className={`text-sm leading-6 ${textSecondary}`}>请将获取到的兑换码输入在下方</p>
+              <div className="mt-4 flex items-stretch gap-3">
+                <input
+                  autoFocus
+                  value={tvRedeemCode}
+                  onChange={(event) => {
+                    setTvRedeemCode(event.target.value)
+                    if (tvRedeemState.message?.includes('失败')) setTvRedeemState({ status: 'idle', message: null })
+                  }}
+                  placeholder="WF1.……"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className={`min-w-0 flex-1 rounded-xl border ${borderColor} ${playerTheme === 'dark' ? 'bg-black/20' : 'bg-black/5'} ${textPrimary} px-4 py-3 font-mono text-sm outline-none focus:ring-2`}
+                  style={{ '--tw-ring-color': accentColor } as React.CSSProperties}
+                />
+                <button
+                  type="button"
+                  onClick={() => void tvRedeem()}
+                  disabled={tvRedeemState.status === 'redeeming'}
+                  className={`shrink-0 rounded-xl px-5 py-3 font-semibold text-white transition-opacity disabled:opacity-60`}
+                  style={{ backgroundColor: accentColor }}
+                >
+                  {tvRedeemState.status === 'redeeming' ? '兑换中…' : '兑换'}
+                </button>
+              </div>
+              {tvRedeemState.message && (
+                <p className={`mt-3 text-sm ${tvRedeemState.message.includes('成功') ? 'text-green-400' : 'text-red-400'}`}>
+                  {tvRedeemState.message}
+                </p>
+              )}
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+
+      {/* TV：本机识别码弹窗（TV 无剪贴板，弹窗展示供查看/抄录） */}
+      {showTvDeviceId && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          data-tv-scope
+          className="fixed inset-0 z-[9990] flex items-center justify-center p-6"
+          style={{ background: playerTheme === 'dark' ? 'rgba(0,0,0,0.7)' : 'rgba(0,0,0,0.45)', backdropFilter: 'blur(6px)' }}
+          onClick={() => setShowTvDeviceId(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.92, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.94, opacity: 0 }}
+            transition={{ type: 'spring', damping: 26, stiffness: 300 }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm rounded-3xl border p-6 text-center shadow-2xl"
+            style={{
+              background: playerTheme === 'dark' ? 'rgba(14,17,24,0.95)' : 'rgba(255,255,255,0.98)',
+              borderColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)',
+            }}
+          >
+            <div className="w-12 h-12 mx-auto rounded-2xl flex items-center justify-center" style={{ backgroundColor: `${accentColor}20`, color: accentColor }}>
+              <KeyRound className="w-6 h-6" />
+            </div>
+            <h3 className={`mt-3 text-lg font-bold ${playerTheme === 'dark' ? 'text-white' : 'text-black'}`}>本机识别码</h3>
+            <p className={`mt-1 text-xs ${playerTheme === 'dark' ? 'text-white/50' : 'text-black/50'}`}>
+              请记录此识别码，向开发者兑换隐藏功能
+            </p>
+            <div
+              className="mt-4 rounded-2xl border px-4 py-4 font-mono text-sm break-all select-all"
+              style={{
+                borderColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.1)',
+                background: playerTheme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+                color: playerTheme === 'dark' ? '#e6edf3' : '#111',
+              }}
+            >
+              {tvLicense.deviceId || '加载中…'}
+            </div>
+            <button
+              data-tv-focus
+              tabIndex={-1}
+              onClick={() => setShowTvDeviceId(false)}
+              className="mt-5 w-full rounded-xl px-5 py-3 text-white font-semibold"
+              style={{ backgroundColor: accentColor }}
+            >
+              确认
+            </button>
+          </motion.div>
+        </motion.div>
+      )}
 
       {/* TV：遥控器可视化教学弹窗 */}
       {showRemoteGuide && (

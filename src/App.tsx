@@ -22,6 +22,7 @@ import type { MusicPlatform } from './services/platforms'
 import { isPlatformVisible } from './services/platforms'
 import { getAppleMusicSettings, resolveAppleTrack } from './services/appleMusic'
 import { getAppleAuthState, clearAppleLogin, type AppleUserInfo } from './services/appleAuth'
+import { recordLogin, clearLoginExpiry, isLoginExpired } from './services/loginExpiry'
 import { resolvePlayableSong, addAppleSongToLibrary, removeAppleSongFromLibrary, addAppleTracksToPlaylist, getAppleLibraryPlaylists } from './services/appleCatalog'
 import AppleLoginPanel from './components/AppleLoginPanel'
 import { cacheManager } from './services/cacheManager'
@@ -3917,6 +3918,8 @@ function App() {
       setNeteaseUsername('网易云用户')
     }
     setAuthRevision(previous => previous + 1)
+    // 记录登录有效期（网易云 cookie 官方约 30 天）
+    recordLogin('netease')
     window.dispatchEvent(new CustomEvent('waveforge-auth-changed', {
       detail: {
         platform: 'netease',
@@ -3941,6 +3944,7 @@ function App() {
     localStorage.removeItem('netease_user_id')
     localStorage.removeItem('netease_username')
     localStorage.removeItem('netease_vip')
+    clearLoginExpiry('netease')
     setAuthRevision(previous => previous + 1)
     window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'netease' } }))
   }
@@ -4000,6 +4004,8 @@ function App() {
           localStorage.setItem('qq_username', getQQUserDisplayName(userDetailData, uin))
         }
         setAuthRevision(previous => previous + 1)
+        // 记录登录有效期（QQ 音乐 cookie 官方约 30 天）
+        recordLogin('qq')
         window.dispatchEvent(new CustomEvent('waveforge-auth-changed', {
           detail: { platform: 'qq', userId: uin }
         }))
@@ -4036,6 +4042,7 @@ function App() {
     localStorage.removeItem('qq_logged_in')
     localStorage.removeItem('qq_user_id')
     localStorage.removeItem('qq_vip')
+    clearLoginExpiry('qq')
     setAuthRevision(previous => previous + 1)
     window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'qq' } }))
     void fetch('http://localhost:3001/api/qq/cookie', { method: 'DELETE' }).catch(() => undefined)
@@ -4186,6 +4193,19 @@ function App() {
     restoreLoginState()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // 仅在组件挂载时执行一次?
+
+  useEffect(() => {
+    if (!loginRestoreComplete) return
+    // 登录有效期提示：已登录但已过期的平台，启动时提醒重新登录（仅启动恢复完成时一次）
+    const expiredPlatforms: string[] = []
+    if (neteaseLoggedIn && isLoginExpired('netease')) expiredPlatforms.push('网易云音乐')
+    if (qqLoggedIn && isLoginExpired('qq')) expiredPlatforms.push('QQ 音乐')
+    if (appleLoggedIn && isLoginExpired('apple')) expiredPlatforms.push('Apple Music')
+    if (expiredPlatforms.length) {
+      addToast(`${expiredPlatforms.join('、')} 登录已过期，请重新登录`, 'info')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loginRestoreComplete])
 
   useEffect(() => {
     if (!loginRestoreComplete) return
