@@ -5360,6 +5360,8 @@ function App() {
                     romanEnabled={romanEnabled}
                     isTransitioning={isVisualTransitioning}
                     onSeek={audioPlayer.seek}
+                    pulseStore={audioPulseStore}
+                    analyzerStore={audioAnalyzer}
                   />
                 </motion.div>
               ) : lyricDisplayMode === 'glorious' ? (
