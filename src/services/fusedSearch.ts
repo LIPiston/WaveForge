@@ -9,7 +9,8 @@ export interface PlatformEntitlement {
   vip: boolean
 }
 
-export type FusionEntitlements = Record<MusicPlatform, PlatformEntitlement>
+/** 平台权益表：已知平台必填；额外平台键（spotify/kugou/soda 等占位）允许存在，待接入后加入 MusicPlatform */
+export type FusionEntitlements = Record<MusicPlatform, PlatformEntitlement> & { [key: string]: PlatformEntitlement | undefined }
 
 export interface FusedSearchInput {
   keyword: string
