@@ -5,11 +5,11 @@
 
 ---
 
-## 1. 项目状态（2026-08-16）
+## 1. 项目状态（2026-08-18）
 
 - **阶段**：功能完整，处于维护/优化阶段。核心功能（双平台搜索/播放/歌词/无缝衔接/桌面模式/壁纸联动）均已实现；**多平台分支**（Android TV、Apple 歌词/探索）已合入。
-- **代码基线**：当前 HEAD `050d315`（2026-08-16 远程 lyrics-apple 分支合并：Android TV + Apple 逐字/探索 + 探索页设置重构 + compression 依赖）；本地含 12 个性能 commit（`1c8ef0c`~`6acf49c`）+ 回归修复（`d1b5e5f`）+ 版本更迭（`8b09d60` v0.1.2）。
-- **稳定性**：`npm run lint` 0 报错、`npm run test` **41 文件 / 469 过 + 5 跳过（v3 LGPL 可选依赖用例，未装属设计行为）/ 共 474 用例**、`vite build` 成功、便携版（win-unpacked）启动冒烟通过（四服务 3001-3004 全 200、首页推荐/热歌榜数据非空）。
+- **代码基线**：当前 HEAD `97b6812`（2026-08-18，远程 master 同点）。近三日主线：v3 引擎融合 → 统一适配层 → HSE 调音室 UI 重设计 → 分析页修复 + 低音下潜 + 音量跟手/独立于场景。
+- **稳定性**：`npm run lint` 0 报错、`npm run test` **41 文件 / 472 过 + 5 跳过（v3 LGPL 可选依赖用例，未装属设计行为）/ 共 477 用例**、`vite build` 成功、便携版（win-unpacked）启动冒烟通过（四服务 3001-3004 全 200、首页推荐/热歌榜数据非空）。
 - **代码规模**：前端约 160+ TS/TSX（含 Android TV 与 Apple 分支），后端 `local-server.mjs` 单文件约 10.2k 行，Python 服务约 2.1k 行。
 
 ## 2. 环境（重要）
@@ -135,6 +135,14 @@
 - 2026-08-16：**场景预设音量下降修复 + 分析页链路核查（本会话）** —— 实测量化：场景压缩器无 makeup 增益，输出 RMS 相对基准（-9dBFS）最多降 **-13dB**（night-bass）/ -10.3dB（rock）。修复：按各场景压缩量补 makeup（pop 5 / rock 13 / jazz 4 / dance 4 / classical 1 / livehouse 3 / studio 4 / warm 5 / dts 2 / vocal-stage 0 / night-bass 15），复测全部回到 Δ-1.6 ~ +2.6dB。**分析页核查结论：链路正常**——引擎侧 process 后 getStats/getAnalysis 数据新鲜（spectrum 1025 bins、features.rms、LUFS 读数合理；双声道同相 1kHz ≈ +3 LUFS 实测 4.1 正确）；EngineV3Host worklet 回传链路单测通过（模拟 worklet 节点回传 stats+analysis，宿主正确暴露）；UI 轮询 300ms / worklet 每 ~80ms 回传。此前"频谱不动"是旧版 worklet 不回传 analysis 的问题，已在五项修复轮解决。lint 0 / 469 测试全过。
 - 2026-08-16：**v3 立体声宽度/智能均衡（IEQ）核查与修复（本会话）** —— 实测脚本验证（后删）结论：**立体声宽度（M/S）一直正常**（width=1 逐样本恒等 / width=2 侧信号 ×2 / width=0 单声道，关 limiter 验证），此前的"失效"感来自测试未关 limiter 的干扰；**智能均衡（IEQ）确有两个真实 bug**：①`feedAnalysis` 单次 process 只触发一次分析（`% W` 取模而非循环递减）——大块喂入（离线导出/一次性处理）会丢掉中间窗，IEQ 增益只走一小步（4s 大块仅 1 次分析、收敛到目标的 1/7）；修复为 `while (pos >= W)` 逐窗触发。②频段电平用线性幅度平均（稀疏频谱把尖峰稀释到接近噪声底，驱动增益在 ±12 clamp 间振荡）+ 分析取样点在 IEQ 之前（开环：增益只增不减推到过冲）；修复为 RMS 能量平均 + -80dB 噪声底 clamp，取样点移到 IEQ 处理后形成闭环。验证：双频信号 warm 抬 200Hz/压 4kHz 比 8339、粉红噪声收敛无振荡、白噪声（病态平谱）修正有界无 NaN；M/S 三项 + IEQ 四项共 7 项断言全过。改动后 v3 测试 317 过 / 5 跳过、审计 124 全过、lint 0。
 - 2026-08-17：**音频引擎统一适配层重构（本会话）** —— 新建 `src/services/audio-engine/`（`types.ts` 统一接口 `IAudioEngineAdapter` + `GenericMixingStudio.tsx` 通用调音室骨架 + `V1Adapter.tsx`/`V2Adapter.tsx`/`V3Adapter.tsx` 三适配器 + `index.ts` 工厂注册表）。App.tsx 消掉 **7 处版本分支**（import 5 个引擎相关 import→1 个 `getEngineAdapter`；v1EngineRef/v2EngineRef→engineAdapterRef；handleAudioGraphReady 三分支→`adapter.attach`；系统音量 effect v1 守卫+v2/v3 分支→`capabilities.supportsSystemVolume`+`adapter.setSystemVolume`；响度归一化 effect v2 守卫→`capabilities.supportsLoudnessNormalization`；switchAudioEngine 三分支 dispose+attach+v2 补归一化→`adapter.dispose`+重建 adapter+`adapter.attach`+`adapter.applyLoudnessNormalization`；切歌 v2 归一化→`adapter.applyLoudnessNormalization`；调音室三分支渲染→`adapter.renderStudio`）。**UI 双模式**：`studioMode: 'custom'`（引擎自带 UI 连外壳，v1/v2/v3 都是）或 `'generic'`（无 UI 引擎用 GenericMixingStudio，通过 `IAudioEngineUiBridge` 驱动参数读写/导出）。v2 响度归一化外部服务调用 + 低音量提示从 App.tsx 剥离到 V2Adapter（`applyLoudnessNormalization`/`resetLoudnessNormalization`/`setSystemVolume` 内触发 toast）。v3 导出状态上提到 V3Adapter（`onExportingChange` 事件驱动 App 重渲染）。App.tsx 不再直接 import 任何引擎类/自由函数（grep 验证零残留）。**未来接入 v4**：写 `V4Adapter.tsx` 实现 `IAudioEngineAdapter`（custom 模式自带 UI 或 generic 模式用通用调音室）+ `index.ts` 注册表加一行，App.tsx 零改动。验证：lint 0 错误 / 469 测试全过 / build 成功。
+- 2026-08-18：**HSE 调音室 UI 重设计（替换非融合，本会话）** —— v3 调音室被 **HyperSoundEngine 风格新 UI 整体替换**：左侧导航 **8 页**（主页/音效场景/均衡器/空间音效/动态调音/分析/调音器/关于）+ 深色琥珀金主题（`hse-theme.ts`，强调色可随 localStorage `accentColor` 联动）+ 真实品牌标志（Hi-Res/DTS:X/Dolby Atmos 徽章白底圆角衬底）+ framer-motion 动效（面板锚点滑入/导航项 hover/页面切换淡入上移）。**关于页**：居中三行（HyperSoundEngine 琥珀金渐变大标题 / WaveForge特供版 / 2026 © IceFire_Icer All Right Reserved）。四轮迭代要点：注册表 displayName 改 HSE（v1/v2 下显示 v3 的根因）、音量滑块改引擎增益通道（v3 无 master volume）、电源键=恢复默认、patch 自动 customized、半透明背景 + logo 白底圆角框。**UI 重设计=覆盖旧组件，勿保留旧实现作并行选项**。
+- 2026-08-18：**分析页修复 + 低音下潜 + 音量跟手 + 音量独立于场景（本会话）** ——
+  - **分析页三个根因**：①FFT 幅度未归一化（raw bin 值当 dB 用，-47dB 以上信号顶满条、无动态）→ 除 N/4 归一化 dBFS；②线性频率轴（32 条均分 0-24kHz，20-100Hz 低音全挤第一根条）→ 20Hz-20kHz 对数轴 + 标签修正（20Hz/200Hz/2kHz/20kHz）；③UI 300ms 轮询（3.3fps）→ 100ms + EMA 平滑（约 10fps，worklet 每 ~80ms 回传）。读取链路本身正常（worklet 已回传 analysis）。
+  - **低音下潜（对比 v2）**：v2 重低音 = lowshelf +11.7dB + 55Hz punch +5dB 真实能量；v3 原只加心理声学谐波（谐波路径 k=0.3，无真实低频）。新增 **`lowBoostDb`（-6..+12dB）**：低通提取低频带按增益混回（lowshelf 语义），场景预设更新（增强 +6 / 舞曲 +6 / 深夜低音 +8 / 温暖 +4 / 流行 +3），分享串编解码同步，调音室弹窗新增滑块；契约测试（白噪声 ±24dB/倍频程）保持全绿。
+  - **音量滑块不跟手**：原与自动响度归一化共用 **3s** 平滑常数（防抽吸），手动音量分支改 **80ms**（跟手且无咔哒），自动分支保留 3s。
+  - **音量独立于场景预设/组合**：`applyScene` 保留 `loudnessNormalization` 状态（内置 11 场景 + 我的场景统一路径），场景快照不再重置用户音量。
+  - 验证：lint 0 / 472 过 + 5 跳过 / worklet 重打包 / 便携版冒烟。
+- 2026-08-18：**融合同步 + FusionEntitlements 类型修复（本会话）** —— 远程 4 提交（TV 遥控器/Apple 登录重构/TV UI 缩放）零冲突 rebase；Apple 重构把 `MusicPlatform` 收窄为 `netease|qq|apple` 后 SearchPanel 的 `spotify/kugou/soda` 占位键致 tsc 报错——**按用户要求保留占位键**，改放宽 `FusionEntitlements`（`Record<MusicPlatform, ...> & { [key: string]: ... | undefined }`，已知平台必填 + 开放索引签名）。注意：此前一次"取消"的命令实际已把删占位键的 commit 推上远程（8fb60da），历史保留"先删后恢复"两条，共享仓库不做强推改写。
 
 ## 7. 常用操作速查
 
@@ -145,7 +153,7 @@ test-python-service.bat       # 检查节拍服务 3002
 
 # 验证
 npm run lint                  # 类型检查
-npm run test                  # vitest 单测（12 文件 / 152 用例）
+npm run test                  # vitest 单测（41 文件 / 477 用例：472 过 + 5 LGPL 跳过）
 npm run build                 # 生产构建
 npm run test:license          # 设备授权自测
 ./resources/python-embed/python.exe -m pip install --no-index --find-links=python-beat-service/packages --dry-run -r python-beat-service/requirements.txt  # 验证离线安装可解析
