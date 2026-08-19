@@ -2154,6 +2154,26 @@ ipcMain.handle('get-current-wallpaper', async () => {
   }
 })
 
+// IPC：OOBE 完成 flag 文件（用户数据目录下 .oobe-complete，独立于 localStorage——
+// 双重保险：localStorage 被清/损坏时仍能识别已完成的 OOBE，跳过引导）
+const oobeFlagPath = () => path.join(app.getPath('userData'), '.oobe-complete')
+
+ipcMain.handle('oobe:get-flag', () => {
+  try {
+    return fs.existsSync(oobeFlagPath())
+  } catch {
+    return false
+  }
+})
+ipcMain.handle('oobe:set-flag', () => {
+  try {
+    fs.writeFileSync(oobeFlagPath(), new Date().toISOString(), 'utf8')
+    return true
+  } catch {
+    return false
+  }
+})
+
 // IPC 处理：打开外部链接
 ipcMain.handle('open-external', async (event, url) => {
   logWallpaper('📞 [IPC] 收到打开外部链接请求:', url)

@@ -4,6 +4,12 @@
 contextBridge.exposeInMainWorld('electronAPI', {
   // 打开外部链接
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+
+  // OOBE 完成 flag 文件（userData/.oobe-complete，独立于 localStorage 的双重保险）
+  oobe: {
+    getFlag: () => ipcRenderer.invoke('oobe:get-flag'),
+    setFlag: () => ipcRenderer.invoke('oobe:set-flag'),
+  },
 })
 
 contextBridge.exposeInMainWorld('electron', {
