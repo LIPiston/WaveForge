@@ -1,0 +1,21 @@
+[package]
+name = "hrtf_core"
+version = "0.1.0"
+edition = "2021"
+description = "HSE v3 空间音频 HRTF 渲染核心（WASM，纯 C ABI，无 wasm-bindgen）"
+license = "MIT"
+
+# cdylib：导出 #[no_mangle] extern "C" 符号，JS 侧直接 new WebAssembly.Instance 同步实例化
+[lib]
+crate-type = ["cdylib"]
+
+# 依赖决策：刻意零外部依赖（纯 std）。
+# 曾评估 rustfft（crates.io 可达，cargo add --dry-run 通过），但最终选择手写基-2 FFT
+# （镜像 dsp/fft.ts：f64 twiddle + f64 累加 + f32 写回）——与 TS 参考后端逐位对齐，
+# 对拍容差余量最大；且离线安全（无网络也能完整构建）。详见 src/lib.rs 文件头。
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
