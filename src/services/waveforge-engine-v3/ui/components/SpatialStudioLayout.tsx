@@ -29,7 +29,7 @@
  *    由 SpatialPage 消费——窄窗仍渲染标准卡片流，本组件不渲染）。
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Radio, SlidersHorizontal, Speaker } from 'lucide-react'
 import { GlassCard, Segmented, Slider } from './Primitives'
@@ -46,8 +46,6 @@ import type {
 import { instantSpeakers } from '../../src/spatial/types'
 import { headLockedSpeakers } from '../../src/spatial/layouts'
 import { stageRoom, stageSpeakers } from '../../src/spatial/scenes'
-import type { SpatialStats } from '../../src/spatial/SpatialNode'
-import { estimateCpuPercent, getSpatialStats, spatialConfigFromParams } from '../../src/spatial/fusion'
 import { sourceName } from './worldControl'
 // 共享常量（O3 审计：消除与 SpatialPage 的重复定义，单事实源见 spatialConstants.ts）
 import { HEAD_LOCKED_LAYOUTS, SPATIAL_ROOM_OPTIONS } from './spatialConstants'
@@ -122,9 +120,6 @@ const ROOM_LABELS: Record<RoomPreset, string> = {
   corridor: '走廊',
 }
 
-/** 状态栏采样率（静态展示；AudioContext 实际采样率不可靠，本波按 48kHz 约定） */
-const DISPLAY_SAMPLE_RATE = 48000
-
 /** 活跃对象展示上限（规划书 §5.6「活跃对象: [8/64]」；实际为当前配置的虚拟扬声器数） */
 const ACTIVE_OBJECTS_CAPACITY = 64
 
@@ -138,40 +133,9 @@ export default function SpatialStudioLayout({
   onSelectWorld,
   children,
 }: SpatialStudioLayoutProps) {
-  /* ── 状态栏：处理器统计轮询（fusion 层缓存，worklet 每 ~80ms 回传） ── */
-  const [stats, setStats] = useState<SpatialStats | null>(null)
-  useEffect(() => {
-    let alive = true
-    const tick = (): void => {
-      let s: SpatialStats | null = null
-      try {
-        s = getSpatialStats()
-      } catch {
-        s = null // 引擎未接线时静默显示「—」
-      }
-      if (alive) setStats(s)
-    }
-    tick()
-    const timer = window.setInterval(tick, 1000)
-    return () => {
-      alive = false
-      window.clearInterval(timer)
-    }
-  }, [])
-
-  /** 延迟毫秒：latencySamples → ms（按 48kHz 静态采样率换算，与状态栏显示一致） */
-  const latencyMs = stats === null ? null : (stats.latencySamples / DISPLAY_SAMPLE_RATE) * 1000
-  /** 后端显示：实时链回传 'ts'/'wasm'（导出离线后端 wasm 优先，见 fusion.ts） */
-  const backendLabel = stats === null ? '—' : stats.backend === 'wasm' ? 'WASM' : 'TS'
-  /** CPU 估算（%）：worklet avgProcessMs → 256 样本块 @48kHz 换算（fusion.estimateCpuPercent） */
-  const cpuPercent = estimateCpuPercent(stats)
-  /** 活跃对象数（规划书 §5.6「活跃对象: [8/64]」）：融合层当前配置的虚拟扬声器数；
-   *  spatial prop 与 getSpatialParams 同源（父页面同一快照），64 为展示上限常量。
-   *  useMemo 按 spatial 快照缓存：避免每次渲染都跑 spatialConfigFromParams（O3 审计） */
-  const activeObjects = useMemo(
-    () => spatialConfigFromParams(spatial).speakers.length,
-    [spatial],
-  )
+  /* ── 状态栏：空间音频已内联 EngineV3（纯 TS DSP，无独立 worklet），
+   *    延迟/后端/CPU 统计不再可用（原 fusion 层 worklet 回传已移除），
+   *    状态栏静态显示「—」；活跃对象数按当前模式扬声器数即时计算。 ── */
 
   const stageActive = mode === 'stage'
   const roomDisabled = mode === 'off'
@@ -184,6 +148,8 @@ export default function SpatialStudioLayout({
     if (mode === 'stage') return stageSpeakers(spatial.stage).length
     return 0
   })()
+  /** 活跃对象数（即时计算，与左面板 leftCount 同源：当前模式配置的虚拟扬声器数） */
+  const activeObjects = leftCount
 
   const renderLeftPanel = (): ReactNode => {
     if (mode === 'off') {
@@ -372,17 +338,16 @@ export default function SpatialStudioLayout({
       >
         <div className="flex items-center gap-1.5">
           <span className={theme.textMuted}>延迟</span>
-          <span className={theme.textSecondary}>{latencyMs === null ? '—' : `${latencyMs.toFixed(1)}ms`}</span>
+          <span className={theme.textSecondary}>—</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className={theme.textMuted}>后端</span>
-          <span className={theme.textSecondary}>{backendLabel}</span>
+          <span className={theme.textSecondary}>TS</span>
         </div>
-        {/* CPU 估算（worklet 每 ~80ms 回传 avgProcessMs → 256 样本块 @48kHz 换算，
-            见 fusion.estimateCpuPercent；未回传显示「—」） */}
+        {/* CPU 估算（空间音频已内联 EngineV3，无独立 worklet 统计，静态显示「—」） */}
         <div className="flex items-center gap-1.5">
           <span className={theme.textMuted}>CPU</span>
-          <span className={theme.textSecondary}>{cpuPercent === null ? '—' : `${Math.round(cpuPercent)}%`}</span>
+          <span className={theme.textSecondary}>—</span>
         </div>
         {/* 活跃对象（规划书 §5.6「活跃对象: [8/64]」）：当前配置的虚拟扬声器数 / 展示上限 */}
         <div className="flex items-center gap-1.5">

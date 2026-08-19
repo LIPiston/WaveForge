@@ -28,21 +28,11 @@ import type { ReactNode } from 'react'
 import { Settings2, Upload, X } from 'lucide-react'
 import type { HSETheme } from '../hse-theme'
 import type { DeepPartial, OutputMode, SpatialParams } from '../../src/spatial/types'
-// 契约已落地：parseSofaFile(buffer): HrtfGrid（sofa.ts）；setHrtfDataset(grid|null)（fusion.ts，
-// 热更新已接线节点 + 持久化，非法网格/采样率不一致抛中文错误）；
-// 内置数据集切换（规划书 §4.1）：setBuiltinDataset('kemar'|'cipic') 热更新 + localStorage
-// 锚点（BUILTIN_HRTF_DATASET_KEY），getBuiltinDataset 恢复当前选择（null = 未显式选择）
-import { parseSofaFile } from '../../src/spatial/sofa'
-import {
-  setHrtfDataset,
-  listOutputDevices,
-  setOutputDevice,
-  setBuiltinDataset,
-  getBuiltinDataset,
-  HRTF_ACTIVE_DATASET_KEY,
-} from '../../src/spatial/fusion'
-// 内置数据集表（构建脚本生成）：base64 null = 数据未打包（UI 禁用 + 标注）
-import { BUILTIN_HRTF_DATASETS } from '../../src/spatial/gridSource'
+// 空间音频已内联 EngineV3（纯 TS DSP），独立 fusion worklet 层已移除：
+//  - SOFA 数据集导入（sofa.ts）与内置数据集切换（gridSource + fusion setBuiltinDataset）
+//    依赖已删模块，本波标注「开发中」禁用，后续 wave 改走 EngineV3 内联合成 HRTF；
+//  - 输出设备枚举/切换（fusion listOutputDevices/setOutputDevice）同样依赖已删模块，
+//    标注「开发中」禁用，后续 wave 接主播放器 AudioContext.setSinkId。
 import { Segmented } from './Primitives'
 import { DEFAULT_KEYMAP } from './worldControl'
 import type { KeyMap } from './worldControl'
@@ -127,72 +117,19 @@ const PERF_MODES: { value: SpatialParams['perfMode']; label: string }[] = [
 ]
 
 export default function SpatialSettingsModal({ open, onClose, theme, spatial, onPatch }: SpatialSettingsModalProps) {
-  /**
-   * 已导入 SOFA 数据集显示状态：
-   *  - null = 无 SOFA 导入项活动（显示内置选择）
-   *  - 非空字符串 = 本会话导入的文件名（显示「已导入「文件名」」）
-   *  - ''（空串）哨兵 = SOFA 已导入但文件名未知（重启后 fusion 仅持久化日期戳 id，
-   *    文件名不入库；显示「已导入 SOFA 数据集」占位）。与 null 区分需用 `!== null` 判断
-   *    （空串 falsy，不能用 `!sofaName` 否则会误判为无导入项）
-   */
-  const [sofaName, setSofaName] = useState<string | null>(null)
-  /** 当前生效的内置数据集（localStorage 恢复；null = 默认 KEMAR 未显式选择） */
-  const [builtinId, setBuiltinId] = useState<'kemar' | 'cipic' | null>(() => getBuiltinDataset())
-  /** SOFA 文件选择 input（隐藏，点击导入按钮触发） */
+  /** SOFA 文件选择 input（隐藏，点击导入按钮触发；导入功能开发中，保留 ref 备用） */
   const sofaInputRef = useRef<HTMLInputElement>(null)
   /** 弹窗面板 ref：open 时聚焦（a11y：role=dialog 焦点起点；完整 focus trap 后续） */
   const containerRef = useRef<HTMLDivElement>(null)
-  /** 输出设备列表（enumerateDevices 枚举；空 = API 不可用/无设备，显示禁用态） */
-  const [devices, setDevices] = useState<{ deviceId: string; label: string }[]>([])
   /** 键位捕获态（null = 未捕获；捕获期间 window keydown 写回 keymap） */
   const [capturing, setCapturing] = useState<KeyMapAction | null>(null)
   /** 捕获态 ref（Escape 关闭监听与捕获监听共用同一判断，防闭包陈旧） */
   const capturingRef = useRef<KeyMapAction | null>(null)
   capturingRef.current = capturing
 
-  useEffect(() => {
-    if (!open) return
-    let alive = true
-    // 每次打开弹窗刷新设备列表（设备插拔后保持最新；API 缺失/拒绝 → [] 静默）
-    void listOutputDevices().then((list) => {
-      if (alive) setDevices(list)
-    })
-    return () => {
-      alive = false
-    }
-  }, [open])
-
   // 弹窗关闭时重置捕获态（背板点击关闭等路径不经过捕获监听，防下次打开残留捕获）
   useEffect(() => {
     if (!open) setCapturing(null)
-  }, [open])
-
-  /**
-   * open 变为 true 时按 fusion 实际活动状态重置 sofaName/builtinId：
-   * 重启后 fusion 优先恢复导入项（SOFA > 内置选择，见 fusion.setBuiltinDataset 头注释），
-   * 但本地 state 跨弹窗打开/关闭保留——若不重置，UI 会显示「内置 KEMAR」而 fusion 实际
-   * 用导入项，造成不一致。fusion 未导出活动数据集查询函数（不可改 fusion.ts），故按
-   * 持久化锚点推断：SOFA 锚点（HRTF_ACTIVE_DATASET_KEY）存在 → SOFA 活动优先显示导入项
-   * （保留本会话已记录文件名，重启无文件名则用空串哨兵）；否则回退内置选择（getBuiltinDataset）。
-   * 注：用户点内置项后 fusion 仍保留 SOFA 锚点（setBuiltinDataset 不触碰），下次打开仍显示
-   * 「已导入」——符合 fusion「重启 SOFA 覆盖内置」的跨重启语义（本会话 live grid 仍是内置）。
-   */
-  useEffect(() => {
-    if (!open) return
-    setBuiltinId(getBuiltinDataset())
-    let sofaActive = false
-    try {
-      sofaActive = typeof window !== 'undefined'
-        && !!window.localStorage.getItem(HRTF_ACTIVE_DATASET_KEY)
-    } catch {
-      sofaActive = false // 存储不可用：视为无导入项
-    }
-    if (sofaActive) {
-      // 保留本会话已记录文件名；重启后无文件名用空串哨兵（显示「已导入 SOFA 数据集」）
-      setSofaName((prev) => prev ?? '')
-    } else {
-      setSofaName(null)
-    }
   }, [open])
 
   // a11y：弹窗打开时聚焦面板（role=dialog 焦点起点；完整 focus trap 后续）
@@ -243,69 +180,6 @@ export default function SpatialSettingsModal({ open, onClose, theme, spatial, on
 
   /** 当前输出模式（已落地字段；持久化旧快照缺省时回退双耳，防御性兜底） */
   const output: OutputMode = spatial.output ?? 'binaural'
-
-  /**
-   * 输出设备切换：'default' 哨兵 → 清除 sinkId 恢复系统默认；否则写 deviceId。
-   * onPatch 先落地快照（随空间参数整体持久化，select 随 spatial prop 联动），
-   * 再 fire-and-forget 调 setOutputDevice 应用 setSinkId——失败（环境不支持/
-   * 设备失效）弹中文 toast；快照保留，下次 attach 由 applySinkId 自动重试。
-   */
-  const handleSinkChange = (v: string): void => {
-    const isDefault = v === 'default'
-    onPatch({ sinkId: isDefault ? undefined : v })
-    void setOutputDevice(isDefault ? null : v).then((ok) => {
-      if (!ok) {
-        window.dispatchEvent(new CustomEvent('showToast', {
-          detail: { message: '设备切换失败（当前环境不支持）', type: 'error' },
-        }))
-      }
-    })
-  }
-
-  /** SOFA 导入：arrayBuffer → parseSofaFile → setHrtfDataset → toast 成功/失败（中文） */
-  const handleSofaFile = async (file: File): Promise<void> => {
-    try {
-      const buffer = await file.arrayBuffer()
-      const grid = parseSofaFile(buffer)
-      if (!grid) throw new Error('解析结果为空')
-      setHrtfDataset(grid)
-      setSofaName(file.name)
-      window.dispatchEvent(new CustomEvent('showToast', {
-        detail: {
-          message: `已导入 SOFA 数据集「${file.name}」（${grid.azimuths.length} 方位 × ${grid.elevations.length} 仰角）`,
-          type: 'success',
-        },
-      }))
-    } catch (err) {
-      // 解析/校验失败（含 setHrtfDataset 抛出的中文错误，如采样率不匹配）：保持原数据集不变
-      const detail = err instanceof Error && err.message ? err.message : '文件格式不支持或已损坏'
-      window.dispatchEvent(new CustomEvent('showToast', {
-        detail: { message: `SOFA 数据集导入失败：${detail}`, type: 'error' },
-      }))
-      console.warn('[spatial-settings] SOFA 导入失败：', err)
-    }
-  }
-
-  /**
-   * 内置数据集切换（规划书 §4.1：MIT KEMAR / CIPIC subject_003）：
-   * setBuiltinDataset 解码内嵌网格 → 已接线则 postGrid 热更新 + 写 localStorage 锚点
-   * （跨重启恢复）；未打包（datasets.ts base64 null）→ 静默返回 false（按钮已禁用，
-   * 防御分支）；成功 → 状态行联动 + 「已切换」toast。切换内置后当前生效数据集为
-   * 内置项（SOFA 导入项仍留存 IDB 与锚点，重启按 fusion 优先级：SOFA 显式导入
-   * 优先于内置选择，见 setBuiltinDataset 头注释）。
-   */
-  const handleBuiltin = (id: 'kemar' | 'cipic'): void => {
-    const ok = setBuiltinDataset(id)
-    if (!ok) return // 数据未打包：静默（按钮已禁用，防御分支）
-    setBuiltinId(id)
-    setSofaName(null) // 当前生效数据集 = 内置项（状态行联动）
-    window.dispatchEvent(new CustomEvent('showToast', {
-      detail: {
-        message: id === 'cipic' ? '已切换到内置 CIPIC subject_003 数据集' : '已切换到内置 MIT KEMAR 数据集',
-        type: 'success',
-      },
-    }))
-  }
 
   /**
    * 与其它动作撞键的冲突动作列表（小写比较，与 worldControl 键比较约定一致；
@@ -395,89 +269,46 @@ export default function SpatialSettingsModal({ open, onClose, theme, spatial, on
           </div>
           <p className={`${theme.textMuted} text-[10px] mb-2`}>立体声下混把双耳信号折叠为普通立体声输出（外放场景）。</p>
 
-          {/* 输出设备：enumerateDevices 枚举 + setSinkId 热切换（sinkId 随空间参数快照持久化，attach 自动恢复） */}
+          {/* 输出设备：空间音频已内联 EngineV3，原 fusion 层 enumerateDevices/setSinkId 已移除；
+              标注「开发中」，后续 wave 接主播放器 AudioContext.setSinkId */}
           <SectionTitle theme={theme}>输出设备</SectionTitle>
-          {devices.length === 0 ? (
-            /* API 不可用/无设备：禁用态（enumerateDevices 缺失、权限拒绝或枚举失败） */
-            <div className="flex items-center justify-between py-1.5 px-2.5 rounded-lg" style={{ backgroundColor: 'rgba(255,255,255,0.04)' }}>
-              <span className={`${theme.textTertiary} text-[11px]`}>系统默认（不可枚举）</span>
-            </div>
-          ) : (
-            <>
-              <select
-                value={spatial.sinkId ?? 'default'}
-                onChange={(e) => handleSinkChange(e.target.value)}
-                aria-label="输出设备"
-                className="w-full py-1.5 px-2.5 rounded-lg text-[11px] cursor-pointer truncate"
-                style={{ backgroundColor: theme.inputBg, border: `1px solid ${theme.cardBorder}`, color: theme.textSecondary }}
-              >
-                <option value="default">系统默认</option>
-                {/* 设备 label 过长截断（JS 截断 + select truncate 双保险）；空 label 由 fusion 回退占位名 */}
-                {devices.map((d) => (
-                  <option key={d.deviceId} value={d.deviceId}>
-                    {d.label.length > 22 ? `${d.label.slice(0, 22)}…` : d.label}
-                  </option>
-                ))}
-                {/* 已保存设备当前不可枚举（被拔出/权限变化）：保留哨兵项避免选中态丢失 */}
-                {spatial.sinkId && !devices.some((d) => d.deviceId === spatial.sinkId) && (
-                  <option value={spatial.sinkId}>已保存设备（当前不可枚举）</option>
-                )}
-              </select>
-              <p className={`${theme.textMuted} text-[10px] mt-1 mb-2`}>
-                切换输出设备（AudioContext.setSinkId）；当前环境不支持时自动保持原设备。
-              </p>
-            </>
-          )}
+          <div
+            className="flex items-center justify-between py-1.5 px-2.5 rounded-lg cursor-not-allowed opacity-50"
+            style={{ backgroundColor: 'rgba(255,255,255,0.04)' }}
+          >
+            <span className={`${theme.textTertiary} text-[11px]`}>系统默认（开发中）</span>
+            <DevBadge theme={theme} />
+          </div>
+          <p className={`${theme.textMuted} text-[10px] mt-1 mb-2`}>
+            输出设备切换后续 wave 接入主播放器 AudioContext.setSinkId。
+          </p>
 
-          {/* HRTF 数据集：内置两套选择（KEMAR/CIPIC，规划书 §4.1）+ SOFA 导入；
-              SADIE II 需注册下载，保持禁用 */}
+          {/* HRTF 数据集：空间音频已内联 EngineV3，用合成解析 HRTF（analyticHrtf）；
+              原 sofa.ts 导入 + gridSource 内置数据集切换 + fusion 热更新已移除，
+              标注「开发中」，后续 wave 改走 EngineV3 内联合成 HRTF / 运行时数据集加载 */}
           <SectionTitle theme={theme}>HRTF 数据集</SectionTitle>
           <div className="flex items-center justify-between py-1">
             <span className={`${theme.textTertiary} text-[11px]`}>当前数据集</span>
-            <span
-              className={`hse-mono text-[11px] ${sofaName !== null || builtinId === 'cipic' ? '' : theme.textSecondary}`}
-              style={sofaName !== null || builtinId === 'cipic' ? { color: theme.accentTo } : undefined}
-            >
-              {sofaName !== null
-                ? (sofaName ? `已导入「${sofaName}」` : '已导入 SOFA 数据集')
-                : builtinId === 'cipic' ? '内置 CIPIC subject_003' : '内置 MIT KEMAR'}
-            </span>
+            <span className={`hse-mono text-[11px] ${theme.textSecondary}`}>合成 HRTF（开发中）</span>
           </div>
-          {/* 内置数据集列表：点击切换（setBuiltinDataset 解码内嵌网格 → postGrid 热更新 +
-              写 localStorage 锚点，跨重启自动恢复）；datasets.ts base64 null（数据未打包）
-              → 禁用 + 标注；选中项显示「使用中」（当前生效数据集，SOFA 导入后覆盖） */}
           <div className="space-y-1">
-            {BUILTIN_HRTF_DATASETS.map((ds) => {
-              const notPackaged = ds.base64 === null
-              const active = !notPackaged && sofaName === null && builtinId === ds.id
-              return (
-                <button
-                  key={ds.id}
-                  type="button"
-                  disabled={notPackaged}
-                  onClick={() => handleBuiltin(ds.id)}
-                  className={`w-full flex items-center justify-between py-1.5 px-2.5 rounded-lg text-[11px] transition-all ${
-                    notPackaged
-                      ? `cursor-not-allowed opacity-50 ${theme.textTertiary}`
-                      : active
-                        ? 'text-white font-medium cursor-pointer'
-                        : `cursor-pointer hover:brightness-110 ${theme.textSecondary}`
-                  }`}
-                  style={notPackaged
-                    ? { backgroundColor: 'rgba(255,255,255,0.04)' }
-                    : active
-                      ? { background: `${theme.accentColor}22`, border: `1px solid ${theme.accentColor}55` }
-                      : { backgroundColor: 'rgba(255,255,255,0.04)' }}
-                >
-                  <span>内置 {ds.name}</span>
-                  {notPackaged ? (
-                    <span className="text-[10px]" style={{ color: 'rgba(255,255,255,0.5)' }}>数据未打包</span>
-                  ) : active ? (
-                    <span className="text-[10px]" style={{ color: theme.accentTo }}>使用中</span>
-                  ) : null}
-                </button>
-              )
-            })}
+            {/* 内置 KEMAR / CIPIC 数据集切换：原 gridSource 内嵌数据已废弃（合成兜底替代），
+                禁用占位，后续 wave 接运行时 fetch / EngineV3 内联数据集 */}
+            {([
+              { id: 'kemar', name: 'MIT KEMAR' },
+              { id: 'cipic', name: 'CIPIC subject_003' },
+            ] as const).map((ds) => (
+              <button
+                key={ds.id}
+                type="button"
+                disabled
+                className="w-full flex items-center justify-between py-1.5 px-2.5 rounded-lg text-[11px] transition-all cursor-not-allowed opacity-50"
+                style={{ backgroundColor: 'rgba(255,255,255,0.04)' }}
+              >
+                <span>内置 {ds.name}</span>
+                <span className="text-[10px]" style={{ color: 'rgba(255,255,255,0.5)' }}>开发中</span>
+              </button>
+            ))}
             {/* SADIE II：需注册下载（sofacoustics 官方库需登录），后续 wave 接入 */}
             <button
               type="button"
@@ -489,25 +320,25 @@ export default function SpatialSettingsModal({ open, onClose, theme, spatial, on
               <DevBadge theme={theme} />
             </button>
           </div>
-          {/* SOFA 导入按钮（.sofa → parseSofaFile → setHrtfDataset，契约已落地） */}
+          {/* SOFA 导入按钮：sofa.ts 已移除，禁用占位（input 保留 ref 备后续 wave 接线） */}
           <input
             ref={sofaInputRef}
             type="file"
             accept=".sofa,application/sofa"
             className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleSofaFile(f); e.target.value = '' }}
+            onChange={() => { /* SOFA 导入开发中，后续 wave 接 EngineV3 内联 */ }}
           />
           <button
             type="button"
-            onClick={() => sofaInputRef.current?.click()}
-            className="w-full py-2 rounded-lg text-[11px] text-center transition-all cursor-pointer hover:brightness-110"
+            disabled
+            className="w-full py-2 rounded-lg text-[11px] text-center transition-all cursor-not-allowed opacity-50"
             style={{ background: `${theme.accentColor}12`, border: `1px dashed ${theme.accentColor}55`, color: theme.textSecondary }}
           >
             <Upload className="w-3.5 h-3.5 inline mr-1 align-[-2px]" />
-            导入 SOFA 数据集
+            导入 SOFA 数据集（开发中）
           </button>
           <p className={`${theme.textMuted} text-[10px] mt-1 mb-2`}>
-            支持 .sofa（NetCDF）格式；导入后当前会话即时生效（已接线节点热更新），重启自动恢复导入项。
+            空间音频现用合成解析 HRTF（无需数据文件）；SOFA 数据集导入后续 wave 接入。
           </p>
 
           {/* 卷积模式（分区 FFT 卷积 / 时域直接卷积；后端契约 spatial_set_convolution_mode，已全量实现） */}

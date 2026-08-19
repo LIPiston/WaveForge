@@ -24,7 +24,6 @@ import SpatialStudioLayout, { useProViewEligible } from '../components/SpatialSt
 import SpatialSettingsModal from '../components/SpatialSettingsModal'
 import { moveListener, rotateListener } from '../../src/spatial/controller'
 import { stageSpeakers } from '../../src/spatial/scenes'
-import { togglePlayback } from '../../src/spatial/fusion'
 import type { HSETheme } from '../hse-theme'
 import type { V3UiBridge } from '../bridge'
 import type { V3ParamsController } from '../hooks'
@@ -417,7 +416,7 @@ export default function SpatialAudioPage({ controller, theme, playbackTimeStore 
         onRotate={handleWorldRotate}
         onReset={handleWorldReset}
         onToggleFirstPerson={() => setFirstPerson((v) => !v)}
-        onTogglePlayback={() => { void togglePlayback() }}
+        onTogglePlayback={() => { /* 播放由主播放器驱动，空间层不再独立控制 */ }}
         keymap={(spatial as any).keymap}
         playbackTimeStore={playbackTimeStore}
       />
@@ -498,15 +497,14 @@ export default function SpatialAudioPage({ controller, theme, playbackTimeStore 
         {/* 专业视图：顶部工具栏（播放控制 + 模式选择器复用 + 输出设备 + 设置弹窗入口） */}
         {proActive ? (
           <div className="flex items-center gap-2 mb-3">
-            {/* 播放/暂停切换（无状态显示：AudioContext.state 不暴露给组件，
-                togglePlayback 内部按 ctx.state 决定 suspend/resume；未接线时
-                返回 false 静默忽略，不弹错） */}
+            {/* 播放/暂停切换（播放由主播放器驱动，空间层已内联 EngineV3 不再独立控制 AudioContext；
+                此按钮保留为占位，后续 wave 接主播放器 play/pause） */}
             <div className="flex items-center gap-1.5 shrink-0">
               <button
                 type="button"
                 title="播放/暂停（空格）"
                 aria-label="播放/暂停"
-                onClick={() => { void togglePlayback() }}
+                onClick={() => { /* 播放由主播放器驱动，空间层不再独立控制 */ }}
                 className="w-8 h-8 rounded-full flex items-center justify-center transition-all hover:brightness-110"
                 style={{ background: theme.accentGradient, boxShadow: `0 4px 14px ${theme.accentColor}44` }}
               >
