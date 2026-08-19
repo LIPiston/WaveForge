@@ -42,7 +42,7 @@ import {
   HRTF_ACTIVE_DATASET_KEY,
 } from '../../src/spatial/fusion'
 // 内置数据集表（构建脚本生成）：base64 null = 数据未打包（UI 禁用 + 标注）
-import { BUILTIN_HRTF_DATASETS } from '../../src/spatial/data/datasets'
+import { BUILTIN_HRTF_DATASETS } from '../../src/spatial/gridSource'
 import { Segmented } from './Primitives'
 import { DEFAULT_KEYMAP } from './worldControl'
 import type { KeyMap } from './worldControl'

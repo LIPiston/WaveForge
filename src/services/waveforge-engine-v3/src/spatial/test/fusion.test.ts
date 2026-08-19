@@ -43,7 +43,7 @@ import { createLayoutSpeakers } from '../layouts'
 import { STAGE_SCENES } from '../scenes'
 import { rotateListener, moveListener } from '../controller'
 import { getLatestDataset } from '../hrtfStore'
-import { BUILTIN_HRTF_DATASETS } from '../data/datasets'
+import { BUILTIN_HRTF_DATASETS } from '../gridSource'
 import type { HrtfGrid, SpatialParams } from '../types'
 
 // hrtfStore 部分 mock：restoreHrtfDataset 的 getLatestDataset 注入（Node 无 IndexedDB）；

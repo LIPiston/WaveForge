@@ -11,8 +11,8 @@
  * 本测试依赖当前构建状态——cipic 条目按实际打包状态分支断言，两态均通过。
  */
 import { describe, it, expect } from 'vitest'
-import { BUILTIN_HRTF_DATASETS } from '../data/datasets'
-import { HRTF_GRID_BASE64 } from '../data/grid'
+import { BUILTIN_HRTF_DATASETS } from '../gridSource'
+import { HRTF_GRID_BASE64 } from '../gridSource'
 import { decodeSpatialGrid, loadBuiltinGrid } from '../gridSource'
 
 /** kemar 网格已知形状（grid.bin 头部实测：48kHz / 72az×14el×256） */

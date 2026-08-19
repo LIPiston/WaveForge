@@ -1,31 +1,24 @@
 /**
- * gridSource —— HRTF 网格装载（构建脚本内嵌数据的解码 / 合成兜底）
+ * gridSource —— HRTF 网格装载（合成兜底 + 运行时文件读取）
  *
- * HRTF_GRID_BASE64 非空（hrtf-data/grid.bin 存在并被构建脚本内嵌）→ 解码为 HrtfGrid；
- * 为空或解码失败（数据损坏）→ 回退 generateAnalyticHrtfGrid（KEMAR 缺失兜底，音频不中断）。
- *
- * grid.bin 字节布局（小端，构建脚本 scripts/build-spatial-worklet.mjs 生成）：
- *   u32 sampleRate | u32 azCount | u32 elCount | u32 hrirLen
- *   | f32 az[azCount] | f32 el[elCount]
- *   | f32 left[elCount·azCount·hrirLen] | f32 right[...]
- *
- * 多内置数据集（规划书 §4.1「初始集成 2 套」）：
- *  - data/datasets.ts（构建脚本生成）持有内置数据集表 BUILTIN_HRTF_DATASETS
- *    （'kemar' MIT KEMAR / 'cipic' CIPIC subject_003，base64 或 null=未打包）；
- *  - loadBuiltinGrid(id) 按 id 解码（与 loadSpatialGrid 同布局，共用公共解码函数
- *    decodeSpatialGrid）；未打包 / 解码失败 → null（调用方静默，不抛）；
- *  - loadSpatialGrid 保持 KEMAR 兼容路径不变（worklet 构造时装载 kemar）。
- *  注：worklet 侧（SpatialProcessor）只调 loadSpatialGrid——本模块对 datasets.ts
- *  的引用若被 esbuild 判定未使用会整体 tree-shake 掉，worklet 体积不增（cipic
- *  数据仅经 fusion.setBuiltinDataset → postGrid 热更新进入处理器）。
+ * 空间音频已内联到 EngineV3（纯 TS），不再使用独立 worklet/构建脚本内嵌数据。
+ * HRTF 网格优先用合成解析 HRTF（generateAnalyticHrtfGrid，确定性、无外部依赖）。
+ * hrtf-data/grid.bin 仍保留（KEMAR 实测数据），可由运行时 fetch 读取（后续扩展）。
  *
  * 注意：AudioWorklet 全局作用域不保证 atob/btoa，base64 解码用自实现纯函数（RFC 4648）。
  */
 
-import { HRTF_GRID_BASE64 } from './data/grid'
-import { BUILTIN_HRTF_DATASETS } from './data/datasets'
 import { generateAnalyticHrtfGrid } from './analyticHrtf'
 import type { HrtfGrid } from './types'
+
+/** 内嵌 HRTF 网格 base64（旧构建脚本产物，现已废弃——纯 TS 内联用合成网格） */
+export const HRTF_GRID_BASE64: string | null = null
+
+/** 内置数据集表（旧构建脚本产物，现已废弃——数据集切换功能保留接口，后续可运行时加载） */
+export const BUILTIN_HRTF_DATASETS: { id: 'kemar' | 'cipic'; name: string; base64: string | null }[] = [
+  { id: 'kemar', name: 'MIT KEMAR（合成兜底）', base64: null },
+  { id: 'cipic', name: 'CIPIC subject_003（合成兜底）', base64: null },
+]
 
 /** RFC 4648 base64 → 字节（纯函数，无 atob 依赖，主线程/worklet/Node 通用） */
 export function decodeBase64(b64: string): Uint8Array {
@@ -117,7 +110,7 @@ export function loadSpatialGrid(sampleRate: number): HrtfGrid {
  *    （fusion，重采样/上下文一致性）负责。
  */
 export function loadBuiltinGrid(id: 'kemar' | 'cipic'): HrtfGrid | null {
-  const entry = BUILTIN_HRTF_DATASETS.find((d) => d.id === id)
+  const entry = BUILTIN_HRTF_DATASETS.find((d: { id: string; name: string; base64: string | null }) => d.id === id)
   if (!entry || entry.base64 === null) return null // 未打包：静默（调用方忽略）
   try {
     return decodeSpatialGrid(entry.base64)
