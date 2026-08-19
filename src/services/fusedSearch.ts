@@ -29,7 +29,9 @@ export interface FusedSearchOutput {
 }
 
 const platformOf = (item: { platform?: MusicPlatform }): MusicPlatform => (
-  item.platform === 'qq' ? 'qq' : item.platform === 'apple' ? 'apple' : 'netease'
+  item.platform === 'qq' || item.platform === 'apple' || item.platform === 'spotify' || item.platform === 'kugou' || item.platform === 'soda'
+    ? (item.platform as MusicPlatform)
+    : 'netease'
 )
 
 /** NFKC lets full-width/half-width text match; punctuation and spacing should not affect equality. */

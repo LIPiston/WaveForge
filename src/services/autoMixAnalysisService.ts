@@ -599,6 +599,18 @@ class AutoMixAnalysisService {
     memoryCache.clear()
   }
 
+  /**
+   * 只读内存缓存中的节拍时间点（秒）：看歌视频漂移校正吸附到最近节拍用。
+   * 不触发任何分析/网络请求——仅当 automix 已分析过这首歌（beat_this/librosa）才有数据。
+   */
+  getCachedBeats(trackKey: string, url: string, duration?: number): number[] | null {
+    const analysis = memoryCache.get(cacheKey({ trackKey, url, duration }))
+    if (analysis && isSupportedAnalysis(analysis) && Array.isArray(analysis.beats) && analysis.beats.length > 0) {
+      return analysis.beats
+    }
+    return null
+  }
+
   async clearCache() {
     this.clearMemoryCache()
     await window.electron?.analysis?.clearCache()

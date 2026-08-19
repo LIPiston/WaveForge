@@ -1,7 +1,7 @@
 ﻿import { debugLog } from '../utils/debugLog'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { autoMixAnalysisService } from '../services/autoMixAnalysisService'
-import { planTransition } from '../audio/transitionPlanner'
+import { planTransition, planTransitionV2 } from '../audio/transitionPlanner'
 import { TransitionRenderer } from '../audio/TransitionRenderer'
 import { createPlaybackTimeStore } from '../audio/playbackTimeStore'
 import { GaplessIntegration } from '../services/gaplessIntegration'
@@ -14,6 +14,7 @@ import type {
   PreloadTrack,
   TrackAnalysis,
   TransitionCommit,
+  TransitionDebugInfo,
   TransitionPlan,
   TransitionState,
   TransitionStrategy,
@@ -35,6 +36,12 @@ export interface AutoMixSettings {
   skipSilence: boolean
   minDuration?: number
   maxDuration?: number
+  /** AutoMix 增强版（v2）引擎开关：false/缺省 = 标准 v1（行为与历史一致） */
+  enhanced?: boolean
+  /** v2 特效强度档位 */
+  intensity?: 'subtle' | 'standard' | 'strong'
+  /** v2 可选 AI 混音（DJTransGAN）开关 */
+  aiMix?: boolean
 }
 
 // 音频图就绪后交给外部（音效引擎）的句柄
@@ -42,6 +49,9 @@ export interface AudioGraphHandle {
   audioContext: AudioContext
   masterGain: GainNode
   analyser: AnalyserNode
+  /** 最终输出增益节点（analyser 之后、destination 之前）：AirPlay 投送时置 0 静音本机，
+   *  不影响 masterGain（采集点在其后，采集到完整声音投送给音箱） */
+  outputGain?: GainNode
 }
 
 interface DeckMetadata extends PreloadTrack {
@@ -66,6 +76,57 @@ function equalPowerCurve(fadeIn: boolean): Float32Array {
     curve[i] = fadeIn ? Math.sin(progress * Math.PI / 2) : Math.cos(progress * Math.PI / 2)
   }
   return curve
+}
+
+/** 从过渡计划构建调试信息（过渡调试弹窗展示用）。 */
+function buildTransitionDebug(
+  plan: TransitionPlan,
+  engine: 'v1' | 'v2' | 'fallback',
+  sourceAnalysis?: TrackAnalysis,
+  targetAnalysis?: TrackAnalysis,
+): TransitionDebugInfo {
+  const effects: string[] = []
+  if (plan.strategy === 'smart-rendered-v2' && plan.v2?.aiMix === true) {
+    // AI 混音：音频由 DJTransGAN 模型生成（推子+EQ 自动化），不叠加 DSP 特效清单
+    effects.push('AI 混音（DJTransGAN 模型推子+EQ，60s 长混音）')
+  } else if (plan.strategy === 'smart-rendered' || plan.strategy === 'smart-rendered-v2') {
+    if (plan.djEffects?.enabled) {
+      if (plan.djEffects.bassSwap) effects.push('低音互换')
+      if (plan.djEffects.filterSweep) effects.push('滤波扫频')
+      if (plan.djEffects.echoOut) effects.push('回声淡出')
+      if (plan.djEffects.sweepFx) effects.push('噪声扫频')
+    }
+    if (plan.v2?.choreography) {
+      const choreography = plan.v2.choreography
+      if (choreography.tempoRampUp) effects.push('加速')
+      if (choreography.drumFill) effects.push(`鼓点填充×${choreography.drumFillBeats}拍`)
+      if (choreography.riser) effects.push('Riser 渐强')
+      if (choreography.reverbDip) effects.push('混响虚化')
+    }
+  }
+  return {
+    engine,
+    strategy: plan.strategy,
+    fallbackReason: plan.fallbackReason,
+    sourceTrackKey: plan.sourceTrackKey,
+    targetTrackKey: plan.targetTrackKey,
+    beatCount: plan.beatCount,
+    sourceBpm: plan.sourceBpm,
+    targetBpm: plan.targetBpm,
+    confidence: plan.confidence,
+    rendererVersion: plan.rendererVersion,
+    sourceStartTime: plan.sourceStartTime,
+    sourceEndTime: plan.sourceEndTime,
+    targetStartTime: plan.targetStartTime,
+    targetEndTime: plan.targetEndTime,
+    style: plan.v2?.choreography?.style,
+    intensity: plan.v2?.intensity,
+    effects,
+    keyCompat: plan.v2?.choreography?.keyCompat,
+    gainOffsetDb: plan.gainOffsetDb,
+    sourceProvider: sourceAnalysis?.provider,
+    targetProvider: targetAnalysis?.provider,
+  }
 }
 
 function waitForSeek(audio: HTMLAudioElement, timeoutMs = 120): Promise<void> {
@@ -198,9 +259,13 @@ export function useAudioPlayer(
       const analyser = context.createAnalyser()
       analyser.fftSize = 1024
       analyser.smoothingTimeConstant = 0.72
+      // 最终输出增益节点：AirPlay 投送时置 0 静音本机输出；采集点在 analyser 之后
+      //（取完整混音），不受本节点影响，投送给音箱的仍是完整声音
+      const outputGain = context.createGain()
+      outputGain.gain.value = 1
       context.createMediaElementSource(first).connect(firstGain).connect(master)
       context.createMediaElementSource(second).connect(secondGain).connect(master)
-      master.connect(analyser).connect(context.destination)
+      master.connect(analyser).connect(outputGain).connect(context.destination)
       master.gain.value = volumeRef.current
       firstGain.gain.value = activePrimaryRef.current ? 1 : 0
       secondGain.gain.value = activePrimaryRef.current ? 0 : 1
@@ -211,6 +276,11 @@ export function useAudioPlayer(
       masterGainRef.current = master
       analyserNodeRef.current = analyser
       setAnalyserNode(analyser)
+      // 应用用户选择的音频输出设备（AudioContext.setSinkId，整体切换输出）
+      void import('../services/audioOutput').then(({ applyStoredOutputDevice, registerActiveAudioContext }) => {
+        registerActiveAudioContext(context)
+        void applyStoredOutputDevice(context)
+      })
       transitionRendererRef.current = new TransitionRenderer(context, master)
       
       // 初始化 Gapless Integration
@@ -219,7 +289,7 @@ export function useAudioPlayer(
       }
       
       // 通知外部音效引擎：音频图已就绪（在 masterGain 与 analyser 之间插入效果链）
-      onAudioGraphReadyRef.current?.({ audioContext: context, masterGain: master, analyser })
+      onAudioGraphReadyRef.current?.({ audioContext: context, masterGain: master, analyser, outputGain })
       
       if (context.state === 'suspended') await context.resume().catch(() => undefined)
     } catch (error) {
@@ -435,7 +505,7 @@ export function useAudioPlayer(
       await ensureAudioGraph()
       
       // Check if we have a smart-rendered transition ready
-      if (strategy === 'smart-rendered' && plan && transitionRendererRef.current) {
+      if ((strategy === 'smart-rendered' || strategy === 'smart-rendered-v2') && plan && transitionRendererRef.current) {
         debugLog('🎨 [Transition] 检查智能渲染的过渡音频...')
         const rendered = await transitionRendererRef.current.getRendered(plan.id)
         if (rendered) {
@@ -816,6 +886,9 @@ export function useAudioPlayer(
       settings.skipSilence,
       settings.minDuration,
       settings.maxDuration,
+      settings.enhanced === true,
+      settings.intensity,
+      settings.aiMix === true,
     ].join(':')
     if (autoMixPreparationKeyRef.current === preparationKey) {
       debugLog('⏭️ [AutoMix] 相同歌曲组合已在准备或已就绪，跳过重复分析')
@@ -851,12 +924,32 @@ export function useAudioPlayer(
       
       current.analysis = sourceAnalysis
       next.analysis = targetAnalysis
-      const plan = planTransition(sourceAnalysis, targetAnalysis, {
-        beatMatching: autoMixRef.current.enableBeatMatching,
-        skipSilence: autoMixRef.current.skipSilence,
-        minDuration: autoMixRef.current.minDuration,
-        maxDuration: autoMixRef.current.maxDuration,
-      }, 'smart-rendered')
+      const isEnhanced = autoMixRef.current.enhanced === true
+      const plan = isEnhanced
+        ? planTransitionV2(sourceAnalysis, targetAnalysis, {
+          beatMatching: autoMixRef.current.enableBeatMatching,
+          skipSilence: autoMixRef.current.skipSilence,
+          minDuration: autoMixRef.current.minDuration,
+          maxDuration: autoMixRef.current.maxDuration,
+          intensity: autoMixRef.current.intensity,
+          aiMix: autoMixRef.current.aiMix,
+        }, 'smart-rendered-v2')
+        : planTransition(sourceAnalysis, targetAnalysis, {
+          beatMatching: autoMixRef.current.enableBeatMatching,
+          skipSilence: autoMixRef.current.skipSilence,
+          minDuration: autoMixRef.current.minDuration,
+          maxDuration: autoMixRef.current.maxDuration,
+        }, 'smart-rendered')
+
+      // Echo 借鉴：剩余时间过短（<12s）时放弃 AutoMix，让 Gapless/Crossfade 接管。
+      // 智能过渡段通常 8~16s，剩余时间不够播放完整过渡，且会挤压下一首预加载窗口。
+      // AI 混音（GAN）除外：模型窗口向源尾回伸 ~34s，天然有足够跑道，不适用此检查。
+      const remainingBeforeTransition = Math.max(0, (Number(current.duration) || 0) - plan.sourceStartTime)
+      if (remainingBeforeTransition < 12 && (plan.strategy === 'smart-rendered' || plan.strategy === 'smart-rendered-v2') && plan.v2?.aiMix !== true) {
+        debugLog(`⏭️ [AutoMix] 剩余时间过短（${remainingBeforeTransition.toFixed(1)}s < 12s），放弃 AutoMix 走 Crossfade`)
+        plan.strategy = 'fixed-crossfade'
+        plan.fallbackReason = 'Too little time before transition; using crossfade'
+      }
       
       debugLog('📋 [AutoMix] 过渡计划生成:')
       debugLog('   计划ID:', plan.id)
@@ -870,7 +963,7 @@ export function useAudioPlayer(
       }
       
       // Try smart rendering if confidence is high and renderer available
-      if (plan.strategy === 'smart-rendered' && plan.confidence >= 0.5 && transitionRendererRef.current) {
+      if ((plan.strategy === 'smart-rendered' || plan.strategy === 'smart-rendered-v2') && plan.confidence >= 0.5 && transitionRendererRef.current) {
         debugLog('🎨 [AutoMix] 尝试智能渲染（置信度 >= 0.5）...')
         try {
           await transitionRendererRef.current.preRender({
@@ -889,11 +982,12 @@ export function useAudioPlayer(
         } catch (renderError) {
           // 过期中止的错误不应触发回退逻辑（新请求正在准备中）
           if (revision !== preparationRevisionRef.current) return
-          console.warn('⚠️ [AutoMix] 智能渲染失败，回退到普通交叉淡化:', renderError)
+          const renderReason = renderError instanceof Error ? renderError.message : String(renderError)
+          console.warn('⚠️ [AutoMix] 智能渲染失败，回退到普通交叉淡化:', renderReason)
           plan.strategy = 'fixed-crossfade'
-          plan.fallbackReason = 'Smart rendering failed; using fixed crossfade without beat stretching'
+          plan.fallbackReason = `Smart rendering failed: ${renderReason}`
         }
-      } else if (plan.strategy === 'smart-rendered' && plan.confidence < 0.5) {
+      } else if ((plan.strategy === 'smart-rendered' || plan.strategy === 'smart-rendered-v2') && plan.confidence < 0.5) {
         debugLog('⚠️ [AutoMix] 置信度不足（< 0.5），回退到节拍交叉淡化')
         plan.strategy = 'beat-crossfade'
         plan.fallbackReason = 'Confidence below smart-render threshold; using beat-aligned crossfade'
@@ -903,6 +997,22 @@ export function useAudioPlayer(
       if (plan.fallbackReason) {
         debugLog('   回退原因:', plan.fallbackReason)
       }
+      // 不依赖「过渡调试」开关的可见警告：DevTools 控制台默认输出，方便定位降级原因
+      if ((plan.strategy === 'fixed-crossfade' || plan.strategy === 'beat-crossfade') && plan.fallbackReason) {
+        console.warn(`[AutoMix] 本次过渡降级为 ${plan.strategy}：${plan.fallbackReason}`)
+      }
+
+      // AI 混音（DJTransGAN）渲染器把过渡窗口替换为模型自身的长混音窗口
+      // （~60s，起点在源尾 ~34s 处）。armed 触发点必须用解析后的窗口，
+      // 否则过渡 buffer 会在错误时机启动。
+      if (plan.v2?.aiMix === true && transitionRendererRef.current) {
+        const renderedPlan = transitionRendererRef.current.getRenderedPlan(plan.id)
+        if (renderedPlan && Number.isFinite(renderedPlan.sourceStartTime)) {
+          plan.sourceStartTime = renderedPlan.sourceStartTime
+          plan.targetEndTime = renderedPlan.targetEndTime
+          debugLog(`🎬 [AutoMix] AI 混音窗口: sourceStart=${plan.sourceStartTime.toFixed(1)}s, targetResume=${plan.targetEndTime.toFixed(1)}s`)
+        }
+      }
       
       transitionPlanRef.current = plan
       setTransitionState('armed', {
@@ -910,6 +1020,8 @@ export function useAudioPlayer(
         fallbackReason: plan.fallbackReason,
         transitioning: false,
         transitionStartTime: plan.sourceStartTime,
+        transitionStyle: plan.v2?.choreography?.style,
+        transitionDebug: buildTransitionDebug(plan, isEnhanced ? 'v2' : 'v1', sourceAnalysis, targetAnalysis),
       })
       debugLog('✅ [AutoMix] 过渡已准备就绪（armed），等待播放到过渡点...')
     } catch (error) {
@@ -943,6 +1055,7 @@ export function useAudioPlayer(
         transitionStrategy: 'fixed-crossfade',
         fallbackReason: transitionPlanRef.current.fallbackReason,
         transitionStartTime: transitionPlanRef.current.sourceStartTime,
+        transitionDebug: buildTransitionDebug(transitionPlanRef.current, 'fallback'),
       })
     }
   }, [getActiveAudio, setTransitionState])
@@ -1301,6 +1414,9 @@ export function useAudioPlayer(
     autoMixSettings.skipSilence,
     autoMixSettings.minDuration,
     autoMixSettings.maxDuration,
+    autoMixSettings.enhanced,
+    autoMixSettings.intensity,
+    autoMixSettings.aiMix,
     crossfadeSettings.enabled,
     crossfadeSettings.duration,
     gaplessSettings.enabled,

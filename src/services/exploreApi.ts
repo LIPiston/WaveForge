@@ -1,4 +1,5 @@
 import type { MusicPlatform } from './platforms'
+import { getPlatformCookie } from './platforms'
 import type { Song } from './musicApi'
 import { getQQMusicSkillHeaders } from './qqMusicSkills'
 import { fetchAppleExplorePayload } from './appleExploreService'
@@ -30,7 +31,8 @@ function getExploreHomeCacheKey(platform: ExplorePlatform, appleCountry?: string
     const storefront = appleCountry || localStorage.getItem('appleStorefront') || 'cn'
     return `apple:${storefront}`
   }
-  const userId = localStorage.getItem(platform === 'qq' ? 'qq_user_id' : 'netease_user_id') || ''
+  const userIdKey = platform === 'qq' ? 'qq_user_id' : platform === 'netease' ? 'netease_user_id' : `${platform}_user_id`
+  const userId = localStorage.getItem(userIdKey) || ''
   const cookie = getExploreCookie(platform)
   const accountKey = userId ? `user:${userId}` : cookie ? `cookie:${fingerprintExploreValue(cookie)}` : 'guest'
   return `${platform}:${accountKey}`
@@ -57,10 +59,14 @@ export interface ExplorePlaylist {
   /** 歌单仅来自网易云/QQ（Apple 探索不产出歌单） */
   platform: MusicPlatform
   source?: 'personalized' | 'community' | 'qqmusic-skills' | string
+  /** 酷狗歌单列表内嵌的部分歌曲（hash + filename），详情接口不可用时兜底 */
+  embeddedSongs?: Array<{ hash: string; filename: string }>
 }
 
 export interface ExploreChartSong {
   id?: number
+  /** 平台歌曲标识（酷狗 hash / 抖音 music_id 等），用于直接播放 */
+  mid?: string
   name: string
   artist: string
   coverUrl?: string
@@ -243,10 +249,7 @@ const normalizeQQSong = (input: any): Song | null => {
 }
 
 export function getExploreCookie(platform: ExplorePlatform): string {
-  if (platform === 'apple') return ''
-  return platform === 'qq'
-    ? localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
-    : localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
+  return getPlatformCookie(platform)
 }
 
 async function syncQQExploreCookie(cookie: string, signal?: AbortSignal): Promise<void> {
@@ -284,6 +287,194 @@ export async function fetchExploreHome(
       payload,
       expiresAt: Date.now() + EXPLORE_MEMORY_CACHE_TTL
     })
+    return payload
+  }
+  // 酷狗：经 local-server 代理调用移动端公开接口（真实 TOP500/新歌榜/歌单）
+  if (platform === 'kugou') {
+    const { fetchKugouRankList, fetchKugouRankInfo, fetchKugouPlaylists, kugouTrackToSong, resolveKugouCover } = await import('./kugouService')
+    const [ranksRes, playlistsRes] = await Promise.allSettled([
+      fetchKugouRankList(),
+      fetchKugouPlaylists(24),
+    ])
+    const ranks = ranksRes.status === 'fulfilled' ? ranksRes.value : []
+    const prefer = (names: string[]) => ranks.find(rank => names.some(name => rank.rankname.includes(name)))
+    const hotRank = prefer(['TOP500', '热歌', '最热']) || ranks[0]
+    const newRank = prefer(['新歌', '新声']) || ranks.find(rank => rank.rankid === '74534')
+    const risingRank = prefer(['飙升', '飙升榜']) || ranks.find(rank => rank.rankid === '6666')
+    // 更多榜单（酷狗 web 榜单页同款分类）：国潮/ACG/DJ/怀旧/纯音乐等，去重后最多取 6 个
+    const extraNames = ['国潮', 'ACG', 'DJ', '80后', '90后', '00后', '民谣', '纯音乐', '粤语', '日韩', '网络热歌']
+    const extraRanks = ranks.filter(rank => extraNames.some(name => rank.rankname.includes(name)))
+    // 榜单顺序 [热歌, 新歌, 飙升, ...扩展]：新歌榜取真实新歌榜（rankSongs[1]）
+    const chartRanks = [hotRank, newRank, risingRank, ...extraRanks]
+      .filter((rank): rank is NonNullable<typeof rank> => Boolean(rank))
+      .filter((rank, index, arr) => arr.findIndex(r => r.rankid === rank.rankid) === index) // 去重
+      .slice(0, 6)
+    const chartTrackResults = await Promise.allSettled(
+      chartRanks.map(rank => fetchKugouRankInfo(rank.rankid, 30)),
+    )
+    const rankSongs = chartTrackResults.map((result, index) =>
+      result.status === 'fulfilled' ? result.value : chartTrackResults[index].status === 'fulfilled' ? [] : []
+    )
+    const hotTracks = rankSongs[0] || []
+    const toChart = (rank: { rankid: string; rankname: string; img?: string }, tracks: Array<{ hash: string; songName: string; singerName: string; coverUrl?: string }>): ExploreChart => ({
+      id: `kg-${rank.rankid}`,
+      name: rank.rankname || '酷狗榜单',
+      group: '酷狗音乐',
+      description: `${rank.rankname || '酷狗榜单'} · 酷狗音乐实时更新`,
+      coverUrl: resolveKugouCover(rank.img || ''),
+      updateText: '实时更新',
+      platform: 'kugou',
+      source: 'kugou-rank',
+      songs: tracks.slice(0, 30).map((track, index) => ({
+        mid: track.hash,
+        name: track.songName,
+        artist: track.singerName,
+        coverUrl: track.coverUrl,
+        rank: index + 1,
+      })),
+    })
+    const charts = chartRanks.map((rank, index) => toChart(rank, rankSongs[index] || [])).filter(chart => chart.songs.length > 0)
+    const playlists: ExplorePlaylist[] = (playlistsRes.status === 'fulfilled' ? playlistsRes.value : []).map(item => ({
+      id: item.specialid,
+      name: item.name,
+      coverUrl: item.coverUrl || '',
+      playCount: item.playcount,
+      trackCount: item.songcount,
+      platform: 'kugou',
+      source: 'kugou-plist',
+      embeddedSongs: item.songs,
+    }))
+    const payload: ExplorePayload = {
+      code: 0,
+      platform: 'kugou',
+      officialEnhanced: false,
+      personalized: false,
+      dailySongs: hotTracks.map(kugouTrackToSong),
+      radioSongs: [],
+      newSongs: (rankSongs[1]?.length ? rankSongs[1] : hotTracks).map(kugouTrackToSong),
+      playlists,
+      charts,
+      albums: [],
+      channels: [],
+      meta: { source: 'kugou-mobile-api', updatedAt: Date.now() },
+    }
+    exploreHomeMemoryCache.set(cacheKey, { payload, expiresAt: Date.now() + EXPLORE_MEMORY_CACHE_TTL })
+    return payload
+  }
+  // Spotify：官方 Web API（需登录 token；未登录返回空 payload，区块自动隐藏）
+  if (platform === 'spotify') {
+    const { fetchSpotifyNewReleases, fetchSpotifyFeaturedPlaylists, fetchSpotifyCharts, spotifyTrackToSong } = await import('./spotifyService')
+    const [releasesRes, playlistsRes, chartsRes] = await Promise.allSettled([
+      fetchSpotifyNewReleases(30),
+      fetchSpotifyFeaturedPlaylists(24),
+      fetchSpotifyCharts(),
+    ])
+    const releases = releasesRes.status === 'fulfilled' ? releasesRes.value : []
+    const albums: ExploreAlbum[] = releases.map(item => ({
+      id: Number(parseInt(item.id.slice(0, 12), 36)) || 0,
+      mid: item.id,
+      name: item.name,
+      artist: item.artists.map(artist => artist.name).join(' / '),
+      coverUrl: item.coverUrl || '',
+      platform: 'spotify',
+    }))
+    // 新发行接口返回专辑：以"专辑首唱"形式呈现新鲜内容
+    const newSongs: Song[] = releases.map(item => ({
+      id: Number(parseInt(item.id.slice(0, 12), 36)) || 0,
+      mid: item.id,
+      name: item.name,
+      artists: item.artists.map(artist => ({ name: artist.name })),
+      album: { name: item.name, picUrl: item.coverUrl || '' },
+      duration: 0,
+      platform: 'spotify',
+      fee: 0,
+      songType: 1,
+      fusedSources: [],
+    }))
+    // 榜单：官方 Top 榜歌单（Global Top 50 / Viral 50）
+    const charts: ExploreChart[] = (chartsRes.status === 'fulfilled' ? chartsRes.value : []).map(chart => ({
+      id: `sp-${chart.id}`,
+      name: chart.name,
+      group: 'Spotify',
+      description: `${chart.name} · Spotify 官方榜单`,
+      coverUrl: chart.coverUrl || '',
+      updateText: '每周更新',
+      platform: 'spotify' as const,
+      source: 'spotify-chart',
+      songs: chart.songs.slice(0, 30).map((track, index) => ({
+        mid: track.id,
+        name: track.name,
+        artist: track.artists.map(a => a.name).join(' / '),
+        coverUrl: track.album?.images?.[0]?.url,
+        rank: index + 1,
+      })),
+    })).filter(chart => chart.songs.length > 0)
+    const payload: ExplorePayload = {
+      code: 0,
+      platform: 'spotify',
+      officialEnhanced: false,
+      personalized: Boolean(localStorage.getItem('spotify_access_token')),
+      dailySongs: [],
+      radioSongs: [],
+      newSongs,
+      playlists: (playlistsRes.status === 'fulfilled' ? playlistsRes.value : []).map(item => ({
+        id: item.id,
+        name: item.name,
+        coverUrl: item.coverUrl || '',
+        platform: 'spotify',
+        source: 'spotify-featured',
+        creator: 'Spotify 编辑精选',
+      })),
+      charts,
+      albums,
+      channels: [],
+      meta: { source: 'spotify-web-api', updatedAt: Date.now() },
+    }
+    exploreHomeMemoryCache.set(cacheKey, { payload, expiresAt: Date.now() + EXPLORE_MEMORY_CACHE_TTL })
+    return payload
+  }
+  // 汽水音乐：经主进程隐藏窗口抓取抖音搜索页音乐卡片（需登录抖音；失败时区块自动隐藏）
+  if (platform === 'soda') {
+    const { fetchSodaExplore } = await import('./sodaService')
+    const explore = await fetchSodaExplore()
+    const charts: ExploreChart[] = explore.charts.map((chart, index) => ({
+      id: chart.id,
+      name: chart.name,
+      group: chart.group,
+      description: `${chart.name} · 抖音音乐`,
+      coverUrl: '',
+      updateText: '实时更新',
+      platform: 'soda',
+      source: 'soda-douyin',
+      songs: chart.songs.map((song, songIndex) => ({
+        id: song.id,
+        name: song.name,
+        artist: song.artists?.[0]?.name || '',
+        coverUrl: song.album?.picUrl || '',
+        rank: songIndex + 1,
+      })),
+    }))
+    const payload: ExplorePayload = {
+      code: 0,
+      platform: 'soda',
+      officialEnhanced: false,
+      personalized: false,
+      dailySongs: explore.songs,
+      radioSongs: [],
+      newSongs: explore.songs.slice(0, 20),
+      playlists: explore.playlists.map(item => ({
+        id: item.id,
+        name: item.name,
+        coverUrl: item.coverUrl || '',
+        platform: 'soda',
+        source: 'soda-douyin',
+      })),
+      charts,
+      albums: [],
+      channels: [],
+      meta: { source: 'soda-douyin-scrape', updatedAt: Date.now() },
+    }
+    exploreHomeMemoryCache.set(cacheKey, { payload, expiresAt: Date.now() + EXPLORE_MEMORY_CACHE_TTL })
     return payload
   }
   // enhanced=false：关闭平台增强（不传 cookie，后端只返回公开榜单/热门，不请求个性化推荐）
@@ -357,8 +548,8 @@ export async function fetchExploreRecommendationBatch(
   excludeSongKeys: string[] = [],
   signal?: AbortSignal
 ): Promise<Song[]> {
-  // Apple 无连续电台接口
-  if (platform === 'apple') return []
+  // Apple/Spotify/酷狗/汽水音乐 无连续电台接口
+  if (platform === 'apple' || platform === 'spotify' || platform === 'kugou' || platform === 'soda') return []
   const cookie = getExploreCookie(platform)
   if (platform === 'qq') {
     return fetchQQGuessYouLikeBatch(batch, excludeSongKeys, signal)
@@ -390,6 +581,44 @@ export async function fetchExplorePlaylist(playlist: ExplorePlaylist, signal?: A
         trackCount: songs.length || playlist.trackCount || 0,
         description: playlist.description || '',
         platform: 'apple',
+      },
+      songs,
+    }
+  }
+  // Spotify 歌单：官方 Web API 曲目
+  if (playlist.platform === 'spotify') {
+    const { fetchSpotifyPlaylist, spotifyTrackToSong } = await import('./spotifyService')
+    const tracks = await fetchSpotifyPlaylist(playlist.id)
+    const songs = tracks.map(spotifyTrackToSong)
+    return {
+      playlist: {
+        id: playlist.id,
+        name: playlist.name,
+        coverImgUrl: playlist.coverUrl,
+        trackCount: songs.length || playlist.trackCount || 0,
+        description: playlist.description || '',
+        platform: 'spotify',
+      },
+      songs,
+    }
+  }
+  // 酷狗歌单：优先真实歌单详情接口，失败时用列表内嵌歌曲兜底
+  if (playlist.platform === 'kugou') {
+    const { fetchKugouPlaylistDetail, kugouTrackToSong } = await import('./kugouService')
+    let tracks = await fetchKugouPlaylistDetail(playlist.id).catch(() => [] as Awaited<ReturnType<typeof fetchKugouPlaylistDetail>>)
+    if (tracks.length === 0 && playlist.embeddedSongs?.length) {
+      const { parseKugouEmbeddedSongs } = await import('./kugouService')
+      tracks = parseKugouEmbeddedSongs(playlist.embeddedSongs)
+    }
+    const songs = tracks.map(kugouTrackToSong)
+    return {
+      playlist: {
+        id: playlist.id,
+        name: playlist.name,
+        coverImgUrl: playlist.coverUrl,
+        trackCount: songs.length || playlist.trackCount || 0,
+        description: playlist.description || '',
+        platform: 'kugou',
       },
       songs,
     }
@@ -441,6 +670,74 @@ export async function fetchExploreChart(chart: ExploreChart, signal?: AbortSigna
         trackCount: songs.length,
         description: chart.description || '',
         platform: 'apple',
+      },
+      songs,
+    }
+  }
+  // 酷狗榜单：客户端已带歌曲列表（含 hash），无需服务端
+  if (chart.platform === 'kugou') {
+    const songs: Song[] = chart.songs.map(song => ({
+      id: typeof song.id === 'number' ? song.id : Number(song.id) || 0,
+      mid: song.mid || (typeof song.id === 'number' ? '' : String(song.id || '')),
+      name: song.name,
+      artists: song.artist ? [{ name: song.artist }] : [],
+      album: { name: '', picUrl: song.coverUrl || '' },
+      duration: 0,
+      platform: 'kugou',
+    }))
+    return {
+      playlist: {
+        id: chart.id,
+        name: chart.name,
+        coverImgUrl: chart.coverUrl,
+        trackCount: songs.length,
+        description: chart.description || '',
+        platform: 'kugou',
+      },
+      songs,
+    }
+  }
+  // 汽水榜单：客户端已带歌曲列表（抖音搜索抓取），无需服务端
+  if (chart.platform === 'soda') {
+    const songs: Song[] = chart.songs.map(song => ({
+      id: typeof song.id === 'number' ? song.id : Number(song.id) || 0,
+      name: song.name,
+      artists: song.artist ? [{ name: song.artist }] : [],
+      album: { name: '', picUrl: song.coverUrl || '' },
+      duration: 0,
+      platform: 'soda',
+    }))
+    return {
+      playlist: {
+        id: chart.id,
+        name: chart.name,
+        coverImgUrl: chart.coverUrl,
+        trackCount: songs.length,
+        description: chart.description || '',
+        platform: 'soda',
+      },
+      songs,
+    }
+  }
+  // Spotify 榜单：客户端已带歌曲列表（官方 Top 榜歌单），无需服务端
+  if (chart.platform === 'spotify') {
+    const songs: Song[] = chart.songs.map(song => ({
+      id: typeof song.id === 'number' ? song.id : Number(song.id) || 0,
+      mid: song.mid || (typeof song.id === 'number' ? '' : String(song.id || '')),
+      name: song.name,
+      artists: song.artist ? [{ name: song.artist }] : [],
+      album: { name: '', picUrl: song.coverUrl || '' },
+      duration: 0,
+      platform: 'spotify',
+    }))
+    return {
+      playlist: {
+        id: chart.id,
+        name: chart.name,
+        coverImgUrl: chart.coverUrl,
+        trackCount: songs.length,
+        description: chart.description || '',
+        platform: 'spotify',
       },
       songs,
     }
