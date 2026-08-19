@@ -5213,6 +5213,8 @@ function App() {
                 availableEngines: getAvailableEngines(),
                 sourceUrl: audioPlayer.audioElement?.src || undefined,
                 sourceDuration: audioPlayer.audioElement?.duration || undefined,
+                // 播放时钟 store → 调音室（v3 空间音效「随曲目播放」playhead 自动跟随用）
+                playbackTimeStore: audioPlayer.playbackTimeStore,
               })}
             </Suspense>
           )}
