@@ -29,6 +29,8 @@ interface PlayerControlsProps {
   backgroundEffect?: 'transparent' | 'blur' | 'immersive'
   isTransitioning?: boolean
   isAutoMixTransition?: boolean
+  /** AutoMix 增强版（v2）：过渡指示显示「AutoMix 增强版」独立样式（缺省时与历史一致） */
+  enhancedAutoMix?: boolean
   transitionStartTime?: number | null
   immersiveTranslation?: string
   immersiveRoman?: string
@@ -184,6 +186,7 @@ export default function PlayerControls({
   backgroundEffect = 'blur',
   isTransitioning = false,
   isAutoMixTransition = false,
+  enhancedAutoMix = false,
   transitionStartTime = null,
   immersiveTranslation = '',
   immersiveRoman = '',
@@ -508,7 +511,7 @@ export default function PlayerControls({
   // 检查是否即将过渡（剩余时间少于 5 秒）
   const isNearTransition = isTransitioning || (duration - currentTime <= 5 && duration - currentTime > 0)
   // AutoMix 智能混音过渡时显示 AutoMix，无缝衔接(Gapless)/交叉淡化仍显示 过渡
-  const transitionLabel = isAutoMixTransition ? 'AutoMix' : '过渡'
+  const transitionLabel = enhancedAutoMix ? 'AutoMix 增强版' : isAutoMixTransition ? 'AutoMix' : '过渡'
   
   // 进度条发光强度
   const glowIntensity = isNearTransition ? 1.5 : 1
@@ -633,9 +636,11 @@ export default function PlayerControls({
                 <span
                   className="text-xs font-medium"
                   style={{
-                    color: 'rgba(255,255,255,0.9)',
+                    color: enhancedAutoMix ? 'rgba(147,197,253,0.95)' : 'rgba(255,255,255,0.9)',
                     letterSpacing: '0.1em',
-                    textShadow: '0 0 20px rgba(255,255,255,0.6), 0 2px 8px rgba(0,0,0,0.5)',
+                    textShadow: enhancedAutoMix
+                      ? '0 0 20px rgba(59,130,246,0.8), 0 2px 8px rgba(0,0,0,0.5)'
+                      : '0 0 20px rgba(255,255,255,0.6), 0 2px 8px rgba(0,0,0,0.5)',
                     animation: 'glow 2s ease-in-out infinite',
                   }}
                 >

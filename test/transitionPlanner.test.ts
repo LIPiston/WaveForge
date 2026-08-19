@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { planTransition } from '../src/audio/transitionPlanner.ts'
+import { planTransition, planTransitionV2 } from '../src/audio/transitionPlanner.ts'
 import type { TrackAnalysis } from '../src/audio/types'
 
 /**
@@ -250,5 +250,149 @@ describe('planTransition（时间窗口与时长）', () => {
   it('相同 analysisVersion 时沿用该版本号', () => {
     const plan = planTransition(SOURCE, TARGET, SMART_SETTINGS)
     expect(plan.analysisVersion).toBe('v1')
+  })
+
+  describe('响度补偿（gainOffsetDb）', () => {
+    it('无 LUFS 数据时不补偿', () => {
+      const plan = planTransition(SOURCE, TARGET, SMART_SETTINGS)
+      expect(plan.gainOffsetDb).toBe(0)
+    })
+
+    it('target 更轻 → 正补偿（抬高目标，钳制 3.5dB）', () => {
+      const plan = planTransition(
+        makeAnalysis('netease-source', { integratedLufs: -14 }),
+        makeAnalysis('netease-target', { integratedLufs: -18 }),
+        SMART_SETTINGS,
+      )
+      expect(plan.gainOffsetDb).toBe(3.5)
+    })
+
+    it('target 更响 → 负补偿（压低目标，钳制 -3.5dB）', () => {
+      const plan = planTransition(
+        makeAnalysis('netease-source', { integratedLufs: -18 }),
+        makeAnalysis('netease-target', { integratedLufs: -14 }),
+        SMART_SETTINGS,
+      )
+      expect(plan.gainOffsetDb).toBe(-3.5)
+    })
+
+    it('补偿被钳制在 ±3.5dB', () => {
+      const plan = planTransition(
+        makeAnalysis('netease-source', { integratedLufs: -10 }),
+        makeAnalysis('netease-target', { integratedLufs: -25 }),
+        SMART_SETTINGS,
+      )
+      expect(plan.gainOffsetDb).toBe(3.5)
+      const plan2 = planTransition(
+        makeAnalysis('netease-source', { integratedLufs: -25 }),
+        makeAnalysis('netease-target', { integratedLufs: -10 }),
+        SMART_SETTINGS,
+      )
+      expect(plan2.gainOffsetDb).toBe(-3.5)
+    })
+
+    it('补偿值并入计划 id（缓存键随补偿变化）', () => {
+      const planA = planTransition(
+        makeAnalysis('netease-source', { integratedLufs: -14 }),
+        makeAnalysis('netease-target', { integratedLufs: -18 }),
+        SMART_SETTINGS,
+      )
+      const planB = planTransition(SOURCE, TARGET, SMART_SETTINGS)
+      expect(planA.id).not.toBe(planB.id)
+      expect(planA.id).toContain('3.5:')
+      expect(planB.id).toContain('0.0:')
+    })
+  })
+})
+
+describe('planTransitionV2（AutoMix 增强版）', () => {
+  it('完整网格 + 同 BPM 时使用 smart-rendered-v2 策略且带 v2 编排', () => {
+    const plan = planTransitionV2(SOURCE, TARGET, SMART_SETTINGS, 'smart-rendered-v2')
+    expect(plan.strategy).toBe('smart-rendered-v2')
+    expect(plan.fallbackReason).toBeUndefined()
+    expect(plan.rendererVersion).toContain('v2')
+    expect(plan.v2).toBeDefined()
+    expect(plan.v2?.choreography).toBeDefined()
+    expect(plan.v2?.intensity).toBe('standard')
+    expect(plan.djEffects).toBeDefined()
+    expect(plan.id).toContain('smart-rendered-v2')
+  })
+
+  it('高能量（energy 0.8 / BPM 差 0）编排为 energetic：含 riser/鼓点/tempo ramp', () => {
+    const plan = planTransitionV2(SOURCE, TARGET, SMART_SETTINGS, 'smart-rendered-v2')
+    const choreography = plan.v2?.choreography
+    expect(choreography?.style).toBe('energetic')
+    expect(choreography?.riser).toBe(true)
+    expect(choreography?.drumFill).toBe(true)
+    expect(choreography?.tempoRampUp).toBe(true)
+    expect(choreography?.drumFillBeats).toBeGreaterThan(0)
+  })
+
+  it('低能量编排为 atmospheric（reverbDip 开启，无鼓点）', () => {
+    const lowEnergy = (trackKey: string) => makeAnalysis(trackKey, {
+      beatFeatures: makeAnalysis(trackKey).beatFeatures.map(frame => ({ ...frame, energy: 0.1 })),
+    })
+    const plan = planTransitionV2(lowEnergy('netease-source'), lowEnergy('netease-target'), SMART_SETTINGS, 'smart-rendered-v2')
+    expect(plan.v2?.choreography?.style).toBe('atmospheric')
+    expect(plan.v2?.choreography?.reverbDip).toBe(true)
+    expect(plan.v2?.choreography?.drumFill).toBe(false)
+  })
+
+  it('强度档位随设置传递', () => {
+    const strong = planTransitionV2(SOURCE, TARGET, { ...SMART_SETTINGS, intensity: 'strong' }, 'smart-rendered-v2')
+    expect(strong.v2?.intensity).toBe('strong')
+    const subtle = planTransitionV2(SOURCE, TARGET, { ...SMART_SETTINGS, intensity: 'subtle' }, 'smart-rendered-v2')
+    expect(subtle.v2?.intensity).toBe('subtle')
+    // 强度影响 id（缓存键隔离）
+    expect(strong.id).not.toBe(subtle.id)
+  })
+
+  it('调性检测：chroma 数据可检出 key（C 大调 → camelot 8B）', () => {
+    const plan = planTransitionV2(SOURCE, TARGET, SMART_SETTINGS, 'smart-rendered-v2')
+    expect(plan.v2?.key?.source).toBeDefined()
+    expect(plan.v2?.key?.source?.tonic).toBe(0)
+    expect(plan.v2?.key?.source?.mode).toBe('major')
+    expect(plan.v2?.key?.source?.camelot).toBe(8)
+    // 两曲同调 → 兼容度 1.0
+    expect(plan.v2?.choreography?.keyCompat).toBe(1)
+  })
+
+  it('无 chroma 数据时调性兼容度为中性（0.5）且不报错', () => {
+    const noChroma = (trackKey: string) => makeAnalysis(trackKey, {
+      beatFeatures: makeAnalysis(trackKey).beatFeatures.map(frame => ({ ...frame, chroma: [] })),
+    })
+    const plan = planTransitionV2(noChroma('netease-source'), noChroma('netease-target'), SMART_SETTINGS, 'smart-rendered-v2')
+    expect(plan.v2?.key?.source).toBeUndefined()
+    expect(plan.v2?.choreography?.keyCompat).toBe(0.5)
+  })
+
+  it('beatMatching 关闭时同样降级为 beat-crossfade', () => {
+    const plan = planTransitionV2(SOURCE, TARGET, { beatMatching: false, skipSilence: false }, 'smart-rendered-v2')
+    expect(plan.strategy).toBe('beat-crossfade')
+    expect(plan.fallbackReason).toContain('Beat matching is disabled')
+    expect(plan.v2?.choreography).toBeDefined() // 编排信息仍生成（供 UI 展示），但不触发渲染
+    expect(plan.djEffects).toBeUndefined()
+  })
+
+  it('BPM 差超限时降级为 fixed-crossfade', () => {
+    const plan = planTransitionV2(
+      makeAnalysis('netease-source', { estimatedBpm: 120 }),
+      makeAnalysis('netease-target', { estimatedBpm: 100 }),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(plan.strategy).toBe('fixed-crossfade')
+    expect(plan.fallbackReason).toContain('BPM difference')
+  })
+
+  it('v2 与 v1 的计划 id 互相隔离（含强度/版本），v1 计划不带 v2 字段', () => {
+    const v1 = planTransition(SOURCE, TARGET, SMART_SETTINGS, 'smart-rendered')
+    const v2 = planTransitionV2(SOURCE, TARGET, SMART_SETTINGS, 'smart-rendered-v2')
+    expect(v1.id).not.toBe(v2.id)
+    expect(v1.id).not.toContain('smart-rendered-v2')
+    expect(v2.id).toContain('smart-rendered-v2')
+    expect(v1.v2).toBeUndefined()
+    expect(v1.rendererVersion).toContain('pitch-preserving-beatgrid-djfx')
+    expect(v2.rendererVersion).toContain('automix-v2')
   })
 })

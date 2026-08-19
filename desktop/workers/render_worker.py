@@ -515,7 +515,14 @@ def render_transition(params: dict) -> dict:
         # Apply gain curves (equal-power crossfade)
         logger.info("Applying gain curves...")
         source_with_gain = apply_gain_curve(source_stretched, plan['gainCurve']['source'])
-        target_with_gain = apply_gain_curve(target_stretched, plan['gainCurve']['target'])
+        target_curve = plan['gainCurve']['target']
+        # 响度补偿（dB）：按 source/target 积分响度差缩放 target 侧，平滑过渡衔接
+        gain_offset_db = float(plan.get('gainOffsetDb', 0) or 0)
+        if abs(gain_offset_db) > 0.001:
+            offset_linear = 10.0 ** (gain_offset_db / 20.0)
+            target_curve = [min(1.0, v * offset_linear) for v in target_curve]
+            logger.info(f"Applying loudness compensation: {gain_offset_db:+.1f} dB")
+        target_with_gain = apply_gain_curve(target_stretched, target_curve)
         
         # Mix with professional audio processing
         logger.info("Mixing with audio processing...")
@@ -596,6 +603,353 @@ def render_transition(params: dict) -> dict:
         }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AutoMix 增强版（v2）渲染：在 v1 的逐拍保音高拉伸 + DJ FX 基础上，新增
+# riser / 鼓点填充 / tempo ramp 加速 / 侧链混响虚化，并按 choreography 编排。
+# 与 v1 的 render_transition 完全隔离：独立消息类型 'render_v2'，独立缓存键。
+# 不引入任何新依赖（仅 numpy/scipy/pedalboard/librosa，与 v1 相同）。
+# ─────────────────────────────────────────────────────────────────────────────
+
+INTENSITY_FACTOR = {'subtle': 0.55, 'standard': 0.75, 'strong': 1.0}
+
+
+def apply_tempo_ramp_up(
+    output_beat_durations: list[float],
+    beat_count: int,
+    intensity: float,
+    max_rate: float = 1.0,
+) -> list[float]:
+    """最后几拍渐进提速（DJ 式"加速落入"）。共享输出网格，两侧同时加速，
+    过渡结束时自然回落目标原速。
+
+    提速幅度自适应钳制：progressive_beat_stretch 有 0.85≤rate≤1.15 的硬上限，
+    若 BPM 差已让某拍接近上限，继续加速会抛错导致整段渲染失败、静默回退——
+    这里把 ramp 预算压到 `1 - max_rate/1.15` 之内，保证始终渲染成功。
+    """
+    if beat_count < 4:
+        return output_beat_durations
+    ramp_beats = 3
+    max_speedup = min(0.12 * float(np.clip(intensity, 0.0, 1.0)), 1.0 - float(max_rate) / 1.15)
+    if max_speedup <= 0.01:
+        return output_beat_durations
+    result = list(output_beat_durations)
+    for offset in range(1, ramp_beats + 1):
+        idx = beat_count - offset
+        if idx < 0:
+            break
+        factor = 1.0 - max_speedup * (offset / ramp_beats)
+        result[idx] = max(0.2, result[idx] * factor)
+    return result
+
+
+def synthesize_kick(sample_rate: int, duration: float = 0.12) -> np.ndarray:
+    """合成 kick：指数扫频（160→45Hz）+ 指数衰减包络。"""
+    n = max(1, int(duration * sample_rate))
+    t = np.arange(n) / sample_rate
+    freq = 45.0 + (160.0 - 45.0) * np.exp(-t * 18.0)
+    phase = 2.0 * np.pi * np.cumsum(freq) / sample_rate
+    envelope = np.exp(-t * 9.0)
+    return (np.sin(phase) * envelope).astype(np.float32)
+
+
+def create_drum_fill(
+    channels: int,
+    samples: int,
+    sample_rate: int,
+    beat_durations: list[float],
+    fill_beats: int,
+    intensity: float,
+    reference_rms: float,
+    seed_text: str,
+) -> np.ndarray:
+    """按输出节拍网格在过渡尾部合成鼓点填充（切分拍 offbeat 模式），导向目标 downbeat。"""
+    beat_count = len(beat_durations)
+    if fill_beats <= 0 or beat_count <= 1:
+        return np.zeros((channels, samples), dtype=np.float32)
+
+    beat_samples = [0]
+    for duration in beat_durations:
+        beat_samples.append(beat_samples[-1] + max(1, int(round(duration * sample_rate))))
+    fill_start_beat = max(0, beat_count - fill_beats)
+    fill_start_sample = beat_samples[fill_start_beat] if fill_start_beat < len(beat_samples) else 0
+    fill_span = max(1, beat_samples[beat_count] - fill_start_sample)
+
+    # 切分拍位置（相对填充窗口的拍偏移），填充拍数不同自动缩放
+    subdivisions = [0.0, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.75]
+    pattern = [rel for rel in subdivisions if rel < fill_beats]
+
+    kick = synthesize_kick(sample_rate)
+    fill = np.zeros((channels, samples), dtype=np.float32)
+    rng = np.random.default_rng(int(hashlib.sha256(seed_text.encode('utf-8')).hexdigest()[:8], 16))
+    for rel in pattern:
+        pos = fill_start_sample + int(round((rel / max(1, fill_beats)) * fill_span))
+        end = min(samples, pos + len(kick))
+        if pos >= samples:
+            continue
+        # 每击微小随机增益，避免机械感
+        hit = kick[:end - pos] * (0.9 + 0.2 * rng.random())
+        for ch in range(channels):
+            fill[ch, pos:end] += hit
+
+    level = reference_rms * (0.16 + 0.20 * float(np.clip(intensity, 0.0, 1.0)))
+    return (fill * level).astype(np.float32)
+
+
+def create_riser(
+    channels: int,
+    samples: int,
+    sample_rate: int,
+    beat_durations: list[float],
+    intensity: float,
+    reference_rms: float,
+    seed_text: str,
+) -> np.ndarray:
+    """最后 3 拍指数扫频 riser（180→2400Hz）+ 滤波噪声层，渐强导向 downbeat。"""
+    beat_count = len(beat_durations)
+    riser_beats = 3
+    start_beat = max(0, beat_count - riser_beats)
+    envelope = beat_automation(samples, sample_rate, beat_durations, [
+        (0, 0.0),
+        (start_beat, 0.0),
+        (beat_count, 1.0),
+    ])
+    if envelope.max() < 1e-9:
+        return np.zeros((channels, samples), dtype=np.float32)
+
+    rng = np.random.default_rng(int(hashlib.sha256(seed_text.encode('utf-8')).hexdigest()[:8], 16))
+    t = np.arange(samples) / sample_rate
+    sweep_len = samples
+    f0, f1 = 180.0, 2400.0
+    freq = f0 * (f1 / f0) ** (t / max(1e-9, t[-1]))
+    phase = 2.0 * np.pi * np.cumsum(freq) / sample_rate
+    sweep = np.sin(phase).astype(np.float32)
+
+    noise = rng.standard_normal(samples).astype(np.float32)
+    noise = filtered(noise[None, :], sample_rate, 4000, 'lowpass')[0]
+    noise = filtered(noise[None, :], sample_rate, 300, 'highpass')[0]
+    noise_rms = float(np.sqrt(np.mean(noise * noise))) + 1e-9
+
+    riser = (0.75 * sweep + 0.25 * noise / noise_rms) * envelope[None, :]
+    level = reference_rms * (0.09 + 0.13 * float(np.clip(intensity, 0.0, 1.0)))
+    return np.repeat(riser, channels, axis=0).astype(np.float32) * level
+
+
+def apply_reverb_dip(
+    audio: np.ndarray,
+    sample_rate: int,
+    beat_durations: list[float],
+    intensity: float,
+) -> np.ndarray:
+    """源尾侧链混响"虚化"：噪声脉冲 IR 卷积 + 低通，随过渡进程渐混入，
+    让源侧在交棒前被空间感模糊而非硬切。"""
+    beat_count = len(beat_durations)
+    ir_len = int(0.6 * sample_rate)
+    rng = np.random.default_rng(int(hashlib.sha256(b'v2-reverb-ir').hexdigest()[:8], 16))
+    t = np.arange(ir_len) / sample_rate
+    tau = 0.16 + 0.06 * float(np.clip(intensity, 0.0, 1.0))
+    ir = (rng.standard_normal(ir_len) * np.exp(-t / tau)).astype(np.float32)
+    ir /= np.sqrt(np.sum(ir * ir)) + 1e-9
+
+    wet = np.stack(
+        [signal.fftconvolve(audio[ch], ir)[:audio.shape[1]] for ch in range(audio.shape[0])],
+        axis=0,
+    ).astype(np.float32)
+    wet = filtered(wet, sample_rate, 6000, 'lowpass')
+
+    envelope = beat_automation(audio.shape[1], sample_rate, beat_durations, [
+        (0, 0.0),
+        (beat_count * 0.55, 0.0),
+        (beat_count * 0.8, 0.5 + 0.3 * float(np.clip(intensity, 0.0, 1.0))),
+        (beat_count, 0.65 + 0.35 * float(np.clip(intensity, 0.0, 1.0))),
+    ])
+    return (audio * (1.0 - envelope[None, :]) + wet * envelope[None, :]).astype(np.float32)
+
+
+def render_transition_v2(params: dict) -> dict:
+    """AutoMix 增强版（v2）渲染：v1 的逐拍共拍网格拉伸 + choreography 特效编排。
+
+    plan.v2.choreography 驱动：style（energetic/atmospheric/clean）+ intensity
+    （subtle/standard/strong）+ 各特效开关。渲染结果与 v1 共用同一个
+    TransitionRenderer 缓存/播放链路，仅 plan.id（rendererVersion=v2）隔离。
+    """
+    try:
+        plan = params['plan']
+        source_path = params['sourceAudioPath']
+        target_path = params['targetAudioPath']
+        output_path = params['outputPath']
+
+        v2 = plan.get('v2') or {}
+        choreography = v2.get('choreography') or {}
+        style = choreography.get('style', 'clean')
+        intensity = float(INTENSITY_FACTOR.get(choreography.get('intensity', 'standard'), 0.75))
+        drum_fill_beats = int(choreography.get('drumFillBeats', 0) or 0)
+        use_tempo_ramp = bool(choreography.get('tempoRampUp', False))
+        use_riser = bool(choreography.get('riser', False))
+        use_reverb_dip = bool(choreography.get('reverbDip', False))
+        use_noise_sweep = bool(choreography.get('noiseSweep', False))
+
+        logger.info(f"🎵 [v2] Rendering enhanced transition: {plan['beatCount']} beats, "
+                   f"style={style}, intensity={choreography.get('intensity', 'standard')}, "
+                   f"{plan['sourceBpm']:.1f} → {plan['targetBpm']:.1f} BPM")
+
+        # 1) 加载源/目标切片（与 v1 相同：AudioFile 上下文管理器，读毕即释放）
+        with AudioFile(source_path) as f:
+            source_sample_rate = f.samplerate
+            source_start_sample = int(plan['sourceStartTime'] * source_sample_rate)
+            source_end_sample = int(plan['sourceEndTime'] * source_sample_rate)
+            f.seek(source_start_sample)
+            source_audio = f.read(source_end_sample - source_start_sample)
+        with AudioFile(target_path) as f:
+            target_sample_rate = f.samplerate
+            target_start_sample = int(plan['targetStartTime'] * target_sample_rate)
+            target_end_sample = int(plan['targetEndTime'] * target_sample_rate)
+            f.seek(target_start_sample)
+            target_audio = f.read(target_end_sample - target_start_sample)
+
+        if source_sample_rate != target_sample_rate:
+            logger.warning(f"⚠️ [v2] Sample rate mismatch: {source_sample_rate} vs {target_sample_rate}")
+            if LIBROSA_AVAILABLE:
+                target_audio = librosa.resample(
+                    target_audio, orig_sr=target_sample_rate, target_sr=source_sample_rate,
+                )
+            else:
+                target_audio = signal.resample(
+                    target_audio,
+                    int(target_audio.shape[1] * source_sample_rate / target_sample_rate),
+                    axis=1,
+                )
+        output_sample_rate = source_sample_rate
+        source_audio = ensure_stereo(source_audio)
+        target_audio = ensure_stereo(target_audio)
+
+        source_beat_times = plan.get('sourceBeatTimes', [])
+        target_beat_times = plan.get('targetBeatTimes', [])
+        if not source_beat_times or not target_beat_times:
+            raise ValueError("Smart rendering requires source and target beat grids")
+
+        source_beat_times_relative = [t - plan['sourceStartTime'] for t in source_beat_times]
+        target_beat_times_relative = [t - plan['targetStartTime'] for t in target_beat_times]
+        output_beat_durations = common_output_beat_durations(
+            source_beat_times_relative,
+            target_beat_times_relative,
+            plan['beatCount'],
+        )
+        # 2) tempo ramp 加速（DJ 式落入）：预算按 ramp 区域当前最大拉伸率自适应钳制，
+        #    确保叠加后每拍 rate ≤1.15，不会因抛错导致整段渲染静默回退。
+        if use_tempo_ramp:
+            beat_count = plan['beatCount']
+            ramp_region_start = max(0, beat_count - 3)
+            ramp_max_rate = 1.0
+            for idx in range(ramp_region_start, beat_count):
+                src_duration = source_beat_times_relative[idx + 1] - source_beat_times_relative[idx]
+                tgt_duration = target_beat_times_relative[idx + 1] - target_beat_times_relative[idx]
+                out_duration = output_beat_durations[idx]
+                if src_duration > 0:
+                    ramp_max_rate = max(ramp_max_rate, src_duration / out_duration)
+                if tgt_duration > 0:
+                    ramp_max_rate = max(ramp_max_rate, tgt_duration / out_duration)
+            output_beat_durations = apply_tempo_ramp_up(output_beat_durations, beat_count, intensity, ramp_max_rate)
+
+        source_stretched = progressive_beat_stretch(
+            source_audio, output_sample_rate, source_beat_times_relative, output_beat_durations, 'source',
+        )
+        target_stretched = progressive_beat_stretch(
+            target_audio, output_sample_rate, target_beat_times_relative, output_beat_durations, 'target',
+        )
+        if source_stretched.shape[1] != target_stretched.shape[1]:
+            raise RuntimeError("Tracks did not land on the same output beat grid")
+        output_length = source_stretched.shape[1]
+
+        # 3) 源尾侧链混响"虚化"
+        if use_reverb_dip:
+            logger.info("🎚️ [v2] Applying source reverb dip (blur out)")
+            source_stretched = apply_reverb_dip(source_stretched, output_sample_rate, output_beat_durations, intensity)
+
+        # 4) DJ FX（bass swap / filter sweep / echo out，复用 v1 助手）
+        effects = plan.get('djEffects') or {}
+        effects_applied = bool(effects.get('enabled', False))
+        echo_return = np.zeros_like(source_stretched, dtype=np.float32)
+        if effects_applied:
+            source_stretched, target_stretched, echo_return = apply_pre_mix_dj_effects(
+                source_stretched, target_stretched, output_sample_rate, output_beat_durations, effects,
+            )
+
+        # 5) 增益曲线 + 响度补偿（与 v1 相同；氛围型曲线的"呼吸感"已由计划侧生成）
+        source_with_gain = apply_gain_curve(source_stretched, plan['gainCurve']['source'])
+        target_curve = plan['gainCurve']['target']
+        gain_offset_db = float(plan.get('gainOffsetDb', 0) or 0)
+        if abs(gain_offset_db) > 0.001:
+            offset_linear = 10.0 ** (gain_offset_db / 20.0)
+            target_curve = [min(1.0, v * offset_linear) for v in target_curve]
+        target_with_gain = apply_gain_curve(target_stretched, target_curve)
+
+        # 6) 混合
+        channels = max(source_with_gain.shape[0], target_with_gain.shape[0])
+        output = np.zeros((channels, output_length), dtype=np.float32)
+        for ch in range(channels):
+            if ch < source_with_gain.shape[0]:
+                output[ch] += source_with_gain[ch]
+            if ch < echo_return.shape[0]:
+                output[ch] += echo_return[ch]
+            if ch < target_with_gain.shape[0]:
+                output[ch] += target_with_gain[ch]
+
+        reference_rms = max(
+            float(np.sqrt(np.mean(source_stretched * source_stretched))),
+            float(np.sqrt(np.mean(target_stretched * target_stretched))),
+            1e-9,
+        )
+        seed_text = f"{plan['sourceTrackKey']}->{plan['targetTrackKey']}"
+
+        # 7) v2 尾部特效层：riser / 鼓点填充 / noise sweep（叠加在混音之上）
+        if use_riser:
+            output += create_riser(channels, output_length, output_sample_rate, output_beat_durations, intensity, reference_rms, seed_text)
+        if drum_fill_beats > 0:
+            output += create_drum_fill(channels, output_length, output_sample_rate, output_beat_durations, drum_fill_beats, intensity, reference_rms, seed_text)
+        if use_noise_sweep:
+            output += create_sweep_fx(channels, output_length, output_sample_rate, output_beat_durations, float(effects.get('intensity', 0.55)), reference_rms, seed_text)
+
+        # 8) Pedalboard 轻压缩 + 软限幅（与 v1 相同）
+        try:
+            board = Pedalboard([
+                Compressor(threshold_db=-18, ratio=1.5, attack_ms=10, release_ms=100),
+            ])
+            output = board(output, output_sample_rate)
+        except Exception as e:
+            logger.warning(f"Audio processing skipped: {e}")
+        max_amplitude = np.max(np.abs(output))
+        if max_amplitude > 0.98:
+            logger.info(f"Applying soft limiting (peak: {max_amplitude:.2f})")
+            output = np.tanh(output * 0.95) * 0.95
+
+        with AudioFile(output_path, 'w', output_sample_rate, num_channels=channels) as f:
+            f.write(output)
+
+        duration = output_length / output_sample_rate
+        file_size = os.path.getsize(output_path)
+        logger.info(f"🎉 [v2] Render complete: {channels} channels, {duration:.2f}s, {file_size / 1024:.1f} KB")
+
+        return {
+            'success': True,
+            'outputPath': output_path,
+            'duration': duration,
+            'sampleRate': output_sample_rate,
+            'channels': channels,
+            'size': file_size,
+            'stretchApplied': True,
+            'djEffectsApplied': effects_applied,
+            'targetResumeTime': plan['targetEndTime'],
+            'rendererVersion': plan.get('rendererVersion', 'unknown'),
+            'v2ChoreographyApplied': True,
+        }
+    except Exception as e:
+        logger.error(f"[v2] Render failed: {e}", exc_info=True)
+        return {
+            'success': False,
+            'error': str(e),
+        }
+
+
 def main():
     """Main worker loop - read JSON requests from stdin, write responses to stdout."""
     logger.info("Render worker ready")
@@ -608,6 +962,13 @@ def main():
             
             if message_type == 'render':
                 result = render_transition(request['params'])
+                response = {
+                    'type': 'result',
+                    'id': message_id,
+                    'data': result
+                }
+            elif message_type == 'render_v2':
+                result = render_transition_v2(request['params'])
                 response = {
                     'type': 'result',
                     'id': message_id,

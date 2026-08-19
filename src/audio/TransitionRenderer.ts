@@ -97,7 +97,7 @@ export class TransitionRenderer {
     // Route to appropriate renderer
     let audioBuffer: AudioBuffer
     let renderedPlan: TransitionPlan = plan
-    if (plan.strategy === 'smart-rendered') {
+    if (plan.strategy === 'smart-rendered' || plan.strategy === 'smart-rendered-v2') {
       const rendered = await this.renderSmartTransition(plan, sourceUrl, targetUrl, onProgress, isStale)
       audioBuffer = rendered.audioBuffer
       renderedPlan = rendered.plan
@@ -167,11 +167,40 @@ export class TransitionRenderer {
       throw new Error('智能过渡需要桌面渲染桥，当前环境不可用')
     }
     debugLog('[TransitionRenderer] Calling Python render worker...')
-    const result = await renderBridge.transition(
-      plan,
-      sourceAudioPath,
-      targetAudioPath
-    )
+
+    // AI 混音（DJTransGAN）路径：v2 计划 + 开启 aiMix + 引擎桥存在 + 源曲尾部足够长；
+    // 引擎不可用/抛错时自动回退 DSP 渲染（render_v2），不中断过渡。
+    const transitionAiMix = renderBridge.transitionAiMix
+    const useAiMix = plan.strategy === 'smart-rendered-v2'
+      && plan.v2?.aiMix === true
+      && plan.sourceEndTime >= 40
+      && typeof transitionAiMix === 'function'
+    let result: {
+      success: boolean
+      outputPath?: string
+      stretchApplied?: boolean
+      djEffectsApplied?: boolean
+      targetResumeTime?: number
+      transitionStart?: number
+      error?: string
+    }
+    if (useAiMix) {
+      try {
+        const aiResult = await transitionAiMix(plan, sourceAudioPath, targetAudioPath)
+        if (!aiResult || !aiResult.success || !aiResult.outputPath) {
+          debugLog('[TransitionRenderer] AI 混音不可用，回退 DSP 渲染:', aiResult?.error)
+          result = await renderBridge.transition(plan, sourceAudioPath, targetAudioPath)
+        } else {
+          debugLog('[TransitionRenderer] AI 混音渲染完成（DJTransGAN 长混音）')
+          result = { ...aiResult, stretchApplied: true, djEffectsApplied: true }
+        }
+      } catch (error) {
+        debugLog('[TransitionRenderer] AI 混音异常，回退 DSP 渲染:', error)
+        result = await renderBridge.transition(plan, sourceAudioPath, targetAudioPath)
+      }
+    } else {
+      result = await renderBridge.transition(plan, sourceAudioPath, targetAudioPath)
+    }
     if (isStale?.()) throw new Error('Transition render superseded')
 
     if (!result.success || !result.outputPath || result.stretchApplied !== true) {
@@ -183,8 +212,15 @@ export class TransitionRenderer {
     // Never mutate the caller's shared TransitionPlan. Compute a shallow copy
     // carrying the resolved resume time so the cache and playback hook share
     // one consistent object while the caller's plan stays untouched.
+    // AI 混音路径还会替换过渡起点（模型固定 ~60s 窗口，从 transitionStart 开始）。
     const renderedPlan = (typeof result.targetResumeTime === 'number' && Number.isFinite(result.targetResumeTime))
-      ? { ...plan, targetEndTime: result.targetResumeTime }
+      ? {
+        ...plan,
+        sourceStartTime: typeof result.transitionStart === 'number' && Number.isFinite(result.transitionStart)
+          ? result.transitionStart
+          : plan.sourceStartTime,
+        targetEndTime: result.targetResumeTime,
+      }
       : plan
 
     onProgress?.({ stage: 'finalizing', progress: 0.9 })
@@ -340,6 +376,16 @@ export class TransitionRenderer {
     const cached = this.cache.get(planId)
     if (cached && cached.timestamp + this.CACHE_TTL > Date.now()) {
       return cached.buffer
+    }
+    if (cached) this.deleteCacheEntry(planId)
+    return null
+  }
+
+  /** 返回已缓存渲染对应的计划副本（含渲染器解析后的窗口调整），未命中返回 null。 */
+  getRenderedPlan(planId: string): TransitionPlan | null {
+    const cached = this.cache.get(planId)
+    if (cached && cached.timestamp + this.CACHE_TTL > Date.now()) {
+      return cached.plan
     }
     if (cached) this.deleteCacheEntry(planId)
     return null

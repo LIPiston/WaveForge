@@ -326,7 +326,10 @@ class RenderRuntime {
       }
       
       // Render
-      const result = await this._sendMessage('render', {
+      // v2 计划（smart-rendered-v2）走独立渲染函数 render_transition_v2（render_worker.py 内新增），
+      // 与 v1 的 'render' 消息完全隔离；v1 路径一行未动。
+      const messageType = plan.strategy === 'smart-rendered-v2' ? 'render_v2' : 'render'
+      const result = await this._sendMessage(messageType, {
         plan,
         sourceAudioPath,
         targetAudioPath,
@@ -374,6 +377,8 @@ class RenderRuntime {
   
   /**
    * Generate cache key for transition plan
+   * 注意：v2 专属字段（intensity/style）只在 smart-rendered-v2 时并入 key，
+   * v1 计划的 key 字段集合与历史完全一致（保持 v1 磁盘缓存键零变化）。
    */
   _generateCacheKey(plan) {
     const key = JSON.stringify({
@@ -389,6 +394,9 @@ class RenderRuntime {
       sourceBeatTimes: plan.sourceBeatTimes,
       targetBeatTimes: plan.targetBeatTimes,
       djEffects: plan.djEffects,
+      ...(plan.strategy === 'smart-rendered-v2'
+        ? { v2Intensity: plan.v2?.intensity || null, v2Style: plan.v2?.choreography?.style || null }
+        : {}),
       rendererVersion: plan.rendererVersion,
     })
     return crypto.createHash('sha256').update(key).digest('hex').substring(0, 16)
@@ -508,6 +516,293 @@ function getRenderRuntime(customCachePath = null) {
   return renderRuntime
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AI 混音（DJTransGAN）运行时：独立 worker 进程，使用带 torch 的 AI Python
+// （环境变量 WAVEFORGE_AI_MIX_PYTHON，或开发目录 DJTransGAN/.venv）。
+// 协议与 RenderRuntime 一致；引擎未安装时 renderTransition 抛错，前端回退 DSP。
+// ─────────────────────────────────────────────────────────────────────────────
+
+const AI_WORKER_IDLE_TIMEOUT = 90_000
+
+function aiPythonCandidates() {
+  const candidates = []
+  if (process.env.WAVEFORGE_AI_MIX_PYTHON) candidates.push(process.env.WAVEFORGE_AI_MIX_PYTHON)
+  // 开发目录：D:\opencode\DJTransGAN\.venv\Scripts\python.exe（__dirname = WaveForge/desktop）
+  candidates.push(path.join(__dirname, '..', '..', 'DJTransGAN', '.venv', 'Scripts', 'python.exe'))
+  // 未来「可选下载」位置：userData/ai-mix-engine/python.exe
+  if (app && app.getPath) candidates.push(path.join(app.getPath('userData'), 'ai-mix-engine', 'python.exe'))
+  return candidates.filter(candidate => typeof candidate === 'string' && fs.existsSync(candidate))
+}
+
+class AiMixRuntime {
+  constructor(customCachePath = null) {
+    this.worker = null
+    this.workerReady = false
+    this.workerStartPromise = null
+    this.pendingRequests = new Map()
+    this.messageId = 0
+    this.idleTimer = null
+    this.aiPython = null
+    this.cacheDir = null
+    this.tempDir = null
+    this.customCachePath = customCachePath
+    this._initializeDirs()
+  }
+
+  _initializeDirs() {
+    const userDataPath = app.getPath('userData')
+    const basePath = this.customCachePath || path.join(userDataPath, 'analysis-cache')
+    this.cacheDir = path.join(basePath, 'transition-renders')
+    this.tempDir = path.join(basePath, 'temp')
+    for (const dir of [this.cacheDir, this.tempDir]) {
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    }
+  }
+
+  _resolveAiPython() {
+    if (this.aiPython) return this.aiPython
+    const candidates = aiPythonCandidates()
+    this.aiPython = candidates[0] || null
+    return this.aiPython
+  }
+
+  getAvailable() {
+    return Boolean(this._resolveAiPython())
+  }
+
+  async ensureWorker() {
+    if (this.worker && this.workerReady) return true
+    if (this.workerStartPromise) return this.workerStartPromise
+
+    const python = this._resolveAiPython()
+    if (!python) throw new Error('AI 混音引擎未安装（需要 torch + DJTransGAN 预训练模型）')
+
+    const workerPath = externalProcessPath(path.join(__dirname, 'workers', 'djtransgan_worker.py'))
+    const startPromise = new Promise((resolve, reject) => {
+      let startupTimer = null
+      let settled = false
+      const finish = (error) => {
+        if (settled) return
+        settled = true
+        if (startupTimer) clearTimeout(startupTimer)
+        if (error) reject(error)
+        else resolve(true)
+      }
+      try {
+        console.log('[AI Mix] Spawning worker with:', python)
+        const worker = spawn(python, [workerPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+        this.worker = worker
+        worker.on('error', (error) => {
+          console.error('[AI Mix] Worker spawn error:', error)
+          const wasCurrent = this.worker === worker
+          if (wasCurrent) { this.workerReady = false; this.worker = null }
+          finish(error)
+          if (wasCurrent) this._rejectPendingRequests(error)
+        })
+        worker.on('exit', (code, signal) => {
+          console.log(`[AI Mix] Worker exited (${code ?? signal ?? 'unknown'})`)
+          const wasCurrent = this.worker === worker
+          if (wasCurrent) { this.workerReady = false; this.worker = null }
+          const error = new Error('AI Mix worker exited')
+          finish(error)
+          if (wasCurrent) this._rejectPendingRequests(error)
+        })
+        worker.stderr.on('data', (data) => {
+          const message = data.toString().trim()
+          console.log('[AI Mix]', message)
+          if (message.includes('"type": "status"') || message.includes('ready')) {
+            if (this.worker !== worker) return
+            this.workerReady = true
+            this._resetIdleTimer()
+            finish()
+          }
+        })
+        let buffer = ''
+        worker.stdout.on('data', (data) => {
+          buffer += data.toString()
+          const lines = buffer.split('\n')
+          buffer = lines.pop()
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const message = JSON.parse(line)
+              if (message.type === 'status') {
+                if (this.worker !== worker) return
+                this.workerReady = true
+                this._resetIdleTimer()
+                finish()
+                continue
+              }
+              this._handleMessage(message)
+            } catch (error) {
+              console.error('[AI Mix] JSON parse error:', error, line)
+            }
+          }
+        })
+        if (!settled) {
+          startupTimer = setTimeout(() => {
+            if (!this.workerReady) {
+              if (this.worker === worker) { this.worker = null; this.workerReady = false }
+              worker.kill()
+              finish(new Error('AI Mix worker startup timeout'))
+            }
+          }, 15000)
+        }
+      } catch (error) {
+        console.error('[AI Mix] Worker spawn error:', error)
+        finish(error)
+      }
+    })
+    this.workerStartPromise = startPromise
+    try {
+      return await startPromise
+    } finally {
+      if (this.workerStartPromise === startPromise) this.workerStartPromise = null
+    }
+  }
+
+  _rejectPendingRequests(error) {
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timeout)
+      pending.reject(error)
+    }
+    this.pendingRequests.clear()
+  }
+
+  _handleMessage(message) {
+    const { type, id, data, error } = message
+    if (!id) return
+    const pending = this.pendingRequests.get(id)
+    if (!pending) return
+    clearTimeout(pending.timeout)
+    this.pendingRequests.delete(id)
+    if (type === 'result') pending.resolve(data)
+    else pending.reject(new Error(error || 'Unknown AI Mix worker response'))
+    if (this.pendingRequests.size === 0) this._resetIdleTimer()
+  }
+
+  async _sendMessage(type, params, timeout = 180_000) {
+    await this.ensureWorker()
+    if (!this.worker || !this.workerReady) throw new Error('AI Mix worker is unavailable')
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null }
+    return new Promise((resolve, reject) => {
+      const id = String(++this.messageId)
+      const message = JSON.stringify({ type, id, params }) + '\n'
+      const timeoutId = setTimeout(() => {
+        this.pendingRequests.delete(id)
+        reject(new Error(`AI Mix worker timeout (${timeout}ms)`))
+        if (this.pendingRequests.size === 0) this._resetIdleTimer()
+      }, timeout)
+      this.pendingRequests.set(id, { resolve, reject, timeout: timeoutId })
+      this.worker.stdin.write(message, (error) => {
+        if (!error) return
+        const pending = this.pendingRequests.get(id)
+        if (!pending) return
+        clearTimeout(pending.timeout)
+        this.pendingRequests.delete(id)
+        pending.reject(error)
+        if (this.pendingRequests.size === 0) this._resetIdleTimer()
+      })
+    })
+  }
+
+  _resetIdleTimer() {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = setTimeout(() => {
+      if (this.pendingRequests.size > 0) return
+      console.log('[AI Mix] Worker idle timeout, shutting down')
+      this.shutdown()
+    }, AI_WORKER_IDLE_TIMEOUT)
+    this.idleTimer.unref?.()
+  }
+
+  /**
+   * 渲染 AI 过渡：DJTransGAN 长混音（~60s 窗口）。
+   * 模型自身窗口的起始/结束时间戳随结果返回（transitionStart / targetResumeTime），
+   * 前端据此替换过渡窗口。AI 引擎不可用时抛错，由前端回退 DSP。
+   */
+  async renderTransition(plan, sourceAudioPath, targetAudioPath) {
+    this._validateInput(plan, sourceAudioPath, targetAudioPath)
+    const cacheKey = crypto.createHash('sha256').update(JSON.stringify({
+      sourceTrackKey: plan.sourceTrackKey,
+      targetTrackKey: plan.targetTrackKey,
+      sourceEndTime: plan.sourceEndTime,
+      targetStartTime: plan.targetStartTime,
+      rendererVersion: 'djtransgan-v1',
+    })).digest('hex').substring(0, 16)
+    const outputPath = path.join(this.cacheDir, `aimix-${cacheKey}.wav`)
+    const result = await this._sendMessage('render', { plan, sourceAudioPath, targetAudioPath, outputPath })
+    return { ...result, cached: false }
+  }
+
+  async getStatus() {
+    if (!this.getAvailable()) return { available: false, python: null, repoDir: null, reason: 'engine-not-found' }
+    try {
+      const result = await this._sendMessage('probe', {}, 20_000)
+      return result
+    } catch (error) {
+      return { available: false, python: this._resolveAiPython(), repoDir: null, reason: String(error?.message || error) }
+    }
+  }
+
+  _validateInput(plan, sourceAudioPath, targetAudioPath) {
+    if (!plan || typeof plan !== 'object') throw new Error('A transition plan is required')
+    for (const field of ['sourceTrackKey', 'targetTrackKey']) {
+      if (typeof plan[field] !== 'string' || !plan[field].trim()) {
+        throw new Error(`Transition plan requires a non-empty ${field}`)
+      }
+    }
+    for (const [label, filePath] of [['source', sourceAudioPath], ['target', targetAudioPath]]) {
+      if (typeof filePath !== 'string' || !filePath.trim()) throw new Error(`${label} audio path is required`)
+      const resolved = path.resolve(filePath)
+      if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+        throw new Error(`${label} audio file does not exist`)
+      }
+    }
+  }
+
+  shutdown() {
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null }
+    const worker = this.worker
+    this.worker = null
+    this.workerReady = false
+    this.workerStartPromise = null
+    if (worker) {
+      try {
+        worker.stdin.write(JSON.stringify({ type: 'exit' }) + '\n')
+        const forceKillTimer = setTimeout(() => { if (!worker.killed) worker.kill() }, 1000)
+        forceKillTimer.unref?.()
+      } catch (error) {
+        if (!worker.killed) worker.kill()
+      }
+    }
+    this._rejectPendingRequests(new Error('AI Mix worker shutdown'))
+  }
+}
+
+let aiMixRuntime = null
+
+function getAiMixRuntime(customCachePath = null) {
+  if (!aiMixRuntime) aiMixRuntime = new AiMixRuntime(customCachePath)
+  return aiMixRuntime
+}
+
+// IPC handlers
+function setupAiMixIPC(ipcMain, customCachePath = null) {
+  ipcMain.handle('render:transitionAiMix', async (event, plan, sourceAudioPath, targetAudioPath) => {
+    const runtime = getAiMixRuntime(customCachePath)
+    return runtime.renderTransition(plan, sourceAudioPath, targetAudioPath)
+  })
+  ipcMain.handle('render:aiMixStatus', async () => {
+    const runtime = getAiMixRuntime(customCachePath)
+    return runtime.getStatus()
+  })
+}
+
+function cleanupAiMix() {
+  if (aiMixRuntime) aiMixRuntime.shutdown()
+}
+
 // IPC handlers
 function setupRenderIPC(ipcMain, customCachePath = null, toMediaUrl = null) {
   // Render transition
@@ -557,10 +852,12 @@ function cleanup() {
   if (renderRuntime) {
     renderRuntime.shutdown()
   }
+  cleanupAiMix()
 }
 
 module.exports = {
   getRenderRuntime,
   setupRenderIPC,
+  setupAiMixIPC,
   cleanup
 }
