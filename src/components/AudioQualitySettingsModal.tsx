@@ -17,6 +17,9 @@ interface AudioQualitySettingsModalProps {
   qqVip: boolean
   neteaseLoggedIn: boolean
   qqLoggedIn: boolean
+  spotifyLoggedIn?: boolean
+  kugouLoggedIn?: boolean
+  sodaLoggedIn?: boolean
 }
 
 type QualityOption = {
@@ -39,6 +42,14 @@ const QQ_OPTIONS: QualityOption[] = [
   { value: 'standard', label: '标准音质', description: '优先使用 128 kbps MP3 / AAC 备用音源' },
   { value: 'high', label: '高品质', description: '优先使用 320 kbps MP3' },
   { value: 'lossless', label: '无损音质', description: '优先使用 FLAC 无损音质', requiresVip: true },
+]
+
+/** 新平台音质选项（自身直源受限时走网易云/QQ 载体音质） */
+const GENERIC_OPTIONS: QualityOption[] = [
+  { value: 'auto', label: '自动最高音质', description: '按账号权限和歌曲可用性自动选择最高音质' },
+  { value: 'standard', label: '标准音质', description: '优先使用标准码率音源' },
+  { value: 'high', label: '高品质', description: '优先使用高码率音源' },
+  { value: 'lossless', label: '无损音质', description: '优先请求无损音质', requiresVip: true },
 ]
 
 function QualityOptionButton({
@@ -88,6 +99,9 @@ export default function AudioQualitySettingsModal({
   qqVip,
   neteaseLoggedIn,
   qqLoggedIn,
+  spotifyLoggedIn = false,
+  kugouLoggedIn = false,
+  sodaLoggedIn = false,
 }: AudioQualitySettingsModalProps) {
   // TV 遥控器 BACK：关闭音质设置弹窗
   useTvBack(() => {
@@ -119,13 +133,13 @@ export default function AudioQualitySettingsModal({
     return () => window.removeEventListener('accentColorChanged', handleAccentColor)
   }, [])
 
-  const update = (platform: 'netease' | 'qq', value: AudioQualityPreference) => {
+  const update = (platform: keyof AudioQualitySettings, value: AudioQualityPreference) => {
     const next = saveAudioQualitySettings({ [platform]: value })
     setSettings(next)
   }
 
   const renderPlatform = (
-    platform: 'netease' | 'qq',
+    platform: keyof AudioQualitySettings,
     title: string,
     icon: ReactNode,
     options: QualityOption[],
@@ -193,7 +207,10 @@ export default function AudioQualitySettingsModal({
               </div>
               {renderPlatform('qq', 'QQ音乐', <span className="font-bold text-sm">QQ</span>, QQ_OPTIONS, qqVip, qqLoggedIn)}
               {renderPlatform('netease', '网易云音乐', <Music2 className="w-5 h-5" />, NETEASE_OPTIONS, neteaseVip, neteaseLoggedIn)}
-              <p className={`${textTertiary} text-xs leading-relaxed`}>设置会立即保存，并作用于播放、下一首预加载及新的播放链接缓存。正在播放的歌曲会在下次加载该歌曲时应用新音质。</p>
+              {renderPlatform('spotify', 'Spotify', <span className="font-bold text-sm">S</span>, GENERIC_OPTIONS, false, spotifyLoggedIn)}
+              {renderPlatform('kugou', '酷狗音乐', <span className="font-bold text-sm">狗</span>, GENERIC_OPTIONS, false, kugouLoggedIn)}
+              {renderPlatform('soda', '汽水音乐', <span className="font-bold text-sm">汽</span>, GENERIC_OPTIONS, false, sodaLoggedIn)}
+              <p className={`${textTertiary} text-xs leading-relaxed`}>设置会立即保存，并作用于播放、下一首预加载及新的播放链接缓存。正在播放的歌曲会在下次加载该歌曲时应用新音质。Spotify/酷狗/汽水自身直源受限时，播放自动降级到网易云/QQ 载体，音质随载体平台设置。</p>
             </div>
           </motion.div>
         </>

@@ -651,7 +651,11 @@ function AlbumDetailModal({
         song={contextMenu.song}
         playerTheme={playerTheme}
         onClose={() => setContextMenu({ show: false, x: 0, y: 0, song: null })}
-        onPlayNow={(song) => onSongSelect?.(song, songs)}
+        onPlayNow={(song) => {
+          // 右键"播放"也必须关闭专辑弹窗，否则播放页出现后弹窗还叠在上面
+          onSongSelect?.(song, songs)
+          onClose()
+        }}
         onPlayNext={onPlayNext}
         onAddToFavorites={onAddToFavorites}
         onRemoveFromFavorites={onRemoveFromFavorites}

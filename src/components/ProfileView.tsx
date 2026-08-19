@@ -2,7 +2,7 @@ import { getQQUserDisplayName } from '../utils/qqUser'
 import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { X, Music, Heart, List, User, Crown, Calendar, MapPin, RefreshCw, LogOut, Plus, MoreHorizontal, Play, History, Disc3, Radio, Mic2, Users, TrendingUp, ArrowLeft, Film, Cloud } from 'lucide-react'
-import { Song, resolveSongAlbumIdentifier, getUserFollows, getUserFolloweds, getUserRecordRank, getQQFollows, getQQFans, getQQUserProfile, getQQUserFavs, subscribeQQUser, subscribeNeteaseUser, getSubscribedAlbums, getSubscribedArtists, getQQSubscribedAlbums, getQQSubscribedArtists, getNeteaseMvSublist, neteaseDailySignin, subscribeNeteaseMV, getNeteaseFollowingEvents, getNeteaseNotices, getNeteaseCommentMessages, neteaseVipSign, qqDailySignin, getNeteaseCloudSongs } from '../services/musicApi'
+import { Song, resolveSongAlbumIdentifier, getUserFollows, getUserFolloweds, getUserRecordRank, getQQFollows, getQQFans, getQQUserProfile, getQQUserFavs, subscribeQQUser, subscribeNeteaseUser, getSubscribedAlbums, getSubscribedArtists, getQQSubscribedAlbums, getQQSubscribedArtists, getNeteaseMvSublist, subscribeNeteaseMV, getNeteaseFollowingEvents, getNeteaseNotices, getNeteaseCommentMessages, getNeteaseCloudSongs } from '../services/musicApi'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
 import CachedImage from './CachedImage'
 import PlaylistContextMenu from './PlaylistContextMenu'
@@ -20,9 +20,11 @@ import {
   updatePlaylistCover
 } from '../services/playlistService'
 import type { MusicPlatform } from '../services/platforms'
+import { getPlatformCapabilities, getPlatformCookie, platformLabel } from '../services/platforms'
 import { getAppleAuthState } from '../services/appleAuth'
 import { getPlatformRemainingDays } from '../services/loginExpiry'
 import { getAppleLibraryPlaylists, getAppleRecentPlayed, appleLibraryTrackToSong, createApplePlaylist, deleteApplePlaylist, getApplePlaylistTracks, getAppleCatalogPlaylistTracks, getAppleLibrarySongs, getApplePlaylistFirstTrackArtwork, appleSongToSong, APPLE_LIBRARY_ID, isAppleLovedPlaylistName } from '../services/appleCatalog'
+import { fetchSpotifyMyPlaylists, fetchSpotifyLiked, fetchSpotifyPlaylist, spotifyTrackToSong } from '../services/spotifyService'
 import { detectQQMusicVip } from '../utils/musicEntitlements'
 
 interface Playlist {
@@ -96,6 +98,17 @@ interface UserDetail {
 
 type ProfileTab = 'created' | 'subscribed' | 'detail' | 'recent' | 'social' | 'rank' | 'favs' | 'collections' | 'cloud'
 type RecentPlaybackType = 'song' | 'playlist' | 'album' | 'dj' | 'voice'
+
+// 平台切换轮转顺序（与 App.tsx 的已登录平台轮换一致；仅用于按钮文案/配色）
+const PLATFORM_SWITCH_ORDER: MusicPlatform[] = ['netease', 'qq', 'apple', 'spotify', 'kugou', 'soda']
+const SWITCH_PLATFORM_COLORS: Record<MusicPlatform, string> = {
+  netease: 'bg-green-600 hover:bg-green-700 text-white',
+  qq: 'bg-red-600 hover:bg-red-700 text-white',
+  apple: 'bg-pink-600 hover:bg-pink-700 text-white',
+  spotify: 'bg-[#1DB954] hover:bg-[#1ED760] text-white',
+  kugou: 'bg-blue-600 hover:bg-blue-700 text-white',
+  soda: 'bg-purple-600 hover:bg-purple-700 text-white',
+}
 
 const formatCount = (value?: number) => {
   const count = Number(value || 0)
@@ -844,6 +857,16 @@ function ProfileView({
         else showPlaylistToast('歌单中暂无可播放歌曲', 'info')
         return
       }
+      // Spotify：我的歌单 / 我喜欢的歌曲（曲目经 App 层自动匹配载体）
+      if (platform === 'spotify') {
+        const tracks = playlist.id === 'spotify-liked'
+          ? await fetchSpotifyLiked(50)
+          : await fetchSpotifyPlaylist(String(playlist.id || ''), 50)
+        const songs = tracks.map(track => spotifyTrackToSong(track))
+        if (songs.length > 0) handleSongSelection(songs[0], songs)
+        else showPlaylistToast('歌单中暂无可播放歌曲', 'info')
+        return
+      }
       const response = await fetch(
         platform === 'qq'
           ? `http://localhost:3001/api/qq/playlist/detail?id=${encodeURIComponent(playlist.id)}&cookie=${encodeURIComponent(cookie)}`
@@ -977,6 +1000,18 @@ function ProfileView({
         setSelectedPlaylist({ ...playlist, platform: 'apple' })
         setManagementPlaylist({ ...playlist, platform: 'apple' })
         setPlaylistSongs(songs)
+        return
+      }
+      
+      // Spotify：我的歌单 / 我喜欢的歌曲（官方 Web API，曲目经 App 层自动匹配载体）
+      if (platform === 'spotify') {
+        const isLiked = playlist.id === 'spotify-liked'
+        const tracks = isLiked
+          ? await fetchSpotifyLiked(50)
+          : await fetchSpotifyPlaylist(String(playlist.id || ''), 50)
+        setSelectedPlaylist({ ...playlist, platform: 'spotify' })
+        setManagementPlaylist({ ...playlist, platform: 'spotify' })
+        setPlaylistSongs(tracks.map(track => spotifyTrackToSong(track)))
         return
       }
       
@@ -1175,6 +1210,26 @@ function ProfileView({
           playTime: 0,
           song: appleLibraryTrackToSong(track),
         })))
+        return
+      }
+      // Spotify：无最近播放官方接口，尽力而为（展示音乐库喜欢的歌曲）
+      if (currentPlatform === 'spotify') {
+        const liked = await fetchSpotifyLiked(50)
+        if (recentRequestRef.current.revision !== revision) return
+        setRecentItems(liked.map((track, index) => ({
+          id: track.id || String(index),
+          type: 'song' as const,
+          name: track.name || '未知歌曲',
+          subtitle: track.artists.map(a => a.name).join(' / '),
+          coverUrl: track.album?.images?.[0]?.url || '',
+          playTime: 0,
+          song: spotifyTrackToSong(track),
+        })))
+        return
+      }
+      // 酷狗/汽水：暂无最近播放接口，返回空（不报错）
+      if (currentPlatform === 'kugou' || currentPlatform === 'soda') {
+        setRecentItems([])
         return
       }
       const requestType = requestPlatform === 'qq' ? 'song' : type
@@ -1690,6 +1745,96 @@ function ProfileView({
           userId: userId
         })
       }
+    } else if (platform === 'spotify') {
+      // Spotify：账号资料 + 我的歌单 + 我喜欢的歌曲（官方 Web API）
+      const username = localStorage.getItem('spotify_username') || ''
+      const avatar = localStorage.getItem('spotify_avatar') || ''
+      const spotifyUid = localStorage.getItem('spotify_user_id') || ''
+      setUserDetail({
+        nickname: username || 'Spotify 用户',
+        avatarUrl: avatar || '',
+        userId: spotifyUid,
+      })
+      if (!getPlatformCookie('spotify')) {
+        setCreatedPlaylists([])
+        setSubscribedPlaylists([])
+        setLoading(false)
+        return
+      }
+      const playlists: Playlist[] = []
+      try {
+        const [playlistsRes, likedRes] = await Promise.allSettled([
+          fetchSpotifyMyPlaylists(50),
+          fetchSpotifyLiked(50),
+        ])
+        if (playlistsRes.status === 'fulfilled') {
+          for (const item of playlistsRes.value) {
+            playlists.push({
+              id: item.id,
+              name: item.name || '未命名歌单',
+              coverImgUrl: item.coverUrl || '',
+              trackCount: 0,
+              platform: 'spotify',
+            })
+          }
+        }
+        if (likedRes.status === 'fulfilled' && likedRes.value.length > 0) {
+          playlists.unshift({
+            id: 'spotify-liked',
+            name: `${username || '我'} 喜欢的歌曲`,
+            coverImgUrl: likedRes.value[0]?.album?.images?.[0]?.url || '',
+            trackCount: likedRes.value.length,
+            description: 'Spotify 音乐库中喜欢的歌曲',
+            platform: 'spotify',
+            isLike: true,
+          })
+        }
+      } catch (error) {
+        console.error('获取 Spotify 用户数据失败:', error)
+      }
+      setCreatedPlaylists(playlists)
+      setSubscribedPlaylists([])
+    } else if (platform === 'kugou') {
+      // 酷狗：本地登录态资料 + 用户歌单（经代理读取）
+      const username = localStorage.getItem('kugou_username') || ''
+      const avatar = localStorage.getItem('kugou_avatar') || ''
+      const kugouUid = localStorage.getItem('kugou_user_id') || ''
+      setUserDetail({
+        nickname: username || '酷狗音乐用户',
+        avatarUrl: avatar || '',
+        userId: kugouUid,
+      })
+      const playlists: Playlist[] = []
+      try {
+        const { fetchKugouUserPlaylists } = await import('../services/kugouService')
+        const list = await fetchKugouUserPlaylists()
+        for (const item of list) {
+          playlists.push({
+            id: item.specialid,
+            name: item.name || '未命名歌单',
+            coverImgUrl: item.coverUrl || '',
+            trackCount: item.songcount || 0,
+            playCount: item.playcount || 0,
+            platform: 'kugou',
+          })
+        }
+      } catch (error) {
+        console.error('获取酷狗用户歌单失败:', error)
+      }
+      setCreatedPlaylists(playlists)
+      setSubscribedPlaylists([])
+    } else if (platform === 'soda') {
+      // 汽水：本地登录态资料（登录时已落盘）；歌单暂不支持读取，返回空
+      const username = localStorage.getItem('soda_username') || ''
+      const avatar = localStorage.getItem('soda_avatar') || ''
+      const sodaUid = localStorage.getItem('soda_user_id') || ''
+      setUserDetail({
+        nickname: username || '汽水音乐用户',
+        avatarUrl: avatar || '',
+        userId: sodaUid,
+      })
+      setCreatedPlaylists([])
+      setSubscribedPlaylists([])
     }
     
     setLoading(false)
@@ -1857,78 +2002,6 @@ function ProfileView({
                   <RefreshCw className={`w-5 h-5 text-white/70 ${loading ? 'animate-spin' : ''}`} />
                 </motion.button>
               )}
-              {currentPlatform === 'netease' && !viewTarget && (
-                <motion.button
-                  whileHover={{ scale: 1.08 }}
-                  whileTap={{ scale: 0.92 }}
-                  onClick={() => {
-                    void neteaseDailySignin(1).then((result) => {
-                      const code = result?.code ?? result?.web?.code ?? result?.android?.code
-                      const msg = result?.msg || result?.message || result?.web?.msg || result?.android?.msg || ''
-                      if (code === 200) {
-                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '每日签到成功', type: 'success' } }))
-                      } else if (code === -2 || msg.includes('重复签到') || msg.includes('已签到')) {
-                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '今日已签到', type: 'info' } }))
-                      } else if (code === 301 || msg.includes('未登录')) {
-                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '请先登录网易云音乐', type: 'error' } }))
-                      } else {
-                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: msg || '签到失败，请稍后重试', type: 'error' } }))
-                      }
-                    })
-                  }}
-                  className="p-2 hover:bg-white/10 rounded-full transition-colors"
-                  title="每日签到"
-                  aria-label="每日签到"
-                >
-                  <Calendar className="w-5 h-5 text-white/70" />
-                </motion.button>
-              )}
-              {currentPlatform === 'netease' && !viewTarget && (
-                <motion.button
-                  whileHover={{ scale: 1.08 }}
-                  whileTap={{ scale: 0.92 }}
-                  onClick={() => {
-                    void neteaseVipSign({ cookie }).then((result) => {
-                      const msg = result?.message || ''
-                      const signed = result?.signed === true || result?.taskSign?.code === 200
-                      if (signed) {
-                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: msg || '黑胶乐签打卡成功', type: 'success' } }))
-                      } else {
-                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: result?.code === 301 ? '请先登录网易云音乐' : (msg || '今日已打卡或打卡失败'), type: 'info' } }))
-                      }
-                    })
-                  }}
-                  className="p-2 hover:bg-white/10 rounded-full transition-colors"
-                  title="黑胶乐签打卡"
-                  aria-label="黑胶乐签打卡"
-                >
-                  <Crown className="w-5 h-5 text-white/70" />
-                </motion.button>
-              )}
-              {currentPlatform === 'qq' && !viewTarget && (
-                <motion.button
-                  whileHover={{ scale: 1.08 }}
-                  whileTap={{ scale: 0.92 }}
-                  onClick={() => {
-                    void qqDailySignin({ cookie }).then((result) => {
-                      const ok = result?.result === 100
-                      const msg = result?.error || ''
-                      if (ok) {
-                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '每日签到成功', type: 'success' } }))
-                      } else if (result?.result === 500 && msg.includes('登录')) {
-                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '请先登录 QQ 音乐', type: 'error' } }))
-                      } else {
-                        window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: msg || '今日已签到或签到失败', type: 'info' } }))
-                      }
-                    })
-                  }}
-                  className="p-2 hover:bg-white/10 rounded-full transition-colors"
-                  title="每日签到"
-                  aria-label="每日签到"
-                >
-                  <Calendar className="w-5 h-5 text-white/70" />
-                </motion.button>
-              )}
               {activeTab === 'created' && !viewTarget && (
                 <motion.button
                   whileHover={{ scale: 1.08 }}
@@ -1942,22 +2015,16 @@ function ProfileView({
                   <Plus className="w-5 h-5 text-white/70" />
                 </motion.button>
               )}
-              {/* 平台切换按钮 - 仅在两个平台都登录时显示 */}
+              {/* 平台切换按钮 - 仅在至少两个平台已登录时显示 */}
               {canSwitchPlatform && (
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={handlePlatformSwitch}
-                  className={`px-4 py-2 rounded-full font-medium text-sm transition-all flex items-center gap-2 ${
-                    platform === 'netease'
-                      ? 'bg-green-600 hover:bg-green-700 text-white'
-                      : platform === 'qq'
-                        ? 'bg-red-600 hover:bg-red-700 text-white'
-                        : 'bg-pink-600 hover:bg-pink-700 text-white'
-                  }`}
+                  className={`px-4 py-2 rounded-full font-medium text-sm transition-all flex items-center gap-2 ${SWITCH_PLATFORM_COLORS[platform]}`}
                 >
                   <RefreshCw className="w-4 h-4" />
-                  切换到{platform === 'netease' ? 'QQ音乐' : platform === 'qq' ? 'Apple Music' : '网易云'}
+                  切换到{platformLabel(PLATFORM_SWITCH_ORDER[(PLATFORM_SWITCH_ORDER.indexOf(platform) + 1) % PLATFORM_SWITCH_ORDER.length])}
                 </motion.button>
               )}
               
@@ -1989,7 +2056,7 @@ function ProfileView({
               <List className="w-5 h-5" />
               {viewTarget && platform === 'qq' ? '创建的歌单' : `我创建的歌单 (${createdPlaylists.length})`}
             </button>
-            {currentPlatform !== 'apple' && (
+            {getPlatformCapabilities(currentPlatform).subscribePlaylist && (
             <button
               onClick={() => setActiveTab('subscribed')}
               className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
@@ -2053,7 +2120,7 @@ function ProfileView({
                 我喜欢
               </button>
             )}
-            {!viewTarget && currentPlatform !== 'apple' && (
+            {!viewTarget && (currentPlatform === 'netease' || currentPlatform === 'qq') && (
               <button
                 onClick={() => setActiveTab('collections')}
                 className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
@@ -2905,7 +2972,7 @@ function ProfileView({
                       <div className="mt-8">
                         <button
                           onClick={() => {
-                            if (confirm(`确定要退出${platform === 'netease' ? '网易云音乐' : 'QQ音乐'}登录吗？`)) {
+                            if (confirm(`确定要退出${platformLabel(platform)}登录吗？`)) {
                               onLogout(platform)
                               onClose()
                             }

@@ -41,12 +41,25 @@ interface SearchPanelProps {
 const SEARCH_HISTORY_KEY_NETEASE = 'waveforge_search_history_netease'
 const SEARCH_HISTORY_KEY_QQ = 'waveforge_search_history_qq'
 const SEARCH_HISTORY_KEY_APPLE = 'waveforge_search_history_apple'
+const SEARCH_HISTORY_KEY_SPOTIFY = 'waveforge_search_history_spotify'
+const SEARCH_HISTORY_KEY_KUGOU = 'waveforge_search_history_kugou'
+const SEARCH_HISTORY_KEY_SODA = 'waveforge_search_history_soda'
 const SEARCH_HISTORY_KEY_FUSED = 'waveforge_search_history_fused'
 const MAX_HISTORY = 5
 // 搜索结果缓存上限：每次搜索缓存完整结果集（约 100 首歌对象），面板是常驻单例，
 // 不加上限会导致 Map 无限增长（内存泄漏）。超出上限时按 LRU 淘汰最旧的 cacheKey。
 const SEARCH_CACHE_MAX = 10
 type SearchPlatform = MusicPlatform | 'fused'
+
+const getSearchHistoryKey = (platform: SearchPlatform): string => {
+  if (platform === 'fused') return SEARCH_HISTORY_KEY_FUSED
+  if (platform === 'qq') return SEARCH_HISTORY_KEY_QQ
+  if (platform === 'apple') return SEARCH_HISTORY_KEY_APPLE
+  if (platform === 'spotify') return SEARCH_HISTORY_KEY_SPOTIFY
+  if (platform === 'kugou') return SEARCH_HISTORY_KEY_KUGOU
+  if (platform === 'soda') return SEARCH_HISTORY_KEY_SODA
+  return SEARCH_HISTORY_KEY_NETEASE
+}
 
 const withSearchTimeout = <T,>(promise: Promise<T>, timeoutMs = 5_000): Promise<T> => new Promise((resolve, reject) => {
   const timer = window.setTimeout(() => reject(new Error('融合搜索请求超时')), timeoutMs)
@@ -207,13 +220,13 @@ export default function SearchPanel({
   // 从 sessionStorage 读取会话内的平台和搜索模式，否则从 localStorage 读取
   const [platform, setPlatform] = useState<SearchPlatform>(() => {
     const sessionSaved = sessionStorage.getItem('waveforge_search_platform')
-    if (sessionSaved === 'qq' || sessionSaved === 'netease' || sessionSaved === 'apple') {
+    if (sessionSaved === 'qq' || sessionSaved === 'netease' || sessionSaved === 'apple' || sessionSaved === 'spotify' || sessionSaved === 'kugou' || sessionSaved === 'soda') {
       if (sessionSaved !== 'netease' && !isPlatformVisible(sessionSaved)) return 'netease'
       return sessionSaved
     }
     if (sessionSaved === 'fused') return 'fused'
     const saved = localStorage.getItem('waveforge_last_search_platform')
-    if (saved === 'qq' || saved === 'netease' || saved === 'apple') {
+    if (saved === 'qq' || saved === 'netease' || saved === 'apple' || saved === 'spotify' || saved === 'kugou' || saved === 'soda') {
       if (saved !== 'netease' && !isPlatformVisible(saved)) return 'netease'
       return saved
     }
@@ -236,7 +249,7 @@ export default function SearchPanel({
   const qqSessionActive = qqLoggedIn || Boolean(
     localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || localStorage.getItem('qq_logged_in') === 'true'
   )
-  const isVipForPlatform = (songPlatform?: MusicPlatform) => songPlatform === 'qq' ? qqVip : songPlatform === 'apple' ? false : neteaseVip
+  const isVipForPlatform = (songPlatform?: MusicPlatform) => songPlatform === 'qq' ? qqVip : songPlatform === 'netease' ? neteaseVip : false
   
   // 判断两首歌是否相同
   const isSameSong = (song1: Song | null | undefined, song2: Song | null | undefined) => {
@@ -340,9 +353,7 @@ export default function SearchPanel({
   useEffect(() => {
     // 平台切换时立即清空，避免残留上一平台的搜索历史
     setSearchHistory([])
-    const key = platform === 'fused'
-      ? SEARCH_HISTORY_KEY_FUSED
-      : platform === 'qq' ? SEARCH_HISTORY_KEY_QQ : platform === 'apple' ? SEARCH_HISTORY_KEY_APPLE : SEARCH_HISTORY_KEY_NETEASE
+    const key = getSearchHistoryKey(platform)
     const history = localStorage.getItem(key)
     if (history) {
       try {
@@ -380,9 +391,7 @@ export default function SearchPanel({
 
   // 保存搜索历史
   const saveSearchHistory = (query: string) => {
-    const key = platform === 'fused'
-      ? SEARCH_HISTORY_KEY_FUSED
-      : platform === 'qq' ? SEARCH_HISTORY_KEY_QQ : SEARCH_HISTORY_KEY_NETEASE
+    const key = getSearchHistoryKey(platform)
     const history = [...searchHistory]
     
     // 移除已存在的相同关键词
@@ -402,9 +411,7 @@ export default function SearchPanel({
 
   // 清空搜索历史
   const clearSearchHistory = () => {
-    const key = platform === 'fused'
-      ? SEARCH_HISTORY_KEY_FUSED
-      : platform === 'qq' ? SEARCH_HISTORY_KEY_QQ : SEARCH_HISTORY_KEY_NETEASE
+    const key = getSearchHistoryKey(platform)
     setSearchHistory([])
     localStorage.removeItem(key)
   }
@@ -529,7 +536,8 @@ export default function SearchPanel({
     
     try {
       if (platform === 'fused') {
-        const platforms: MusicPlatform[] = ['netease', 'qq']
+        // 融合搜索覆盖全部可搜索平台（soda 接口暂不可用，跳过避免无效请求）
+        const platforms: MusicPlatform[] = ['netease', 'qq', 'apple', 'spotify', 'kugou']
         const requests = platforms.flatMap(sourcePlatform => ([
           { sourcePlatform, kind: 'songs' as const, promise: withSearchTimeout(searchSongs(finalKeyword, 100, sourcePlatform)) },
           { sourcePlatform, kind: 'artists' as const, promise: withSearchTimeout(searchArtists(finalKeyword, sourcePlatform)) },
@@ -559,6 +567,9 @@ export default function SearchPanel({
             netease: { loggedIn: neteaseSessionActive, vip: neteaseVip },
             qq: { loggedIn: qqSessionActive, vip: qqVip },
             apple: { loggedIn: false, vip: false },
+            spotify: { loggedIn: false, vip: false },
+            kugou: { loggedIn: false, vip: false },
+            soda: { loggedIn: false, vip: false },
           },
         })
         setFusionUnavailablePlatforms(unavailable)
@@ -964,6 +975,48 @@ export default function SearchPanel({
               }`}
             >
               Apple Music
+            </button>
+            )}
+            {isPlatformVisible('spotify') && (
+            <button
+              onClick={() => setPlatform('spotify')}
+              className={`px-6 py-3 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg ${
+                platform === 'spotify'
+                  ? 'bg-emerald-500/90 text-white hover:bg-emerald-500'
+                  : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
+              }`}
+            >
+              Spotify
+            </button>
+            )}
+            {isPlatformVisible('kugou') && (
+            <button
+              onClick={() => setPlatform('kugou')}
+              className={`px-6 py-3 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg ${
+                platform === 'kugou'
+                  ? 'bg-orange-500/90 text-white hover:bg-orange-500'
+                  : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
+              }`}
+            >
+              酷狗音乐
+            </button>
+            )}
+            {isPlatformVisible('soda') && (
+            <button
+              onClick={() => setPlatform('soda')}
+              className={`px-6 py-3 rounded-2xl text-sm font-medium transition-all backdrop-blur-xl shadow-lg ${
+                platform === 'soda'
+                  ? 'bg-sky-500/90 text-white hover:bg-sky-500'
+                  : playerTheme === 'dark'
+                    ? 'bg-white/10 text-white/60 hover:bg-white/20 hover:text-white'
+                    : 'bg-black/10 text-black/60 hover:bg-black/15 hover:text-black'
+              }`}
+            >
+              汽水音乐
             </button>
             )}
             <div className="flex-1 min-w-4" />
@@ -1577,14 +1630,21 @@ export default function SearchPanel({
             setSelectedArtistAlbumId(undefined)
             onRestoreConsumed?.()
           }}
-          onSongSelect={(song, songs) => onSongSelect(song, songs, {
-            surface: selectedArtistAlbumId ? 'search-artist-album' : 'search-artist',
-            platform: selectedArtistPlatform,
-            searchMode: platform,
-            artistId: selectedArtistPlatform === 'qq' ? selectedArtist.mid : selectedArtist.id,
-            albumId: selectedArtistAlbumId,
-            artistTab: selectedArtistTab,
-          })}
+          onSongSelect={(song, songs) => {
+            // 纵深防御：无论艺人弹窗内部回调是否触发，选歌播放时一律关闭艺人弹窗与整个搜索面板，
+            // 避免播放页出现后搜索/艺人/专辑界面还叠在上面
+            setSelectedArtist(null)
+            setSelectedArtistAlbumId(undefined)
+            onClose()
+            onSongSelect(song, songs, {
+              surface: selectedArtistAlbumId ? 'search-artist-album' : 'search-artist',
+              platform: selectedArtistPlatform,
+              searchMode: platform,
+              artistId: selectedArtistPlatform === 'qq' ? selectedArtist.mid : selectedArtist.id,
+              albumId: selectedArtistAlbumId,
+              artistTab: selectedArtistTab,
+            })
+          }}
           initialAlbumId={selectedArtistAlbumId}
           onAlbumOpen={setSelectedArtistAlbumId}
           initialTab={selectedArtistTab || 'hotSongs'}
@@ -1614,12 +1674,17 @@ export default function SearchPanel({
             setSelectedAlbum(null)
             onRestoreConsumed?.()
           }}
-          onSongSelect={(song, songs) => onSongSelect(song, songs, {
-            surface: 'search-album',
-            platform: selectedAlbumPlatform,
-            searchMode: platform,
-            albumId: selectedAlbumPlatform === 'qq' ? selectedAlbum.mid : selectedAlbum.id,
-          })}
+          onSongSelect={(song, songs) => {
+            // 纵深防御：选歌播放时关闭专辑弹窗与整个搜索面板，避免播放页出现后界面还叠在上面
+            setSelectedAlbum(null)
+            onClose()
+            onSongSelect(song, songs, {
+              surface: 'search-album',
+              platform: selectedAlbumPlatform,
+              searchMode: platform,
+              albumId: selectedAlbumPlatform === 'qq' ? selectedAlbum.mid : selectedAlbum.id,
+            })
+          }}
           playerTheme={playerTheme}
           neteaseVip={neteaseVip}
           qqVip={qqVip}

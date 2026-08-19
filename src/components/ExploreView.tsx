@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { useTvMode, useRemoteCursorMode } from '../tv/tvCore'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
 import {
   AlertCircle,
@@ -45,7 +46,7 @@ import PlaylistDetailPanel from './PlaylistDetailPanel'
 import QQMusicJourney from './QQMusicJourney'
 import NeteaseMusicJourney from './NeteaseMusicJourney'
 import { getAppleLibraryPlaylists, APPLE_EXPLORE_COUNTRIES } from '../services/appleCatalog'
-import { getPlatformCapabilities, getVisiblePlatforms, PLATFORM_VISIBILITY_EVENT } from '../services/platforms'
+import { getPlatformCapabilities, getVisiblePlatforms, PLATFORM_VISIBILITY_EVENT, PLATFORM_ORDER_EVENT } from '../services/platforms'
 import ExploreSettingsPanel, {
   EXPLORE_SECTION_LABELS,
   createDefaultExplorePreferences,
@@ -61,8 +62,19 @@ import type { PlaybackOrigin, SongSelectHandler } from '../types/playbackNavigat
 
 type ViewMode = 'explore' | 'minimal' | 'desktop'
 const appLogoUrl = new URL('../../logo.png', import.meta.url).href
-const EXPLORE_CACHE_KEY = 'exploreHomeCache'
+// v2：酷狗探索数据修复（封面/真新歌榜/多榜单）后升级版本，强制旧缓存失效
+const EXPLORE_CACHE_KEY = 'exploreHomeCache-v2'
 const EXPLORE_SESSION_REFRESH_PREFIX = 'exploreHomeRefreshed:'
+
+/** 探索页平台元信息：名称 / 页签短名 / 主题色 / 主题色 RGB */
+const EXPLORE_PLATFORM_META: Record<ExplorePlatform, { name: string; short: string; accent: string; accentRgb: string }> = {
+  netease: { name: '网易云音乐', short: '网易云', accent: '#ff5a70', accentRgb: '255, 90, 112' },
+  qq: { name: 'QQ 音乐', short: 'QQ 音乐', accent: '#31e68b', accentRgb: '49, 230, 139' },
+  apple: { name: 'Apple Music', short: 'Apple Music', accent: '#fa2d48', accentRgb: '250, 45, 72' },
+  spotify: { name: 'Spotify', short: 'Spotify', accent: '#1DB954', accentRgb: '29, 185, 84' },
+  kugou: { name: '酷狗音乐', short: '酷狗音乐', accent: '#FF7A00', accentRgb: '255, 122, 0' },
+  soda: { name: '汽水音乐', short: '汽水音乐', accent: '#38BDF8', accentRgb: '56, 189, 248' },
+}
 
 interface ExploreCacheEntry {
   accountKey: string
@@ -96,6 +108,15 @@ interface ExploreViewProps {
   appleUsername: string
   appleAvatar?: string
   appleStorefront?: string
+  spotifyLoggedIn: boolean
+  spotifyUsername: string
+  spotifyAvatar?: string
+  kugouLoggedIn: boolean
+  kugouUsername: string
+  kugouAvatar?: string
+  sodaLoggedIn: boolean
+  sodaUsername: string
+  sodaAvatar?: string
   onLoginClick: (platform: ExplorePlatform) => void
   onProfileClick: (platform: ExplorePlatform) => void
   onSearchClick: () => void
@@ -398,7 +419,8 @@ const fingerprintExploreCredential = (value: string) => {
 const getExploreAccountKey = (platform: ExplorePlatform) => {
   // Apple 无 cookie/用户，按商店区分缓存
   if (platform === 'apple') return `apple:${localStorage.getItem('appleStorefront') || 'cn'}`
-  const userId = localStorage.getItem(platform === 'qq' ? 'qq_user_id' : 'netease_user_id') || ''
+  const userIdKey = platform === 'qq' ? 'qq_user_id' : platform === 'netease' ? 'netease_user_id' : `${platform}_user_id`
+  const userId = localStorage.getItem(userIdKey) || ''
   const cookie = getExploreCookie(platform)
   if (userId) return `user:${userId}`
   if (cookie) return `cookie:${fingerprintExploreCredential(cookie)}`
@@ -418,7 +440,7 @@ const readExploreCache = (): Partial<Record<ExplorePlatform, ExplorePayload>> =>
   const entries = readExploreCacheEntries()
   const today = getExploreDateKey()
   const result: Partial<Record<ExplorePlatform, ExplorePayload>> = {}
-  ;(['netease', 'qq', 'apple'] as ExplorePlatform[]).forEach(platform => {
+  ;(['netease', 'qq', 'apple', 'spotify', 'kugou', 'soda'] as ExplorePlatform[]).forEach(platform => {
     const entry = entries[platform]
     if (
       entry?.payload &&
@@ -469,6 +491,15 @@ function ExploreView({
   appleUsername,
   appleAvatar,
   appleStorefront,
+  spotifyLoggedIn,
+  spotifyUsername,
+  spotifyAvatar,
+  kugouLoggedIn,
+  kugouUsername,
+  kugouAvatar,
+  sodaLoggedIn,
+  sodaUsername,
+  sodaAvatar,
   onLoginClick,
   onProfileClick,
   onSearchClick,
@@ -490,14 +521,18 @@ function ExploreView({
 }: ExploreViewProps) {
   const [platform, setPlatform] = useState<ExplorePlatform>(() => {
     const saved = localStorage.getItem('explorePlatform')
-    return saved === 'qq' ? 'qq' : saved === 'apple' ? 'apple' : 'netease'
+    return saved === 'qq' || saved === 'apple' || saved === 'spotify' || saved === 'kugou' || saved === 'soda' ? saved : 'netease'
   })
-  // 可见平台（设置中可隐藏不常用的平台）
+  // 可见平台（设置中可隐藏不常用的平台 / 调整顺序）
   const [visiblePlatforms, setVisiblePlatforms] = useState<ExplorePlatform[]>(() => getVisiblePlatforms())
   useEffect(() => {
     const sync = () => setVisiblePlatforms(getVisiblePlatforms())
     window.addEventListener(PLATFORM_VISIBILITY_EVENT, sync)
-    return () => window.removeEventListener(PLATFORM_VISIBILITY_EVENT, sync)
+    window.addEventListener(PLATFORM_ORDER_EVENT, sync)
+    return () => {
+      window.removeEventListener(PLATFORM_VISIBILITY_EVENT, sync)
+      window.removeEventListener(PLATFORM_ORDER_EVENT, sync)
+    }
   }, [])
   useEffect(() => {
     // 当前平台被隐藏时切换到第一个可见平台
@@ -549,7 +584,7 @@ function ExploreView({
   const [banners, setBanners] = useState<ExploreBannerItem[]>([])
 
   useEffect(() => {
-    if (platform === 'apple') return
+    if (platform !== 'netease' && platform !== 'qq') return
     let cancelled = false
     const load = platform === 'netease' ? getNeteaseBanner() : getQQBanner()
     void load.then((list) => {
@@ -582,6 +617,21 @@ function ExploreView({
         window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '打开歌曲详情请使用搜索', type: 'info' } }))
       })
     }
+  }, [])
+
+  // 关闭探索歌单详情覆盖层（选歌播放/点关闭共用，保证不残留叠在播放页上）
+  const closeExploreDetail = useCallback(() => {
+    detailRequestRef.current += 1
+    detailControllerRef.current?.abort()
+    detailControllerRef.current = null
+    setDetailOpen(false)
+    setDetailError('')
+    if (detailCleanupTimerRef.current !== null) window.clearTimeout(detailCleanupTimerRef.current)
+    detailCleanupTimerRef.current = window.setTimeout(() => {
+      setDetail(null)
+      setDetailLoading(false)
+      detailCleanupTimerRef.current = null
+    }, 450)
   }, [])
 
   // 网易云私人 FM：个性化电台推荐播放
@@ -645,6 +695,11 @@ function ExploreView({
     setDetailOpen(true)
   }, [restorePlaybackOrigin?.revision])
   const [modeTriggerHovered, setModeTriggerHovered] = useState(false)
+  // TV 遥控器模式无鼠标：顶部模式切换按钮视为恒 hover（常驻可聚焦）；
+  // 手机遥控器连上（光标模式）时恢复真实 hover，与 HomeView/DesktopView 同策略
+  const tvMode = useTvMode()
+  const remoteCursorMode = useRemoteCursorMode()
+  const topBarActive = (tvMode && !remoteCursorMode) || modeTriggerHovered
 
   useEffect(() => {
     const closeForModeSwitch = () => {
@@ -678,13 +733,29 @@ function ExploreView({
   }, [])
 
   const payload = dataByPlatform[platform]
-  const loggedIn = platform === 'qq' ? qqLoggedIn : platform === 'apple' ? appleLoggedIn : neteaseLoggedIn
-  const username = platform === 'qq' ? qqUsername : platform === 'apple' ? appleUsername : neteaseUsername
-  const avatar = platform === 'qq' ? qqAvatar : platform === 'apple' ? appleAvatar : neteaseAvatar
-  const vip = platform === 'qq' ? qqVip : platform === 'apple' ? false : neteaseVip
-  const platformName = platform === 'qq' ? 'QQ 音乐' : platform === 'apple' ? 'Apple Music' : '网易云音乐'
-  const accent = platform === 'qq' ? '#31e68b' : platform === 'apple' ? '#fa2d48' : '#ff5a70'
-  const accentRgb = platform === 'qq' ? '49, 230, 139' : platform === 'apple' ? '250, 45, 72' : '255, 90, 112'
+  const loggedIn = platform === 'qq' ? qqLoggedIn
+    : platform === 'apple' ? appleLoggedIn
+    : platform === 'spotify' ? spotifyLoggedIn
+    : platform === 'kugou' ? kugouLoggedIn
+    : platform === 'soda' ? sodaLoggedIn
+    : neteaseLoggedIn
+  const username = platform === 'qq' ? qqUsername
+    : platform === 'apple' ? appleUsername
+    : platform === 'spotify' ? spotifyUsername
+    : platform === 'kugou' ? kugouUsername
+    : platform === 'soda' ? sodaUsername
+    : neteaseUsername
+  const avatar = platform === 'qq' ? qqAvatar
+    : platform === 'apple' ? appleAvatar
+    : platform === 'spotify' ? spotifyAvatar
+    : platform === 'kugou' ? kugouAvatar
+    : platform === 'soda' ? sodaAvatar
+    : neteaseAvatar
+  const vip = platform === 'qq' ? qqVip : platform === 'netease' ? neteaseVip : false
+  const platformMeta = EXPLORE_PLATFORM_META[platform]
+  const platformName = platformMeta.name
+  const accent = platformMeta.accent
+  const accentRgb = platformMeta.accentRgb
   const platformPreferences = preferences[platform]
 
   const themeStyle = {
@@ -757,6 +828,30 @@ function ExploreView({
           if (active) setUserPlaylists([])
         })
       return () => { active = false }
+    }
+    // Spotify：官方 API 我的歌单（token 驱动）；酷狗：隐藏窗口桥抓用户歌单
+    if (platform === 'spotify' || platform === 'kugou') {
+      const loggedIn = platform === 'spotify' ? spotifyLoggedIn : kugouLoggedIn
+      if (!loggedIn) {
+        setUserPlaylists([])
+        return
+      }
+      let active = true
+      const shouldForceRefresh = authRevision !== playlistAuthRevisionRef.current
+      playlistAuthRevisionRef.current = authRevision
+      void getUserPlaylists(platform, '', platform === 'spotify' ? spotifyUsername : kugouUsername, { forceRefresh: shouldForceRefresh })
+        .then(playlists => {
+          if (active) setUserPlaylists(playlists || [])
+        })
+        .catch(() => {
+          if (active) setUserPlaylists([])
+        })
+      return () => { active = false }
+    }
+    // 汽水：暂无用户歌单接口，不发起请求
+    if (platform === 'soda') {
+      setUserPlaylists([])
+      return
     }
     const isLoggedIn = platform === 'qq' ? qqLoggedIn : neteaseLoggedIn
     const userId = platform === 'qq' ? qqUserId || '' : neteaseUserId || ''
@@ -837,7 +932,26 @@ function ExploreView({
     () => Object.fromEntries(platformPreferences.order.map((section, index) => [section, index])) as Record<ExploreSectionId, number>,
     [platformPreferences.order]
   )
-  const sectionVisible = (section: ExploreSectionId) => !platformPreferences.hidden.includes(section) && getPlatformCapabilities(platform).exploreSections.includes(section)
+  // 区块显隐：用户设置 + 平台能力表 + 数据可用性（空 payload 时区块自动隐藏）
+  const sectionHasData = (section: ExploreSectionId) => {
+    switch (section) {
+      case 'discover':
+        return payload ? payload.dailySongs.length + payload.radioSongs.length + payload.newSongs.length > 0 : false
+      case 'playlists':
+        return (payload?.playlists.length || 0) > 0
+      case 'charts':
+        return (payload?.charts.length || 0) > 0
+      case 'newSongs':
+        return (payload?.newSongs.length || 0) > 0
+      case 'albums':
+        return (payload?.albums.length || 0) > 0
+      case 'channels':
+        return (payload?.channels.length || 0) > 0
+      default:
+        return true
+    }
+  }
+  const sectionVisible = (section: ExploreSectionId) => !platformPreferences.hidden.includes(section) && getPlatformCapabilities(platform).exploreSections.includes(section) && sectionHasData(section)
   const sectionStyle = (section: ExploreSectionId): CSSProperties => ({ order: sectionOrder[section] ?? 99 })
   const showSectionDescriptions = platformPreferences.showDescriptions
   const expandedHome = platformPreferences.contentAmount === 'expanded'
@@ -1149,10 +1263,11 @@ function ExploreView({
         onMouseLeave={() => setModeTriggerHovered(false)}
       >
         <AnimatePresence>
-          {modeTriggerHovered && !showModePanel && (
+          {topBarActive && !showModePanel && (
             <motion.button
               type="button"
               aria-label="打开模式选择"
+              data-tv-focus
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
@@ -1191,7 +1306,9 @@ function ExploreView({
             onSelect={(mode) => {
               setModeTriggerHovered(false)
               setShowModePanel(false)
-              // 先完成面板收回和内容层复位，再启动跨模式根视图动画。
+              // 立即显示过渡动画（覆盖后续所有切换过程）；面板收起/内容复位后再真正切换，
+              // 避免来源内容以展开态（下移 210px）残留成目标模式顶部的占位空区。
+              window.dispatchEvent(new CustomEvent('viewModeTransitionStart', { detail: mode }))
               window.setTimeout(() => switchMode(mode), MODE_SELECTION_CLOSE_MS)
             }}
           />
@@ -1238,7 +1355,7 @@ function ExploreView({
                       transition={{ duration: 0.16, ease: 'easeOut' }}
                     />
                   )}
-                  <span className="relative">{item === 'netease' ? '网易云' : item === 'qq' ? 'QQ 音乐' : 'Apple Music'}</span>
+                  <span className="relative">{EXPLORE_PLATFORM_META[item].short}</span>
                 </button>
               ))}
             </div>
@@ -1263,7 +1380,7 @@ function ExploreView({
             )}
 
             <div className="ml-auto flex items-center gap-2">
-              {platform === 'netease' && (
+              {getPlatformCapabilities(platform).radio && (
                 <button
                   type="button"
                   onClick={() => void handlePlayFM()}
@@ -1274,7 +1391,7 @@ function ExploreView({
                   <Radio className={`h-[18px] w-[18px] ${fmLoading ? 'animate-pulse' : ''}`} />
                 </button>
               )}
-              {platform !== 'apple' && (
+              {getPlatformCapabilities(platform).mv && (
               <button
                 type="button"
                 onClick={() => setShowMVExplore(true)}
@@ -1513,14 +1630,14 @@ function ExploreView({
                       songs: payload.dailySongs.length ? payload.dailySongs : payload.newSongs,
                     },
                     {
-                      label: platform === 'qq' ? '猜你喜欢' : platform === 'apple' ? '今日热选' : '私人漫游',
-                      title: platform === 'apple' ? '苹果全球热榜' : '一键进入无限电台',
+                      label: platform === 'qq' ? '猜你喜欢' : platform === 'apple' ? '今日热选' : platform === 'netease' ? '私人漫游' : '新鲜首发',
+                      title: platform === 'apple' ? '苹果全球热榜' : (platform === 'netease' || platform === 'qq') ? '一键进入无限电台' : '刚刚上线的新鲜声音',
                       copy: platform === 'apple'
                         ? `${payload.dailySongs.length} 首热门歌曲一次听完`
                         : payload.radioSongs.length ? '越听越懂你的连续推荐' : '从相似口味自然延伸',
                       icon: Radio,
                       cover: payload.radioSongs[0]?.album.picUrl || payload.channels[0]?.coverUrl || payload.dailySongs[0]?.album.picUrl,
-                      songs: payload.radioSongs.length ? payload.radioSongs : (platform === 'apple' ? payload.dailySongs : payload.radioSongs),
+                      songs: payload.radioSongs.length ? payload.radioSongs : (platform === 'apple' ? payload.dailySongs : (platform === 'netease' || platform === 'qq' ? payload.radioSongs : payload.newSongs)),
                       continuous: platform !== 'apple',
                     },
                     {
@@ -1906,24 +2023,16 @@ function ExploreView({
         playlist={detail?.playlist || null}
         songs={detail?.songs || []}
         loading={detailLoading}
-        onClose={() => {
-          detailRequestRef.current += 1
-          detailControllerRef.current?.abort()
-          detailControllerRef.current = null
-          setDetailOpen(false)
-          setDetailError('')
-          if (detailCleanupTimerRef.current !== null) window.clearTimeout(detailCleanupTimerRef.current)
-          detailCleanupTimerRef.current = window.setTimeout(() => {
-            setDetail(null)
-            setDetailLoading(false)
-            detailCleanupTimerRef.current = null
-          }, 450)
+        onClose={closeExploreDetail}
+        onSongSelect={(song, songs) => {
+          // 选歌后关闭歌单详情覆盖层，否则播放页出现后歌单界面还叠在上面
+          closeExploreDetail()
+          onSongSelect(song, songs, {
+            surface: 'explore-detail',
+            detail: detail || undefined,
+            songs,
+          })
         }}
-        onSongSelect={(song, songs) => onSongSelect(song, songs, {
-          surface: 'explore-detail',
-          detail: detail || undefined,
-          songs,
-        })}
         neteaseVip={neteaseVip}
         qqVip={qqVip}
         currentPlatform={detail?.playlist.platform || platform}
@@ -1981,7 +2090,7 @@ function ExploreView({
       <AnimatePresence>
         {showMVExplore && (
           <MVExploreModal
-            initialPlatform={platform === 'apple' ? 'netease' : platform}
+            initialPlatform={(platform === 'apple' || platform === 'spotify' || platform === 'soda' || platform === 'kugou') ? 'netease' : platform}
             playerTheme={playerTheme}
             onClose={() => setShowMVExplore(false)}
           />

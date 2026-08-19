@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { Play, ListPlus, Heart, HeartOff, MessageSquare, Disc, User, Copy, ChevronRight, Info, ListMusic, ThumbsDown } from 'lucide-react'
 import { Song, getProxiedImageUrl } from '../services/musicApi'
+import { getPlatformCapabilities, getPlatformCookie, platformLabel } from '../services/platforms'
 import type { MusicPlatform } from '../services/platforms'
 import { useEffect, useLayoutEffect, useState, useRef } from 'react'
 import CachedImage from './CachedImage'
@@ -39,6 +40,74 @@ interface SongContextMenuProps {
 const SUBMENU_VIEWPORT_MARGIN = 10
 const SUBMENU_MAX_HEIGHT = 300
 const SUBMENU_MIN_WIDTH = 220
+
+const showMenuToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+  window.dispatchEvent(new CustomEvent('showToast', { detail: { message, type } }))
+}
+
+/** 平台用户 ID 的 localStorage 键（apple 无此概念） */
+const getUserStorageKey = (p: MusicPlatform): string => {
+  switch (p) {
+    case 'qq': return 'qq_user_id'
+    case 'spotify': return 'spotify_user_id'
+    case 'kugou': return 'kugou_user_id'
+    case 'soda': return 'soda_user_id'
+    default: return 'netease_user_id'
+  }
+}
+
+/** 需菜单内拦截收藏/加歌单动作的第三方平台（登录态检查 + 能力提示） */
+const isThirdPartyPlatform = (p: MusicPlatform): boolean =>
+  p === 'spotify' || p === 'kugou' || p === 'soda'
+
+/** Spotify 官方 API：收藏歌曲（放入音乐库） */
+async function spotifySaveTrack(song: Song): Promise<boolean> {
+  const token = getPlatformCookie('spotify')
+  if (!token || !song.mid) return false
+  try {
+    const resp = await fetch(`https://api.spotify.com/v1/me/tracks?ids=${encodeURIComponent(song.mid)}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    return resp.ok
+  } catch (error) {
+    console.warn('[SongContextMenu] Spotify 收藏失败:', error)
+    return false
+  }
+}
+
+/** Spotify 官方 API：取消收藏歌曲 */
+async function spotifyRemoveTrack(song: Song): Promise<boolean> {
+  const token = getPlatformCookie('spotify')
+  if (!token || !song.mid) return false
+  try {
+    const resp = await fetch(`https://api.spotify.com/v1/me/tracks?ids=${encodeURIComponent(song.mid)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    return resp.ok
+  } catch (error) {
+    console.warn('[SongContextMenu] Spotify 取消收藏失败:', error)
+    return false
+  }
+}
+
+/** Spotify 官方 API：添加歌曲到歌单 */
+async function spotifyAddTrackToPlaylist(song: Song, playlistId: string): Promise<boolean> {
+  const token = getPlatformCookie('spotify')
+  if (!token || !song.mid) return false
+  try {
+    const resp = await fetch(`https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}/tracks`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uris: [`spotify:track:${song.mid}`] }),
+    })
+    return resp.ok
+  } catch (error) {
+    console.warn('[SongContextMenu] Spotify 添加到歌单失败:', error)
+    return false
+  }
+}
 
 export default function SongContextMenu({
   show,
@@ -241,9 +310,34 @@ export default function SongContextMenu({
     return ''
   }
 
-  const currentUserId = platform === 'qq'
-    ? localStorage.getItem('qq_user_id') || ''
-    : platform === 'apple' ? '' : localStorage.getItem('netease_user_id') || ''
+  const currentUserId = platform === 'apple' ? '' : (localStorage.getItem(getUserStorageKey(platform)) || '')
+  // 第三方平台（spotify/kugou/soda）操作拦截：未登录提示先登录；已登录 spotify 走官方收藏/加歌单接口
+  const handleThirdPartyAction = (action: 'like' | 'unlike' | 'playlist', playlistId?: string): boolean => {
+    const p = resolvedPlatform
+    if (!isThirdPartyPlatform(p)) return false
+    if (!getPlatformCookie(p)) {
+      showMenuToast(`请先登录${platformLabel(p)}`, 'error')
+      return true
+    }
+    if (p === 'spotify') {
+      if (action === 'playlist' && playlistId) {
+        void spotifyAddTrackToPlaylist(song, playlistId).then(ok => {
+          showMenuToast(ok ? '已添加到 Spotify 歌单' : '添加到 Spotify 歌单失败', ok ? 'success' : 'error')
+        })
+      } else if (action === 'like') {
+        void spotifySaveTrack(song).then(ok => {
+          showMenuToast(ok ? '已收藏到 Spotify 音乐库' : '收藏失败，请检查登录状态', ok ? 'success' : 'error')
+        })
+      } else {
+        void spotifyRemoveTrack(song).then(ok => {
+          showMenuToast(ok ? '已从 Spotify 音乐库取消收藏' : '取消收藏失败，请检查登录状态', ok ? 'success' : 'error')
+        })
+      }
+      return true
+    }
+    showMenuToast('该平台暂不支持此操作', 'info')
+    return true
+  }
   const ownedPlaylists = userPlaylists.filter((playlist) => {
     if (playlist.isCollected || playlist.isLike) return false
     if (playlist.platform && playlist.platform !== platform) return false
@@ -286,6 +380,7 @@ export default function SongContextMenu({
       label: '我喜欢',
       icon: Heart,
       onClick: () => {
+        if (handleThirdPartyAction('like')) { onClose(); return }
         onAddToFavorites(song)
         onClose()
       }
@@ -294,6 +389,7 @@ export default function SongContextMenu({
       label: '从喜欢歌单中移除',
       icon: HeartOff,
       onClick: () => {
+        if (handleThirdPartyAction('unlike')) { onClose(); return }
         onRemoveFromFavorites(song)
         onClose()
       },
@@ -316,7 +412,7 @@ export default function SongContextMenu({
       },
       danger: true
     }] : []),
-    ...(onViewComments && song?.platform !== 'apple' ? [{
+    ...(onViewComments && getPlatformCapabilities(resolvedPlatform).comments ? [{
       label: `查看评论${getCommentCountText() ? ` (${getCommentCountText()})` : ''}`,
       icon: MessageSquare,
       onClick: () => {
@@ -356,7 +452,7 @@ export default function SongContextMenu({
         onClose()
       }
     }] : []),
-    ...(song?.platform === 'netease' || song?.platform === 'qq' ? [{
+    ...(getPlatformCapabilities(resolvedPlatform).similarSongs ? [{
       label: '相似歌曲',
       icon: ListMusic,
       onClick: () => {
@@ -525,6 +621,10 @@ export default function SongContextMenu({
                               <button
                                 key={playlist.id}
                                 onClick={() => {
+                                  if (handleThirdPartyAction('playlist', String(playlist.dirId || playlist.id))) {
+                                    onClose()
+                                    return
+                                  }
                                   onAddToPlaylist?.(song, String(playlist.dirId || playlist.id))
                                   onClose()
                                 }}

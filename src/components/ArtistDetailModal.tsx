@@ -1652,7 +1652,13 @@ export default function ArtistDetailModal({
             albumId={selectedAlbum.mid || selectedAlbum.id!}
             platform={platform}
             onClose={() => setSelectedAlbum(null)}
-            onSongSelect={onSongSelect}
+            onSongSelect={(song, songs) => {
+              // 从艺人弹窗内的专辑子视图选歌：播放的同时必须把艺人弹窗一并关闭，
+              // 否则播放页出现后艺人/专辑界面还叠在上面
+              onSongSelect?.(song, songs)
+              setSelectedAlbum(null)
+              onClose()
+            }}
             playerTheme={playerTheme}
             neteaseVip={neteaseVip}
             qqVip={qqVip}
@@ -1677,7 +1683,11 @@ export default function ArtistDetailModal({
           song={contextMenu.song}
           playerTheme={playerTheme}
           onClose={() => setContextMenu({ show: false, x: 0, y: 0, song: null, sourceSongs: [] })}
-          onPlayNow={(song) => onSongSelect?.(song, contextMenu.sourceSongs)}
+          onPlayNow={(song) => {
+            // 右键"播放"也必须关闭艺人弹窗，否则播放页出现后弹窗还叠在上面
+            onSongSelect?.(song, contextMenu.sourceSongs)
+            onClose()
+          }}
           onPlayNext={onPlayNext}
           onAddToFavorites={onAddToFavorites}
           onRemoveFromFavorites={onRemoveFromFavorites}

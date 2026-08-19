@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Music, Play, Clock, Crown, Heart, Info, Radio } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier } from '../services/musicApi'
+import { getPlatformCapabilities } from '../services/platforms'
 import type { MusicPlatform } from '../services/platforms'
 import { subscribePlaylist } from '../services/playlistService'
 import { useState, useRef, useEffect, useCallback, useMemo, memo, type UIEvent } from 'react'
@@ -44,6 +45,8 @@ interface PlaylistDetailPanelProps {
   neteaseVip?: boolean
   qqVip?: boolean
   currentPlatform?: MusicPlatform
+  /** 当前登录用户 ID：用于判断歌单是否本人（自建歌单/我喜欢不显示收藏按钮） */
+  currentUserId?: string | number
   onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
   onOpenAlbum?: (albumId: string, platform: MusicPlatform) => void
   onPlayNext?: (song: Song) => void
@@ -82,7 +85,8 @@ function PlaylistDetailPanel({
   userPlaylists = [],
   currentSong = null,
   playerTheme = 'dark',
-  accentColor = '#ec4899'
+  accentColor = '#ec4899',
+  currentUserId,
 }: PlaylistDetailPanelProps) {
   // TV 遥控器 BACK：关闭歌单详情面板
   useTvBack(() => {
@@ -593,6 +597,7 @@ function PlaylistDetailPanel({
                           播放全部
                         </motion.button>
                       )}
+                      {/* 智能播放：仅网易云（无其他平台接口） */}
                       {(playlist.platform === 'netease' || currentPlatform === 'netease') && songs.length > 0 && (
                         <motion.button
                           whileHover={{ scale: 1.05 }}
@@ -608,7 +613,10 @@ function PlaylistDetailPanel({
                           智能播放
                         </motion.button>
                       )}
-                      {currentPlatform !== 'apple' && playlist.platform !== 'apple' && (
+                      {/* 自建歌单/我喜欢/已收藏的歌单不显示收藏按钮（只有别人的歌单可收藏） */}
+                      {getPlatformCapabilities(playlist.platform || currentPlatform).subscribePlaylist &&
+                        !playlist.isLike &&
+                        !(currentUserId != null && playlist.userId != null && String(playlist.userId) === String(currentUserId)) && (
                       <motion.button
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
