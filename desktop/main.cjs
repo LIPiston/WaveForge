@@ -853,6 +853,26 @@ ipcMain.handle('media-keys:set-enabled', (_event, enabled) => {
   return setGlobalMediaKeysEnabled(enabled)
 })
 
+// IPC：OOBE 完成 flag 文件（用户数据目录下 .oobe-complete，独立于 localStorage——
+// 双重保险：localStorage 被清/损坏时仍能识别已完成的 OOBE，跳过引导）
+const oobeFlagPath = () => path.join(app.getPath('userData'), '.oobe-complete')
+
+ipcMain.handle('oobe:get-flag', () => {
+  try {
+    return fs.existsSync(oobeFlagPath())
+  } catch {
+    return false
+  }
+})
+ipcMain.handle('oobe:set-flag', () => {
+  try {
+    fs.writeFileSync(oobeFlagPath(), new Date().toISOString(), 'utf8')
+    return true
+  } catch {
+    return false
+  }
+})
+
 // 主窗口推送播放状态（歌曲 / 歌词 / 播放中 / 频谱）
 ipcMain.on('desktop-player:state-update', (_event, partial) => {
   if (!partial || typeof partial !== 'object') return
