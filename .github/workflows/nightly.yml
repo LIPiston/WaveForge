@@ -209,6 +209,10 @@ jobs:
         run: node node_modules/electron/install.js
 
       - name: 重建嵌入式 Python（让打包版自带 beat/loudness/compensation 服务）
+        # GitHub Actions 服务器在国外 → 直连官方 PyPI（不走清华镜像）；
+        # 镜像源经 PIP_INDEX_URL 显式控制，脚本不自行决定（见 bundle-python.mjs）
+        env:
+          PIP_INDEX_URL: https://pypi.org/simple
         run: npm run bundle-python
         timeout-minutes: 20
 
