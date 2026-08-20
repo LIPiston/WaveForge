@@ -42,6 +42,12 @@ export interface V2Choreography {
   keyCompat: number
   /** 目标开头相对源结尾的能量差（绝对值，0-1） */
   energyDelta: number
+  /** riser 起始拍（相对过渡窗口；按 source 乐句锚定，缺省=beatCount-3） */
+  riserStartBeat?: number
+  /** 混响虚化起始拍（相对过渡窗口；缺省=beatCount*0.55） */
+  reverbStartBeat?: number
+  /** riser 终止频率 Hz（调性驱动；缺省 2400） */
+  riserEndFreq?: number
 }
 
 /** 过渡调试信息（调试弹窗展示用，从过渡计划摘要而来） */
@@ -176,6 +182,16 @@ export interface TransitionPlan {
     choreography?: V2Choreography
     intensity?: TransitionIntensity
     aiMix?: boolean
+    /** true = BPM 差过大（15~100），不做节拍对齐拉伸，只做特效过渡（riser/混响虚化/扫频等） */
+    withoutBeatGrid?: boolean
+    /** 部分同步（Apple 专利）：BPM 整数倍（140↔70 等）时快曲跳拍对齐慢曲网格的跳拍数（2/3/4） */
+    partialSyncN?: number
+    /** 谐波变调：过渡窗口内目标曲变调到源曲主音的半音数（±1~2，0=不变调） */
+    pitchShiftSemitones?: number
+    /** 目标窗口逐拍 vocalness（渲染期人声 ducking 用） */
+    targetVocalness?: number[]
+    /** DJTransGAN 学到的推子/EQ 自动化参数（v2 短过渡用；[prev_fo, next_fi]） */
+    automation?: Array<{ band: number[][][]; fader: number[][][][] }>
   }
   gainCurve: { source: number[]; target: number[] }
   /** 响度补偿（dB）：作用于 target 侧，正数=抬高目标，负数=压低目标（clamp ±3.5dB） */
@@ -185,6 +201,11 @@ export interface TransitionPlan {
   fallbackReason?: string
   analysisVersion: string
   rendererVersion: string
+  /** AI 长混音专用：缓冲尾段渐出/目标 deck 提前渐入的重叠窗口（秒），掩蔽 handoff 速度台阶 */
+  overlapSeconds?: number
+  /** AI 长混音专用：混音尾段 target 内容相对原曲的播放速度比（<1 慢 / >1 快）。
+   *  handoff 时 deck 以此 playbackRate 起步，overlap 窗口内渐回 1.0（post-settle） */
+  mixSpeedRatio?: number
 }
 
 export interface RenderedTransition {

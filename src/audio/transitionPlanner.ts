@@ -8,6 +8,9 @@ const MAX_SMART_MIX_BPM_DIFFERENCE = 5
 // v2 增强版 BPM 差上限：逐拍保音高拉伸实际可承受 ±15% 变速（≈±18 BPM@120），
 // 放宽到 15 使真实歌单（BPM 差 5~15 常见）不再静默降级成纯交叉淡化。
 const MAX_SMART_MIX_BPM_DIFFERENCE_V2 = 15
+// v2 大 BPM 差（15~100）：不做节拍对齐拉伸（±15% 外质量崩坏），改为"特效过渡"——
+// 等功率交叉 + riser/混响虚化/扫频等氛围层，避免纯交叉淡化的"没有效果"。
+const MAX_V2_EFFECTS_BPM_DIFFERENCE = 100
 // v1 分析置信度门槛：保持历史行为。
 const MIN_ANALYSIS_CONFIDENCE = 0.55
 // v2 放宽：节拍/重拍网格本身可靠即可智能渲染（部分分析器置信度标定偏保守，
@@ -115,6 +118,42 @@ function buildWindow(
     endTime: beatTimes[beatTimes.length - 1],
     beatTimes,
     frames: Array.from({ length: beatCount }, (_, offset) => frameByBeat.get(point.beatIndex + offset)),
+  }
+}
+
+/**
+ * 部分同步（Apple 专利 US8704069B2 的"partial sync"）：BPM 呈整数倍（70↔140 / 60↔120 / 40↔120）
+ * 时，把快曲网格按 stride=N 跳拍抽稀成"对齐网格"——每 N 个快拍映射慢曲 1 拍。
+ * 对齐网格的拍间隔与慢曲一致，渲染端按 rate≈1.0 自然播放即可实现半速听感对齐，
+ * 不需要对快曲做 ±N 倍时间拉伸（那会把打击乐糊成一团）。
+ * 抽稀后保留下来的拍（原曲 0, N, 2N, … 拍）就是与慢曲重合的对齐点。
+ */
+function alignBeatGrid(analysis: TrackAnalysis, stride: number): TrackAnalysis {
+  const beatCount = Math.floor(analysis.beats.length / stride)
+  if (beatCount < 2) return analysis
+  const beats = Array.from({ length: beatCount }, (_, index) => analysis.beats[index * stride])
+  const beatConfidence = Array.from(
+    { length: beatCount },
+    (_, index) => analysis.beatConfidence[index * stride] ?? analysis.confidence,
+  )
+  const downbeats: number[] = []
+  const downbeatConfidence: number[] = []
+  analysis.downbeats.forEach((time, index) => {
+    if (nearestBeatIndex(analysis.beats, time) % stride === 0) {
+      downbeats.push(time)
+      downbeatConfidence.push(analysis.downbeatConfidence[index] ?? analysis.confidence)
+    }
+  })
+  const beatFeatures = analysis.beatFeatures
+    .filter(frame => frame.beatIndex % stride === 0)
+    .map(frame => ({ ...frame, beatIndex: Math.floor(frame.beatIndex / stride) }))
+  return {
+    ...analysis,
+    beats,
+    beatConfidence,
+    downbeats,
+    downbeatConfidence,
+    beatFeatures,
   }
 }
 
@@ -503,14 +542,22 @@ function phraseCost(target: BeatWindow): number {
   return 0.6
 }
 
-function buildV2GainCurves(beatCount: number, style: V2Choreography['style']): { source: number[]; target: number[] } {
+function buildV2GainCurves(
+  beatCount: number,
+  style: V2Choreography['style'],
+  energyBalance = 0,
+): { source: number[]; target: number[] } {
   const length = Math.max(32, beatCount * 16)
+  // 能量中点偏移：energyBalance>0（target 更响）→ 交叉中点略提前（source 更快让位），
+  // 避免 target 进来时响度叠加；最多 ±6%。
+  const midShift = clamp01(Math.abs(energyBalance)) * 0.06 * Math.sign(energyBalance)
   const source: number[] = new Array(length)
   const target: number[] = new Array(length)
   for (let index = 0; index < length; index += 1) {
     const progress = index / (length - 1)
-    let sourceValue = Math.cos(progress * Math.PI / 2)
-    let targetValue = Math.sin(progress * Math.PI / 2)
+    const shifted = clamp01(progress + midShift)
+    let sourceValue = Math.cos(shifted * Math.PI / 2)
+    let targetValue = Math.sin(shifted * Math.PI / 2)
     if (style === 'atmospheric') {
       // 氛围型：过渡中点让源侧轻轻"沉"一下再交棒，制造呼吸感（虚化的听觉铺垫）
       const dip = 1 - 0.18 * Math.exp(-Math.pow((progress - 0.55) / 0.14, 2))
@@ -545,10 +592,13 @@ function buildV2Choreography(options: {
   // 风格判定基准（修复"真实验证中大多数过渡落入最克制 clean 风格、听不出效果"的问题）：
   // 流行/舞曲常规能量 + BPM 差在智能混音上限内 → energetic（含鼓点/加速/riser）；
   // 极低能量或明确 outro→intro 衔接 → atmospheric；其余才 fallback 到 clean。
+  // 过渡型分级（谐波混音视角）：调性兼容度作为关键修正——
+  // 高兼容（keyCompat≥0.85）→ 放心做干净/高能量过渡；低兼容（<0.5）→ 氛围化掩盖
+  // （回声/混响虚化），避免在和声冲突上做张扬的特效。
   const style: V2Choreography['style'] = energeticBoundary
     || (bpmDifference <= MAX_SMART_MIX_BPM_DIFFERENCE_V2 && energyDelta < 0.4 && avgEnergy >= 0.3)
-    ? 'energetic'
-    : avgEnergy < 0.25 || (sourceSection?.type === 'outro' && (!targetSection || targetSection.type === 'intro'))
+    ? (keyCompat >= 0.5 ? 'energetic' : 'atmospheric')
+    : avgEnergy < 0.25 || keyCompat < 0.45 || (sourceSection?.type === 'outro' && (!targetSection || targetSection.type === 'intro'))
       ? 'atmospheric'
       : 'clean'
   const vocalLow = (sourceVocalness ?? 1) < 0.65
@@ -574,14 +624,18 @@ function buildV2Choreography(options: {
     choreography = {
       style,
       intensity,
-      riser: false,
+      // riser 开启：氛围型过渡同样要有可听的 DJ 收尾（渐强扫频导向 handoff），
+      // 与噪声扫频/回声配合，避免"只有压低音量"的听感。
+      riser: true,
       noiseSweep: true,
       drumFill: false,
       tempoRampUp: false,
       reverbDip: true,
       echoOut: true,
       bassSwap: true,
-      filterSweep: false,
+      // filterSweep 开启：DJ 式滤波扫频（中段抽低音压暗/尾部提亮），
+      // 氛围型同样要有对音乐本身的混音处理，不是只有叠加合成音效
+      filterSweep: true,
       drumFillBeats: 0,
       keyCompat,
       energyDelta,
@@ -620,6 +674,30 @@ function buildV2Choreography(options: {
 }
 
 /**
+ * 谐波混音（Vande Veire 2018）：过渡窗口内把目标曲变调到源曲主音，
+ * 让两曲和声兼容（跨主音对齐）。仅在同调性（同 mode）且 |变调| ≤ 2 半音时启用：
+ * 再大的变调会失真；不同 mode 时仅相对大小调（同音集，C 大调↔A 小调）天然兼容。
+ * 返回目标窗口需变调的半音数（0 = 不变调）。
+ */
+function keyPitchShiftSemitones(
+  sourceKey: KeyDetection | undefined,
+  targetKey: KeyDetection | undefined,
+): number {
+  if (!sourceKey || !targetKey) return 0
+  const confident = (sourceKey.confidence ?? 0) >= MIN_ANALYSIS_CONFIDENCE_V2
+    && (targetKey.confidence ?? 0) >= MIN_ANALYSIS_CONFIDENCE_V2
+  if (!confident) return 0
+  const tonicDiff = (sourceKey.tonic - targetKey.tonic + 12) % 12
+  if (sourceKey.mode === targetKey.mode) {
+    // 同调性：目标主音对齐源曲主音（±6 内取最短路径）
+    const shift = tonicDiff > 6 ? tonicDiff - 12 : tonicDiff
+    return Math.abs(shift) <= 2 ? shift : 0
+  }
+  // 不同调性：相对大小调（同音集）无需移调；其余差异不强行对齐（避免平行调冲突）
+  return 0
+}
+
+/**
  * AutoMix 增强版（v2）计划生成器。
  * 输出策略为 'smart-rendered-v2'（走 v2 渲染器）或与 v1 相同的降级策略
  * （beat-crossfade / fixed-crossfade），降级路径与 v1 完全一致。
@@ -640,13 +718,31 @@ export function planTransitionV2(
   const sourceBpm = safeBpm(source.estimatedBpm)
   const targetBpm = safeBpm(target.estimatedBpm)
   const bpmDifference = Math.abs(sourceBpm - targetBpm)
-  const beatDuration = 60 / safeBpm((sourceBpm + targetBpm) / 2)
+  // 部分同步（Apple 专利）：BPM 差 15~100 且快曲≈慢曲整数倍（±5% 容差）→
+  // 快曲跳拍对齐慢曲网格。有效 BPM 差≈0，可走完整智能混音而无需 ±N 倍拉伸。
+  let partialSyncN = 0
+  if (bpmDifference > MAX_SMART_MIX_BPM_DIFFERENCE_V2 && bpmDifference <= MAX_V2_EFFECTS_BPM_DIFFERENCE) {
+    const bpmRatio = Math.max(sourceBpm, targetBpm) / Math.max(1e-6, Math.min(sourceBpm, targetBpm))
+    if (bpmRatio >= 1.9 && bpmRatio <= 2.1) partialSyncN = 2
+    else if (bpmRatio >= 2.9 && bpmRatio <= 3.1) partialSyncN = 3
+    else if (bpmRatio >= 3.9 && bpmRatio <= 4.1) partialSyncN = 4
+  }
+  if (partialSyncN > 0) {
+    // 快曲换成跳拍对齐视图：windows/拍网格/特征全部基于对齐网格（慢拍间隔）。
+    const fastAnalysis = sourceBpm > targetBpm ? source : target
+    const aligned = alignBeatGrid(fastAnalysis, partialSyncN)
+    if (sourceBpm > targetBpm) source = aligned
+    else target = aligned
+  }
+  // 时长定标用有效节奏：部分同步时两曲听感同速（慢曲速度），否则用两曲均值
+  const effectiveTempoBpm = partialSyncN > 0 ? Math.min(sourceBpm, targetBpm) : (sourceBpm + targetBpm) / 2
+  const beatDuration = 60 / safeBpm(effectiveTempoBpm)
   const tempoSimilarity = 1 - Math.min(bpmDifference / 40, 1)
   const baseDuration = tempoSimilarity > 0.8 ? 12 : tempoSimilarity > 0.5 ? 10 : 8
-  const requestedMin = Number.isFinite(settings.minDuration) ? settings.minDuration! : Math.max(6, baseDuration - 2)
-  const requestedMax = Number.isFinite(settings.maxDuration) ? settings.maxDuration! : Math.min(20, baseDuration + 8)
-  const minDuration = Math.max(1, Math.min(20, requestedMin))
-  const maxDuration = Math.max(minDuration, Math.min(20, requestedMax))
+  // v2 过渡时长由算法根据 BPM 相似度智能决定，不读取用户设置的最短/最长
+  // （用户手动调 min/max 会把过渡窗口卡在不合适的长度，破坏混音效果）。
+  const minDuration = Math.max(1, Math.min(20, baseDuration - 2))
+  const maxDuration = Math.max(minDuration, Math.min(20, baseDuration + 8))
   const beatCount = chooseBeatCount(beatDuration, minDuration, maxDuration)
   const intensity = settings.intensity ?? 'standard'
 
@@ -743,11 +839,28 @@ export function planTransitionV2(
     && sourceBeatTimes.length === beatCount + 1
     && targetBeatTimes.length === beatCount + 1
   )
-  const reason = fallbackReason(settings, bpmDifference, reliableGrid, confidence, MAX_SMART_MIX_BPM_DIFFERENCE_V2)
+  // 策略判定：BPM 差 ≤15 → 全节拍对齐智能混音；15<差≤100 → 整数倍 BPM 对走
+  // 部分同步（快曲跳拍对齐，仍为智能混音），其余走特效过渡（无节拍对齐，
+  // 交叉 + 氛围特效层，保证真实歌单大 BPM 差也有实际效果）；>100 → 降级 fixed-crossfade。
+  let reason: string | undefined
+  let withoutBeatGrid = false
+  if (bpmDifference > MAX_V2_EFFECTS_BPM_DIFFERENCE) {
+    reason = `BPM difference ${bpmDifference.toFixed(1)} exceeds the ${MAX_V2_EFFECTS_BPM_DIFFERENCE} BPM smart-mix limit`
+  } else if (bpmDifference > MAX_SMART_MIX_BPM_DIFFERENCE_V2) {
+    if (partialSyncN > 0 && reliableGrid) {
+      // 部分同步：快曲跳拍对齐慢曲网格（有效 BPM 差≈0），走完整智能混音
+      reason = undefined
+    } else {
+      withoutBeatGrid = true
+      reason = undefined
+    }
+  } else {
+    reason = fallbackReason(settings, bpmDifference, reliableGrid, confidence, MAX_SMART_MIX_BPM_DIFFERENCE_V2)
+  }
   const smartEligible = !reason
   const finalStrategy = smartEligible
     ? strategy
-    : reliableGrid && bpmDifference <= MAX_SMART_MIX_BPM_DIFFERENCE_V2
+    : reliableGrid && bpmDifference <= MAX_V2_EFFECTS_BPM_DIFFERENCE
       ? 'beat-crossfade'
       : 'fixed-crossfade'
 
@@ -770,7 +883,8 @@ export function planTransitionV2(
     sourceSection: chosen?.sourceSection,
     targetSection: chosen?.targetSection,
     sourceVocalness: chosen?.sourceVocalness ?? 1,
-    bpmDifference,
+    // 部分同步时有效 BPM 差≈0（两曲听感同速），按匹配节拍对待编排
+    bpmDifference: partialSyncN > 0 ? 0 : bpmDifference,
     energyDelta,
     avgEnergy: (sourceEnergy + targetEnergy) / 2,
     keyCompat,
@@ -778,15 +892,61 @@ export function planTransitionV2(
   })
   const smartEffects = smartEligible ? djEffects : undefined
   const gainOffsetDb = computeGainOffsetDb(source, target)
+  // 大 BPM 差（无节拍对齐）时：编排固定为氛围型并显式开启氛围特效
+  // （riser/噪声扫频/混响虚化/回声），关闭依赖节拍网格的特效（鼓点/加速/低音互换/滤波扫频）。
+  const finalChoreography = withoutBeatGrid
+    ? {
+      ...choreography,
+      style: 'atmospheric' as const,
+      riser: true,
+      noiseSweep: true,
+      reverbDip: true,
+      echoOut: true,
+      drumFill: false,
+      tempoRampUp: false,
+      bassSwap: false,
+      filterSweep: false,
+      drumFillBeats: 0,
+    }
+    : choreography
+
+  // ── 乐句锚定：riser 收在 source 的 drop/break/outro 段落，混响虚化从 outro 前开始 ──
+  const srcSection = chosen?.sourceSection
+  let riserEndBeat: number | undefined
+  if (srcSection && (srcSection.type === 'drop' || srcSection.type === 'break' || srcSection.type === 'outro')) {
+    const relBeat = srcSection.beatIndex - (chosen?.source.point.beatIndex ?? 0)
+    if (relBeat > 3 && relBeat <= beatCount) riserEndBeat = relBeat
+  }
+  const anchoredChoreography: V2Choreography = {
+    ...finalChoreography,
+    riserStartBeat: (riserEndBeat ?? beatCount) - 3,
+    reverbStartBeat: finalChoreography.reverbDip
+      ? Math.round(beatCount * (srcSection?.type === 'outro' ? 0.4 : 0.55))
+      : undefined,
+    // 调性驱动 riser 终频：target 主音对应频率乘 2^n 落入 2-4kHz（key 置信度≥0.4 才用）
+    riserEndFreq: targetKey && targetKey.confidence >= 0.4
+      ? tonicToAudibleFreq(targetKey.tonic, targetKey.mode)
+      : 2400,
+  }
+  // 目标窗口逐拍 vocalness：渲染期人声 ducking 用（避免进入曲人声与源曲重叠）
+  const targetVocalness = chosen?.target.frames.map(frame => frame?.vocalness ?? 0.5) ?? []
+  // 谐波变调：过渡窗口内目标曲变调到源曲主音（≤2 半音），和声兼容
+  const pitchShiftSemitones = keyPitchShiftSemitones(sourceKey, targetKey)
+  // 能量平衡：target 更响 → 正，交叉中点略提前
+  const energyBalance = (targetEnergy - sourceEnergy) / Math.max(0.1, targetEnergy + sourceEnergy)
   const v2 = {
     key: { source: sourceKey, target: targetKey },
-    choreography,
+    choreography: anchoredChoreography,
     intensity,
     aiMix: settings.aiMix === true,
+    withoutBeatGrid,
+    ...(partialSyncN > 0 ? { partialSyncN } : {}),
+    ...(pitchShiftSemitones !== 0 ? { pitchShiftSemitones } : {}),
+    targetVocalness,
   }
 
   return {
-    id: `${source.trackKey}->${target.trackKey}:${finalStrategy}:${sourceStartTime.toFixed(3)}-${sourceEndTime.toFixed(3)}:${targetStartTime.toFixed(3)}-${targetEndTime.toFixed(3)}:${beatCount}:${gainOffsetDb.toFixed(1)}:${intensity}:${settings.aiMix ? 'ai' : 'dsp'}:${RENDERER_VERSION_V2}`,
+    id: `${source.trackKey}->${target.trackKey}:${finalStrategy}:${sourceStartTime.toFixed(3)}-${sourceEndTime.toFixed(3)}:${targetStartTime.toFixed(3)}-${targetEndTime.toFixed(3)}:${beatCount}:${gainOffsetDb.toFixed(1)}:${intensity}:${settings.aiMix ? 'ai' : 'dsp'}${withoutBeatGrid ? ':nogrid' : ''}${partialSyncN > 0 ? `:ps${partialSyncN}` : ''}${pitchShiftSemitones !== 0 ? `:pshift${pitchShiftSemitones > 0 ? '+' : ''}${pitchShiftSemitones}` : ''}:${RENDERER_VERSION_V2}`,
     sourceTrackKey: source.trackKey,
     targetTrackKey: target.trackKey,
     sourceStartTime,
@@ -805,7 +965,7 @@ export function planTransitionV2(
     targetBeatTimes,
     djEffects: smartEffects,
     v2,
-    gainCurve: buildV2GainCurves(beatCount, choreography.style),
+    gainCurve: buildV2GainCurves(beatCount, anchoredChoreography.style, energyBalance),
     gainOffsetDb,
     confidence,
     strategy: finalStrategy,
@@ -813,4 +973,14 @@ export function planTransitionV2(
     analysisVersion: source.analysisVersion === target.analysisVersion ? source.analysisVersion : 'mixed-analysis',
     rendererVersion: RENDERER_VERSION_V2,
   }
+}
+
+/** 调性主音 → 可听 riser 终频：以 220Hz(A3)=参考，主音音高乘 2^n 落入 [2000, 4000]Hz。 */
+function tonicToAudibleFreq(tonic: number, mode: 'major' | 'minor'): number {
+  const a3 = 220
+  const f = a3 * Math.pow(2, (tonic - 9) / 12)
+  let result = f
+  while (result < 2000) result *= 2
+  while (result > 4000) result /= 2
+  return Math.round(result)
 }

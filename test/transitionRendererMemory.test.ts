@@ -55,11 +55,31 @@ function makeFakeContext() {
     addEventListener: ReturnType<typeof vi.fn>
     removeEventListener: ReturnType<typeof vi.fn>
   }>()
+  const gains = new Set<{
+    gain: { value: number; setValueAtTime: ReturnType<typeof vi.fn>; linearRampToValueAtTime: ReturnType<typeof vi.fn>; cancelScheduledValues: ReturnType<typeof vi.fn> }
+    connect: ReturnType<typeof vi.fn>
+    disconnect: ReturnType<typeof vi.fn>
+  }>()
   return {
     sources,
+    gains,
     destination: {},
     currentTime: 0,
     createBuffer: () => makeFakeAudioBuffer(44100),
+    createGain: () => {
+      const gain = {
+        gain: {
+          value: 1,
+          setValueAtTime: vi.fn(),
+          linearRampToValueAtTime: vi.fn(),
+          cancelScheduledValues: vi.fn(),
+        },
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+      }
+      gains.add(gain)
+      return gain
+    },
     createBufferSource: () => {
       const source = {
         buffer: null,
@@ -152,5 +172,83 @@ describe('TransitionRenderer 渲染产物缓存内存安全', () => {
     expect(renderer.getCacheSize()).toBe(2)
     renderer.dispose()
     expect(renderer.getCacheSize()).toBe(0)
+  })
+})
+
+describe('TransitionRenderer playTransition（事件驱动 handoff + 迟到保护）', () => {
+  let context: ReturnType<typeof makeFakeContext>
+  let renderer: TransitionRenderer
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    context = makeFakeContext()
+    renderer = new TransitionRenderer(context as unknown as AudioContext)
+  })
+
+  afterEach(() => {
+    renderer.dispose()
+    vi.useRealTimers()
+  })
+
+  it('ended 事件触发 onEnded 回调（事件驱动 handoff）', async () => {
+    const rendererAny = renderer as unknown as { addToCache: (p: TransitionPlan, b: AudioBuffer) => void }
+    const plan = makePlan('handoff-plan', 0)
+    rendererAny.addToCache(plan, makeFakeAudioBuffer(44100))
+    let endedCalled = false
+    const result = await renderer.playTransition('handoff-plan', 0, () => { endedCalled = true })
+    expect(result).not.toBeNull()
+    expect(result?.targetResumeTime).toBe(plan.targetEndTime)
+    // 触发缓冲源 ended 事件 → onEnded 应被调用
+    const source = [...context.sources][0]
+    const endedHandler = source.addEventListener.mock.calls.find(([name]: [string]) => name === 'ended')
+    expect(endedHandler).toBeDefined()
+    const callback = endedHandler![1] as () => void
+    callback()
+    expect(endedCalled).toBe(true)
+    expect(source.buffer).toBeNull()
+    expect(source.disconnect).toHaveBeenCalled()
+  })
+
+  it('迟到保护：触发偏移超过缓冲 85% 时返回 tooLate 且不启动缓冲', async () => {
+    const rendererAny = renderer as unknown as { addToCache: (p: TransitionPlan, b: AudioBuffer) => void }
+    rendererAny.addToCache(makePlan('late-plan', 0), makeFakeAudioBuffer(44100))
+    // buffer.duration = 1s；sourceStartTime=0 → offset=0.95s > 0.85s
+    const result = await renderer.playTransition('late-plan', 0.95)
+    expect(result).not.toBeNull()
+    expect(result?.tooLate).toBe(true)
+    expect(context.sources.size).toBe(0) // 未创建缓冲源
+  })
+
+  it('正常触发时 tooLate 为 undefined 且缓冲源已启动', async () => {
+    const rendererAny = renderer as unknown as { addToCache: (p: TransitionPlan, b: AudioBuffer) => void }
+    rendererAny.addToCache(makePlan('ok-plan', 0), makeFakeAudioBuffer(44100))
+    const result = await renderer.playTransition('ok-plan', 0)
+    expect(result?.tooLate).toBeUndefined()
+    expect(context.sources.size).toBe(1)
+    expect([...context.sources][0].start).toHaveBeenCalledWith(0, 0)
+  })
+
+  it('overlap handoff：请求 overlap 时创建过渡增益节点、尾段渐出、返回 overlap 窗口', async () => {
+    const rendererAny = renderer as unknown as { addToCache: (p: TransitionPlan, b: AudioBuffer) => void }
+    // 4 秒缓冲（buffer.duration=4s），overlap 2s ≤ 4×0.35=1.4s？→ 会被钳制到 1.4s
+    const buffer = makeFakeAudioBuffer(4 * 44100)
+    rendererAny.addToCache(makePlan('overlap-plan', 0), buffer)
+    const result = await renderer.playTransition('overlap-plan', 0, undefined, { overlap: 2 })
+    expect(result).not.toBeNull()
+    // overlap 被钳制到缓冲时长 35%（1.4s），且返回给调用方
+    expect(result?.overlap).toBeCloseTo(1.4, 3)
+    // 创建了过渡增益节点：source → gain → destination
+    expect(context.gains.size).toBe(1)
+    const gain = [...context.gains][0]
+    expect(gain.gain.linearRampToValueAtTime).toHaveBeenCalled()
+    const source = [...context.sources][0]
+    expect(source.connect).toHaveBeenCalledWith(gain)
+    // 无 overlap 请求时不创建增益节点
+    renderer.stopPlayback()
+    rendererAny.addToCache(makePlan('no-overlap-plan', 0), makeFakeAudioBuffer(4 * 44100))
+    await renderer.playTransition('no-overlap-plan', 0)
+    expect(context.gains.size).toBe(1) // 仍是上一个的 1 个
+    const latestSource = [...context.sources].at(-1)!
+    expect(latestSource.connect).not.toHaveBeenCalledWith(gain)
   })
 })
