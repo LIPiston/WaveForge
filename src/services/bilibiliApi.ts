@@ -44,6 +44,8 @@ export interface BilibiliViewData {
   pic: string
   /** 播放量（view 接口 stat.view；手动记住的视频重建时用于信息展示） */
   play?: number
+  /** 视频简介 */
+  desc?: string
   /** 选集（多 P）信息：部分视频含 on vocal / off vocal 等版本 */
   pages?: Array<{ cid: number; page: number; part: string; duration: number }>
   owner: {
@@ -77,6 +79,32 @@ export interface BilibiliSubtitleLine {
   from: number
   to: number
   content: string
+}
+
+/** B 站 AI 字幕噪音词：纯音乐/分类标签（如整段只有"♪音乐♪"），非歌词 */
+const SUBTITLE_JUNK_WORDS = [
+  '音乐', '纯音乐', '背景音乐', 'bgm', 'music',
+  '歌词', '字幕', '无人声', '器乐', '伴奏',
+  'instrumental', 'inst', '无言', '哼唱', '演唱', '歌唱',
+]
+
+/** 判断单行字幕是否为噪音行：剥掉所有符号/标点/空白（♪♫、括号、点号等）后只剩一个噪音词，或整行只有符号 */
+function isJunkSubtitleLine(content: string): boolean {
+  const raw = String(content || '').trim()
+  if (!raw) return true
+  const core = raw.replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase()
+  if (!core) return true // 全是符号（如只有"♪"）→ 噪音
+  return SUBTITLE_JUNK_WORDS.includes(core)
+}
+
+/** 清洗字幕行：去掉噪音行；整份字幕全是噪音则返回空（调用方视为无字幕，不显示） */
+export function cleanSubtitleLines(lines: BilibiliSubtitleLine[] | undefined | null): BilibiliSubtitleLine[] {
+  if (!Array.isArray(lines)) return []
+  return lines.filter((l) => {
+    const t = String(l?.content || '').trim()
+    if (!t) return false
+    return !isJunkSubtitleLine(t)
+  })
 }
 
 export interface BilibiliUser {
@@ -358,10 +386,161 @@ export interface BilibiliDanmakuItem {
   fontSize: number
   color: number
   text: string
+  /** 自己发送的弹幕：加描边框突出显示 */
+  border?: boolean
 }
 
 export function getBilibiliDanmaku(cid: number, signal?: AbortSignal): Promise<{ code: number; danmaku: BilibiliDanmakuItem[] }> {
-  return fetchJson(`${BILI_API_BASE}/danmaku?cid=${cid}`, { signal })
+  // fetchJsonLoose：弹幕非阻塞，服务端 502/风控时不抛异常，交由调用方静默降级
+  return fetchJsonLoose(`${BILI_API_BASE}/danmaku?cid=${cid}`, { signal })
+}
+
+// ===== B 站交互（发弹幕/评论/投币/点赞/收藏，需 B 站登录 cookie） =====
+
+/** 发送弹幕（同步 B 站）。progress 为视频内秒数，服务端转毫秒 */
+export function sendBilibiliDanmaku(opts: {
+  cid: number
+  bvid?: string
+  aid?: string | number
+  msg: string
+  progress: number
+  color?: number
+  fontsize?: number
+  mode?: number
+}): Promise<{ code: number; message?: string; data?: unknown }> {
+  const cookie = getBilibiliCookie()
+  return fetchJson(`${BILI_API_BASE}/danmaku`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...opts,
+      cookie,
+      progress: Math.max(0, Math.round((opts.progress || 0) * 1000)),
+    }),
+  })
+}
+
+export interface BilibiliComment {
+  rpid: number
+  mid: number
+  root: number
+  parent: number
+  count: number
+  rcount: number
+  like: number
+  /** 1 = 当前用户已点赞 */
+  action?: number
+  ctime: number
+  /** B 站返回的正文在 content.message（嵌套结构） */
+  content?: { message?: string; members?: unknown[] }
+  member?: {
+    uname?: string
+    avatar?: string
+    level_info?: { current_level?: number }
+    sex?: string
+    sign?: string
+  }
+  reply?: { count: number }
+  replies?: BilibiliComment[]
+  /** 是否本人评论（本地比对 mid 后标记） */
+  isMine?: boolean
+  /** 归一化后的评论正文（content.message 兜底 message） */
+  message?: string
+}
+
+/** 评论列表（type=1 视频，按热度分页） */
+export function getBilibiliComments(aid: string | number, pn = 1, signal?: AbortSignal): Promise<{
+  code: number
+  replies?: BilibiliComment[]
+  cursor?: unknown
+}> {
+  return fetchJson(`${BILI_API_BASE}/comments?aid=${encodeURIComponent(String(aid))}&pn=${pn}`, { signal })
+}
+
+/** 某条评论的回复 */
+export function getBilibiliCommentReplies(aid: string | number, rpid: string | number, pn = 1, signal?: AbortSignal): Promise<{
+  code: number
+  replies?: BilibiliComment[]
+}> {
+  return fetchJson(`${BILI_API_BASE}/comment/replies?aid=${encodeURIComponent(String(aid))}&rpid=${encodeURIComponent(String(rpid))}&pn=${pn}`, { signal })
+}
+
+/** 发评论 / 回复（root+parent 存在即为回复） */
+export function postBilibiliComment(opts: {
+  aid: string | number
+  message: string
+  root?: string | number
+  parent?: string | number
+}): Promise<{ code: number; message?: string; data?: unknown }> {
+  const cookie = getBilibiliCookie()
+  return fetchJson(`${BILI_API_BASE}/comment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...opts, cookie }),
+  })
+}
+
+/** 删除评论（需为本人） */
+export function deleteBilibiliComment(aid: string | number, rpid: string | number): Promise<{ code: number; message?: string }> {
+  const cookie = getBilibiliCookie()
+  return fetchJson(`${BILI_API_BASE}/comment/del`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aid, rpid, cookie }),
+  })
+}
+
+/** 评论点赞/取消（action 1 点赞 2 取消） */
+export function likeBilibiliComment(aid: string | number, rpid: string | number, action: 1 | 2 = 1): Promise<{ code: number; message?: string }> {
+  const cookie = getBilibiliCookie()
+  return fetchJson(`${BILI_API_BASE}/comment/like`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aid, rpid, action, cookie }),
+  })
+}
+
+/** 投币（multiply 1/2，selectLike 1=同时点赞） */
+export function coinBilibiliVideo(aid: string | number, multiply = 1, selectLike = 0): Promise<{ code: number; message?: string; data?: unknown }> {
+  const cookie = getBilibiliCookie()
+  return fetchJson(`${BILI_API_BASE}/coin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aid, multiply, selectLike, cookie }),
+  })
+}
+
+/** 视频点赞/取消（like 1 点赞 2 取消） */
+export function likeBilibiliVideo(aid: string | number, like: 1 | 2 = 1): Promise<{ code: number; message?: string }> {
+  const cookie = getBilibiliCookie()
+  return fetchJson(`${BILI_API_BASE}/like`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aid, like, cookie }),
+  })
+}
+
+/** 收藏/取消收藏（addMediaIds 添加进收藏夹，delMediaIds 取消） */
+export function favBilibiliVideo(aid: string | number, opts: { addMediaIds?: string | number; delMediaIds?: string | number } = {}): Promise<{ code: number; message?: string; data?: unknown }> {
+  const cookie = getBilibiliCookie()
+  return fetchJson(`${BILI_API_BASE}/fav`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aid, ...opts, cookie }),
+  })
+}
+
+export interface BilibiliInteractionState {
+  isLike: number
+  coin: number
+  todayCoins: number
+  favoured: number
+  favFolders: Array<{ id: number; name: string }>
+}
+
+/** 交互状态汇总：点赞态/投币数/今日剩余硬币/收藏态/收藏夹列表 */
+export function getBilibiliInteraction(aid: string | number, signal?: AbortSignal): Promise<{ code: number; data?: BilibiliInteractionState }> {
+  return fetchJson(`${BILI_API_BASE}/interaction?aid=${encodeURIComponent(String(aid))}`, { signal })
 }
 
 /** 弹幕设置（参考 B 站网页版：不透明度/字号/显示区域/同屏数/速度/滚动方式/屏蔽词） */
@@ -646,8 +825,12 @@ const INSTRUMENT_MARKERS = [
  * 多元查询时额外尝试别名，提升召回。覆盖常见日音/华语艺人。
  */
 const ARTIST_ALIASES: Record<string, string[]> = {
-  宇多田光: ['宇多田ヒカル'],
-  宇多田ヒカル: ['宇多田光'],
+  宇多田光: ['宇多田ヒカル', 'Utada', 'Hikaru Utada', 'Utada Hikaru'],
+  宇多田ヒカル: ['宇多田光', 'Utada', 'Hikaru Utada', 'Utada Hikaru'],
+  // Utada 与 宇多田光 是同一歌手的两个账户（英文名/中文名）：互认命中官号提分，避免只认其中一个漏掉官方 MV
+  Utada: ['宇多田光', '宇多田ヒカル', 'Hikaru Utada', 'Utada Hikaru'],
+  'Hikaru Utada': ['宇多田光', '宇多田ヒカル', 'Utada'],
+  'Utada Hikaru': ['宇多田光', '宇多田ヒカル', 'Utada'],
   米津玄師: ['米津玄师', '米津玄師'],
   米津玄师: ['米津玄師'],
   中島美嘉: ['中岛美嘉', '中島美嘉'],
@@ -661,8 +844,10 @@ const ARTIST_ALIASES: Record<string, string[]> = {
   五轮真弓: ['五輪真弓'],
   山口百恵: ['山口百惠'],
   山口百惠: ['山口百恵'],
-  澤野弘之: ['泽野弘之', '澤野弘之'],
-  泽野弘之: ['澤野弘之'],
+  澤野弘之: ['泽野弘之', '澤野弘之', 'SawanoHiroyuki', 'sawanohiroyuki'],
+  泽野弘之: ['澤野弘之', 'SawanoHiroyuki', 'sawanohiroyuki'],
+  'SawanoHiroyuki[nZk]': ['泽野弘之', '澤野弘之', 'SawanoHiroyuki', 'sawanohiroyuki', '泽野弘之nZk'],
+  SawanoHiroyuki: ['泽野弘之', '澤野弘之', 'SawanoHiroyuki[nZk]'],
   久石譲: ['久石让'],
   久石让: ['久石譲'],
   坂本龍一: ['坂本龙一'],
@@ -729,10 +914,15 @@ const ARTIST_ALIASES: Record<string, string[]> = {
  */
 export function expandArtistNames(raw: string): string[] {
   const result: string[] = []
-  const segments = String(raw || '').split(/\s+(?:feat(?:uring)?|ft)\.?\s+|\s*&\s*|,|，|、|;|；|\|/gi)
+  const full = String(raw || '').trim()
+  if (!full) return result
+  // 完整串保留为第一个元素（有的歌手名本身含 "/" 如组合名，不能拆没），
+  // 同时按常见分隔拆分多人合唱（xx/xx/xx/xx → 几个歌手一起唱）
+  result.push(full)
+  const segments = full.split(/\s+(?:feat(?:uring)?|ft)\.?\s+|\s*&\s*|,|，|、|;|；|\||\//gi)
   for (const seg of segments) {
     const trimmed = seg.trim()
-    if (!trimmed) continue
+    if (!trimmed || trimmed === full) continue
     result.push(trimmed)
     // 去括号翻译变体（保留原串；若括号内才是主体，原串命中也不受影响）
     const noParen = trimmed.replace(/[（(][^（）()]*[）)]/g, '').trim()
@@ -866,10 +1056,13 @@ export function scoreCandidate(
   const dashForm = titleNorm.replace(/^([^-]{2,20})-([^-]{1,20})$/, '$1-$2')
   if (dashForm !== titleNorm && artistNormList.some((a) => titleNorm.startsWith(a))) score += 15
 
-  // 短歌名易撞车：标题不含歌手则重罚
-  if (songTitleNorm.length <= 4 && !signals.hasArtist) score -= 50
-  // 短歌名 + 未命中歌手 + 却带官方/MV 标记 → 极可能是"别的歌手的官方MV"（张冠李戴，如王艺瑾-喜欢你），再重罚
-  if (songTitleNorm.length <= 4 && !signals.hasArtist && (signals.officialMarker || signals.mvMarker)) score -= 40
+  // 歌名不含歌手（无歌手证据）：可能是同名的其它歌曲（货不对板防御，任何歌名长度都适用——
+  // 否则同名不同歌手的官方 MV 会靠官方/播放加成胜出，如 SawanoHiroyuki 与 NMIXX 的 Roller Coaster）
+  if (!signals.hasArtist) score -= 35
+  // 短歌名易撞车：额外重罚
+  if (songTitleNorm.length <= 4 && !signals.hasArtist) score -= 15
+  // 未命中歌手 + 却带官方/MV 标记 → 极可能是"别的歌手的官方MV"（张冠李戴，如王艺瑾-喜欢你），再重罚
+  if (!signals.hasArtist && (signals.officialMarker || signals.mvMarker)) score -= 40
 
   // 分区
   if (video.typename === '音乐') score += 15

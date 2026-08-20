@@ -466,8 +466,105 @@ export function registerBilibiliRoutes(app) {
     }
   })
 
-  // 弹幕：list.so 返回 deflate-raw 压缩的 XML（历史上有 gzip/brotli），逐种尝试解压后解析。
-  // list.so 需 buvid3 cookie，否则 B 站风控 403/412；失败时回退 comment.bilibili.com/{cid}.xml（老 XML 端点）。
+  // ===== 弹幕 protobuf（seg.so）解码 =====
+  // B 站已将弹幕迁移到 protobuf 端点 /x/v2/dm/web/seg.so（旧 XML list.so/comment.bilibili.com
+  // 对迁移视频返回空列表元信息 XML）。返回 DanmakuSeg { repeated DanmakuElem elems = 1; int64 next = 3; }
+  // DanmakuElem: 1=id(int64) 2=progress(int32,毫秒) 3=mode 4=fontsize 5=color(uint32)
+  //              6=midHash 7=content 8=ctime 9=weight 10=action 11=pool 12=idStr 13=attr
+  const decodeVarint = (buf, offset) => {
+    let result = 0n
+    let shift = 0n
+    let o = offset
+    while (o < buf.length) {
+      const byte = buf[o++]
+      result |= BigInt(byte & 0x7f) << shift
+      if ((byte & 0x80) === 0) return [result, o]
+      shift += 7n
+    }
+    throw new Error('弹幕 protobuf varint 越界')
+  }
+  const parseDanmakuElem = (buf) => {
+    const elem = {}
+    let o = 0
+    while (o < buf.length) {
+      const [tag, o2] = decodeVarint(buf, o)
+      o = o2
+      const field = Number(tag >> 3n)
+      const wire = Number(tag & 7n)
+      if (wire === 0) {
+        const [v, o3] = decodeVarint(buf, o)
+        o = o3
+        elem[field] = v
+      } else if (wire === 2) {
+        const [len, o3] = decodeVarint(buf, o)
+        o = o3
+        elem[field] = buf.slice(o, o + Number(len))
+        o += Number(len)
+      } else if (wire === 5) {
+        elem[field] = buf.readUInt32LE(o)
+        o += 4
+      } else {
+        o += 8
+      }
+    }
+    return elem
+  }
+  const parseDanmakuSeg = (buf) => {
+    const items = []
+    let next = null
+    let o = 0
+    while (o < buf.length) {
+      const [tag, o2] = decodeVarint(buf, o)
+      o = o2
+      const field = Number(tag >> 3n)
+      const wire = Number(tag & 7n)
+      if (wire === 2) {
+        const [len, o3] = decodeVarint(buf, o)
+        o = o3
+        const chunk = buf.slice(o, o + Number(len))
+        o += Number(len)
+        if (field === 1) {
+          const elem = parseDanmakuElem(chunk)
+          const text = elem[7] ? elem[7].toString('utf8') : ''
+          const mode = Number(elem[3] || 1n)
+          items.push({
+            time: Number(elem[2] || 0n) / 1000, // progress 毫秒 → 秒
+            mode,
+            fontSize: Number(elem[4] || 25n),
+            color: Number(elem[5] || 0xffffffn),
+            text,
+          })
+        }
+      } else if (wire === 0) {
+        const [v, o3] = decodeVarint(buf, o)
+        o = o3
+        if (field === 3) next = Number(v) // 下一段索引；<=0 表示已无更多段
+      } else {
+        o += wire === 5 ? 4 : 8
+      }
+    }
+    return { items, next }
+  }
+  const fetchDanmakuSegs = async (cid) => {
+    const all = []
+    let idx = 1
+    const seen = new Set()
+    for (let guard = 0; guard < 30; guard++) {
+      if (seen.has(idx)) break
+      seen.add(idx)
+      const url = `${API_BASE}/x/v2/dm/web/seg.so?type=1&oid=${cid}&segment_index=${idx}`
+      const resp = await fetchBili(url, { referer: BILI_REFERER })
+      if (!resp.ok) throw new Error(`seg.so HTTP ${resp.status}`)
+      const buf = Buffer.from(await resp.arrayBuffer())
+      if (buf.length < 2) break
+      const { items, next } = parseDanmakuSeg(buf)
+      all.push(...items)
+      if (next == null || next <= 0) break
+      idx = next
+    }
+    return all
+  }
+  // 旧 XML 弹幕（seg.so 无数据时的兜底；模式/颜色/字号齐全）
   const parseDanmakuXml = (xml) => {
     const items = []
     const re = /<d p="([^"]+)">([^<]*)<\/d>/g
@@ -517,27 +614,296 @@ export function registerBilibiliRoutes(app) {
     try {
       // 弹幕接口必须带 buvid3 cookie，否则极易触发风控（此前路由漏调 ensureBuvid3）
       await ensureBuvid3()
-      let xml = null
-      let lastError = ''
-      for (const url of [
-        `https://api.bilibili.com/x/v1/dm/list.so?oid=${cid}`,
-        `https://comment.bilibili.com/${cid}.xml`,
-      ]) {
-        try {
-          xml = await fetchDanmakuXml(url)
-          if (xml) break
-        } catch (error) {
-          lastError = error instanceof Error ? error.message : String(error)
-        }
+      let items = []
+      // 优先 protobuf seg.so（B 站现行弹幕源）；空/失败回退旧 XML
+      try {
+        items = await fetchDanmakuSegs(cid)
+      } catch (segError) {
+        console.warn(`[Bilibili] seg.so 弹幕失败，回退 XML:`, segError.message)
       }
-      // 两路都失败：返回错误码（此前返回 code:0 空列表，前端静默无弹幕）
-      if (!xml) return res.status(502).json({ code: -412, error: `获取弹幕失败（${lastError || '两路均失败'}）` })
-      const items = parseDanmakuXml(xml)
+      if (items.length === 0) {
+        let xml = null
+        let lastError = ''
+        for (const url of [
+          `https://api.bilibili.com/x/v1/dm/list.so?oid=${cid}`,
+          `https://comment.bilibili.com/${cid}.xml`,
+        ]) {
+          try {
+            xml = await fetchDanmakuXml(url)
+            if (xml) break
+          } catch (error) {
+            lastError = error instanceof Error ? error.message : String(error)
+          }
+        }
+        if (xml) items = parseDanmakuXml(xml)
+        else if (!lastError) lastError = 'seg.so 与 XML 均无数据'
+      }
+      if (items.length === 0) {
+        // 两路都无弹幕：返回空列表（视频确实无弹幕，或全部为高级弹幕命令）
+        danmakuCache.set(cid, { items: [], createdAt: Date.now() })
+        return res.json({ code: 0, danmaku: [] })
+      }
       danmakuCache.set(cid, { items, createdAt: Date.now() })
       pruneCache(danmakuCache, DANMAKU_CACHE_TTL)
       res.json({ code: 0, danmaku: items })
     } catch (error) {
       res.status(502).json({ code: -1, error: error.message || '获取弹幕失败' })
+    }
+  })
+
+  // ===== B 站交互端点（发弹幕/评论/投币/点赞/收藏，均需登录 cookie + WBI + CSRF） =====
+
+  /** 取 cookie 中的 CSRF token（bili_jct） */
+  const csrfOf = (cookie) => {
+    const m = String(resolveBiliCookie(cookie) || '').match(/bili_jct=([^;]+)/)
+    return m ? m[1] : ''
+  }
+  /** POST form 到 B 站（WBI 签名 + CSRF），返回 JSON */
+  const postBiliForm = async (url, params, { cookie, csrf } = {}) => {
+    const signed = await wbiSign(params)
+    const effectiveCookie = resolveBiliCookie(cookie)
+    const token = csrf || csrfOf(effectiveCookie)
+    const body = new URLSearchParams({ ...signed, ...(token ? { csrf: token } : {}) })
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 12000)
+    try {
+      const raw = await fetch(url, {
+        method: 'POST',
+        signal: ctrl.signal,
+        headers: {
+          'User-Agent': BILI_UA,
+          Referer: BILI_REFERER,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          ...(effectiveCookie ? { Cookie: buildCookieHeader(effectiveCookie) } : {}),
+        },
+        body,
+      })
+      const text = await raw.text()
+      try {
+        return JSON.parse(text)
+      } catch {
+        return { code: -1, message: text.slice(0, 200) }
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  // 发弹幕（同步 B 站）：type=1 视频弹幕，progress 为毫秒
+  app.post('/api/bilibili/danmaku', async (req, res) => {
+    const { cid, bvid, aid, msg, progress, color = 0xffffff, fontsize = 25, mode = 1 } = req.body || {}
+    if (!cid || !msg) return res.status(400).json({ code: -1, error: 'cid/msg 必填' })
+    const cookie = req.body.cookie || req.query.cookie
+    if (!csrfOf(cookie)) return res.status(401).json({ code: -401, error: '需要登录（B 站扫码登录）' })
+    try {
+      const json = await postBiliForm(`${API_BASE}/x/v2/dm/post`, {
+        type: 1,
+        oid: String(cid),
+        msg,
+        bvid: bvid || '',
+        aid: aid || '',
+        progress: String(Math.max(0, Math.round(Number(progress) || 0))),
+        color: String(color),
+        fontsize: String(fontsize),
+        mode: String(mode),
+        pool: '0',
+        plat: '1',
+      }, { cookie })
+      if (json.code !== 0) return res.status(502).json({ code: json.code, message: json.message || '发送弹幕失败' })
+      res.json({ code: 0, data: json.data })
+    } catch (error) {
+      res.status(502).json({ code: -1, error: error.message || '发送弹幕失败' })
+    }
+  })
+
+  // 评论列表（type=1 视频；mode=3 按热度，pn 分页）
+  app.get('/api/bilibili/comments', async (req, res) => {
+    const aid = Number(req.query.aid)
+    const pn = Number(req.query.pn) || 1
+    if (!aid) return res.status(400).json({ code: -1, error: 'aid 必填' })
+    try {
+      const signed = await wbiSign({ type: 1, oid: String(aid), mode: 3, pn, ps: 20 })
+      const json = await fetchBiliJson(`${API_BASE}/x/v2/reply/main`, {
+        params: signed,
+        cookie: req.query.cookie,
+      })
+      if (json.code !== 0) return res.status(502).json({ code: json.code, message: json.message || '获取评论失败' })
+      const page = json.data?.page || {}
+      const replies = json.data?.replies || []
+      // 附带顶层评论数/游标，供分页
+      res.json({
+        code: 0,
+        replies,
+        page: { num: page.num, size: page.size, total: json.data?.top_replies ? undefined : page.total },
+        cursor: json.data?.cursor || null,
+      })
+    } catch (error) {
+      res.status(502).json({ code: -1, error: error.message || '获取评论失败' })
+    }
+  })
+
+  // 某条评论的回复（root 游标分页）
+  app.get('/api/bilibili/comment/replies', async (req, res) => {
+    const { aid, rpid } = req.query
+    const pn = Number(req.query.pn) || 1
+    if (!aid || !rpid) return res.status(400).json({ code: -1, error: 'aid/rpid 必填' })
+    try {
+      const signed = await wbiSign({ type: 1, oid: String(aid), root: String(rpid), ps: 20, pn })
+      const json = await fetchBiliJson(`${API_BASE}/x/v2/reply/reply`, {
+        params: signed,
+        cookie: req.query.cookie,
+      })
+      if (json.code !== 0) return res.status(502).json({ code: json.code, message: json.message || '获取回复失败' })
+      res.json({ code: 0, replies: json.data?.replies || [], page: json.data?.page || {} })
+    } catch (error) {
+      res.status(502).json({ code: -1, error: error.message || '获取回复失败' })
+    }
+  })
+
+  // 发评论 / 回复（root+parent 存在即为回复）
+  app.post('/api/bilibili/comment', async (req, res) => {
+    const { aid, message, root, parent } = req.body || {}
+    const cookie = req.body.cookie || req.query.cookie
+    if (!aid || !message) return res.status(400).json({ code: -1, error: 'aid/message 必填' })
+    if (!csrfOf(cookie)) return res.status(401).json({ code: -401, error: '需要登录（B 站扫码登录）' })
+    try {
+      const json = await postBiliForm(`${API_BASE}/x/v2/reply/add`, {
+        type: '1',
+        oid: String(aid),
+        message,
+        ...(root ? { root: String(root) } : {}),
+        ...(parent ? { parent: String(parent) } : {}),
+        post_type: '1',
+        platform: '1',
+      }, { cookie })
+      if (json.code !== 0) return res.status(502).json({ code: json.code, message: json.message || '发送评论失败' })
+      res.json({ code: 0, data: json.data })
+    } catch (error) {
+      res.status(502).json({ code: -1, error: error.message || '发送评论失败' })
+    }
+  })
+
+  // 删除评论（需登录且为本人）
+  app.post('/api/bilibili/comment/del', async (req, res) => {
+    const { aid, rpid } = req.body || {}
+    const cookie = req.body.cookie || req.query.cookie
+    if (!aid || !rpid) return res.status(400).json({ code: -1, error: 'aid/rpid 必填' })
+    if (!csrfOf(cookie)) return res.status(401).json({ code: -401, error: '需要登录（B 站扫码登录）' })
+    try {
+      const json = await postBiliForm(`${API_BASE}/x/v2/reply/del`, {
+        oid: String(aid),
+        rpid: String(rpid),
+      }, { cookie })
+      if (json.code !== 0) return res.status(502).json({ code: json.code, message: json.message || '删除评论失败' })
+      res.json({ code: 0 })
+    } catch (error) {
+      res.status(502).json({ code: -1, error: error.message || '删除评论失败' })
+    }
+  })
+
+  // 点赞/取消赞评论（action: 1 点赞，2 取消）
+  app.post('/api/bilibili/comment/like', async (req, res) => {
+    const { aid, rpid, action = 1 } = req.body || {}
+    const cookie = req.body.cookie || req.query.cookie
+    if (!aid || !rpid) return res.status(400).json({ code: -1, error: 'aid/rpid 必填' })
+    if (!csrfOf(cookie)) return res.status(401).json({ code: -401, error: '需要登录（B 站扫码登录）' })
+    try {
+      const json = await postBiliForm(`${API_BASE}/x/v2/reply/action`, {
+        oid: String(aid),
+        rpid: String(rpid),
+        action: String(action),
+      }, { cookie })
+      if (json.code !== 0) return res.status(502).json({ code: json.code, message: json.message || '评论点赞失败' })
+      res.json({ code: 0 })
+    } catch (error) {
+      res.status(502).json({ code: -1, error: error.message || '评论点赞失败' })
+    }
+  })
+
+  // 投币（multiply 1/2；select_like 1=同时点赞）
+  app.post('/api/bilibili/coin', async (req, res) => {
+    const { aid, multiply = 1, selectLike = 0 } = req.body || {}
+    const cookie = req.body.cookie || req.query.cookie
+    if (!aid) return res.status(400).json({ code: -1, error: 'aid 必填' })
+    if (!csrfOf(cookie)) return res.status(401).json({ code: -401, error: '需要登录（B 站扫码登录）' })
+    try {
+      const json = await postBiliForm(`${API_BASE}/x/web-interface/coin/add`, {
+        aid: String(aid),
+        multiply: String(multiply),
+        select_like: String(selectLike),
+        cross_domain: '1',
+      }, { cookie })
+      if (json.code !== 0) return res.status(502).json({ code: json.code, message: json.message || '投币失败' })
+      res.json({ code: 0, data: json.data })
+    } catch (error) {
+      res.status(502).json({ code: -1, error: error.message || '投币失败' })
+    }
+  })
+
+  // 视频点赞（like: 1 点赞，2 取消）
+  app.post('/api/bilibili/like', async (req, res) => {
+    const { aid, like = 1 } = req.body || {}
+    const cookie = req.body.cookie || req.query.cookie
+    if (!aid) return res.status(400).json({ code: -1, error: 'aid 必填' })
+    if (!csrfOf(cookie)) return res.status(401).json({ code: -401, error: '需要登录（B 站扫码登录）' })
+    try {
+      const json = await postBiliForm(`${API_BASE}/x/web-interface/archive/like`, {
+        aid: String(aid),
+        like: String(like),
+      }, { cookie })
+      if (json.code !== 0) return res.status(502).json({ code: json.code, message: json.message || '点赞失败' })
+      res.json({ code: 0 })
+    } catch (error) {
+      res.status(502).json({ code: -1, error: error.message || '点赞失败' })
+    }
+  })
+
+  // 收藏/取消收藏（type=2 视频；add_media_ids 添加，del_media_ids 取消）
+  app.post('/api/bilibili/fav', async (req, res) => {
+    const { aid, addMediaIds, delMediaIds } = req.body || {}
+    const cookie = req.body.cookie || req.query.cookie
+    if (!aid) return res.status(400).json({ code: -1, error: 'aid 必填' })
+    if (!csrfOf(cookie)) return res.status(401).json({ code: -401, error: '需要登录（B 站扫码登录）' })
+    try {
+      const json = await postBiliForm(`${API_BASE}/x/v3/fav/resource/deal`, {
+        rid: String(aid),
+        type: '2',
+        ...(addMediaIds ? { add_media_ids: String(addMediaIds) } : {}),
+        ...(delMediaIds ? { del_media_ids: String(delMediaIds) } : {}),
+      }, { cookie })
+      if (json.code !== 0) return res.status(502).json({ code: json.code, message: json.message || '收藏失败' })
+      res.json({ code: 0, data: json.data })
+    } catch (error) {
+      res.status(502).json({ code: -1, error: error.message || '收藏失败' })
+    }
+  })
+
+  // 交互状态汇总（未登录返回 0）：点赞态/投币数/今日剩余硬币/收藏态/收藏夹列表
+  app.get('/api/bilibili/interaction', async (req, res) => {
+    const aid = Number(req.query.aid)
+    if (!aid) return res.status(400).json({ code: -1, error: 'aid 必填' })
+    const cookie = req.query.cookie
+    const out = { isLike: 0, coin: 0, todayCoins: 0, favoured: 0, favFolders: [] }
+    try {
+      if (csrfOf(cookie)) {
+        // 收藏夹列表需要用户自己的 mid（DedeUserID），传 0 会返回空
+        const myMid = String(resolveBiliCookie(cookie) || '').match(/DedeUserID=(\d+)/)?.[1] || '0'
+        const [likeJson, coinsJson, todayJson, favedJson, favListJson] = await Promise.all([
+          fetchBiliJson(`${API_BASE}/x/web-interface/archive/has/like`, { params: { aid: String(aid) }, cookie }),
+          fetchBiliJson(`${API_BASE}/x/web-interface/archive/coins`, { params: { aid: String(aid) }, cookie }),
+          fetchBiliJson(`${API_BASE}/x/web-interface/coin/today`, { cookie }),
+          fetchBiliJson(`${API_BASE}/x/v2/fav/video/favoured`, { params: { aid: String(aid) }, cookie }),
+          fetchBiliJson(`${API_BASE}/x/v3/fav/folder/created/list-all`, { params: { up_mid: myMid, type: '2' }, cookie }),
+        ])
+        out.isLike = likeJson.data?.like === 1 ? 1 : 0
+        out.coin = Number(coinsJson.data?.multiply || 0)
+        out.todayCoins = Number(todayJson.data?.coins || 0)
+        out.favoured = favedJson.data?.favoured === 1 ? 1 : 0
+        out.favFolders = Array.isArray(favListJson.data?.list) ? favListJson.data.list.map((f) => ({ id: f.id, name: f.title || f.name })) : []
+      }
+      res.json({ code: 0, data: out })
+    } catch (error) {
+      res.status(502).json({ code: -1, error: error.message || '获取交互状态失败' })
     }
   })
 

@@ -18,6 +18,7 @@ import {
   getBilibiliSubtitleJson,
   bilibiliStreamUrl,
   pickBestSubtitle,
+  cleanSubtitleLines,
   formatBiliTime,
   qualityLabel,
   setBilibiliOverride,
@@ -122,8 +123,10 @@ export default function BilibiliVideoPlayerOverlay({ bvid, title, onClose, initi
             const chosen = pickBestSubtitle(subInfo.subtitles, subPref)
             if (chosen) {
               const lines = await getBilibiliSubtitleJson(chosen.cacheKey, controller.signal).catch(() => [] as BilibiliSubtitleLine[])
-              if (Array.isArray(lines) && lines.length) {
-                setSubtitles(lines)
+              // 清洗 AI 字幕噪音行（如整段只有"音乐"的分类标签），全噪音则视为无字幕
+              const clean = cleanSubtitleLines(lines)
+              if (clean.length) {
+                setSubtitles(clean)
                 setSubtitleOn(chosen.aiType === 0)
               }
             }

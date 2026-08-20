@@ -70,6 +70,25 @@ interface BilibiliMvBackgroundProps {
   enabled?: boolean
   /** 视频背景模糊度（px，独立于封面背景的模糊设置；默认 0 = 视频清晰显示） */
   blur?: number
+  /**
+   * 过渡目标歌曲（automix/无缝/普通切歌的 audio 过渡期间由 App 下发）。
+   * 过渡进行时提前匹配并预载目标 MV（新 MV 叠旧 MV 渐现，与封面过渡一致），
+   * 过渡提交后由主路径（songKey 变化）无缝接管。null = 无过渡。
+   */
+  transitionToTrack?: {
+    trackKey: string
+    coverUrl: string
+    title: string
+    artist: string
+    dominantColor?: string | null
+    duration?: number
+    platform?: string
+    id?: string | number
+  } | null
+  /** 过渡进度 0-1：过渡期预载的 MV 以其为透明度叠在旧 MV 上渐入 */
+  transitionProgress?: number
+  /** 当前歌曲在 App 层的稳定 trackKey（用于跳过"过渡目标就是当前歌"的重复预载） */
+  songTrackKey?: string
 }
 
 /** 上报给外部的播放状态（用于看歌无缝接管） */
@@ -111,6 +130,9 @@ export default function BilibiliMvBackground({
   onPlayStateChange,
   enabled = true,
   blur = 0,
+  transitionToTrack = null,
+  transitionProgress = 0,
+  songTrackKey = '',
 }: BilibiliMvBackgroundProps) {
   const slotARef = useRef<HTMLVideoElement>(null)
   const slotBRef = useRef<HTMLVideoElement>(null)
@@ -135,15 +157,36 @@ export default function BilibiliMvBackground({
   const wasEnabledRef = useRef(enabled)
   wasEnabledRef.current = wasEnabledRef.current || enabled
   const searchedSongKeyRef = useRef('')
-  // A/B 双视频槽位：切歌时旧视频继续播放，新视频在另一槽位缓冲好后交叉淡入（封面式过渡，无黑屏）
+  // A/B 双视频槽位：切歌时旧视频继续播放，新视频在另一槽位缓冲好后盖在旧视频上渐入（封面式过渡，无黑屏）
   const [slotAUrl, setSlotAUrl] = useState<string | null>(null)
   const [slotBUrl, setSlotBUrl] = useState<string | null>(null)
   const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A')
   const activeSlotRef = useRef<'A' | 'B'>('A')
-  // 已放入但未淡入的槽位（等待 canplay）；淡出中的槽位（过渡期间不参与同步，避免被 seek 到新歌位置跳变）
+  // 正在盖在旧视频上渐入的新槽（opacity 0→1，promote 后成为 active 并清掉旧槽）
+  const [incomingSlot, setIncomingSlot] = useState<'A' | 'B' | null>(null)
+  const incomingSlotRef = useRef<'A' | 'B' | null>(null)
+  // 首个视频渐入：组件刚启用/首首歌时没有旧视频可叠，视频在封面上方从透明渐入
+  const [firstFadeDone, setFirstFadeDone] = useState(false)
+  const firstFadeDoneRef = useRef(false)
+  // 已放入但未淡入的槽位（等待 canplay / 过渡期由 transitionProgress 驱动）
   const stagedSlotRef = useRef<'A' | 'B' | null>(null)
-  const fadingOutSlotRef = useRef<'A' | 'B' | null>(null)
   const crossfadeTimerRef = useRef<number | null>(null)
+  // 过渡目标去重：同一目标只预载一次（切歌/过渡结束在主路径重置）
+  const lastTransitionTargetRef = useRef('')
+  // 过渡激活状态经 ref 读取：同步循环/事件处理器等长生命闭包需要最新值（effect 依赖不含该 prop）
+  const transitionActiveRef = useRef(false)
+  // 当前歌曲 key 的最新渲染值：主路径 effect 的闭包可能捕获旧 songTrackKey（commit 时序），
+  // 接管判断必须用 ref 读取最新值，否则预载（下一曲）与旧 key 不匹配 → 显示上一曲 MV
+  const songTrackKeyRef = useRef(songTrackKey)
+  songTrackKeyRef.current = songTrackKey
+  // 过渡预载状态：commit 时主路径据此直接接管预载视频（跳过重新搜索/拉流），
+  // 避免过渡结束后重拉 playurl + 视频重载导致旧 MV 回显约 1s；failed 时主路径走正常流程
+  const transitionPreloadRef = useRef<{ trackKey: string; failed: boolean } | null>(null)
+  // 最新过渡目标（ref）：预载 effect 的 cleanup 需要判断"是过渡目标被替换还是 commit"。
+  // React 先跑旧 effect 的 cleanup 再跑新 effect——commit 时 songTrackKey 变化也会触发
+  // 该 effect 重跑，若 cleanup 无脑清预载，主路径接管时预载已丢失 → 封面重载数秒。
+  const transitionTargetRef = useRef(transitionToTrack)
+  transitionTargetRef.current = transitionToTrack
   const [candidates, setCandidates] = useState<CandidateScore[]>([])
   const [showCandidates, setShowCandidates] = useState(false)
   const [notice, setNotice] = useState('')
@@ -157,13 +200,32 @@ export default function BilibiliMvBackground({
   }, [])
 
   const slotUrl = (slot: 'A' | 'B') => (slot === 'A' ? slotAUrl : slotBUrl)
-  const slotOpacity = (slot: 'A' | 'B') => (slot === activeSlot ? 1 : 0)
+  // 过渡期（automix/无缝/普通切歌的 audio 过渡期间）为 true：预载的目标 MV 以 transitionProgress 叠在旧 MV 上渐入
+  const transitionActive = Boolean(transitionToTrack?.trackKey)
+  transitionActiveRef.current = transitionActive
+  const slotOpacity = (slot: 'A' | 'B') => {
+    if (slot === incomingSlot) return 1
+    if (slot === activeSlot) return firstFadeDone ? 1 : 0
+    if (transitionActive && stagedSlotRef.current === slot) return transitionProgress
+    return 0
+  }
+  // 过渡期槽位透明度跟随 progress（~30ms 级更新）用短过渡平滑；其余槽位保持常规 0.65s 渐入
+  const slotTransition = (slot: 'A' | 'B') =>
+    transitionActive && stagedSlotRef.current === slot ? 'opacity 120ms linear' : 'opacity 0.65s ease'
+  // 分层：正在渐入的新视频（incoming / 过渡期预载槽）必须置顶，否则会被 opacity:1 的旧视频盖住
+  // （A/B 槽 DOM 顺序固定，B 天然在 A 之上；不显式分层时"新盖旧"只在 B 槽才可见）
+  const slotZIndex = (slot: 'A' | 'B') => {
+    if (slot === incomingSlot) return 2
+    if (transitionActive && stagedSlotRef.current === slot) return 2
+    if (slot === activeSlot) return 1
+    return 0
+  }
   const slotEl = (slot: 'A' | 'B') => (slot === 'A' ? slotARef.current : slotBRef.current)
   const activeEl = () => slotEl(activeSlotRef.current)
   const otherSlot = (slot: 'A' | 'B') => (slot === 'A' ? 'B' : 'A')
 
   const loadVideo = useCallback(
-    (candidate: CandidateScore, chainIndex = 0) => {
+    (candidate: CandidateScore, chainIndex = 0, stagedOnly = false) => {
       const controller = new AbortController()
       searchControllerRef.current?.abort()
       searchControllerRef.current = controller
@@ -197,27 +259,30 @@ export default function BilibiliMvBackground({
             // 首个视频 / 同一视频：直接进当前槽位，无需过渡
             if (activeSlotRef.current === 'A') setSlotAUrl(newVideoUrl)
             else setSlotBUrl(newVideoUrl)
-            if (fadingOutSlotRef.current) {
-              const deadSlot = fadingOutSlotRef.current
-              if (deadSlot === 'A') setSlotAUrl(null)
-              else setSlotBUrl(null)
-              fadingOutSlotRef.current = null
-            }
             stagedSlotRef.current = null
           } else {
-            // 换歌：新视频放另一槽位（隐藏缓冲），canplay 后交叉淡入
+            // 换歌：新视频放另一槽位（隐藏缓冲），canplay 后盖在旧视频上渐入
             const stage = otherSlot(activeSlotRef.current)
             stagedSlotRef.current = stage
-            // 目标槽还在上一轮淡出中：取消其清理定时器，直接复用该槽
-            if (fadingOutSlotRef.current === stage) {
-              fadingOutSlotRef.current = null
-              if (crossfadeTimerRef.current) {
-                window.clearTimeout(crossfadeTimerRef.current)
-                crossfadeTimerRef.current = null
-              }
+            // 该槽正作为新视频淡入/待晋升：新目标顶掉它，取消旧晋升定时器并重置 incoming（避免残留 opacity:1 直接弹出）
+            if (crossfadeTimerRef.current) {
+              window.clearTimeout(crossfadeTimerRef.current)
+              crossfadeTimerRef.current = null
+            }
+            if (incomingSlotRef.current === stage) {
+              incomingSlotRef.current = null
+              setIncomingSlot(null)
             }
             if (stage === 'A') setSlotAUrl(newVideoUrl)
             else setSlotBUrl(newVideoUrl)
+            // 过渡期预载的目标视频已在槽内且就绪：canplay 不会再次触发。
+            // stagedOnly（预载路径）时**不 beginCrossfade**——预载只需缓冲，active 槽
+            // 切换必须等 commit 时主路径接管；否则 active 提前切到下一曲、旧槽 1s 后被
+            // 清空 → commit 时 staged 已消费、无槽可接管 → 重新搜索 → MV 残留/张冠李戴。
+            const stageEl = slotEl(stage)
+            if (stageEl && (stageEl.currentSrc || stageEl.src) === newVideoUrl && stageEl.readyState >= 2) {
+              if (!stagedOnly) beginCrossfade(stage)
+            }
           }
           setStatus('playing')
           onPlayStateChangeRef.current?.({ ...lastPlayStateRef.current, currentTime: activeEl()?.currentTime || 0 })
@@ -240,23 +305,30 @@ export default function BilibiliMvBackground({
     [songKey, showNotice],
   )
 
-  // 待淡入槽位的视频缓冲完成 → 开始交叉过渡：新槽 0→1，旧槽 1→0，淡出完成后释放旧槽
+  // 待淡入槽位的视频缓冲完成 → 开始过渡：新槽盖在旧槽上 0→1 渐现（封面式"视频过渡"），
+  // 完成后新槽晋升为 active 并释放旧槽。快速切歌时该槽若已被新目标顶掉，定时器直接放弃本次晋升。
   const beginCrossfade = (slot: 'A' | 'B') => {
     if (stagedSlotRef.current !== slot) return
     const prevActive = activeSlotRef.current
     stagedSlotRef.current = null
-    fadingOutSlotRef.current = prevActive
-    activeSlotRef.current = slot
-    setActiveSlot(slot)
+    incomingSlotRef.current = slot
+    setIncomingSlot(slot)
     setStatus('playing')
     if (crossfadeTimerRef.current) window.clearTimeout(crossfadeTimerRef.current)
     crossfadeTimerRef.current = window.setTimeout(() => {
-      // 旧槽已不再 active 才清空（快速切歌时该槽可能已被新视频复用）
+      crossfadeTimerRef.current = null
+      // 该槽已被更新的目标顶掉（incoming 被重置）：放弃本次晋升
+      if (incomingSlotRef.current !== slot) return
+      activeSlotRef.current = slot
+      incomingSlotRef.current = null
+      setActiveSlot(slot)
+      setIncomingSlot(null)
+      firstFadeDoneRef.current = true
+      setFirstFadeDone(true)
+      // 旧槽已被新槽盖住：清空释放（快速切歌时该槽可能已被新视频复用，复用则跳过）
       if (prevActive === 'A' && activeSlotRef.current !== 'A') setSlotAUrl(null)
       else if (prevActive === 'B' && activeSlotRef.current !== 'B') setSlotBUrl(null)
-      fadingOutSlotRef.current = null
-      crossfadeTimerRef.current = null
-    }, 850)
+    }, 1000)
   }
 
   // 切歌/首次挂载：自动匹配当前歌曲（仅 songKey 变化才重跑，避免 App 每 ~1s 重渲染导致视频反复卸载）。
@@ -266,6 +338,48 @@ export default function BilibiliMvBackground({
     // 开关关闭但此前启用过：保留已加载视频，不重复搜索（开关打开时 enabled 变化会再触发）
     if (!enabled && searchedSongKeyRef.current === songKey) return
     searchedSongKeyRef.current = songKey
+    // 新歌就位：过渡目标去重标记重置，后续同目标的过渡重新预载
+    lastTransitionTargetRef.current = ''
+    // 歌曲已切换：若新歌 MV 未就绪，立即隐藏旧歌 MV（封面兜底），
+    // 避免"过渡完毕到下一曲"后仍显示上一曲 MV；新 MV 就绪后由 canplay 淡入
+    const hideOldMv = () => {
+      const active = activeSlotRef.current
+      if (active === 'A') setSlotAUrl(null)
+      else setSlotBUrl(null)
+    }
+    // 过渡预载接管：预载目标即当前歌时直接晋升预载视频（就绪即过渡、未就绪等 canplay），
+    // 跳过重新搜索/拉流——否则 commit 瞬间会重拉 playurl + 视频重载，旧 MV 回显约 1s。
+    // 用 songTrackKeyRef（最新渲染值）而非本 effect 闭包捕获的 songTrackKey——commit 时
+    // 若 App 的 currentSong 更新与本 effect 触发不在同一渲染，闭包可能还是**上一曲**的 key，
+    // 预载（下一曲）与之不匹配 → 重新搜索旧歌 MV → commit 后显示上一曲 MV（用户实测"张冠李戴"）。
+    const preload = transitionPreloadRef.current
+    transitionPreloadRef.current = null
+    const currentKey = songTrackKeyRef.current
+    if (preload && !preload.failed && preload.trackKey === currentKey) {
+      const staged = stagedSlotRef.current
+      console.log('[MvBackground] commit 接管预载 ✓', songTrackKey, '| staged:', staged || '无', '| readyState:', staged ? slotEl(staged)?.readyState : '-')
+      if (staged) {
+        const stagedEl = slotEl(staged)
+        if (stagedEl && stagedEl.readyState >= 2) {
+          beginCrossfade(staged)
+          setStatus('playing')
+          return
+        }
+        // 已放 URL 未就绪：保留缓冲，等 canplay → beginCrossfade（不重拉流丢弃已缓冲数据）
+        hideOldMv()
+        return
+      }
+      // 预载拉流中（尚未放 URL）：不打断，预载 loadVideo 完成后由 canplay 接管
+      hideOldMv()
+      return
+    }
+    // 无预载（普通切歌/预载失败）：旧 MV 立即隐藏，等新 MV 搜索加载好后淡入
+    if (!preload) {
+      console.log('[MvBackground] commit 时无预载（未触发/已消费）→ 重新搜索', songTrackKey)
+    } else {
+      console.log('[MvBackground] commit 预载不可用（failed 或目标不匹配）', preload.trackKey, '≠', songTrackKey)
+    }
+    hideOldMv()
     let cancelled = false
     const controller = new AbortController()
     searchControllerRef.current?.abort()
@@ -274,7 +388,8 @@ export default function BilibiliMvBackground({
     fallbackChainRef.current = []
     lastPlayStateRef.current = null
     onPlayStateChangeRef.current?.(null) // 旧歌曲视频作废，切看歌时不复用
-    // 不清空当前视频：切歌时旧视频继续播放，新视频加载好后交叉淡入（封面式过渡，无黑屏闪断）
+    // 旧 MV 已在上方隐藏（封面兜底）：歌曲已切换，不能再展示上一曲画面；
+    // 新 MV 搜索加载好后由 canplay → beginCrossfade 淡入
     setStatus('searching')
     setShowCandidates(false)
     setCandidates([])
@@ -323,6 +438,76 @@ export default function BilibiliMvBackground({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [songKey, JSON.stringify(upcomingSongs || [])])
 
+  // 过渡目标预载：automix/无缝/普通切歌的 audio 过渡期间（commit 之前 currentSong 未变），
+  // App 下发 transitionToTrack——提前匹配并缓冲目标歌 MV，用 transitionProgress 盖在旧 MV 上渐现，
+  // 与封面过渡同步；过渡提交后主路径（songKey 变化）无缝接管。目标即当前歌/未启用时跳过。
+  useEffect(() => {
+    const target = transitionToTrack
+    if (!target?.trackKey) return
+    if (!enabled) return
+    if (target.trackKey === songTrackKey) return
+    if (target.trackKey === lastTransitionTargetRef.current) return
+    lastTransitionTargetRef.current = target.trackKey
+    const controller = new AbortController()
+    searchControllerRef.current?.abort()
+    searchControllerRef.current = controller
+    // 标记预载进行中：commit 时主路径据此直接接管，跳过重新搜索/拉流（避免旧 MV 回显 1s）
+    transitionPreloadRef.current = { trackKey: target.trackKey, failed: false }
+    console.log('[MvBackground] 过渡预载开始 →', target.trackKey, '| 当前歌:', songTrackKey)
+    const markFailed = () => {
+      if (transitionPreloadRef.current?.trackKey === target.trackKey) {
+        transitionPreloadRef.current = { trackKey: target.trackKey, failed: true }
+      }
+    }
+    void (async () => {
+      try {
+        const ctx: MatchContext = {
+          songTitle: target.title || '',
+          artists: (target.artist || '').split(',').map((s) => s.trim()).filter(Boolean),
+          songDuration: typeof target.duration === 'number' && target.duration > 0
+            ? target.duration
+            : songRef.current.songDuration,
+          platform: target.platform,
+          id: target.id,
+        }
+        const result = await findBestBilibiliMv(ctx, { signal: controller.signal })
+        if (controller.signal.aborted || searchControllerRef.current !== controller) return
+        if (result.status === 'auto' && result.best) {
+          console.log('[MvBackground] 过渡预载命中 →', result.best.video.title || result.best.video.bvid, '| 开始拉流（仅缓冲，不切换）')
+          fallbackChainRef.current = result.fallbackChain
+          loadVideo(result.best, 0, true)
+        } else {
+          // confirm/none/error 静默：标记失败，让主路径在提交后用完整上下文重新匹配（结果按歌缓存 24h）
+          console.log('[MvBackground] 过渡预载未命中（confirm/none/error）', result.status)
+          markFailed()
+        }
+      } catch {
+        markFailed()
+      }
+    })()
+    return () => {
+      // 过渡目标被替换成**另一首有效歌曲**时才清理旧目标的预载/缓冲槽；
+      // transitionToTrack 被清空（commit 后 App 释放目标引用）时**保留**预载——
+      // 主路径（songKey 变化）在 commit 后无缝接管，否则预载视频被丢弃 →
+      // 重新搜索 → 封面背景重载数秒（用户反复反馈的问题）。
+      const currentTarget = transitionTargetRef.current
+      if (currentTarget?.trackKey && currentTarget.trackKey !== target.trackKey) {
+        console.log('[MvBackground] 过渡目标被替换，清理旧预载', target.trackKey, '→', currentTarget.trackKey)
+        transitionPreloadRef.current = null
+        controller.abort()
+        const staged = stagedSlotRef.current
+        if (staged) {
+          stagedSlotRef.current = null
+          if (staged === 'A') setSlotAUrl(null)
+          else setSlotBUrl(null)
+        }
+      } else if (transitionTargetRef.current === null || transitionTargetRef.current?.trackKey === undefined) {
+        console.log('[MvBackground] commit 后目标清空，保留预载给主路径接管', target.trackKey)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transitionToTrack?.trackKey, songTrackKey, enabled])
+
   // 死胡同状态（未找到 / 匹配失败 / 播放失败 / 候选条被关闭）→ 通知外部回退到普通封面背景；
   // 恢复播放（搜索中/加载中/候选选择中）→ 通知取消回退。外部据此在 MV 层与封面层之间切换。
   useEffect(() => {
@@ -333,7 +518,8 @@ export default function BilibiliMvBackground({
   // 同步循环：视频时间 = 音频位置 % 视频时长，偏差超阈值才 seek。
   // fMP4 的 duration 在缓冲期不稳定，且反复 seek 会触发重新缓冲（黑屏）；
   // 因此只在 readyState>=2、非 seeking、时长有限时校正，阈值 0.9s（原 1.5s 时漂移可感知）。
-  // 双槽位：pendingStage 期间当前槽自由播放（避免被 seek 到新歌位置跳变），淡出槽不参与同步。
+  // 双槽位：pendingStage 期间当前槽自由播放（避免被 seek 到新歌位置跳变），
+  // 过渡期预载槽同样自由播放，等提交后主路径接管再同步。
   useEffect(() => {
     if (!isPlaying || !enabled) {
       for (const ref of [slotARef, slotBRef]) {
@@ -351,7 +537,8 @@ export default function BilibiliMvBackground({
         if (!video || !audio) continue
         const isActive = slot === activeSlotRef.current
         if (pendingStage && isActive) continue
-        if (slot === fadingOutSlotRef.current) continue
+        // 过渡期预载的目标 MV（盖在旧 MV 上渐入中）：自由播放，等提交后主路径接管再同步，避免 seek 到旧歌位置跳变
+        if (transitionActiveRef.current && stagedSlotRef.current === slot) continue
         const target = computeMvSyncTarget(audio.currentTime, video.duration)
         if (target !== null && video.readyState >= 2 && !video.seeking && shouldSeekMvVideo(video.currentTime, target, 0.9)) {
           video.currentTime = target
@@ -397,6 +584,40 @@ export default function BilibiliMvBackground({
     loadVideo(candidate)
   }
 
+  // 视频缓冲完成：
+  // - staged 槽：过渡期由 transitionProgress 驱动渐入（提交后主路径接管）；否则开始盖在旧视频上的渐入过渡
+  // - 直进当前槽（首个视频/同一视频）：未渐入过则触发首个渐入（封面兜底→视频淡入）
+  const handleCanPlay = (slot: 'A' | 'B') => {
+    if (stagedSlotRef.current === slot) {
+      // staged 槽是"过渡预载"（transitionPreloadRef 未消费）或过渡动画进行中时：
+      // 一律不在此切换 active——预载只需缓冲，切换统一由 commit 后主路径接管
+      // （beginCrossfade），否则 active 提前切走/旧槽被清，commit 时无槽可接管 → MV 残留。
+      const preloading = Boolean(transitionPreloadRef.current && !transitionPreloadRef.current.failed)
+      if (transitionActive || preloading) return
+      beginCrossfade(slot)
+      return
+    }
+    if (slot === activeSlotRef.current && !firstFadeDoneRef.current) {
+      firstFadeDoneRef.current = true
+      setFirstFadeDone(true)
+    }
+  }
+
+  // 视频加载失败：清掉该槽的 staged/incoming 标记并释放 URL；若正是当前播放槽则进入 error 回退
+  const handleVideoError = (slot: 'A' | 'B') => {
+    if (stagedSlotRef.current === slot) stagedSlotRef.current = null
+    if (incomingSlotRef.current === slot) {
+      incomingSlotRef.current = null
+      setIncomingSlot(null)
+    }
+    if (slot === 'A') setSlotAUrl(null)
+    else setSlotBUrl(null)
+    if (activeSlotRef.current === slot) {
+      setStatus('error')
+      showNotice('MV 播放失败')
+    }
+  }
+
   const dark = playerTheme !== 'light'
 
   return (
@@ -415,23 +636,18 @@ export default function BilibiliMvBackground({
         className="absolute inset-0 h-full w-full object-cover"
         style={{
           opacity: slotOpacity('A'),
-          transition: 'opacity 0.65s ease',
+          transition: slotTransition('A'),
+          zIndex: slotZIndex('A'),
           display: slotAUrl ? undefined : 'none',
-          filter: blur > 0 ? `blur(${blur}px) scale(1.08)` : undefined,
+          // scale() 不是合法的 filter 函数（filter 里写 blur+scale 整条被浏览器丢弃，模糊永不生效），
+          // 放大 1.08 盖住模糊边缘改用 transform 承担
+          filter: blur > 0 ? `blur(${blur}px)` : undefined,
+          transform: blur > 0 ? 'scale(1.08)' : undefined,
         }}
-        onCanPlay={() => beginCrossfade('A')}
-        onError={() => {
-          const slot = 'A'
-          if (stagedSlotRef.current === slot) stagedSlotRef.current = null
-          else if (fadingOutSlotRef.current === slot) fadingOutSlotRef.current = null
-          setSlotAUrl(null)
-          if (activeSlotRef.current === slot) {
-            setStatus('error')
-            showNotice('MV 播放失败')
-          }
-        }}
+        onCanPlay={() => handleCanPlay('A')}
+        onError={() => handleVideoError('A')}
       />
-      {/* B 槽视频：换歌时新视频在此缓冲后交叉淡入 */}
+      {/* B 槽视频：换歌时新视频在此缓冲后盖在旧视频上渐入 */}
       <video
         ref={slotBRef}
         src={slotBUrl ?? undefined}
@@ -442,21 +658,14 @@ export default function BilibiliMvBackground({
         className="absolute inset-0 h-full w-full object-cover"
         style={{
           opacity: slotOpacity('B'),
-          transition: 'opacity 0.65s ease',
+          transition: slotTransition('B'),
+          zIndex: slotZIndex('B'),
           display: slotBUrl ? undefined : 'none',
-          filter: blur > 0 ? `blur(${blur}px) scale(1.08)` : undefined,
+          filter: blur > 0 ? `blur(${blur}px)` : undefined,
+          transform: blur > 0 ? 'scale(1.08)' : undefined,
         }}
-        onCanPlay={() => beginCrossfade('B')}
-        onError={() => {
-          const slot = 'B'
-          if (stagedSlotRef.current === slot) stagedSlotRef.current = null
-          else if (fadingOutSlotRef.current === slot) fadingOutSlotRef.current = null
-          setSlotBUrl(null)
-          if (activeSlotRef.current === slot) {
-            setStatus('error')
-            showNotice('MV 播放失败')
-          }
-        }}
+        onCanPlay={() => handleCanPlay('B')}
+        onError={() => handleVideoError('B')}
       />
 
       {/* 搜索/加载指示 */}

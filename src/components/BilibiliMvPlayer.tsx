@@ -15,9 +15,27 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Play, Pause, Volume2, VolumeX, ChevronLeft, ChevronRight,
   Search, X, Subtitles, CaptionsOff, ArrowLeft, RefreshCw, Eye, Clock, ListVideo, Music,
-  Settings as SettingsIcon, ThumbsDown, RotateCcw, Home, ListMusic, Info, AudioLines, MessageCircle, MessageCircleOff, PlayCircle,
+  Settings as SettingsIcon, ThumbsDown, RotateCcw, Home, ListMusic, Info, AudioLines, MessageCircle, MessageCircleOff, PlayCircle, Shuffle,
 } from 'lucide-react'
 import { useTvMode, useTvBack } from '../tv/tvCore'
+
+/** B 站小电视图标（简化版 logo：圆角机身 + 顶部双鳍天线 + 屏幕） */
+function BiliTvIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      {/* 顶部双鳍天线 */}
+      <path d="M8 5 L6.4 2.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M16 5 L17.6 2.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      {/* 圆角机身 */}
+      <rect x="3.5" y="5" width="17" height="12.5" rx="2.2" stroke="currentColor" strokeWidth="1.6" />
+      {/* 屏幕（内含播放三角） */}
+      <rect x="6" y="7.5" width="12" height="7" rx="1.4" fill="currentColor" />
+      <path d="M10.4 9.4v3.4l3-1.7-3-1.7z" fill="#FB7299" />
+      {/* 底座 */}
+      <rect x="9.5" y="18.2" width="5" height="1.6" rx="0.8" fill="currentColor" />
+    </svg>
+  )
+}
 import {
   findBestBilibiliMv,
   getBilibiliPlayUrl,
@@ -47,6 +65,7 @@ import {
   saveBilibiliWatchSettings,
   getLocalMvMark,
   saveLocalMvMark,
+  cleanSubtitleLines,
   WATCH_SETTINGS_EVENT,
   type DanmakuSettings,
   type BilibiliDanmakuItem,
@@ -60,9 +79,11 @@ import {
 import BilibiliLoginPanel from './BilibiliLoginPanel'
 import BilibiliWatchSettingsModal from './BilibiliWatchSettingsModal'
 import BilibiliProfileModal from './BilibiliProfileModal'
+import BilibiliInteractPanel from './BilibiliInteractPanel'
 import DanmakuLayer from './DanmakuLayer'
 import { useColorThief } from '../hooks/useColorThief'
-import { AudioEffectsEngine } from '../services/audio-effects-v2/AudioEffectsEngine'
+import { getEngineAdapter, getAvailableEngineIds, type IAudioEngineAdapter, type AudioGraphHandle } from '../services/audio-engine'
+import { getAudioEngineVersion } from '../services/audioEngineVersion'
 import { loadPlaybackShortcutSettings } from '../services/playbackShortcutSettings'
 import { autoMixAnalysisService } from '../services/autoMixAnalysisService'
 
@@ -85,6 +106,8 @@ interface BilibiliMvPlayerProps {
   platform?: string
   songId?: string | number
   playerTheme?: 'light' | 'dark'
+  /** 全局音量（0-1，单一数据源）：与其它播放模式同步，改动经 onVideoStateChange 回写 */
+  volume?: number
   onNext: () => void
   onPrevious: () => void
   /** 退回音频歌词模式 */
@@ -158,6 +181,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     platform,
     songId,
     playerTheme = 'dark',
+    volume: volumeProp = 0.7,
     onNext,
     onPrevious,
     onBackToAudio,
@@ -189,8 +213,8 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  /** 视频音效引擎：DASH 音频轨经 Web Audio 效果链输出（与调音室同引擎、同设置） */
-  const videoEffectsRef = useRef<{ ctx: AudioContext; engine: AudioEffectsEngine } | null>(null)
+  /** 视频音效引擎：DASH 音频轨经统一音效 adapter（v1/v2/HSE 同 App 引擎）效果链输出 */
+  const videoEffectsRef = useRef<{ ctx: AudioContext; adapter: IAudioEngineAdapter } | null>(null)
   /** 续播目标位置（音频秒数；加载新视频后 seek 一次即清除） */
   const initialSeekSecondsRef = useRef<number | null>(initialSeekSeconds ?? null)
   /** 引擎实时位置读取器：App 传的内联函数每次渲染都是新引用，经 ref 读取避免事件绑定 effect 反复重建 */
@@ -236,6 +260,9 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
   settingsRef.current = settings
 
   const [loginReady, setLoginReady] = useState(() => isBilibiliLoggedIn())
+  const [showBiliPanel, setShowBiliPanel] = useState(false)
+  const showBiliPanelRef = useRef(false)
+  showBiliPanelRef.current = showBiliPanel
   const [showLogin, setShowLogin] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
@@ -259,6 +286,31 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
   const [subtitles, setSubtitles] = useState<BilibiliSubtitleLine[]>([])
   const [subtitleOn, setSubtitleOn] = useState(false)
   const [currentSubtitle, setCurrentSubtitle] = useState('')
+  // CC 字幕垂直位置（距底部 px，可拖拽 + 持久记忆）
+  const [subtitlePos, setSubtitlePos] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('bilibili_subtitle_pos'))
+    return Number.isFinite(saved) && saved >= 8 && saved <= 320 ? saved : 176
+  })
+  const subtitlePosRef = useRef(subtitlePos)
+  subtitlePosRef.current = subtitlePos
+  const subtitleDragRef = useRef<{ startY: number; startPos: number } | null>(null)
+  const onSubtitlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    subtitleDragRef.current = { startY: e.clientY, startPos: subtitlePosRef.current }
+  }
+  const onSubtitlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!subtitleDragRef.current) return
+    const next = Math.max(8, Math.min(320, subtitleDragRef.current.startPos - (e.clientY - subtitleDragRef.current.startY)))
+    setSubtitlePos(next)
+    subtitlePosRef.current = next
+  }
+  const onSubtitlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    subtitleDragRef.current = null
+    e.currentTarget.releasePointerCapture?.(e.pointerId)
+    try { localStorage.setItem('bilibili_subtitle_pos', String(subtitlePosRef.current)) } catch { /* 忽略 */ }
+  }
   // 用户手动开关字幕的选择：非 null 时跨歌保持（加载新歌不再被默认值覆盖回开）
   const subtitleUserChoiceRef = useRef<boolean | null>(null)
 
@@ -278,16 +330,26 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
   // 播放器控件
   const [isPlaying, setIsPlaying] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
-  const [volume, setVolume] = useState(() => {
-    const saved = Number(localStorage.getItem(VOLUME_KEY))
-    return Number.isFinite(saved) && saved >= 0 && saved <= 1 ? saved : 0.8
-  })
+  const [volume, setVolume] = useState(() => (
+    Number.isFinite(volumeProp) && (volumeProp as number) >= 0 && (volumeProp as number) <= 1 ? (volumeProp as number) : 0.7
+  ))
+  // 全局音量（单一数据源）变化 → 同步本机音量（其它播放模式调整音量后看歌跟随）
+  useEffect(() => {
+    if (!Number.isFinite(volumeProp) || (volumeProp as number) < 0 || (volumeProp as number) > 1) return
+    setVolume(volumeProp as number)
+    setIsMuted(volumeProp === 0)
+    const audio = audioRef.current
+    if (audio) audio.volume = volumeProp as number
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [volumeProp])
   const [videoTime, setVideoTime] = useState(0)
   const [videoDuration, setVideoDuration] = useState(0)
   // 底部控制条 / 左上角歌曲信息：联动自动隐藏（无操作 2 秒后隐藏，带动画）
   const [showControls, setShowControls] = useState(true)
   const [showTopInfo, setShowTopInfo] = useState(true)
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
+  const showVolumeSliderRef = useRef(false)
+  showVolumeSliderRef.current = showVolumeSlider
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showReplay, setShowReplay] = useState(false)
   const [showPicker, setShowPicker] = useState(false)
@@ -324,7 +386,8 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     clearControlsTimer()
     if (tvMode || !settingsRef.current.autoHideControls) return
     controlsTimerRef.current = window.setTimeout(() => {
-      if (videoRef.current && !videoRef.current.paused) {
+      // 音量小药丸打开时不隐藏控件（避免小药丸被一起收走）；由再次点击音量按钮关闭
+      if (videoRef.current && !videoRef.current.paused && !showVolumeSliderRef.current) {
         setShowControls(false)
         setShowTopInfo(false)
         // 底部栏隐藏时同时收回音量条/画质菜单，避免下次显示时残留
@@ -350,7 +413,8 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     if (inBottom) {
       setShowTopInfo(true)
       setShowControls(true)
-      scheduleControlsHide()
+      // 悬停在底部栏/弹出菜单上时不安排自动隐藏：用户正在选择要点的按钮，
+      // 鼠标移出底部区域（或离开容器）后才会走 scheduleControlsHide
     } else if (inTopLeft) {
       setShowTopInfo(true)
       setShowControls(false)
@@ -453,7 +517,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
             if (controller.signal.aborted) return
             try {
               const dm = await getBilibiliDanmaku(cid, controller.signal)
-              if (dm.code === 0) setDanmakuItems(dm.danmaku || [])
+              if (dm.code === 0) setDanmakuItems((dm.danmaku || []).slice().sort((a, b) => a.time - b.time))
               else if (attempt === 0) window.setTimeout(() => void loadDanmaku(1), 1500)
             } catch {
               if (attempt === 0) window.setTimeout(() => void loadDanmaku(1), 1500)
@@ -471,8 +535,10 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
                   const chosen = pickBestSubtitle(subInfo.subtitles, subPref)
                   if (chosen) {
                     const lines = await getBilibiliSubtitleJson(chosen.cacheKey, controller.signal)
-                    if (Array.isArray(lines) && lines.length) {
-                      setSubtitles(lines)
+                    // 清洗 AI 字幕噪音行（如整段只有"音乐"的分类标签），全噪音则视为无字幕
+                    const clean = cleanSubtitleLines(lines)
+                    if (clean.length) {
+                      setSubtitles(clean)
                       // 已按用户偏好选出字幕（subPref !== 'off'）→ 默认开启；
                       // 用户手动开关过（subtitleUserChoiceRef 非 null）则跨歌保持其选择，不强制开
                       setSubtitleOn(subtitleUserChoiceRef.current ?? true)
@@ -635,7 +701,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
       const session = videoEffectsRef.current
       if (session) {
         videoEffectsRef.current = null
-        try { session.engine.dispose() } catch { /* 忽略 */ }
+        try { session.adapter.dispose() } catch { /* 忽略 */ }
         try { void session.ctx.close() } catch { /* 忽略 */ }
       }
     }
@@ -793,21 +859,38 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     }
   }
 
-  // 音量弹出式小药丸（竖向，位于按钮上方）：点击展开，移出 2 秒收起
+  // 音量滑条（内联在底部控件栏内）：点击展开；鼠标离开音量区域约 1.5 秒后自动收回
+  const volumeHoverRef = useRef(false)
+  const volumeCloseTimerRef = useRef<number | null>(null)
+
   const toggleVolumeSlider = (e: React.MouseEvent) => {
     e.stopPropagation()
-    setShowVolumeSlider((v) => !v)
+    const next = !showVolumeSlider
+    setShowVolumeSlider(next)
+    if (next) {
+      volumeHoverRef.current = true
+    } else {
+      volumeHoverRef.current = false
+      if (volumeCloseTimerRef.current !== null) window.clearTimeout(volumeCloseTimerRef.current)
+      volumeCloseTimerRef.current = null
+    }
   }
 
   const handleVolumeMouseEnter = () => {
-    if (volumeTimerRef.current !== null) window.clearTimeout(volumeTimerRef.current)
-    volumeTimerRef.current = null
+    volumeHoverRef.current = true
+    if (volumeCloseTimerRef.current !== null) window.clearTimeout(volumeCloseTimerRef.current)
+    volumeCloseTimerRef.current = null
     clearControlsTimer()
   }
 
   const handleVolumeMouseLeave = () => {
-    if (volumeTimerRef.current !== null) window.clearTimeout(volumeTimerRef.current)
-    volumeTimerRef.current = window.setTimeout(() => setShowVolumeSlider(false), 2000)
+    volumeHoverRef.current = false
+    // 离开音量区域：1.5 秒后自动收回滑条
+    if (volumeCloseTimerRef.current !== null) window.clearTimeout(volumeCloseTimerRef.current)
+    volumeCloseTimerRef.current = window.setTimeout(() => {
+      volumeCloseTimerRef.current = null
+      setShowVolumeSlider(false)
+    }, 1500)
   }
 
   const setVolumeFromPointer = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -828,6 +911,25 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
   }
 
   const handleVolumePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.currentTarget.releasePointerCapture?.(e.pointerId)
+  }
+
+  // 横向音量滑条（内联在底部控件栏内）：x 占比即音量
+  const setVolumeFromPointerH = (e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
+    handleVolumeChange(frac)
+  }
+  const handleVolumePointerDownH = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setVolumeFromPointerH(e)
+  }
+  const handleVolumePointerMoveH = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.buttons & 1) setVolumeFromPointerH(e)
+  }
+  const handleVolumePointerUpH = (e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.releasePointerCapture?.(e.pointerId)
   }
 
@@ -857,8 +959,10 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
         const chosen = pickBestSubtitle(subInfo.subtitles, pref)
         if (chosen) {
           const lines = await getBilibiliSubtitleJson(chosen.cacheKey)
-          if (Array.isArray(lines) && lines.length) {
-            setSubtitles(lines)
+          // 与自动加载路径一致：过滤 AI 字幕噪音行（如"音乐"），全噪音视为无字幕
+          const clean = cleanSubtitleLines(lines)
+          if (clean.length) {
+            setSubtitles(clean)
             return
           }
         }
@@ -1027,6 +1131,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     setShowControls(true)
     setShowTopInfo(true)
     const behavior = settingsRef.current.videoEndBehavior
+    // 歌曲放完按设置正常切下一曲（B 站功能弹窗开着也切，保持弹幕/评论跟随当前视频）
     if (behavior === 'next') {
       reportVideoActive(false)
       onNext()
@@ -1249,8 +1354,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
       }
     } catch { /* 忽略 */ }
     if (!hasEnabledEffect) return // 无音效：音频轨直出（不创建 MediaElementAudioSourceNode，避免永久路由导致静音）
-    // 每个视频建一条独立效果链；同一 audio 元素只允许 createMediaElementSource 一次，
-    // 首次创建后永久路由，故整个看歌会话复用同一 context/引擎（audio 元素跨视频复用）
+    // 与 App 同款：按配置的引擎版本（v1/v2/HSE）走统一 adapter
     let session = videoEffectsRef.current
     if (!session) {
       try {
@@ -1261,37 +1365,26 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
         analyser.fftSize = 256
         analyser.connect(ctx.destination)
         ctx.createMediaElementSource(audio).connect(masterGain)
-        const engine = new AudioEffectsEngine()
-        engine.attach({ audioContext: ctx, masterGain, analyser })
+        const adapter = getEngineAdapter(getAudioEngineVersion(getAvailableEngineIds()))
+        const handle: AudioGraphHandle = { audioContext: ctx, masterGain, analyser }
+        void adapter.attach(handle).catch(() => { /* 通路不可用：保持直连 */ })
         // 自动播放策略下 AudioContext 默认 suspended：立即请求恢复，播放手势再兜底
         if (ctx.state === 'suspended') void ctx.resume().catch(() => undefined)
-        session = { ctx, engine }
+        session = { ctx, adapter }
         videoEffectsRef.current = session
       } catch (error) {
         console.warn('[看歌] 视频音效引擎初始化失败:', error)
         return
       }
-    } else {
-      // 已建会话：重新应用当前设置（本地存储为最新源）
-      try {
-        const raw = localStorage.getItem('waveforge:audio-effects-settings')
-        if (raw) {
-          const parsed = JSON.parse(raw)
-          session.engine.updateSettings(parsed)
-        }
-      } catch {
-        // 忽略
-      }
     }
-    // 实时同步设置
+    // 实时同步设置：v2 引擎暴露 updateSettings；v1/v3 在下次 attach（切歌）时读取最新存储生效
     const onEffectsChanged = (e: Event) => {
       const detail = (e as CustomEvent).detail
-      if (detail && videoEffectsRef.current) {
-        videoEffectsRef.current.engine.updateSettings(detail)
-        if (videoEffectsRef.current.ctx.state === 'suspended') {
-          void videoEffectsRef.current.ctx.resume().catch(() => undefined)
-        }
-      }
+      const current = videoEffectsRef.current
+      if (!detail || !current) return
+      const engine = (current.adapter as unknown as { engine?: { updateSettings?: (s: unknown) => void } }).engine
+      if (typeof engine?.updateSettings === 'function') engine.updateSettings(detail)
+      if (current.ctx.state === 'suspended') void current.ctx.resume().catch(() => undefined)
     }
     window.addEventListener('waveforge:audio-effects-changed', onEffectsChanged as EventListener)
     return () => window.removeEventListener('waveforge:audio-effects-changed', onEffectsChanged as EventListener)
@@ -1574,9 +1667,15 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
             className="absolute inset-0 w-full h-full object-contain z-10"
           />
 
-          {/* 弹幕层（canvas，覆盖视频之上、字幕/控件之下） */}
+          {/* 弹幕层（canvas，覆盖视频之上、字幕/控件之下）；时钟用音频时间（音画分离时视频可能未实际播放） */}
           {danmakuOn && danmakuItems.length > 0 && (
-            <DanmakuLayer items={danmakuItems} settings={danmakuSettings} isPlaying={isPlaying} videoRef={videoRef} />
+            <DanmakuLayer
+              items={danmakuItems}
+              settings={danmakuSettings}
+              isPlaying={isPlaying}
+              videoRef={videoRef}
+              getTime={() => Math.max(audioRef.current?.currentTime ?? 0, videoRef.current?.currentTime ?? 0)}
+            />
           )}
 
           {/* 快进/快退指示（右上角，避免与左上角歌曲信息/底部控件重叠） */}
@@ -1610,7 +1709,12 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
-                className="absolute z-30 left-1/2 -translate-x-1/2 bottom-44 w-[70%] text-center pointer-events-none"
+                className="absolute z-30 left-1/2 -translate-x-1/2 w-[70%] text-center cursor-grab active:cursor-grabbing select-none"
+                style={{ bottom: subtitlePos }}
+                onPointerDown={onSubtitlePointerDown}
+                onPointerMove={onSubtitlePointerMove}
+                onPointerUp={onSubtitlePointerUp}
+                title="拖动可调整字幕位置（自动记住）"
               >
                 <p
                   className="inline-block px-4 py-1.5 rounded-xl bg-black/45 backdrop-blur-sm text-white leading-snug shadow-lg"
@@ -1748,15 +1852,17 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
                     <Info size={14} />
                     信息
                   </button>
-                  <button
-                    type="button"
-                    title={subtitleOn ? '关闭字幕' : '开启字幕'}
-                    onClick={() => void toggleSubtitle()}
-                    className="h-8 w-8 rounded-full backdrop-blur-md border border-white/15 flex items-center justify-center transition-colors"
-                    style={subtitleOn ? { backgroundColor: watchAccent, color: '#fff' } : { backgroundColor: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.75)' }}
-                  >
-                    {subtitleOn ? <Subtitles size={15} /> : <CaptionsOff size={15} />}
-                  </button>
+                  {subtitles.length > 0 && (
+                    <button
+                      type="button"
+                      title={subtitleOn ? '关闭字幕' : '开启字幕'}
+                      onClick={() => void toggleSubtitle()}
+                      className="h-8 w-8 rounded-full backdrop-blur-md border border-white/15 flex items-center justify-center transition-colors"
+                      style={subtitleOn ? { backgroundColor: watchAccent, color: '#fff' } : { backgroundColor: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.75)' }}
+                    >
+                      {subtitleOn ? <Subtitles size={15} /> : <CaptionsOff size={15} />}
+                    </button>
+                  )}
                   <button
                     type="button"
                     title={danmakuOn ? '关闭弹幕' : '开启弹幕'}
@@ -1776,9 +1882,9 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
                     type="button"
                     title="换一个视频"
                     onClick={dislikeCurrent}
-                    className="h-8 w-8 rounded-full bg-white/10 backdrop-blur-md border border-white/15 flex items-center justify-center text-white/75 hover:bg-white/20 hover:text-red-300 transition-colors"
+                    className="h-8 w-8 rounded-full bg-white/10 backdrop-blur-md border border-white/15 flex items-center justify-center text-white/75 hover:bg-white/20 hover:text-white transition-colors"
                   >
-                    <ThumbsDown size={15} />
+                    <Shuffle size={15} />
                   </button>
                   <button
                     type="button"
@@ -1814,6 +1920,15 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
                   </button>
                   <button
                     type="button"
+                    title="B 站功能（点赞/投币/收藏/发弹幕/评论）"
+                    onClick={() => setShowBiliPanel((v) => !v)}
+                    className="h-8 w-8 rounded-full bg-white/10 backdrop-blur-md border border-white/15 flex items-center justify-center transition-colors text-white/75 hover:bg-white/20 hover:text-white"
+                    style={showBiliPanel ? { backgroundColor: '#FB7299', color: '#fff', borderColor: 'transparent' } : undefined}
+                  >
+                    <BiliTvIcon size={16} />
+                  </button>
+                  <button
+                    type="button"
                     title="返回主页"
                     onClick={onHomeClick}
                     className="h-8 w-8 rounded-full bg-white/10 backdrop-blur-md border border-white/15 flex items-center justify-center text-white/75 hover:bg-white/20 hover:text-white transition-colors"
@@ -1821,34 +1936,34 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
                     <Home size={15} />
                   </button>
 
-                  {/* 音量：竖向小药丸弹出（位于按钮上方），单击展开、双击静音/恢复 */}
+                  {/* 音量：内联在底部控件栏内（无悬浮弹窗/无缝隙），单击展开横向滑条、双击静音/恢复 */}
                   <div
-                    className="relative flex items-center"
+                    className="flex items-center gap-1 rounded-full pl-1"
                     onMouseEnter={handleVolumeMouseEnter}
                     onMouseLeave={handleVolumeMouseLeave}
                   >
                     <AnimatePresence>
                       {showVolumeSlider && (
                         <motion.div
-                          initial={{ opacity: 0, y: 8, scale: 0.9 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: 8, scale: 0.9 }}
-                          transition={{ duration: 0.15 }}
-                          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 rounded-full bg-black/85 backdrop-blur-xl border border-white/15 px-3 py-4 shadow-2xl"
+                          initial={{ width: 0, opacity: 0 }}
+                          animate={{ width: 96, opacity: 1 }}
+                          exit={{ width: 0, opacity: 0 }}
+                          transition={{ duration: 0.18 }}
+                          className="overflow-hidden"
                         >
                           <div
-                            className="relative w-1.5 h-24 rounded-full bg-white/20 cursor-pointer"
-                            onPointerDown={handleVolumePointerDown}
-                            onPointerMove={handleVolumePointerMove}
-                            onPointerUp={handleVolumePointerUp}
+                            className="relative h-1.5 w-24 rounded-full bg-white/20 cursor-pointer"
+                            onPointerDown={handleVolumePointerDownH}
+                            onPointerMove={handleVolumePointerMoveH}
+                            onPointerUp={handleVolumePointerUpH}
                           >
                             <div
-                              className="absolute bottom-0 left-0 right-0 rounded-full"
-                              style={{ backgroundColor: watchAccent, height: `${(isMuted ? 0 : volume) * 100}%` }}
+                              className="absolute left-0 top-0 bottom-0 rounded-full"
+                              style={{ backgroundColor: watchAccent, width: `${(isMuted ? 0 : volume) * 100}%` }}
                             />
                             <div
-                              className="absolute left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white shadow-md"
-                              style={{ bottom: `calc(${(isMuted ? 0 : volume) * 100}% - 6px)` }}
+                              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white shadow-md"
+                              style={{ left: `calc(${(isMuted ? 0 : volume) * 100}% - 6px)` }}
                             />
                           </div>
                         </motion.div>
@@ -1856,7 +1971,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
                     </AnimatePresence>
                     <button
                       type="button"
-                      title="音量（单击弹出调节，双击静音/恢复）"
+                      title="音量（单击展开滑条，双击静音/恢复）"
                       onClick={toggleVolumeSlider}
                       onDoubleClick={toggleMute}
                       className="h-8 w-8 rounded-full bg-white/10 backdrop-blur-md border border-white/15 flex items-center justify-center text-white/75 hover:bg-white/20 hover:text-white transition-colors"
@@ -2105,6 +2220,27 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
           onClose={() => setShowProfile(false)}
           playerTheme={playerTheme}
           currentSongContext={{ songKey, songTitle }}
+        />
+      )}
+
+      {/* B 站功能面板（点赞/投币/收藏/发弹幕/评论） */}
+      {showBiliPanel && activeVideo && (
+        <BilibiliInteractPanel
+          bvid={activeVideo.video.bvid}
+          aid={activeVideo.video.aid || 0}
+          coverUrl={resolveBiliPic(activeVideo.video.pic || '')}
+          cid={activeVideo.cid || 0}
+          title={activeVideo.video.title}
+          author={activeVideo.video.author}
+          play={activeVideo.video.play}
+          danmaku={activeVideo.video.danmaku}
+          playerTheme={playerTheme}
+          getCurrentTime={() => videoTime}
+          onDanmakuSent={(text, time, mode, color) => {
+            // 本地即时上屏（B 站审核前先显示），自己发的弹幕描边框突出
+            setDanmakuItems((prev) => [...prev, { time, mode: mode || 1, fontSize: 25, color: color || 0xffffff, text, border: true }].sort((a, b) => a.time - b.time))
+          }}
+          onClose={() => setShowBiliPanel(false)}
         />
       )}
     </div>
