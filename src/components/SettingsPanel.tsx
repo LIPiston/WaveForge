@@ -1262,6 +1262,8 @@ function SettingsPanel({
     setAutoMixEnabled(enabled)
     localStorage.setItem('autoMixEnabled', JSON.stringify(enabled))
     window.dispatchEvent(new Event('autoMixSettingsChanged'))
+    // 探针：用户点击开关的瞬间写入后端日志（独立于 App 的事件链）
+    window.electron?.automixLog?.('settings-toggle', `autoMixEnabled=${enabled}`).catch(() => undefined)
   }
 
   const handleAutoMixBeatMatchingToggle = (enabled: boolean) => {
@@ -1293,16 +1295,19 @@ function SettingsPanel({
     setAutoMixEnhanced(enabled)
     localStorage.setItem('autoMixEnhanced', JSON.stringify(enabled))
     window.dispatchEvent(new Event('autoMixSettingsChanged'))
+    window.electron?.automixLog?.('settings-toggle', `autoMixEnhanced=${enabled}`).catch(() => undefined)
   }
   const handleAutoMixIntensityChange = (intensity: 'subtle' | 'standard' | 'strong') => {
     setAutoMixTransitionIntensity(intensity)
     localStorage.setItem('autoMixTransitionIntensity', intensity)
     window.dispatchEvent(new Event('autoMixSettingsChanged'))
+    window.electron?.automixLog?.('settings-toggle', `autoMixTransitionIntensity=${intensity}`).catch(() => undefined)
   }
   const handleAutoMixAiMixToggle = (enabled: boolean) => {
     setAutoMixAiMix(enabled)
     localStorage.setItem('autoMixAiMix', JSON.stringify(enabled))
     window.dispatchEvent(new Event('autoMixSettingsChanged'))
+    window.electron?.automixLog?.('settings-toggle', `autoMixAiMix=${enabled}`).catch(() => undefined)
   }
 
   // 深浅色主题：与播放页快捷设置共用同一存储与事件，App 监听后统一更新
@@ -2926,10 +2931,10 @@ function SettingsPanel({
                               {/* v2 可选 AI 混音（GAN）：引擎可用才可开启；不可用时说明原因 */}
                               <div className="flex items-center justify-between gap-4">
                                 <div>
-                                  <div className={`${textPrimary} text-sm font-medium mb-1`}>AI 混音（实验性）</div>
+                                  <div className={`${textPrimary} text-sm font-medium mb-1`}>AI 混音（实验性 · 60s 长混音）</div>
                                   <div className={`${textSecondary} text-xs`}>
                                     {aiMixAvailable === true
-                                      ? '已检测到 DJTransGAN 引擎：过渡由 AI 模型生成推子与 EQ 曲线（长混音）'
+                                      ? '已检测到 DJTransGAN 引擎：AI 模型生成的 60 秒 DJ 长混音（模型固定时长，无法缩短）；想要短过渡可关闭它使用增强版 DSP'
                                       : aiMixAvailable === false
                                         ? 'AI 引擎未安装（需 torch + DJTransGAN 预训练模型，暂未随应用分发），当前使用内置 DSP 特效'
                                         : '正在检测 AI 引擎…'}
@@ -2981,41 +2986,49 @@ function SettingsPanel({
                             </label>
                           </div>
 
-                          <div>
-                            <div className="flex items-center justify-between mb-2">
-                              <div className={`${textPrimary} text-sm font-medium`}>过渡时长范围</div>
-                              <div className={`${textSecondary} text-xs tabular-nums`}>{autoMixMinDuration}–{autoMixMaxDuration} 秒</div>
+                          {/* 过渡时长范围：仅标准版（v1）可调；增强版（v2）由算法按 BPM 智能决定 */}
+                          {!autoMixEnhanced && (
+                            <div>
+                              <div className="flex items-center justify-between mb-2">
+                                <div className={`${textPrimary} text-sm font-medium`}>过渡时长范围</div>
+                                <div className={`${textSecondary} text-xs tabular-nums`}>{autoMixMinDuration}–{autoMixMaxDuration} 秒</div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-4">
+                                <label className={`${textSecondary} text-xs`}>
+                                  最短
+                                  <input
+                                    type="range"
+                                    min="1"
+                                    max="19"
+                                    step="1"
+                                    value={autoMixMinDuration}
+                                    onChange={(event) => handleAutoMixMinDurationChange(Number(event.target.value))}
+                                    className="mt-2 w-full accent-current"
+                                    style={{ color: accentColor }}
+                                  />
+                                </label>
+                                <label className={`${textSecondary} text-xs`}>
+                                  最长
+                                  <input
+                                    type="range"
+                                    min="2"
+                                    max="20"
+                                    step="1"
+                                    value={autoMixMaxDuration}
+                                    onChange={(event) => handleAutoMixMaxDurationChange(Number(event.target.value))}
+                                    className="mt-2 w-full accent-current"
+                                    style={{ color: accentColor }}
+                                  />
+                                </label>
+                              </div>
+                              <div className={`${textSecondary} text-xs mt-2`}>实际时长会吸附到完整的 8 / 16 / 24 / 32 拍。</div>
                             </div>
-                            <div className="grid grid-cols-2 gap-4">
-                              <label className={`${textSecondary} text-xs`}>
-                                最短
-                                <input
-                                  type="range"
-                                  min="1"
-                                  max="19"
-                                  step="1"
-                                  value={autoMixMinDuration}
-                                  onChange={(event) => handleAutoMixMinDurationChange(Number(event.target.value))}
-                                  className="mt-2 w-full accent-current"
-                                  style={{ color: accentColor }}
-                                />
-                              </label>
-                              <label className={`${textSecondary} text-xs`}>
-                                最长
-                                <input
-                                  type="range"
-                                  min="2"
-                                  max="20"
-                                  step="1"
-                                  value={autoMixMaxDuration}
-                                  onChange={(event) => handleAutoMixMaxDurationChange(Number(event.target.value))}
-                                  className="mt-2 w-full accent-current"
-                                  style={{ color: accentColor }}
-                                />
-                              </label>
+                          )}
+                          {autoMixEnhanced && (
+                            <div className={`${textSecondary} text-xs`}>
+                              增强版过渡时长由算法根据两首歌曲的 BPM 与能量自动决定，无需手动调整。
                             </div>
-                            <div className={`${textSecondary} text-xs mt-2`}>实际时长会吸附到完整的 8 / 16 / 24 / 32 拍。</div>
-                          </div>
+                          )}
 
                           <div className={`${bgCard} rounded-lg p-3 border ${borderColor}`}>
                             <div className="flex items-start gap-2">

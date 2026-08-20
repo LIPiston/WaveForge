@@ -65,7 +65,8 @@ class AirplayController {
   /** 诊断统计：已推送 PCM 块数 */
   private sentChunks = 0
   private lastCaptureDiagAt = 0
-  private lastConnectedPhase = ''
+  /** 连接提示音：每次连接会话只响一次（切歌/过渡的 phase 抖动不再重复响） */
+  private connectSoundPlayedInSession = false
 
   /** 诊断日志：同时输出到渲染控制台与主进程控制台（electron.log 桥） */
   private diag(message: string): void {
@@ -139,9 +140,9 @@ class AirplayController {
     return readStored<boolean>(STORAGE_KEYS.syncVolume, false)
   }
 
-  /** 断开后应恢复的设备音量（连接前记录，默认 50） */
+  /** 断开后应恢复的设备音量（连接前记录，默认 30） */
   getRestoreVolume(): number {
-    const v = readStored<number>(STORAGE_KEYS.restoreVolume, 50)
+    const v = readStored<number>(STORAGE_KEYS.restoreVolume, 30)
     return Math.max(0, Math.min(100, v))
   }
 
@@ -179,13 +180,13 @@ class AirplayController {
   }
 
   private handleStatus(status: AirplayStatus): void {
-    const wasConnected = this.lastConnectedPhase === 'connected' || this.lastConnectedPhase === 'streaming'
-    this.lastConnectedPhase = status.phase
     this.status = status
     this.listeners.forEach((listener) => listener(status))
-    // 连接成功（进入 connected/streaming）且开启提示音时播放一声
     const connected = status.phase === 'connected' || status.phase === 'streaming'
-    if (connected && !wasConnected && this.getConnectSound()) {
+    // 提示音只在一次「用户主动连接」会话中响一次：connect() 会重置标记；
+    // 切歌/异常导致的自动重连（idle→connected）不重置，因此不响提示音。
+    if (connected && !this.connectSoundPlayedInSession && this.getConnectSound()) {
+      this.connectSoundPlayedInSession = true
       this.playConnectSound()
     }
     // 采集随连接状态联动
@@ -209,6 +210,8 @@ class AirplayController {
   async connect(deviceId: string, mode: 'auto' | 'raop' | 'airplay2' = 'auto'): Promise<{ success: boolean; error?: string }> {
     const bridge = (window as any).electron?.airplay
     if (!bridge) return { success: false, error: 'unsupported' }
+    // 用户主动连接：本次会话允许响一次连接提示音（切歌自动重连不重置，不响）
+    this.connectSoundPlayedInSession = false
     writeStored(STORAGE_KEYS.deviceId, deviceId)
     writeStored(STORAGE_KEYS.mode, mode)
     writeStored(STORAGE_KEYS.enabled, true)

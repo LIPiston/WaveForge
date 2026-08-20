@@ -88,6 +88,23 @@ export default function PlaybackDeviceModal({ show, onClose, playerTheme = 'dark
   const [audioOutputBusy, setAudioOutputBusy] = useState(false)
   const [audioOutputStored, setAudioOutputStored] = useState<StoredOutputDevice | null>(() => getStoredOutputDevice())
 
+  // AirPlay 也视为一种音频输出：连接成功后自动加入上方输出列表（位于跟随系统默认之下）
+  // 并自动选中，切换统一从输出列表进行；但切换本机设备不会自动断开 AirPlay，
+  // 断开只发生在用户按「断开」或关闭软件时。
+  const airplayActive = !!airplayStatus
+    && (airplayStatus.phase === 'connected' || airplayStatus.phase === 'streaming')
+    && !!airplayStatus.connectedDeviceId
+  const airplayEntry: AudioOutputDevice | null = airplayActive && airplayStatus?.connectedDeviceId
+    ? {
+        deviceId: `airplay:${airplayStatus.connectedDeviceId}`,
+        label: airplayStatus.devices.find(d => d.id === airplayStatus.connectedDeviceId)?.name || 'AirPlay 设备',
+        groupId: '',
+        isDefault: false,
+      }
+    : null
+  // AirPlay 条目紧跟「跟随系统默认」按钮，避免排到末尾用户看不见
+  const displayDevices = airplayEntry ? [airplayEntry, ...audioOutputDevices] : audioOutputDevices
+
   const refreshAudioOutputDevices = useCallback(async () => {
     setAudioOutputBusy(true)
     try {
@@ -127,12 +144,21 @@ export default function PlaybackDeviceModal({ show, onClose, playerTheme = 'dark
   }, [show, refreshAudioOutputDevices])
 
   const handleAudioOutputSelect = async (device: AudioOutputDevice) => {
+    // AirPlay 条目：仅连接期间存在，作为当前输出展示；已选中无需再操作
+    if (device.deviceId.startsWith('airplay:')) return
+    // 切换本机输出设备不会自动断开 AirPlay（断开只由「断开」按钮/关闭软件触发）；
+    // 投送期间的选择先记住，断开 AirPlay 后生效。
     const context = getActiveAudioContext()
     const result = await applyOutputDevice(context, { deviceId: device.deviceId, label: device.label })
     setAudioOutputStored(getStoredOutputDevice())
     if (result.success) {
+      const message = airplayActive
+        ? `已选择「${device.label}」，断开 AirPlay 后生效`
+        : (result as { pending?: boolean }).pending
+          ? `已选择「${device.label}」，播放时自动应用`
+          : `音频输出已切换到：${device.label}`
       window.dispatchEvent(new CustomEvent('showToast', {
-        detail: { message: (result as { pending?: boolean }).pending ? `已选择「${device.label}」，播放时自动应用` : `音频输出已切换到：${device.label}`, type: 'success' },
+        detail: { message, type: 'success' },
       }))
     } else {
       window.dispatchEvent(new CustomEvent('showToast', {
@@ -142,12 +168,13 @@ export default function PlaybackDeviceModal({ show, onClose, playerTheme = 'dark
   }
 
   const handleAudioOutputDefault = async () => {
+    // 同上：不自动断开 AirPlay，选择先记住，断开后生效
     const context = getActiveAudioContext()
     const result = await applyOutputDevice(context, null)
     setAudioOutputStored(getStoredOutputDevice())
     if (result.success) {
       window.dispatchEvent(new CustomEvent('showToast', {
-        detail: { message: '已恢复跟随系统默认输出', type: 'success' },
+        detail: { message: airplayActive ? '已恢复跟随系统默认，断开 AirPlay 后生效' : '已恢复跟随系统默认输出', type: 'success' },
       }))
     }
   }
@@ -210,17 +237,17 @@ export default function PlaybackDeviceModal({ show, onClose, playerTheme = 'dark
 
                 {!audioOutputSupported ? (
                   <p className={`text-xs leading-5 ${textTertiary}`}>当前环境不支持枚举输出设备（仅桌面端支持），音频将跟随系统默认输出。</p>
-                ) : audioOutputDevices.length === 0 ? (
+                ) : displayDevices.length === 0 ? (
                   <p className={`text-xs leading-5 ${textTertiary}`}>未检测到音频输出设备，音频将跟随系统默认输出。</p>
                 ) : (
-                  <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+                  <div className="space-y-1.5 pr-1">
                     <button
                       type="button"
                       onClick={() => void handleAudioOutputDefault()}
                       className="w-full flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors"
                       style={{
-                        borderColor: followingDefault ? `${accentColor}99` : borderColor === 'border-white/10' ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.1)',
-                        background: followingDefault ? `${accentColor}12` : 'transparent',
+                        borderColor: !airplayActive && followingDefault ? `${accentColor}99` : borderColor === 'border-white/10' ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.1)',
+                        background: !airplayActive && followingDefault ? `${accentColor}12` : 'transparent',
                       }}
                     >
                       <div className="min-w-0">
@@ -229,13 +256,14 @@ export default function PlaybackDeviceModal({ show, onClose, playerTheme = 'dark
                       </div>
                     </button>
                     <AnimatePresence initial={false}>
-                      {audioOutputDevices.map((device) => {
+                      {displayDevices.map((device) => {
+                        const isAirplay = device.deviceId.startsWith('airplay:')
                         // 跟随默认：默认设备行只显示右侧「使用中」勾（不高亮整行）；
-                        // 选中具体设备：该行高亮 + 勾
-                        const isStoredDevice = audioOutputStored?.deviceId === device.deviceId
-                        const isDefaultDisplay = followingDefault && device.isDefault
-                        const showCheck = isStoredDevice || isDefaultDisplay
-                        const highlight = isStoredDevice
+                        // 选中具体设备：该行高亮 + 勾；AirPlay 投送中：AirPlay 行高亮 + 勾
+                        const isStoredDevice = !isAirplay && audioOutputStored?.deviceId === device.deviceId
+                        const isDefaultDisplay = !isAirplay && followingDefault && device.isDefault
+                        const highlight = isAirplay ? airplayActive : isStoredDevice && !airplayActive
+                        const showCheck = isAirplay ? airplayActive : (isStoredDevice || isDefaultDisplay) && !airplayActive
                         return (
                           <motion.button
                             key={device.deviceId}
@@ -254,8 +282,17 @@ export default function PlaybackDeviceModal({ show, onClose, playerTheme = 'dark
                           >
                             <div className="min-w-0">
                               <div className={`${textPrimary} text-sm font-medium break-words leading-snug`}>{device.label}</div>
-                              <div className={`${textTertiary} text-xs mt-0.5`}>{device.isDefault ? '系统默认设备' : '外接设备'}</div>
+                              <div className={`${textTertiary} text-xs mt-0.5`}>
+                                {isAirplay
+                                  ? 'AirPlay 投送'
+                                  : device.isDefault
+                                    ? '系统默认设备'
+                                    : '外接设备'}
+                              </div>
                             </div>
+                            {isAirplay && (
+                              <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${accentColor}22`, color: accentColor }}>AirPlay</span>
+                            )}
                             {showCheck && <span className="shrink-0 text-xs" style={{ color: accentColor }}>使用中</span>}
                           </motion.button>
                         )
@@ -308,6 +345,11 @@ export default function PlaybackDeviceModal({ show, onClose, playerTheme = 'dark
                           {airplayStatus?.phase === 'browsing' ? '正在发现…' : airplayStatus?.devices.length ? `${airplayStatus.devices.length} 台` : '未发现设备'}
                         </span>
                       </span>
+                      {(airplayStatus?.connectedMode === 'airplay2' || airplayStatus?.connectedMode === 'raop') && (
+                        <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${accentColor}22`, color: accentColor }}>
+                          {airplayStatus.connectedMode === 'airplay2' ? 'AirPlay 2' : 'RAOP'}
+                        </span>
+                      )}
                     </div>
                     {airplayStatus?.phase === 'error' && (
                       <p className={`text-[11px] mb-2 ${dark ? 'text-red-400' : 'text-red-600'}`}>{airplayStatus.message || '连接出错'}</p>

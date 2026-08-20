@@ -132,6 +132,10 @@ function patchLatency() {
     const before = src
     src = src.replace(/latencyMax:\s*88200,/g, `latencyMax: 22050, // PATCHED_BY_WAVEFORGE_LATENCY: 2s→0.5s`)
     src = src.replace(/latencyMin:\s*11025,/g, `latencyMin: 4410,`)
+    // 注：SETUP_AP2_2 的 audioLatency fallback 保持原值 50（≈1ms）——曾改为 88200 做 2s
+    // 预缓冲补偿，但实测 Xiaomi Sound 为「积累播放」型设备（忽略 RTP 时间戳），补偿无效
+    // 且带来连接/切歌先送 2s 静音的副作用，故回退。设备不响应 Audio-Latency 时延迟由
+    // 设备自身缓冲决定，发送端无法消除。
     if (src === before) {
       console.warn(`[patch-airplay] ${target} 未找到 latencyMax/latencyMin 锚点`)
       continue

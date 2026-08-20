@@ -98,6 +98,7 @@ class AirplaySenderService extends EventEmitter {
     this._reconnectAttempted = false
     /** 连接提示音待重推标记（首个 setMetadata reset 后补推） */
     this._chimePending = false
+    this._chimePendingAt = 0
     /** 断开后应恢复的设备音量（连接前记录；异常退出后下次连接也会用记忆值修正） */
     this.restoreVolume = null
   }
@@ -299,6 +300,7 @@ class AirplaySenderService extends EventEmitter {
 
     this._reconnectAttempted = false
     this._setPhase('connecting', `正在连接 ${device.name}`)
+    console.log(`[AirPlay] connect ${device.name} mode=${useMode}（hasRaop:${device.hasRaop} hasAirplay2:${device.hasAirplay2}）port=${port} host=${device.addresses?.[0] || device.host}`)
     try {
       // 优先用真实 IPv4 直连（mDNS 主机名解析在部分环境不可靠，会导致永远连接中）
       const connectHost = Array.isArray(device.addresses) && device.addresses.length
@@ -313,9 +315,13 @@ class AirplaySenderService extends EventEmitter {
         inputCodec: 'pcm',
         alacEncoding: true,
         debug: this.debug,
-        // 降低发送端缓冲：默认 260 包（约 2.1s）；120 包约 1s。
+        // 降低发送端缓冲：默认 260 包（约 2.1s）；60 包约 0.5s，减少暂停后的残余播放。
         // stream_latency 200→50：UDP 音频包更平滑推送，减少突发积压被设备端缓冲放大。
-        config: { packets_in_buffer: 120, stream_latency: 50 },
+        config: { packets_in_buffer: 60, stream_latency: 50 },
+        // startTimeMs 必须显式传入：包内 setLatencyFrames 依赖它把 RTP 时间轴
+        // 按设备响应的 Audio-Latency 前移，使播放对齐墙钟、抵消设备缓冲
+        // （否则延迟 ≈ 设备缓冲，Xiaomi Sound 可达 3-4s）。
+        startTimeMs: Date.now(),
         log: (level, message) => {
           if (this.debug) console.log(`[AirPlay:${level}] ${message}`)
         },
@@ -485,9 +491,11 @@ class AirplaySenderService extends EventEmitter {
       // 直接置为 NORMAL（2）让真实数据立即出流，提示音排在当前时间点播放。
       const cb = this.sender.airtunes?.circularBuffer
       if (cb && typeof cb.status === 'number') cb.status = 2
-      // 连接瞬间的首个 setMetadata 会 reset() 清空发送端缓冲（丢弃上一首残留），
-      // 可能把刚推入的提示音一并清掉；标记待重推，由 setMetadata 复位后补推一次。
+      // 连接瞬间的首个 setMetadata 会 reset() 清空发送端缓冲，可能把刚推入的提示音
+      // 一并清掉；标记待重推，由 setMetadata 复位后补推一次。
+      // 补推只在 2s 窗口内有效：连接时未播放（首个 setMetadata 延后）也不残留到切歌。
       this._chimePending = true
+      this._chimePendingAt = Date.now()
     } catch { /* 忽略 */ }
   }
 
@@ -521,10 +529,13 @@ class AirplaySenderService extends EventEmitter {
     const trackKey = String(metadata.trackKey || metadata.title || '')
     if (trackKey && trackKey !== this.lastTrackKey) {
       try { this.sender.reset() } catch { /* 忽略 */ }
-      // 连接提示音在首个元数据 reset 时可能被清掉：补推一次，保证音箱能听到
+      // 连接提示音在首个元数据 reset 时可能被清掉：仅在 2s 窗口内补推一次
+      //（超过窗口说明不是连接瞬间的 reset，避免切歌时误响）
       if (this._chimePending) {
         this._chimePending = false
-        this.playConnectSound()
+        if (Date.now() - (this._chimePendingAt || 0) < 2000) {
+          this.playConnectSound()
+        }
       }
       this.lastTrackKey = trackKey
     }
