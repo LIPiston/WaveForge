@@ -67,6 +67,8 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.on('wallpaper-changed', listener)
       return () => ipcRenderer.removeListener('wallpaper-changed', listener)
     },
+    // 按需启停壁纸监控：仅桌面模式 + 联动开启时启用（避免非桌面模式持续查询拖慢性能）
+    setWallpaperWatcherEnabled: (enabled) => ipcRenderer.invoke('set-wallpaper-watcher', Boolean(enabled)),
   },
   
   // 开发者模式
@@ -113,12 +115,20 @@ contextBridge.exposeInMainWorld('electron', {
     transitionAiMix: (plan, sourceAudioPath, targetAudioPath) =>
       ipcRenderer.invoke('render:transitionAiMix', plan, sourceAudioPath, targetAudioPath),
     aiMixStatus: () => ipcRenderer.invoke('render:aiMixStatus'),
+    // AI 学到的推子/EQ 自动化参数（v2 短过渡用）
+    aiMixAutomation: (plan, sourceAudioPath, targetAudioPath) =>
+      ipcRenderer.invoke('render:aiMixAutomation', plan, sourceAudioPath, targetAudioPath),
   },
+  
+  // AutoMix 渲染进程诊断日志：写入后端 automix-backend.log
+  automixLog: (scope, message) => ipcRenderer.invoke('automix-log:append', scope, message),
   
   // Audio download for rendering
   audioDownload: {
     prepare: (urlOrPath, trackKey) => 
       ipcRenderer.invoke('audio-download:prepare', urlOrPath, trackKey),
+    getMediaUrl: (filePath) => ipcRenderer.invoke('audio-download:getMediaUrl', filePath),
+    saveWav: (trackKey, wavArrayBuffer) => ipcRenderer.invoke('audio-download:saveWav', trackKey, wavArrayBuffer),
     cleanupOldFiles: () => ipcRenderer.invoke('audio-download:cleanup'),
     getStats: () => ipcRenderer.invoke('audio-download:get-stats'),
     clearCache: () => ipcRenderer.invoke('audio-download:clear-cache'),

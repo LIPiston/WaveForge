@@ -198,6 +198,8 @@ export interface ElectronAPI {
   wallpaper: {
     getCurrentWallpaper: () => Promise<WallpaperResult>
     onWallpaperChange: (callback: (wallpaper: WallpaperPayload | string) => void) => () => void
+    /** 按需启停壁纸监控：仅桌面模式 + 壁纸联动开启时启用（避免非桌面模式持续查询拖慢性能） */
+    setWallpaperWatcherEnabled: (enabled: boolean) => Promise<{ success: boolean }>
   }
   developerMode: {
     set: (enabled: boolean) => Promise<{ success: boolean }>
@@ -239,6 +241,8 @@ export interface ElectronAPI {
       targetResumeTime?: number
       aiMixApplied?: boolean
       rendererVersion?: string
+      /** 混音尾段 target 内容相对原曲的播放速度比（>1 快 / <1 慢），overlap handoff 用 */
+      mixSpeedRatio?: number
       error?: string
     }>
     /** AI 混音引擎可用性探测 */
@@ -251,9 +255,21 @@ export interface ElectronAPI {
       python?: string | null
       reason?: string
     }>
+    /** AI 学到的推子/EQ 自动化参数（v2 短过渡用；引擎不可用返回 success=false） */
+    aiMixAutomation?: (plan: TransitionPlan, sourceAudioPath: string, targetAudioPath: string) => Promise<{
+      success: boolean
+      params?: Array<{ band: number[][][]; fader: number[][][][] }>
+      error?: string
+    }>
   }
+  /** AutoMix 渲染进程诊断日志：写入后端 automix-backend.log（便于前后端合并定位） */
+  automixLog?: (scope: string, message: string) => Promise<boolean>
   audioDownload: {
     prepare: (urlOrPath: string, trackKey: string) => Promise<string>
+    /** 把已下载的音频文件映射为渲染进程可 fetch 的 waveforge-media:// URL（浏览器分析 m4a/aac 用） */
+    getMediaUrl?: (filePath: string) => Promise<string>
+    /** 保存渲染进程转码的 WAV（Chromium 解码 m4a/aac → 16bit PCM），返回路径；同 key 复用 */
+    saveWav?: (trackKey: string, wavArrayBuffer: ArrayBuffer) => Promise<string>
     cleanupOldFiles: () => Promise<{ success: boolean }>
     getStats: () => Promise<{ fileCount: number; totalSize: number; maxSize: number; cachePath: string }>
     clearCache: () => Promise<{ success: boolean }>

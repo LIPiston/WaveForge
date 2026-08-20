@@ -104,6 +104,7 @@ const os = require('os')
 const { pathToFileURL } = require('url')
 const { createAnalysisRuntime } = require('./analysis-runtime.cjs')
 const { setupRenderIPC, setupAiMixIPC, cleanup: cleanupRender } = require('./render-runtime.cjs')
+const automixLog = require('./automix-log.cjs')
 const { ConfigManager } = require('./config-manager.cjs')
 const deviceLicense = require('./device-license.cjs')
 const { createRemoteServer, getLanIPv4Addresses } = require('./remote-server.cjs')
@@ -1745,6 +1746,12 @@ protocol.registerSchemesAsPrivileged([
       secure: true,
       stream: true,
       supportFetchAPI: true,
+      // 关键：允许从 http://127.0.0.1:3000（渲染 origin）跨源 fetch 该协议。
+      // 缺失时 AI 混音 wav（waveforge-media://）被 Chromium CORS 拦截 → 缓冲加载失败
+      // → 回退普通交叉淡化 → 音量突变 + MV 预载链路断裂（用户实测的"介入即衰减/
+      // MV 不叠加/封面回退"均由此引起）。registerSchemesAsPrivileged 仅在启动时生效，
+      // 修改后必须完全重启应用。
+      corsEnabled: true,
     },
   },
 ])
@@ -2496,6 +2503,15 @@ ipcMain.handle('desktop-widgets:open-launcher-target', async (_event, target, ki
 let lastWallpaperSignature = null
 let wallpaperWatcherBusy = false
 
+function stopWallpaperWatcher() {
+  if (wallpaperWatcher) {
+    clearInterval(wallpaperWatcher)
+    wallpaperWatcher = null
+  }
+  wallpaperWatcherBusy = false
+  lastWallpaperSignature = null
+}
+
 function startWallpaperWatcher() {
   logWallpaper('[Watcher] Starting wallpaper watcher')
   if (wallpaperWatcher) {
@@ -2546,6 +2562,17 @@ function startWallpaperWatcher() {
   
   logWallpaper('✓ [Watcher] 壁纸监听器已启动（10秒间隔）')
 }
+
+// 渲染端按需启停壁纸监控：仅在桌面模式 + 壁纸联动开启时启用（避免非桌面模式持续 powershell 查询拖慢性能）
+ipcMain.handle('set-wallpaper-watcher', (_event, enabled) => {
+  logWallpaper(`[Watcher] 收到启停请求: ${enabled ? '启动' : '停止'}`)
+  if (enabled) {
+    startWallpaperWatcher()
+  } else {
+    stopWallpaperWatcher()
+  }
+  return { success: true }
+})
 
 // ========== QQ音乐登录窗口 ==========
 
@@ -6001,6 +6028,15 @@ app.whenReady().then(() => {
   })
   
   // Setup render runtime IPC handlers
+  automixLog.init(app)
+
+  // 渲染进程的 automix 事件（在调用后端之前就发生/退出的情况）也写进同一个日志文件
+  ipcMain.handle('automix-log:append', (_event, scope, message) => {
+    if (typeof scope !== 'string' || typeof message !== 'string') return true
+    automixLog.log(`renderer:${scope}`, message.slice(0, 400))
+    return true
+  })
+
   setupRenderIPC(ipcMain, configManager.getCachePath(), toMediaUrl)
   // AI 混音（DJTransGAN）运行时：可选引擎，未安装时 render:transitionAiMix 抛错、前端回退 DSP
   setupAiMixIPC(ipcMain, configManager.getCachePath())
@@ -6026,7 +6062,56 @@ app.whenReady().then(() => {
     if (!analysisRuntime || !analysisRuntime.audioDownload) {
       throw new Error('Audio download service not initialized')
     }
-    return await analysisRuntime.audioDownload.prepareAudioFile(urlOrPath, trackKey)
+    const result = await analysisRuntime.audioDownload.prepareAudioFile(urlOrPath, trackKey)
+    const ext = String(result || '').split('.').pop()?.toLowerCase() || '?'
+    automixLog.log('download', `trackKey=${trackKey} url=${String(urlOrPath).slice(0, 120)} -> ${result} (ext=${ext})`)
+    return result
+  })
+
+  // 把已下载的音频文件映射为渲染进程可 fetch 的 waveforge-media:// URL
+  // （浏览器端 decodeAudioData 原生支持 m4a/aac——Python/librosa 侧 libsndfile 打不开）。
+  // 仅允许下载缓存目录内的文件，与 render:getAudioUrl 同款路径校验。
+  ipcMain.handle('audio-download:getMediaUrl', (_event, filePath) => {
+    if (!analysisRuntime || !analysisRuntime.audioDownload || !analysisRuntime.audioDownload.tempRoot) {
+      throw new Error('Audio download service not initialized')
+    }
+    if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('Media file path is required')
+    const resolved = path.resolve(filePath)
+    const relative = path.relative(path.resolve(analysisRuntime.audioDownload.tempRoot), resolved)
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error('Media file path is outside the audio download cache')
+    }
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+      throw new Error('Media file does not exist')
+    }
+    const url = toMediaUrl(resolved)
+    automixLog.log('media-url', resolved)
+    return url
+  })
+
+  // 保存渲染进程转码后的 WAV（Chromium decodeAudioData → 16bit PCM），供 Python
+  // 渲染/AI worker 读取（libsndfile 只认 wav/flac/ogg/mp3，m4a/aac/opus 必须转码）。
+  // 已存在同 key 的 WAV 直接复用，同一首歌只转码一次。
+  ipcMain.handle('audio-download:saveWav', (_event, trackKey, wavArrayBuffer) => {
+    if (!analysisRuntime || !analysisRuntime.audioDownload || !analysisRuntime.audioDownload.tempRoot) {
+      throw new Error('Audio download service not initialized')
+    }
+    if (typeof trackKey !== 'string' || !trackKey.trim() || trackKey.length > 256) {
+      throw new Error('A non-empty track key is required')
+    }
+    const buf = Buffer.from(wavArrayBuffer || new ArrayBuffer(0))
+    if (!buf.length || buf.length > 512 * 1024 * 1024) {
+      throw new Error('Invalid WAV payload size')
+    }
+    const safeName = trackKey.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) + '.wav'
+    const target = path.join(analysisRuntime.audioDownload.tempRoot, safeName)
+    if (fs.existsSync(target) && fs.statSync(target).isFile()) {
+      automixLog.log('saveWav', `trackKey=${trackKey} 复用已有 ${target}`)
+      return target
+    }
+    fs.writeFileSync(target, buf)
+    automixLog.log('saveWav', `trackKey=${trackKey} 写入 ${buf.length} bytes -> ${target}`)
+    return target
   })
   
   ipcMain.handle('audio-download:cleanup', () => {
@@ -6252,8 +6337,8 @@ app.whenReady().then(() => {
       console.log('🔧 [DevMode] 无法读取开发者模式设置，使用默认值: 禁用')
     })
   })
-  
-  startWallpaperWatcher()
+
+  // 壁纸监控不再全局启动：由渲染端在「桌面模式 + 壁纸联动开启」时经 set-wallpaper-watcher 启停
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

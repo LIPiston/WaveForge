@@ -131,6 +131,8 @@ export default memo(function QuickSettings({
   useEffect(() => {
     const onActive = (e: Event) => setMvBackgroundActive((e as CustomEvent<boolean>).detail === true)
     window.addEventListener('mvBackgroundActiveChanged', onActive as EventListener)
+    // 挂载时主动查询当前 MV 背景状态：本面板懒加载可能晚于 MV 激活，错过一次性广播
+    window.dispatchEvent(new Event('mvBackgroundActiveQuery'))
     return () => window.removeEventListener('mvBackgroundActiveChanged', onActive as EventListener)
   }, [])
 

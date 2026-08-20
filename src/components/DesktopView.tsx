@@ -2323,6 +2323,18 @@ function DesktopView({
             onAddToPlaylist={onAddToPlaylist}
             onViewComments={onViewComments}
             onOpenArtist={onOpenArtist}
+            onOpenPlaylist={(playlist) => {
+              // 搜索歌单结果 → 桌面端歌单详情面板（QQ 用 mid 字符串 id，网易云用数字 id）
+              void handlePlaylistSelect({
+                id: playlist.platform === 'qq' ? String(playlist.id) : Number(playlist.id) || playlist.id,
+                mid: playlist.platform === 'qq' ? String(playlist.id) : undefined,
+                name: playlist.name,
+                coverImgUrl: playlist.coverImgUrl,
+                trackCount: playlist.trackCount,
+                creator: playlist.creator,
+                platform: playlist.platform,
+              } as Playlist)
+            }}
             onCopyInfo={onCopyInfo}
           />
         )}

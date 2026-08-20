@@ -917,6 +917,8 @@ function App() {
   const [transitionFallbackReason, setTransitionFallbackReason] = useState<string | undefined>()
   const [isLyricsTransitioning, setIsLyricsTransitioning] = useState(false) // 歌词过渡状态（不影响UI）
   const [transitionProgress, setTransitionProgress] = useState(0) // 过渡进度 0-1
+  // 过渡缓冲时长（秒）：叠加动画窗口（最后 4 秒）按此映射 progress
+  const [transitionDuration, setTransitionDuration] = useState(0)
   const [transitionStartTime, setTransitionStartTime] = useState<number | null>(null)
   const [transitionFromTrack, setTransitionFromTrack] = useState<{
     trackKey: string
@@ -931,6 +933,10 @@ function App() {
     title: string
     artist: string
     dominantColor?: string | null
+    // 过渡期间供 MV 背景提前匹配/预载目标 MV（automix/无缝等长过渡时新 MV 叠旧 MV 渐入）
+    duration?: number
+    platform?: string
+    id?: string | number
   } | null>(null)
   const [transitionFromAccentColor, setTransitionFromAccentColor] = useState<string | null>(null)
   const [transitionToAccentColor, setTransitionToAccentColor] = useState<string | null>(null)
@@ -952,6 +958,12 @@ function App() {
   const mvBackgroundActive = Boolean(currentSong) && lyricDisplayMode !== 'video' && mvBackgroundEnabled && !mvBackgroundFallback
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('mvBackgroundActiveChanged', { detail: mvBackgroundActive }))
+  }, [mvBackgroundActive])
+  // QuickSettings 是懒加载挂载，可能晚于 MV 背景激活（一次性广播已错过）：收到查询请求时回发当前状态
+  useEffect(() => {
+    const onQuery = () => window.dispatchEvent(new CustomEvent('mvBackgroundActiveChanged', { detail: mvBackgroundActive }))
+    window.addEventListener('mvBackgroundActiveQuery', onQuery as EventListener)
+    return () => window.removeEventListener('mvBackgroundActiveQuery', onQuery as EventListener)
   }, [mvBackgroundActive])
   // 切歌时重置 MV 背景回退标记：上一首未找到 MV 不影响下一首重新匹配（回退期间 MV 层已卸载，无法自行上报）
   useEffect(() => {
@@ -1591,46 +1603,48 @@ function App() {
         const now = performance.now()
         const lastCommit = currentTimeCommitRef.current
         const playbackDelta = Math.abs(state.currentTime - lastCommit.playbackTime)
+        // 倒计时基准：gapless/autoMix 启用时以 transitionStartTime（=动画起点）为准，
+        // 否则以歌曲结束时间为准。
+        const useTransitionCountdown = effectiveAutoMixEnabled || effectiveGaplessEnabled
+        const eventTime = useTransitionCountdown ? (transitionStartTime ?? duration) : duration
+        // 动画窗口前 12s 内提高 currentTime 提交频率（≤100ms），让"即将进入过渡"倒计时流畅
+        const nearEvent = state.currentTime >= (eventTime ?? 0) - 12 && state.currentTime <= (eventTime ?? 0) + 2
         const shouldCommitToReact = state.isPlaying === false
           || state.currentTime === 0
           || state.currentTime + 0.5 < lastCommit.playbackTime
-          || playbackDelta >= 1
-          || now - lastCommit.wallTime >= 900
+          || playbackDelta >= (nearEvent ? 0.1 : 1)
+          || now - lastCommit.wallTime >= (nearEvent ? 100 : 900)
 
         if (shouldCommitToReact) {
           currentTimeCommitRef.current = { wallTime: now, playbackTime: state.currentTime }
           setCurrentTime(state.currentTime)
         }
-        
-        // 检查是否接近结束，显示"即将播放下一首"提示
-        // 立即切换到下一首，不等待当前歌曲播放完
-      const useTransitionCountdown = effectiveAutoMixEnabled || effectiveGaplessEnabled
-      // gapless/autoMix 启用时以 transitionStartTime 为倒计时基准；但该值在
-      // preparing-next、播放加载、取消等路径会为 null——必须 fallback 到 duration，
-      // 否则下方 `eventTime !== null` 检查失败，「即将播放下一首」弹窗永不显示。
-      const eventTime = useTransitionCountdown ? (transitionStartTime ?? duration) : duration
-      const timeRemaining = (eventTime ?? duration) - state.currentTime
-      
-      // 提前1秒开始淡出（仅淡出提示本身，不主动关闭用户打开的设置/个人/搜索面板）
-      // 如果正在过渡中或准备过渡，隐藏"即将播放"提示
-      if (state.transitioning || state.transitionState === 'preparing-next' || state.transitionState === 'running-transition') {
-        if (showUpNext) setShowUpNext(false)
-      } else if (Date.now() < suppressUpNextUntilRef.current) {
-        if (showUpNext) setShowUpNext(false)
-      } else if (canShowUpNextOnCurrentSurface && playMode !== 'repeat' && upNextEnabled && duration > 0 && eventTime !== null && timeRemaining <= upNextTime && timeRemaining > 0) {
-        if (!showUpNext && deterministicNextIndex !== undefined) {
-          setShowUpNext(true)
+
+        const timeRemaining = (eventTime ?? duration) - state.currentTime
+
+        // 动画窗口：currentTime 是否已到达过渡动画起点（transitionStartTime）。
+        // AI 长混音音频过渡远早于动画点开始（transitioning 全程 true）——只有真正
+        // 进入动画窗口后才隐藏"即将播放/即将进入过渡"卡片（卡片负责动画前的倒计时）。
+        const inAnimationWindowNow = transitionStartTime === null || state.currentTime >= transitionStartTime
+        if ((state.transitioning && inAnimationWindowNow) || state.transitionState === 'preparing-next') {
+          if (showUpNext) setShowUpNext(false)
+        } else if (Date.now() < suppressUpNextUntilRef.current) {
+          if (showUpNext) setShowUpNext(false)
+        } else if (canShowUpNextOnCurrentSurface && playMode !== 'repeat' && upNextEnabled && duration > 0 && eventTime !== null && timeRemaining <= upNextTime && timeRemaining > 0) {
+          if (!showUpNext && deterministicNextIndex !== undefined) {
+            setShowUpNext(true)
+          }
+        } else {
+          if (showUpNext) setShowUpNext(false)
         }
-      } else {
-        if (showUpNext) setShowUpNext(false)
       }
-    }
     if (state.duration !== undefined) setDuration(state.duration)
     if (state.volume !== undefined) setVolume(state.volume)
     if (state.transitioning !== undefined) setIsTransitioning(state.transitioning)
     if (state.transitionState !== undefined) setTransitionState(state.transitionState)
     if (state.transitionStrategy !== undefined) setTransitionStrategy(state.transitionStrategy)
     if (state.transitionStyle !== undefined) setTransitionStyle(state.transitionStyle)
+    if (state.transitionDuration !== undefined) setTransitionDuration(state.transitionDuration)
     if (state.transitionDebug !== undefined) setTransitionDebug(state.transitionDebug)
     if ('transitionStartTime' in state) setTransitionStartTime(state.transitionStartTime ?? null)
     if (state.fallbackReason !== undefined || state.transitionState === 'armed' || state.transitionState === 'preparing-next') {
@@ -1684,6 +1698,9 @@ function App() {
           title: normalizedToSong.name,
           artist: normalizedToSong.artists.map(artist => artist.name).join(', '),
           dominantColor: null, // 下一首的主色调会在切换后更新
+          duration: typeof normalizedToSong.duration === 'number' ? normalizedToSong.duration / 1000 : undefined,
+          platform: normalizedToSong.platform,
+          id: normalizedToSong.id ?? normalizedToSong.mid,
         })
       }
     }
@@ -1757,7 +1774,7 @@ function App() {
           ? '已用「直接拼接」无缝切换'
           : '已用「60ms 淡入淡出」切换'
       } else if (commit.strategy === 'smart-rendered-v2') {
-        toastMessage = '已用「AutoMix 增强版 智能渲染」切换'
+        toastMessage = '已用「AutoMix Enhanced 智能渲染」切换'
       } else if (commit.strategy === 'smart-rendered') {
         toastMessage = '已用「Smart AutoMix 智能渲染」切换'
       } else if (commit.strategy === 'beat-crossfade') {
@@ -2020,6 +2037,27 @@ function App() {
         intensity === 'subtle' || intensity === 'strong' ? intensity : 'standard',
       )
       setAutoMixAiMix(parseStoredBoolean(aiMix, false))
+
+      // 设置状态写入后端日志：无论操作到哪一步，都能看到开关的真实状态
+      window.electron?.automixLog?.('settings', JSON.stringify({
+        enabled: parseStoredBoolean(enabled, false),
+        enhanced: parseStoredBoolean(enhanced, false),
+        intensity: intensity === 'subtle' || intensity === 'strong' ? intensity : 'standard',
+        aiMix: parseStoredBoolean(aiMix, false),
+        beatMatching: parseStoredBoolean(beatMatching, true),
+        skipSilence: parseStoredBoolean(skipSilence, true),
+        minDuration: minDuration ? parseFloat(minDuration) : 2,
+        maxDuration: maxDuration ? parseFloat(maxDuration) : 12,
+      })).catch(() => undefined)
+    }
+
+    // 挂载时立即记录一次（含默认值），确认渲染端日志链路可用
+    handleAutoMixChange()
+    // 探针：验证渲染端跑的是含本代码的版本（可在 localStorage leveldb 中直接验证）
+    try {
+      localStorage.setItem('wf_automix_mount_marker', String(Date.now()))
+    } catch {
+      // 忽略
     }
 
     window.addEventListener('autoMixSettingsChanged', handleAutoMixChange)
@@ -2181,6 +2219,8 @@ function App() {
       if (isTv() && isPerfModeEfficiency() && mode === 'desktop') mode = 'minimal'
       setViewMode(mode)
       setEnteredFromMode(mode)
+      // 壁纸监控按需启停（桌面模式 + 联动开启才启动）
+      syncWallpaperWatcher(mode)
       // 切换模式时清掉待恢复的歌单/搜索来源，避免切回后又自动打开上一次的歌单
       setRestorePlaybackOrigin(null)
       playbackOriginRef.current = { mode, surface: mode === 'minimal' ? 'home' : 'mode-root' }
@@ -2191,6 +2231,16 @@ function App() {
       setShowLyricModeCustomize(false)
       setShowLyricModeArrowHint(false)
     }
+
+    // 壁纸监控按需启停：仅「桌面模式 + 壁纸联动开启」时启动，其余模式停止（避免持续 powershell 查询拖慢性能）
+    const syncWallpaperWatcher = (mode?: 'explore' | 'minimal' | 'desktop') => {
+      const inDesktop = (mode ?? viewModeRef.current) === 'desktop'
+      const syncOn = localStorage.getItem('wallpaperSyncEnabled') === 'true'
+      window.electron?.wallpaper?.setWallpaperWatcherEnabled?.(Boolean(inDesktop && syncOn))
+    }
+    const onWallpaperSyncChange = () => syncWallpaperWatcher()
+    window.addEventListener('wallpaperSyncChanged', onWallpaperSyncChange)
+    syncWallpaperWatcher(viewMode)
 
     const handleViewModeChange = (e: Event) => {
       const mode = (e as CustomEvent).detail as 'explore' | 'minimal' | 'desktop'
@@ -2242,6 +2292,7 @@ function App() {
     window.addEventListener('viewModeTransitionStart', handleTransitionStart as EventListener)
 
     return () => {
+      window.removeEventListener('wallpaperSyncChanged', onWallpaperSyncChange)
       window.removeEventListener('viewModeChanged', handleViewModeChange as EventListener)
       window.removeEventListener('viewModeTransitionStart', handleTransitionStart as EventListener)
     }
@@ -2437,7 +2488,21 @@ function App() {
   // 提取失败时使用默认强调色，过渡期间保留来源颜色以避免闪烁。
   const dominantColor = extractedColor || '#3B82F6'
   dominantColorRef.current = dominantColor
-  const isVisualTransitioning = isTransitioning || Boolean(transitionToTrack && transitionProgress > 0)
+  // 动画窗口：过渡动画（卡片/流光/交叉淡化）只在 currentTime 到达 transitionStartTime
+  // （=动画起点，最多提前 10s）后才开始。AI 长混音的音频过渡远早于动画点开始，
+  // 若不加门控，视觉会跟着 60s 混音全程走。transitionStartTime 为 null（普通交叉淡化/
+  // gapless）时视为始终在窗口内，保持 v1 行为不变。
+  const inAnimationWindow = transitionStartTime === null || currentTime >= transitionStartTime
+  // 叠加动画（封面/字/MV 渐变）只在过渡最后 ~4 秒完成（用户要求：叠加 4 秒足够，
+  // 太长拖沓）；倒计时/流光仍按动画窗口全程提前出现（isVisualTransitioning 第一个条件）。
+  const overlayProgress = (() => {
+    if (!inAnimationWindow) return 0
+    const dur = transitionDuration > 0 ? transitionDuration : 20
+    const span = Math.min(4, dur)
+    const start = 1 - span / dur
+    return Math.max(0, Math.min(1, (transitionProgress - start) / (span / dur)))
+  })()
+  const isVisualTransitioning = (isTransitioning && inAnimationWindow) || Boolean(transitionToTrack && overlayProgress > 0 && inAnimationWindow)
   // 看歌模式下视频为唯一时间线：automix/无缝/交叉过渡全部失效
   const effectiveTransitionStrategy = lyricDisplayMode === 'video' ? 'none' : transitionStrategy
   // AutoMix 过渡时，播放页过渡指示显示 AutoMix 以与无缝衔接(Gapless)区分
@@ -2484,7 +2549,11 @@ function App() {
   }, [transitionToTrack?.coverUrl])
 
   useEffect(() => {
-    if (isTransitioning || transitionProgress < 0.995 || !transitionToTrack) return
+    // 过渡进行中（准备/armed/混音中）保留叠加层；commit 后（playing/committed/idle）
+    // 立即清除过渡封面叠加，恢复当前歌曲封面——不依赖 transitionProgress 是否到 1
+    // （过渡进度可能在 commit 时停在 <1，旧条件导致叠加层残留上一曲封面）。
+    if (transitionState === 'armed' || transitionState === 'running-transition' || transitionState === 'preparing-next') return
+    if (!transitionToTrack) return
 
     const targetUiReady = currentSong !== null
       && getSongKey(currentSong) === transitionToTrack.trackKey
@@ -2501,8 +2570,7 @@ function App() {
     return () => window.clearTimeout(releaseTimer)
   }, [
     currentSong,
-    isTransitioning,
-    transitionProgress,
+    transitionState,
     transitionToTrack?.artist,
     transitionToTrack?.coverUrl,
     transitionToTrack?.title,
@@ -4107,18 +4175,6 @@ function App() {
     return () => airplayController.detachProbe()
   }, [currentTrack, isPlaying, currentTime])
 
-  // 音量同步（可选）：开启后本地音量变化联动 AirPlay 音箱音量。
-  // 启动时 effect 首次运行携带的是初始默认音量 1.0（100%），不代表用户选择——
-  // 直接回写会把用户设置的投送音量覆盖成 100，因此跳过首次运行。
-  const airplayVolumePushedRef = useRef(false)
-  useEffect(() => {
-    if (!airplayVolumePushedRef.current) {
-      airplayVolumePushedRef.current = true
-      return
-    }
-    airplayController.setPlayerVolume(volume)
-  }, [volume])
-
   // AirPlay 音量条变化（跟随软件音量开启时）→ 同步软件音量条显示
   useEffect(() => {
     const onAirplayVolume = (event: Event) => {
@@ -4131,19 +4187,15 @@ function App() {
 
   // AirPlay 投送时静音本机输出（声音只走音箱），断开/停止投送恢复原音量。
   // 只静音输出设备、不改 UI 音量：音量按钮保持原值显示，投送期间操作它控制 AirPlay 音量。
+  // 投送状态由「播放设备控制」弹窗的音频输出列表直接体现（AirPlay 条目自动选中），不再弹 toast。
   const airplayLocalMutedRef = useRef(false)
   const airplayRestoreVolumeRef = useRef(1)
   const airplayStreamingRef = useRef(false)
-  const airplayToastShownRef = useRef(false)
   const airplayUnmuteTimerRef = useRef<number | null>(null)
   useEffect(() => {
     return airplayController.subscribe((status) => {
       const streaming = status?.phase === 'streaming'
       airplayStreamingRef.current = streaming
-      // 完全断开/空闲：重置 toast 会话标记（下次连接再提示一次）
-      if (status?.phase === 'idle' || status?.phase === 'browsing') {
-        airplayToastShownRef.current = false
-      }
       if (streaming && !airplayLocalMutedRef.current) {
         airplayLocalMutedRef.current = true
         if (airplayUnmuteTimerRef.current !== null) {
@@ -4155,13 +4207,6 @@ function App() {
         setVolume(airplayController.getVolume() / 100)
         // 只静音本机输出（outputGain，采集点在其之前不受影响），投送给音箱的仍是完整声音
         airplayController.setLocalMute(true)
-        // 本次连接会话只弹一次提示（切歌/暂停的短暂切换不再重复弹）
-        if (!airplayToastShownRef.current) {
-          airplayToastShownRef.current = true
-          window.dispatchEvent(new CustomEvent('showToast', {
-            detail: { message: '已投送到 AirPlay，本机已静音', type: 'info' },
-          }))
-        }
       } else if (!streaming && airplayLocalMutedRef.current) {
         // 暂停/切歌会短暂离开 streaming：延迟 1.5s 再恢复，避免闪烁与音量条跳动
         if (airplayUnmuteTimerRef.current === null) {
@@ -4450,6 +4495,10 @@ function App() {
       return
     }
     audioPlayerRef.current.setVolume(newVolume)
+    // 用户手动调整主音量：开启「跟随软件音量」时联动 AirPlay 音箱音量。
+    // 只在用户操作时推送（unmute/streaming 同步等内部 setVolume 不推送，
+    // 否则会拿默认 100% 音量覆盖用户设置的投送音量）。
+    airplayController.setPlayerVolume(newVolume)
   }, [lyricDisplayMode])
 
   const handleDesktopQueueRemove = useCallback((index: number) => {
@@ -5354,7 +5403,16 @@ function App() {
             songs={detailPlaylist.songs}
             loading={detailPlaylistLoading}
             onClose={() => setDetailPlaylist(null)}
-            onSongSelect={(song, songs) => { void handleSongSelect(song, songs) }}
+            onSongSelect={(song, songs) => {
+              // 选歌后关闭歌单详情面板（避免盖在播放页上），并记录歌单来源，
+              // home 返回时经 HomeView 恢复同一歌单并自动定位当前歌曲
+              setDetailPlaylist(null)
+              void handleSongSelect(song, songs, {
+                surface: 'home-playlist',
+                playlist: detailPlaylist.playlist,
+                songs,
+              })
+            }}
             currentPlatform={detailPlaylist.playlist.platform || 'netease'}
             currentUserId={detailPlaylist.playlist.platform === 'qq' ? qqUserId : neteaseUserId}
             neteaseVip={neteaseVip}
@@ -5592,8 +5650,20 @@ function App() {
         }}
       />
 
-      {/* MV 背景层：开关关闭时保持挂载（display:none 隐藏但保留已缓冲视频），重开秒播不重新加载 */}
+      {/* 背景层：封面常驻最底兜底，MV 叠其上（加载期间 MV 层透明露出封面，就绪后渐入） */}
       <div className="absolute inset-0">
+        {currentSong && lyricDisplayMode !== 'video' && (
+          <PulsingCrossfadeBackground
+            coverUrl={displayCoverUrl}
+            transitionFromUrl={transitionFromTrack?.coverUrl}
+            transitionToUrl={transitionToTrack?.coverUrl}
+            isTransitioning={isVisualTransitioning}
+            transitionProgress={transitionProgress}
+            pulseStore={audioPulseStore}
+            backgroundEffect={backgroundEffect}
+            backgroundBlur={backgroundBlur}
+          />
+        )}
         {currentSong && lyricDisplayMode !== 'video' && (
           <LazyBilibiliMvBackground
             songTitle={currentSong.name}
@@ -5607,23 +5677,16 @@ function App() {
             upcomingSongs={watchUpcomingSongs}
             enabled={mvBackgroundEnabled && !mvBackgroundFallback}
             blur={mvBackgroundBlur}
+            transitionToTrack={transitionToTrack}
+            // 封面过渡只在过渡动画窗口内叠加（用户要求：从过渡动画开始，不是 automix 介入），
+            // 且叠加只在最后 4 秒完成（不拖沓）
+            transitionProgress={overlayProgress}
+            songTrackKey={currentSong ? getSongKey(currentSong) : ''}
             onFallbackChange={setMvBackgroundFallback}
             onPlayStateChange={(s: { bvid: string; cid: number; videoUrl: string; cacheKey: string; currentTime: number } | null) => {
               // null = MV 背景已卸载/切歌/失败：清空复用缓存，避免切看歌时用上过期视频
               mvBackgroundStateRef.current = s ? { bvid: s.bvid, cid: s.cid, videoUrl: s.videoUrl, cacheKey: s.cacheKey } : null
             }}
-          />
-        )}
-        {(!mvBackgroundEnabled || mvBackgroundFallback) && currentSong && lyricDisplayMode !== 'video' && (
-          <PulsingCrossfadeBackground
-            coverUrl={displayCoverUrl}
-            transitionFromUrl={transitionFromTrack?.coverUrl}
-            transitionToUrl={transitionToTrack?.coverUrl}
-            isTransitioning={isVisualTransitioning}
-            transitionProgress={transitionProgress}
-            pulseStore={audioPulseStore}
-            backgroundEffect={backgroundEffect}
-            backgroundBlur={backgroundBlur}
           />
         )}
             {/* 娓愬彉閬濞撴劕褰夐柆顔惧兊 */}
@@ -5780,7 +5843,14 @@ function App() {
                 onBackToAudio={() => handleLyricDisplayModeChange('modern')}
                 onVideoActiveChange={setWatchVideoActive}
                 onSearchFailedChange={setWatchSearchFailed}
-                onVideoStateChange={setWatchVideoState}
+                volume={volume}
+                onVideoStateChange={(state: { playing: boolean; time: number; duration: number; volume: number }) => {
+                  setWatchVideoState(state)
+                  // 看歌里调音量 → 同步全局音量（其它播放模式跟随）
+                  if (typeof state.volume === 'number' && state.volume >= 0 && state.volume <= 1) {
+                    setVolume(state.volume)
+                  }
+                }}
                 onHomeClick={handlePlayerHome}
                 onOpenMixingStudio={(anchorRect: { x: number; y: number; width: number; height: number }) => {
                   if (anchorRect) {
@@ -6195,11 +6265,11 @@ function App() {
                     
                     {/* 歌曲信息 - 过渡时双层淡入淡出 */}
                     <div className="relative w-full max-w-4xl space-y-3 text-center">
-                      {isVisualTransitioning && transitionProgress > 0 && transitionFromTrack && transitionToTrack ? (
-                        // 过渡模式：双层叠加
+                      {isVisualTransitioning && overlayProgress > 0 && transitionFromTrack && transitionToTrack ? (
+                        // 过渡模式：双层叠加（叠加动画只持续最后 4 秒，不拖沓）
                         <>
                           {/* 底层：旧歌曲信息 */}
-                          <div className="absolute inset-0" style={{ opacity: 1 - transitionProgress }}>
+                          <div className="absolute inset-0" style={{ opacity: 1 - overlayProgress }}>
                             <h1 className={`text-4xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
                               {transitionFromTrack.title}
                             </h1>
@@ -6208,7 +6278,7 @@ function App() {
                             </p>
                           </div>
                           {/* 顶层：新歌曲信息 */}
-                          <div className="relative" style={{ opacity: transitionProgress }}>
+                          <div className="relative" style={{ opacity: overlayProgress }}>
                             <h1 className={`text-4xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
                               {transitionToTrack.title}
                             </h1>
@@ -6523,11 +6593,14 @@ function App() {
               accentColor={dominantColor || '#fff'}
               transitionFromAccentColor={transitionFromAccentColor || transitionFromTrack?.dominantColor || undefined}
               transitionToAccentColor={transitionToAccentColor || undefined}
-              transitionProgress={transitionProgress}
+              transitionProgress={overlayProgress}
               playerTheme={playerTheme}
               isTransitioning={isVisualTransitioning}
               isAutoMixTransition={isAutoMixTransition}
               enhancedAutoMix={isEnhancedAutoMix}
+              // 「AutoMix 正在介入」：只有真正开始混音（running-transition）才显示，
+              // armed/准备阶段不显示（用户要求：不是开关开着就一直显示）
+              enhancedAutoMixActive={isEnhancedAutoMix && transitionState === 'running-transition'}
               transitionStartTime={transitionStartTime}
               immersiveTranslation={immersiveLyricLine?.translation || ''}
               immersiveRoman={immersiveLyricLine?.roman || ''}
@@ -6617,9 +6690,10 @@ function App() {
       )}
 
       {/* Search and login are global singletons. They can open from any mode and must not
-          remain attached to an outgoing AnimatePresence branch during playback entry. */}
+          remain attached to an outgoing AnimatePresence branch during playback entry.
+          不用 AnimatePresence 包裹：整屏 backdrop-filter 的退出节点在播放页挂载时会被
+          Chromium/framer-motion 卡住不卸载（首页同款故障），普通条件渲染关闭即当帧卸载。 */}
       <Suspense fallback={null}>
-        <AnimatePresence>
           {showSearch && (
             <LazySearchPanel
             onSongSelect={viewCallbacks.onSongSelect}
@@ -6642,10 +6716,10 @@ function App() {
             onViewComments={viewCallbacks.onViewComments}
             onOpenArtist={viewCallbacks.onOpenArtist}
             onOpenAlbum={viewCallbacks.onOpenAlbum}
+            onOpenPlaylist={(playlist) => { void handleOpenPlaylistFromDetail(playlist.id, playlist.platform as 'netease' | 'qq') }}
             onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
-        </AnimatePresence>
       </Suspense>
 
       <Suspense fallback={null}>
@@ -6679,9 +6753,10 @@ function App() {
       </Suspense>
 
       {/* Global detail singletons stay outside mode branches so an outgoing view cannot
-          retain a second interactive overlay while playback switches to minimal mode. */}
+          retain a second interactive overlay while playback switches to minimal mode.
+          不用 AnimatePresence 包裹：整屏 backdrop-filter 退出节点会被卡住不卸载，
+          普通条件渲染保证选歌后艺人弹窗当帧移除。 */}
       <Suspense fallback={null}>
-        <AnimatePresence>
           {showArtistDetail && selectedArtistId && (
             <LazyArtistDetailModal
             key={'artist-' + selectedArtistId}
@@ -6708,11 +6783,9 @@ function App() {
             onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
-        </AnimatePresence>
       </Suspense>
 
       <Suspense fallback={null}>
-        <AnimatePresence>
           {showAlbumDetail && selectedAlbumId && (
             <LazyAlbumDetailModal
             key={'album-' + selectedAlbumId}
@@ -6735,7 +6808,6 @@ function App() {
             onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
-        </AnimatePresence>
       </Suspense>
 
       <Suspense fallback={null}>
