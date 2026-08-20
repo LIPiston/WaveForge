@@ -932,6 +932,11 @@ app.use(compression({
 
 // CORS 支持
 app.use((req, res, next) => {
+  // TV 遥控桥等 WebSocket 客户端误连本服务的 /ws：明确告知本服务不承载 WebSocket，
+  // 代替 404 噪音（WebSocket 由桌面端 remote-server 在 25566/25567 提供）
+  if (req.headers.upgrade?.toLowerCase?.() === 'websocket') {
+    return res.status(426).json({ error: 'WebSocket 不在此服务，请连接遥控器服务的 /ws' })
+  }
   const origin = req.headers.origin
   if (origin && !ALLOWED_RENDERER_ORIGINS.has(origin)) {
     return res.status(403).json({ error: 'Origin not allowed' })
