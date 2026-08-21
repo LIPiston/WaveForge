@@ -3467,18 +3467,16 @@ function SettingsPanel({
                               >
                                 跟随显示器
                               </button>
-                              {HIGH_REFRESH_OPTIONS.map(hz => {
+                              {HIGH_REFRESH_OPTIONS.filter(hz => hz <= (displayInfo?.currentHz || 60)).map(hz => {
                                 const active = highRefreshHz === hz
-                                const displayMax = displayInfo?.currentHz || 60
-                                const clamped = highRefreshEnabled && displayMax < hz
                                 return (
                                   <button
                                     key={hz}
                                     type="button"
                                     onClick={() => void handleHighRefreshHzChange(hz)}
-                                    className={`rounded-full border px-3 py-1.5 text-xs font-medium tabular-nums transition-all ${active ? 'border-transparent text-white' : `${borderColor} ${textSecondary} hover:opacity-80`} ${clamped ? 'opacity-55' : ''}`}
+                                    className={`rounded-full border px-3 py-1.5 text-xs font-medium tabular-nums transition-all ${active ? 'border-transparent text-white' : `${borderColor} ${textSecondary} hover:opacity-80`}`}
                                     style={active ? { backgroundColor: accentColor, boxShadow: `0 0 10px ${accentColor}44` } : undefined}
-                                    title={clamped ? `显示器最高 ${displayMax}Hz，超出将被限制` : `${hz}Hz`}
+                                    title={`${hz}Hz`}
                                   >
                                     {hz}
                                   </button>

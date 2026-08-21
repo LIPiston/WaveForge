@@ -2284,6 +2284,11 @@ function App() {
       playbackOriginRef.current = { mode, surface: mode === 'minimal' ? 'home' : 'mode-root' }
       if (mode === 'desktop') setShowHome(false)
       else setShowHome(true)
+      // 离开桌面模式时自动关闭融合穿透：DesktopView 卸载后没有鼠标悬停检测者，
+      // 不关闭会让窗口残留 click-through（什么都点不了）
+      if (mode !== 'desktop' && localStorage.getItem('desktopFusionEnabled') === 'true') {
+        void handleDesktopFusionChange(false)
+      }
       // 探索→简约 切模式时收回顶部歌词模式下拉框/自定义/箭头提示，避免占位残留
       setShowLyricModePanel(false)
       setShowLyricModeCustomize(false)

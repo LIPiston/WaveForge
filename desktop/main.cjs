@@ -2037,12 +2037,18 @@ function createWindow() {
       if (savedWindowState.state === 'maximized') {
         // 窗口尚未显示时 maximize 可能不生效，等 show 后再设置
         mainWindow.once('show', () => {
-          if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isKiosk()) mainWindow.maximize()
+          if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isKiosk()) {
+            mainWindow.maximize()
+            mainWindowExpanded = true
+          }
         })
       } else if (savedWindowState.state === 'kiosk') {
         // 全屏覆盖任务栏（kiosk）：同样等窗口显示后再进入
         mainWindow.once('show', () => {
-          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setKiosk(true)
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.setKiosk(true)
+            mainWindowExpanded = true
+          }
         })
       }
     } catch (error) {
@@ -2220,19 +2226,26 @@ function createWindow() {
 
   // 监听窗口最大化/取消最大化事件
   mainWindow.on('maximize', () => {
+    mainWindowExpanded = true
     safeSendToWindow(mainWindow, 'window-maximized', true)
+    safeSendToWindow(mainWindow, 'window-fullscreen-change', true)
   })
 
   mainWindow.on('unmaximize', () => {
+    // 可能仍处于 kiosk/原生全屏（例如全屏内部状态变化），自记态仅在确认非全屏后清除
+    mainWindowExpanded = mainWindow.isKiosk() || mainWindow.isFullScreen()
     safeSendToWindow(mainWindow, 'window-maximized', false)
+    safeSendToWindow(mainWindow, 'window-fullscreen-change', mainWindowExpanded)
   })
 
   // 监听进入/退出 Kiosk 模式
   mainWindow.on('enter-full-screen', () => {
+    mainWindowExpanded = true
     safeSendToWindow(mainWindow, 'window-fullscreen-change', true)
   })
 
   mainWindow.on('leave-full-screen', () => {
+    mainWindowExpanded = mainWindow.isKiosk() || mainWindow.isMaximized()
     safeSendToWindow(mainWindow, 'window-fullscreen-change', false)
   })
 
@@ -5958,54 +5971,59 @@ ipcMain.handle('window-minimize', () => {
   }
 })
 
+// 窗口"扩大态"自记状态：kiosk 全屏 / 原生全屏 / 最大化 任一成立即 true。
+// Windows 上 setKiosk 进入全屏后，isKiosk()/isFullScreen()/isMaximized() 返回值可能
+// 全部为 false（kiosk 走独立全屏路径且不触发 maximize 事件），导致最大化按钮的第二次
+// 按压被误判为"非全屏"而重新进入全屏——看起来"按了没反应"。自记状态让进入/还原切换始终自洽。
+let mainWindowExpanded = false
+
 ipcMain.handle('window-maximize', async () => {
-  if (mainWindow) {
-    // 检查当前是否已经是某种全屏状态
-    const isInFullscreen = mainWindow.isKiosk() || mainWindow.isFullScreen()
-    
-    if (isInFullscreen || mainWindow.isMaximized()) {
-      // 如果是全屏或最大化状态，则还原窗口
-      if (mainWindow.isKiosk()) {
-        mainWindow.setKiosk(false)
-      }
-      if (mainWindow.isFullScreen()) {
-        mainWindow.setFullScreen(false)
-      }
-      if (mainWindow.isMaximized()) {
-        mainWindow.unmaximize()
-      }
-    } else {
-      // 如果是正常窗口，则根据用户设置进入全屏或最大化
-      try {
-        // 从渲染进程读取全屏模式设置
-        const fullscreenMode = await mainWindow.webContents.executeJavaScript(`
-          (() => {
-            try {
-              return localStorage.getItem('fullscreenMode') || 'kiosk';
-            } catch {
-              return 'kiosk';
-            }
-          })()
-        `)
-        
-        console.log('[窗口最大化] 读取到的全屏模式设置:', fullscreenMode)
-        
-        if (fullscreenMode === 'kiosk') {
-          // 全屏模式 - 覆盖任务栏?
-          console.log('[窗口最大化] 进入全屏模式（覆盖任务栏）')
-          mainWindow.setKiosk(true)
-        } else {
-          // 全屏无边框模式 - 保留任务栏
-          console.log('[窗口最大化] 进入全屏无边框模式（保留任务栏）')
-          mainWindow.maximize()
-        }
-      } catch (error) {
-        console.error('[窗口最大化] 读取设置失败，使用默认全屏模式', error)
-        mainWindow.setKiosk(true)
-      }
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindowExpanded) {
+    // 扩大态 → 还原窗口
+    console.log('[窗口最大化] 还原窗口（当前为扩大态）')
+    try {
+      if (mainWindow.isKiosk()) mainWindow.setKiosk(false)
+      if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
+      if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    } catch (error) {
+      console.error('[窗口最大化] 还原失败:', error?.message || error)
     }
-    persistMainWindowState() // kiosk 切换可能不触发 fullscreen 事件，立即记忆
+    mainWindowExpanded = false
+  } else {
+    // 正常窗口 → 按用户设置进入全屏或最大化
+    try {
+      // 从渲染进程读取全屏模式设置
+      const fullscreenMode = await mainWindow.webContents.executeJavaScript(`
+        (() => {
+          try {
+            return localStorage.getItem('fullscreenMode') || 'kiosk';
+          } catch {
+            return 'kiosk';
+          }
+        })()
+      `)
+      console.log('[窗口最大化] 读取到的全屏模式设置:', fullscreenMode)
+      if (fullscreenMode === 'kiosk') {
+        console.log('[窗口最大化] 进入全屏模式（覆盖任务栏）')
+        mainWindow.setKiosk(true)
+      } else {
+        console.log('[窗口最大化] 进入全屏无边框模式（保留任务栏）')
+        mainWindow.maximize()
+      }
+    } catch (error) {
+      console.error('[窗口最大化] 读取设置失败，使用默认全屏模式', error)
+      mainWindow.setKiosk(true)
+    }
+    mainWindowExpanded = true
   }
+  // 切换完成后向渲染端推送真实状态，供标题栏按钮图标刷新
+  // （kiosk 路径不触发 maximize/unmaximize 事件，必须在此显式同步）
+  try {
+    safeSendToWindow(mainWindow, 'window-maximized', mainWindow.isMaximized())
+    safeSendToWindow(mainWindow, 'window-fullscreen-change', mainWindowExpanded)
+    persistMainWindowState()
+  } catch { /* 忽略 */ }
 })
 
 ipcMain.handle('window-close', () => {
@@ -6097,6 +6115,7 @@ ipcMain.handle('window-set-fullscreen', (event, fullscreen, kiosk = false) => {
         // 使用最大化来保留任务栏
         mainWindow.maximize()
       }
+      mainWindowExpanded = true
     } else {
       // 退出所有全屏模式
       console.log('[全屏控制] 退出全屏')
@@ -6112,20 +6131,24 @@ ipcMain.handle('window-set-fullscreen', (event, fullscreen, kiosk = false) => {
         console.log('[全屏控制] 取消最大化')
         mainWindow.unmaximize()
       }
+      mainWindowExpanded = false
     }
     
     console.log(`[全屏控制] 执行后状态: isKiosk=${mainWindow.isKiosk()}, isFullScreen=${mainWindow.isFullScreen()}, isMaximized=${mainWindow.isMaximized()}`)
+    // 向渲染端同步扩大态（kiosk 路径可能不触发 fullscreen 事件），刷新标题栏图标
+    safeSendToWindow(mainWindow, 'window-fullscreen-change', mainWindowExpanded)
     persistMainWindowState() // 全屏/最大化切换后立即记忆
   }
 })
 
 // IPC 处理：获取全屏状态?
 ipcMain.handle('window-is-fullscreen', () => {
-  if (!mainWindow) return { fullscreen: false, kiosk: false, maximized: false }
+  if (!mainWindow) return { fullscreen: false, kiosk: false, maximized: false, expanded: false }
   return {
     fullscreen: mainWindow.isFullScreen(),
     kiosk: mainWindow.isKiosk(),
-    maximized: mainWindow.isMaximized()
+    maximized: mainWindow.isMaximized(),
+    expanded: mainWindowExpanded
   }
 })
 

@@ -251,29 +251,6 @@ function DesktopView({
     return () => window.removeEventListener('viewModeChanged', closeForModeSwitch)
   }, [])
 
-  // 桌面融合穿透：光标悬停在组件上时窗口可交互，空区域点击穿透到真实桌面。
-  // 利用 setIgnoreMouseEvents(true,{forward:true}) 的 mousemove 转发，由页面实时判定交互区。
-  useEffect(() => {
-    if (!desktopFusionEnabled) return
-    let lastSend = 0
-    let disposed = false
-    const INTERACTIVE_SELECTOR = '.desktop-widget-card, .desktop-lyrics-fusion, [data-desktop-interactive]'
-    const onMouseMove = (event: MouseEvent) => {
-      const now = Date.now()
-      if (now - lastSend < 40) return // 节流 IPC
-      lastSend = now
-      const target = document.elementFromPoint(event.clientX, event.clientY) as Element | null
-      const interactive = Boolean(target && target.closest && target.closest(INTERACTIVE_SELECTOR))
-      window.electron?.desktopFusion?.setInteractive(interactive)
-    }
-    window.electron?.desktopFusion?.setInteractive(false) // 初始穿透
-    document.addEventListener('mousemove', onMouseMove)
-    return () => {
-      disposed = true
-      document.removeEventListener('mousemove', onMouseMove)
-      window.electron?.desktopFusion?.setInteractive(false)
-    }
-  }, [desktopFusionEnabled])
   const [showSettings, setShowSettings] = useState(false)
   const [settingsModuleMounted, setSettingsModuleMounted] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
@@ -1683,6 +1660,35 @@ function DesktopView({
     || showPlaylistDetail
     || focusTimer.timer.status === 'ringing'
 
+  // 桌面融合穿透：光标悬停在组件上时窗口可交互，空区域点击穿透到真实桌面。
+  // 利用 setIgnoreMouseEvents(true,{forward:true}) 的 mousemove 转发，由页面实时判定交互区。
+  // 可交互区域用 data-desktop-interactive / .desktop-widget-card / .desktop-lyrics-fusion 标记，
+  // 其余（透明背景、卡片间隙、容器骨架）一律穿透，让真实桌面图标/任务栏可点。
+  // 弹层/面板打开时整窗强制交互——弹层覆盖全屏，此时任何点击都属于应用本身。
+  useEffect(() => {
+    if (!desktopFusionEnabled) return
+    let lastSend = 0
+    const INTERACTIVE_SELECTOR = '.desktop-widget-card, .desktop-lyrics-fusion, [data-desktop-interactive]'
+    const onMouseMove = (event: MouseEvent) => {
+      const now = Date.now()
+      if (now - lastSend < 40) return // 节流 IPC
+      lastSend = now
+      if (desktopOverlayOpen) {
+        window.electron?.desktopFusion?.setInteractive(true)
+        return
+      }
+      const target = document.elementFromPoint(event.clientX, event.clientY) as Element | null
+      const interactive = Boolean(target && target.closest && target.closest(INTERACTIVE_SELECTOR))
+      window.electron?.desktopFusion?.setInteractive(interactive)
+    }
+    window.electron?.desktopFusion?.setInteractive(desktopOverlayOpen) // 初始态：弹层开则整窗交互，否则穿透等 mousemove
+    document.addEventListener('mousemove', onMouseMove)
+    return () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      window.electron?.desktopFusion?.setInteractive(false)
+    }
+  }, [desktopFusionEnabled, desktopOverlayOpen])
+
   const widgetHandlersRef = useRef({
     onVolumeChange,
     onPlayPause,
@@ -1744,8 +1750,8 @@ function DesktopView({
         onClose={() => setShowToast(false)}
       />
       
-      {/* 背景层 */}
-      <div className="absolute inset-0 z-0" style={{ 
+      {/* 背景层（桌面融合穿透开启时隐藏，让真实桌面壁纸透出） */}
+      {!desktopFusionEnabled && <div className="absolute inset-0 z-0" style={{ 
         opacity: 1, 
         transform: 'translate3d(0, 0, 0)',
         backfaceVisibility: 'hidden',
@@ -1851,9 +1857,9 @@ function DesktopView({
             }}
           />
         )}
-      </div>
+      </div>}
 
-      {backgroundDim > 0 && (
+      {backgroundDim > 0 && !desktopFusionEnabled && (
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 z-[1] bg-black"
@@ -1946,6 +1952,7 @@ function DesktopView({
       {/* 顶部主题切换触发区域 - 面板关闭时的下箭头 */}
       <div 
         className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-8 z-50"
+        data-desktop-interactive
         onMouseEnter={() => setIsTopHovered(true)}
         onMouseLeave={() => setIsTopHovered(false)}
       >
@@ -2014,6 +2021,7 @@ function DesktopView({
             exit={{ y: 44, opacity: 0 }}
             transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
             className="absolute bottom-0 left-0 right-0 z-40"
+            data-desktop-interactive
             onMouseEnter={handleCarouselMouseEnter}
             onMouseLeave={handleCarouselMouseLeave}
             style={{ 

@@ -31,6 +31,9 @@ export interface FullscreenStatus {
   fullscreen: boolean
   kiosk: boolean
   maximized: boolean
+  /** 主进程自记的"扩大态"（kiosk 全屏/原生全屏/最大化任一成立）。
+   *  Windows kiosk 路径下 fullscreen/kiosk/maximized 查询可能全为 false，需优先取此字段。 */
+  expanded?: boolean
 }
 
 export type WallpaperResult =

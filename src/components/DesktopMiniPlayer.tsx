@@ -43,6 +43,7 @@ function DesktopMiniPlayer({
       exit={{ y: -100, opacity: 0 }}
       transition={{ type: 'spring', damping: 25, stiffness: 200 }}
       className={`fixed top-6 left-1/2 max-w-[44vw] -translate-x-1/2 cursor-pointer ${underOverlay ? 'pointer-events-none z-10' : 'z-50'}`}
+      data-desktop-interactive
       style={{
         width: 'clamp(400px, 42vw, 600px)',
       }}

@@ -938,7 +938,9 @@ input, textarea, [contenteditable="true"] {
 
 .desktop-widget-scroller {
   background: transparent !important;
-  contain: layout style;
+  /* 只保留样式隔离。contain:layout 会把本列变成 position:fixed 后代的包含块，
+     导致时间中心/进度/便签等弹窗被约束在卡片列内（挤压显示），天气弹窗因 portal 不受影响 */
+  contain: style;
 }
 
 /* 播放页连续 7 秒无鼠标移动时隐藏指针；覆盖内部按钮的 cursor 样式。 */
