@@ -1996,7 +1996,9 @@ function createWindow() {
     splashFrameDone = true
     tryShowSplash()
   }, 3000)
-  // 创建主窗口
+  // 创建主窗口：默认原生不透明窗口（Windows 11 系统圆角/阴影/对齐吸附）。
+  // 桌面融合穿透需要透明窗口，而 transparent 仅创建时生效——开启/关闭融合时
+  // 由 recreateMainWindow 销毁重建切换透明属性，普通模式始终用原生窗口。
   const iconPath = path.join(__dirname, '..', 'build', 'icon.ico')
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -2004,10 +2006,8 @@ function createWindow() {
     minWidth: 1200,
     minHeight: 800,
     frame: false,
-    backgroundColor: '#00000000',
-    // 桌面融合穿透：窗口需为透明，常规模式由 App 根部黑色层保持不透明；
-    // 桌面模式 + 融合穿透时隐藏根部黑色与桌面背景层，真实桌面从透明区透出。
-    transparent: true,
+    backgroundColor: '#000000',
+    transparent: false,
     titleBarStyle: 'hidden',
     title: 'WaveForge 澜音工坊',
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
