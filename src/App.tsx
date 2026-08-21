@@ -378,6 +378,19 @@ function getSongKey(song: Song): string {
   return `${song.platform || 'netease'}-${song.mid || song.id}`
 }
 
+// 纯音乐判定（现代歌词模式：纯音乐时封面居中显示）。
+// 只查前两行会漏掉"作曲/编曲信息在前、纯音乐提示在后"的歌曲——扫描全部歌词行；
+// 空歌词也视为纯音乐（无歌词兜底居中）。各歌词加载路径统一走此函数，避免判定不一致。
+const PURE_MUSIC_MARKERS = ['纯音乐', '无歌词', 'instrumental']
+function detectPureMusic(lyrics: LyricLine[] | undefined | null): boolean {
+  const lines = Array.isArray(lyrics) ? lyrics : []
+  if (lines.length === 0) return true
+  return lines.some(line => {
+    const text = (line?.text || '').toLowerCase()
+    return PURE_MUSIC_MARKERS.some(marker => text.includes(marker))
+  })
+}
+
 function getSongIdentifiers(song: Song | null): string[] {
   if (!song) return []
   return [song.id, song.mid]
@@ -1194,7 +1207,7 @@ function App() {
         if (activeTrackKeyRef.current === cacheKey) {
           debugLog(`📝 歌词更新: ${source} (${progressLyrics.length}行 逐字=${hasWordByWord})`)
           setLyrics(progressLyrics)
-          setIsPureMusic(progressLyrics.length === 0 || progressLyrics.slice(0, 2).some(lyric => lyric.text.includes('纯音乐')))
+          setIsPureMusic(detectPureMusic(progressLyrics))
         }
       }
         )
@@ -1215,7 +1228,7 @@ function App() {
       })
       if (activeTrackKeyRef.current === cacheKey) {
         setLyrics(finalLyrics)
-        setIsPureMusic(finalLyrics.length === 0 || finalLyrics.slice(0, 2).some(lyric => lyric.text.includes('纯音乐')))
+        setIsPureMusic(detectPureMusic(finalLyrics))
       }
       return finalLyrics
     }).catch(error => {
@@ -2074,7 +2087,7 @@ function App() {
         setCurrentTime(audioPlayer.getAudioElement()?.currentTime || 0)
         const cachedLyrics = preloadCacheRef.current.get(cacheKey)?.lyrics || []
         setLyrics(cachedLyrics)
-        setIsPureMusic(cachedLyrics.length > 0 && cachedLyrics.slice(0, 2).some(lyric => lyric.text.includes('纯音乐')))
+        setIsPureMusic(detectPureMusic(cachedLyrics))
         setCurrentTranslation('')
         void ensureSongLyrics(normalizedSong, cacheKey)
 
@@ -3490,10 +3503,10 @@ function App() {
     const cached = preloadCacheRef.current.get(cacheKey)
     if (cached && cached.lyrics.length > 0) {
       setLyrics(cached.lyrics)
-      setIsPureMusic(cached.lyrics.slice(0, 2).some(lyric => lyric.text.includes('纯音乐')))
+      setIsPureMusic(detectPureMusic(cached.lyrics))
     } else {
       setLyrics([])
-      setIsPureMusic(false)
+      setIsPureMusic(detectPureMusic(cached?.lyrics))
     }
     void ensureSongLyrics(normalizedSong, cacheKey)
 
@@ -3648,12 +3661,10 @@ function App() {
       songLyrics = preloadCacheRef.current.get(cacheKey)?.lyrics || songLyrics
       if (songLyrics.length > 0) {
         setLyrics(songLyrics)
-        const checkIsPureMusic = songLyrics.slice(0, 2).some(lyric => lyric.text.includes('纯音乐'))
-        setIsPureMusic(checkIsPureMusic)
       } else {
         setLyrics([]) // 先清空歌词
-        setIsPureMusic(false) // 重置纯音乐状态
       }
+      setIsPureMusic(detectPureMusic(songLyrics))
       
       let started = false
       try {
