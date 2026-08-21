@@ -5938,6 +5938,9 @@ function wireMainWindowEvents(win) {
   // 最大化/还原/全屏事件：自记扩大态 + 向渲染端推送状态（标题栏按钮图标依赖）
   win.on('maximize', () => {
     mainWindowExpanded = true
+    // 记录最大化前的正常边界（getNormalBounds 在最大化后仍返回还原态的位置/尺寸），
+    // 覆盖 Win+Up / 拖到顶部等原生最大化路径——否则还原时没有边界可恢复
+    if (!mainWindowNormalBounds) mainWindowNormalBounds = win.getNormalBounds()
     safeSendToWindow(win, 'window-maximized', true)
     safeSendToWindow(win, 'window-fullscreen-change', true)
   })
@@ -5949,6 +5952,7 @@ function wireMainWindowEvents(win) {
   })
   win.on('enter-full-screen', () => {
     mainWindowExpanded = true
+    if (!mainWindowNormalBounds) mainWindowNormalBounds = win.getNormalBounds()
     safeSendToWindow(win, 'window-fullscreen-change', true)
   })
   win.on('leave-full-screen', () => {
@@ -6088,22 +6092,12 @@ const restoreMainWindowFromExpanded = () => {
     mainWindow.setKiosk(false)
     mainWindow.setFullScreen(false)
     if (mainWindow.isMaximized()) mainWindow.unmaximize()
-    // 显式恢复进入前边界；缺失时退回主屏居中默认尺寸
-    let bounds = mainWindowNormalBounds
-    mainWindowNormalBounds = null
-    if (!bounds) {
-      const { screen } = require('electron')
-      const wa = screen.getPrimaryDisplay().workArea
-      const width = Math.min(1400, wa.width - 80)
-      const height = Math.min(900, wa.height - 80)
-      bounds = {
-        x: wa.x + Math.round((wa.width - width) / 2),
-        y: wa.y + Math.round((wa.height - height) / 2),
-        width,
-        height,
-      }
+    // 显式恢复进入前边界；未记录时（如启动即 kiosk）交给原生还原（unmaximize/
+    // setKiosk(false)），不强行居中覆盖用户自定义位置/尺寸
+    if (mainWindowNormalBounds) {
+      mainWindow.setBounds(mainWindowNormalBounds)
+      mainWindowNormalBounds = null
     }
-    mainWindow.setBounds(bounds)
   } catch (error) {
     console.error('[窗口最大化] 还原失败:', error?.message || error)
   }
