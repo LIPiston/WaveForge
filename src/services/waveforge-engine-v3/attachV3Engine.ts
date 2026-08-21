@@ -254,9 +254,16 @@ function ensureBridge(fs: number): V3UiBridge {
   if (!host) host = new EngineV3Host({ mode: 'auto', workletUrl: './v3-worklet.js' })
   if (wrappedBridge === null || bridgedEngine !== host.engine) {
     const raw = createV3UiBridge(host.engine, fs)
+    // setParams 值相等短路：拖拽/滑块高频路径每次 patch 的真实代价是 3 次整参数
+    // JSON 深拷贝 + 双 setParams（15 级链全量重配）+ worklet postMessage + 全页重渲染；
+    // 值未变化时（球形拖拽静止帧、React 双调用等）一次 stringify 对比即可全跳过
+    let lastParamsKey = ''
     wrappedBridge = {
       ...raw,
       setParams: (p: V3EngineParams) => {
+        const key = JSON.stringify(p)
+        if (key === lastParamsKey) return
+        lastParamsKey = key
         raw.setParams(p)          // 桥内部快照 + 主线程引擎
         host!.setParams(p)        // worklet 处理器同步下发（script 模式下与上一行同源）
         currentParams = p
