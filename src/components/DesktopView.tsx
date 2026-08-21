@@ -1669,6 +1669,22 @@ function DesktopView({
     if (!desktopFusionEnabled) return
     let lastSend = 0
     const INTERACTIVE_SELECTOR = '.desktop-widget-card, .desktop-lyrics-fusion, [data-desktop-interactive]'
+    // 判定光标下的元素是否属于"可交互 UI"：
+    // 1) 命中标记（组件卡片/歌词/歌单栏/迷你播放器/标题栏等）
+    // 2) 命中任意 position:fixed 的元素——全屏弹层（设备控制/遥控器/歌曲详情/登录提示/
+    //    更新提示等）与标题栏都是 fixed。DesktopView 之外的 App 级弹层不在
+    //    desktopOverlayOpen 状态里，必须靠这里通用覆盖：弹层打开时所有点击都属于应用，
+    //    融合穿透只在透明空区域生效。
+    const isInteractiveElement = (target: Element | null): boolean => {
+      if (!target || !target.closest) return false
+      if (target.closest(INTERACTIVE_SELECTOR)) return true
+      let node: Element | null = target
+      while (node && node !== document.body) {
+        if (node.nodeType === 1 && window.getComputedStyle(node).position === 'fixed') return true
+        node = node.parentElement
+      }
+      return false
+    }
     const onMouseMove = (event: MouseEvent) => {
       const now = Date.now()
       if (now - lastSend < 40) return // 节流 IPC
@@ -1678,8 +1694,7 @@ function DesktopView({
         return
       }
       const target = document.elementFromPoint(event.clientX, event.clientY) as Element | null
-      const interactive = Boolean(target && target.closest && target.closest(INTERACTIVE_SELECTOR))
-      window.electron?.desktopFusion?.setInteractive(interactive)
+      window.electron?.desktopFusion?.setInteractive(isInteractiveElement(target))
     }
     window.electron?.desktopFusion?.setInteractive(desktopOverlayOpen) // 初始态：弹层开则整窗交互，否则穿透等 mousemove
     document.addEventListener('mousemove', onMouseMove)
