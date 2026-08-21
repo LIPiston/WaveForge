@@ -6202,34 +6202,10 @@ ipcMain.handle('desktop-fusion:set-enabled', async (_event, enabled) => {
   return { success: true, enabled: desktopFusionEnabled, recreated: true }
 })
 
-// 开启穿透需重建窗口（会中断当前播放/重载界面），先弹系统确认框告知用户
-ipcMain.handle('desktop-fusion:request-enable', async () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return { success: false, canceled: true }
-  if (desktopFusionEnabled) return { success: true, enabled: true, canceled: false, recreated: false }
-  const { response } = await dialog.showMessageBox(mainWindow, {
-    type: 'question',
-    buttons: ['取消', '继续并重建窗口'],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-    title: '启用桌面融合穿透',
-    message: '启用桌面融合需要把主窗口重建为透明窗口（以便透出真实桌面）。',
-    detail: '重建会重新加载界面，当前播放的音乐会中断。\n关闭桌面融合时会再次重建，恢复原生窗口。',
-  })
-  if (response !== 1) return { success: false, canceled: true }
-  desktopFusionSavedKiosk = mainWindow.isKiosk()
-  desktopFusionEnabled = true
-  try {
-    const win = await recreateMainWindow(true)
-    if (!win) { desktopFusionEnabled = false; return { success: false, canceled: false } }
-    applyFusionWindowState(win)
-  } catch (error) {
-    console.error('[桌面融合穿透] 重建窗口失败:', error?.message || error)
-    desktopFusionEnabled = false
-    return { success: false, canceled: false }
-  }
-  return { success: true, enabled: true, canceled: false, recreated: true }
-})
+// 开启穿透需重建窗口（会中断当前播放/重载界面），确认框由渲染端应用内弹窗完成
+//（FusionEnableConfirmModal，与删除歌单弹窗同款样式），确认后经 set-enabled 重建。
+// 此路径同样承担"应用启动时从 localStorage 恢复融合态"（此时主进程 desktopFusionEnabled
+// 为 false，渲染端启动同步调用 set-enabled(true) 触发重建为透明窗口）。
 
 // 渲染端报告「光标是否悬停在组件上」→ 切换鼠标穿透
 ipcMain.on('desktop-fusion:set-interactive', (_event, interactive) => {

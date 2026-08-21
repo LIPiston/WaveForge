@@ -9,6 +9,7 @@ import AlbumCoverPlayer from './components/AlbumCoverPlayer'
 import LyricsDisplay from './components/LyricsDisplay'
 import PlayerControls from './components/PlayerControls'
 import TitleBar from './components/TitleBar'
+import FusionEnableConfirmModal from './components/FusionEnableConfirmModal'
 import UpdatePrompt from './components/UpdatePrompt'
 import CrossfadeBackground from './components/CrossfadeBackground'
 
@@ -480,30 +481,25 @@ function App() {
   const viewModeChangeRevisionRef = useRef(0)
   // 桌面融合穿透：桌面模式空区域鼠标穿透到真实桌面（退出 kiosk + 组件区可交互）
   const [desktopFusionEnabled, setDesktopFusionEnabled] = useState(() => localStorage.getItem('desktopFusionEnabled') === 'true')
+  // 开启融合需重建窗口（会中断播放/重载界面），先弹应用内确认框（参考删除歌单弹窗）
+  const [showFusionConfirm, setShowFusionConfirm] = useState(false)
   const handleDesktopFusionChange = useCallback(async (enabled: boolean) => {
     if (enabled) {
       // 开启穿透需要把主窗口重建为透明窗口（transparent 仅创建时生效，普通模式用原生
-      // 不透明窗口+系统圆角）。主进程会弹确认框告知会中断播放/重载界面。
-      // 先写 localStorage：确认后旧窗口随重建销毁，新窗口启动时据此恢复融合态
-      //（本实例不再执行后续代码，无需依赖返回结果）。
-      localStorage.setItem('desktopFusionEnabled', 'true')
-      let canceled = true
-      try {
-        const result = await window.electron?.desktopFusion.requestEnable?.()
-        canceled = result ? result.canceled === true : true
-      } catch {
-        canceled = false // 旧窗口已随重建销毁（invoke 通道关闭）＝融合已启用，无需回滚
-      }
-      if (canceled) {
-        // 用户取消：回滚
-        localStorage.setItem('desktopFusionEnabled', 'false')
-        setDesktopFusionEnabled(false)
-      }
+      // 不透明窗口+系统圆角）——先弹应用内确认框，确认后由 confirmEnableFusion 重建
+      setShowFusionConfirm(true)
       return
     }
     setDesktopFusionEnabled(false)
     localStorage.setItem('desktopFusionEnabled', 'false')
     try { await window.electron?.desktopFusion.setEnabled(false) } catch { /* 忽略 */ }
+  }, [])
+  // 确认开启融合：先写 localStorage，主进程销毁重建为透明窗口（本实例随旧窗口销毁，
+  // 新窗口启动时据此恢复融合态）；invoke 通道随窗口销毁关闭，异常可忽略
+  const confirmEnableFusion = useCallback(async () => {
+    setShowFusionConfirm(false)
+    localStorage.setItem('desktopFusionEnabled', 'true')
+    try { await window.electron?.desktopFusion.setEnabled(true) } catch { /* 忽略 */ }
   }, [])
   // 重启后同步主进程窗口状态（退出 kiosk / 置顶等），保证与 localStorage 一致
   useEffect(() => {
@@ -5560,6 +5556,13 @@ function App() {
       
       {/* 固定背景层 - 防止切换时白屏（桌面模式 + 融合穿透时隐藏，让真实桌面透出） */}
       {!(viewMode === 'desktop' && desktopFusionEnabled) && <div className="fixed inset-0 bg-black" />}
+
+      {/* 桌面融合开启确认弹窗（重建窗口会中断播放/重载界面，先询问用户） */}
+      <FusionEnableConfirmModal
+        show={showFusionConfirm}
+        onClose={() => setShowFusionConfirm(false)}
+        onConfirm={() => void confirmEnableFusion()}
+      />
       
       {/* 全局更新提示（任何视图模式可见；分客户端显示） */}
       <UpdatePrompt playerTheme={playerTheme} />
