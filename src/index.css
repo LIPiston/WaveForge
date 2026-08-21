@@ -25,6 +25,14 @@ html, body, #root {
   overflow: hidden;
 }
 
+/* 窗口圆角：主窗口为透明窗口（桌面融合需要穿透），Windows 不会为透明窗口做原生
+   DWM 圆角，改由 #root 按 12px 圆角裁剪模拟（#root 是应用全部内容的挂载容器，
+   overflow:hidden 会裁剪包含 fixed 在内的一切后代；body 自身的 border-radius 因
+   overflow 传播到视口而不裁剪内容，不起作用）。 */
+#root {
+  border-radius: 12px;
+}
+
 /* 窗口圆角 - 仅用于 Electron */
 body {
   border-radius: 12px;
