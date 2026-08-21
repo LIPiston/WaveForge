@@ -273,6 +273,16 @@ export function useAudioPlayer(
   const getActiveGain = useCallback(() => gainNodesRef.current[activePrimaryRef.current ? 0 : 1], [])
   const getStandbyGain = useCallback(() => gainNodesRef.current[activePrimaryRef.current ? 1 : 0], [])
 
+  // 专辑播放判定（三方案分流依据）：当前曲与下一曲属于同一专辑
+  // （albumId 都存在且相等）→ 专辑场景；否则为非专辑（普通列表）场景。
+  // 同专辑时即使 AutoMix 启用也优先走首尾拼接无缝方案（预热 20s + ended 拼接），
+  // AutoMix 智能过渡只接管非专辑场景。
+  const isAlbumPlayback = useCallback(() => {
+    const currentMeta = currentMetadataRef.current
+    const nextMeta = nextMetadataRef.current
+    return Boolean(currentMeta?.albumId && nextMeta?.albumId && currentMeta.albumId === nextMeta.albumId)
+  }, [])
+
   const setDeckGain = useCallback((gain: GainNode | null, audio: HTMLAudioElement | null, value: number) => {
     const next = Math.max(0, Math.min(1, value))
     if (gain && audioContextRef.current) {
@@ -1472,7 +1482,7 @@ export function useAudioPlayer(
       getStandbyAudio,
       getStandbyGain,
       setDeckGain,
-      isGaplessEnabled: () => gaplessRef.current.enabled,
+      isGaplessEnabled: () => gaplessRef.current.enabled || (autoMixRef.current.enabled && isAlbumPlayback()),
       isTransitionRunning: () => transitionStateRef.current === 'running-transition',
       hasActiveTransition: () => Boolean(gaplessIntegrationRef.current?.hasActiveTransition()),
       getRevision: () => transitionExecutionRevisionRef.current,
@@ -1490,13 +1500,11 @@ export function useAudioPlayer(
       const remaining = (active.duration || 0) - active.currentTime
       const standby = getStandbyAudio()
       const plan = transitionPlanRef.current
-      // 专辑播放检测（三方案分流依据）：当前曲与下一曲属于同一专辑
-      // （albumId 都存在且相等）→ 专辑场景；否则为非专辑（普通列表）场景。
-      const currentMeta = currentMetadataRef.current
-      const nextMeta = nextMetadataRef.current
-      const albumPlayback = Boolean(currentMeta?.albumId && nextMeta?.albumId && currentMeta.albumId === nextMeta.albumId)
+      // 专辑播放检测（三方案分流依据）——同专辑时即使 AutoMix 启用也优先走首尾拼接，
+      // AutoMix 过渡（timeupdate 触发与预分析）只接管非专辑场景。
+      const albumPlayback = isAlbumPlayback()
       if (standby?.src && transitionStateRef.current !== 'running-transition') {
-        if (autoMixRef.current.enabled && plan && (transitionStateRef.current === 'armed' || transitionStateRef.current === 'playing')) {
+        if (autoMixRef.current.enabled && !albumPlayback && plan && (transitionStateRef.current === 'armed' || transitionStateRef.current === 'playing')) {
           if (active.currentTime >= plan.sourceStartTime) {
             debugLog('🎬 [AutoMix] 到达过渡点！')
             debugLog('   当前时间:', active.currentTime.toFixed(2), 's')
@@ -1508,7 +1516,7 @@ export function useAudioPlayer(
         } else if (crossfadeRef.current.enabled && remaining <= Math.max(0.25, crossfadeRef.current.duration)) {
           debugLog('🎬 [Crossfade] 到达交叉淡化点，剩余时间:', remaining.toFixed(2), 's')
           void startTransition('fixed-crossfade')
-        } else if (gaplessRef.current.enabled && Number.isFinite(remaining)) {
+        } else if ((gaplessRef.current.enabled || (autoMixRef.current.enabled && albumPlayback)) && Number.isFinite(remaining)) {
           // Gapless 三方案分流已抽离到 src/services/gapless/seamlessJoinController.ts：
           //   remaining ∈ (1, 20] 且专辑 → 预热缓存前 10s（保证首选拼接就绪）
           //   remaining ∈ (0, 1]     → scheduleBoundary（首选直接拼接 / 备选 60ms 淡入淡出）
@@ -1594,7 +1602,7 @@ export function useAudioPlayer(
         debugLog('✅ [Event] 过渡正在进行中，提交过渡')
         const strategy = transitionPlanRef.current?.strategy || (crossfadeRef.current.enabled ? 'fixed-crossfade' : 'gapless')
         commitTransition(strategy, standby.currentTime, transitionExecutionRevisionRef.current)
-      } else if (standby?.src && gaplessRef.current.enabled) {
+      } else if (standby?.src && (gaplessRef.current.enabled || (autoMixRef.current.enabled && isAlbumPlayback()))) {
         debugLog('⏭️ [Event] 待机音频就绪且无缝衔接已启用')
         if (gaplessIntegrationRef.current) {
           // 使用 Cuefield/Album Gapless 执行过渡
@@ -1770,9 +1778,12 @@ export function useAudioPlayer(
       if (preloadReadyCleanupRef.current === cleanupReady) preloadReadyCleanupRef.current = null
       if (!isCurrentPreload()) return
       debugLog('🎵 [Preload] 预加载歌曲就绪')
-      if (autoMixRef.current.enabled) {
+      if (autoMixRef.current.enabled && !isAlbumPlayback()) {
         debugLog('🎵 [Preload] autoMix 已启用，调用 prepareAutoMix()')
         void prepareAutoMix()
+      } else if (autoMixRef.current.enabled && isAlbumPlayback()) {
+        debugLog('🎵 [Preload] 同专辑 + AutoMix：跳过智能过渡分析，走首尾拼接无缝方案')
+        setTransitionState('armed', { transitionStrategy: 'gapless' })
       }
       else if (gaplessRef.current.enabled && gaplessIntegrationRef.current) {
         debugLog('🎵 [Preload] 准备无缝衔接，调用 GaplessIntegration')
@@ -1895,8 +1906,8 @@ export function useAudioPlayer(
       debugLog('✅ [LoadAndPlay] 播放成功')
       setTransitionState('playing', { isPlaying: true, duration: active.duration || track?.duration || 0, ended: false })
       
-      // Prepare auto mix for next track if available
-      if (nextMetadataRef.current?.url && autoMixRef.current.enabled) {
+      // Prepare auto mix for next track if available（同专辑优先首尾拼接，跳过 AutoMix 分析）
+      if (nextMetadataRef.current?.url && autoMixRef.current.enabled && !isAlbumPlayback()) {
         debugLog('🎵 [LoadAndPlay] 检测到下一首歌曲且 autoMix 已启用，调用 prepareAutoMix()')
         void prepareAutoMix()
       } else {
