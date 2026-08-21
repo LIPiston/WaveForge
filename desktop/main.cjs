@@ -2201,89 +2201,8 @@ function createWindow() {
     mainFirstFrameReady = true
     showMainWindowWhenReady()
   })
-  // 阻止 window.open 创建新的 Electron 窗口
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    // 使用系统默认浏览器打开外部链接
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      shell.openExternal(url)
-      return { action: 'deny' }
-    }
-    return { action: 'deny' }
-  })
-
-  // 窗口关闭（含退出）前做最终状态保存——will-quit 时窗口可能已销毁拿不到 bounds
-  mainWindow.on('close', () => {
-    persistMainWindowState()
-  })
-
-  mainWindow.on('closed', () => {
-    mainWindow = null
-    if (wallpaperWatcher) {
-      clearInterval(wallpaperWatcher)
-      wallpaperWatcher = null
-    }
-  })
-
-  // 监听窗口最大化/取消最大化事件
-  mainWindow.on('maximize', () => {
-    mainWindowExpanded = true
-    safeSendToWindow(mainWindow, 'window-maximized', true)
-    safeSendToWindow(mainWindow, 'window-fullscreen-change', true)
-  })
-
-  mainWindow.on('unmaximize', () => {
-    // 可能仍处于 kiosk/原生全屏（例如全屏内部状态变化），自记态仅在确认非全屏后清除
-    mainWindowExpanded = mainWindow.isKiosk() || mainWindow.isFullScreen()
-    safeSendToWindow(mainWindow, 'window-maximized', false)
-    safeSendToWindow(mainWindow, 'window-fullscreen-change', mainWindowExpanded)
-  })
-
-  // 监听进入/退出 Kiosk 模式
-  mainWindow.on('enter-full-screen', () => {
-    mainWindowExpanded = true
-    safeSendToWindow(mainWindow, 'window-fullscreen-change', true)
-  })
-
-  mainWindow.on('leave-full-screen', () => {
-    mainWindowExpanded = mainWindow.isKiosk() || mainWindow.isMaximized()
-    safeSendToWindow(mainWindow, 'window-fullscreen-change', false)
-  })
-
-  mainWindow.webContents.on('did-finish-load', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      safeSendToWindow(mainWindow, 'window-maximized', mainWindow.isMaximized())
-      safeSendToWindow(mainWindow, 'window-fullscreen-change', mainWindow.isKiosk() || mainWindow.isFullScreen())
-    }
-  })
-
-  // ── 窗口状态记忆：大小/位置/状态变化后防抖保存（关闭时会做最终保存） ──
-  let windowStateSaveTimer = null
-  const scheduleWindowStateSave = () => {
-    if (windowStateSaveTimer) clearTimeout(windowStateSaveTimer)
-    windowStateSaveTimer = setTimeout(() => {
-      windowStateSaveTimer = null
-      persistMainWindowState()
-    }, 400)
-  }
-  mainWindow.on('resize', scheduleWindowStateSave)
-  mainWindow.on('move', scheduleWindowStateSave)
-  mainWindow.on('maximize', scheduleWindowStateSave)
-  mainWindow.on('unmaximize', scheduleWindowStateSave)
-  mainWindow.on('enter-full-screen', scheduleWindowStateSave)
-  mainWindow.on('leave-full-screen', scheduleWindowStateSave)
-
-  // F12 快捷键：开发者模式下打开开发者工具
-  mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.key === 'F12' && input.type === 'keyDown') {
-      if (developerMode) {
-        if (mainWindow.webContents.isDevToolsOpened()) {
-          mainWindow.webContents.closeDevTools()
-        } else {
-          mainWindow.webContents.openDevTools()
-        }
-      }
-    }
-  })
+  // 事件接线（状态推送/窗口记忆/F12 等）——与融合穿透重建（recreateMainWindow）共用
+  wireMainWindowEvents(mainWindow)
 }
 
 // ========== 壁纸功能 ==========
@@ -5980,6 +5899,186 @@ let mainWindowExpanded = false
 //（停留在左上角或全屏尺寸），还原时显式 setBounds 恢复。
 let mainWindowNormalBounds = null
 
+// 窗口状态记忆：大小/位置/状态变化后防抖保存（关闭时会做最终保存）。
+// 提升到模块级：主窗口重建（透明↔不透明切换）后事件接线继续共用。
+let windowStateSaveTimer = null
+const scheduleWindowStateSave = () => {
+  if (windowStateSaveTimer) clearTimeout(windowStateSaveTimer)
+  windowStateSaveTimer = setTimeout(() => {
+    windowStateSaveTimer = null
+    persistMainWindowState()
+  }, 400)
+}
+
+// 主窗口事件接线：启动创建（createWindow）与融合穿透重建（recreateMainWindow）共用。
+// 重建后必须重新挂接，否则窗口会失去状态推送（标题栏图标）/窗口记忆/F12 快捷键。
+function wireMainWindowEvents(win) {
+  // 阻止 window.open 创建新的 Electron 窗口（外部链接交给系统浏览器）
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url)
+      return { action: 'deny' }
+    }
+    return { action: 'deny' }
+  })
+
+  // 窗口关闭（含退出）前做最终状态保存——will-quit 时窗口可能已销毁拿不到 bounds
+  win.on('close', () => {
+    persistMainWindowState()
+  })
+
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
+    if (wallpaperWatcher) {
+      clearInterval(wallpaperWatcher)
+      wallpaperWatcher = null
+    }
+  })
+
+  // 最大化/还原/全屏事件：自记扩大态 + 向渲染端推送状态（标题栏按钮图标依赖）
+  win.on('maximize', () => {
+    mainWindowExpanded = true
+    safeSendToWindow(win, 'window-maximized', true)
+    safeSendToWindow(win, 'window-fullscreen-change', true)
+  })
+  win.on('unmaximize', () => {
+    // 可能仍处于 kiosk/原生全屏（例如全屏内部状态变化），自记态仅在确认非全屏后清除
+    mainWindowExpanded = win.isKiosk() || win.isFullScreen()
+    safeSendToWindow(win, 'window-maximized', false)
+    safeSendToWindow(win, 'window-fullscreen-change', mainWindowExpanded)
+  })
+  win.on('enter-full-screen', () => {
+    mainWindowExpanded = true
+    safeSendToWindow(win, 'window-fullscreen-change', true)
+  })
+  win.on('leave-full-screen', () => {
+    mainWindowExpanded = win.isKiosk() || win.isMaximized()
+    safeSendToWindow(win, 'window-fullscreen-change', false)
+  })
+
+  // 加载完成后向渲染端推送当前窗口状态
+  win.webContents.on('did-finish-load', () => {
+    if (mainWindow === win && !win.isDestroyed()) {
+      safeSendToWindow(win, 'window-maximized', win.isMaximized())
+      safeSendToWindow(win, 'window-fullscreen-change', win.isKiosk() || win.isFullScreen())
+    }
+  })
+
+  // 窗口状态记忆：大小/位置/状态变化后防抖保存
+  win.on('resize', scheduleWindowStateSave)
+  win.on('move', scheduleWindowStateSave)
+  win.on('maximize', scheduleWindowStateSave)
+  win.on('unmaximize', scheduleWindowStateSave)
+  win.on('enter-full-screen', scheduleWindowStateSave)
+  win.on('leave-full-screen', scheduleWindowStateSave)
+
+  // F12 快捷键：开发者模式下打开开发者工具
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12' && input.type === 'keyDown') {
+      if (developerMode) {
+        if (win.webContents.isDevToolsOpened()) {
+          win.webContents.closeDevTools()
+        } else {
+          win.webContents.openDevTools()
+        }
+      }
+    }
+  })
+}
+
+// 重建主窗口：transparent 仅在创建时生效（透明窗口用于桌面融合穿透，普通模式用原生
+// 不透明窗口+系统圆角/阴影），切换两者只能销毁重建。重建保留窗口边界与置顶状态，
+// 融合特有的状态（kiosk 记忆/沉底/鼠标穿透）由调用方在重建后应用。
+async function recreateMainWindow(transparent) {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+  const wasAlwaysOnTop = mainWindow.isAlwaysOnTop()
+  // 先退出扩大态（kiosk/全屏/最大化），避免销毁时把全屏边界写进窗口状态记忆；
+  // 退出后再取边界，否则 getBounds 会拿到 kiosk 的全屏尺寸
+  try {
+    if (mainWindow.isKiosk()) mainWindow.setKiosk(false)
+    if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+  } catch { /* 忽略 */ }
+  const savedBounds = mainWindow.getBounds()
+  mainWindowExpanded = false
+  mainWindowNormalBounds = null
+
+  const oldWindow = mainWindow
+  mainWindow = null
+  if (!oldWindow.isDestroyed()) oldWindow.destroy()
+
+  const iconPath = path.join(__dirname, '..', 'build', 'icon.ico')
+  const win = new BrowserWindow({
+    width: savedBounds.width,
+    height: savedBounds.height,
+    x: savedBounds.x,
+    y: savedBounds.y,
+    minWidth: 1200,
+    minHeight: 800,
+    frame: false,
+    backgroundColor: transparent ? '#00000000' : '#000000',
+    transparent,
+    titleBarStyle: 'hidden',
+    title: 'WaveForge 澜音工坊',
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    // 不透明窗口用 Windows 11 原生圆角；透明窗口原生圆角无效，由渲染端 #root 自绘
+    roundedCorners: !transparent,
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.cjs'),
+      paintWhenInitiallyHidden: true, // 软件合成下隐藏时也持续绘制，避免显示时首帧空白
+    },
+  })
+  mainWindow = win
+  if (wasAlwaysOnTop) win.setAlwaysOnTop(true)
+  guardAgainstExternalNavigation(win)
+  wireMainWindowEvents(win)
+
+  if (isDev) {
+    win.loadURL(devServerUrl)
+    if (process.env.WAVEFORGE_OPEN_DEVTOOLS === '1') win.webContents.openDevTools()
+  } else {
+    win.loadFile(path.join(__dirname, '../dist/index.html'))
+  }
+
+  win.once('ready-to-show', () => {
+    if (mainWindow === win && !win.isDestroyed()) {
+      win.show()
+      win.focus()
+    }
+  })
+  return win
+}
+
+// 应用融合穿透窗口状态：退出 kiosk/置顶并沉底（真实窗口浮在上层），开启鼠标穿透。
+const applyFusionWindowState = (win) => {
+  if (!win || win.isDestroyed()) return
+  try {
+    if (win.isKiosk()) win.setKiosk(false)
+    if (win.isFullScreen()) win.setFullScreen(false)
+    win.setAlwaysOnTop(false)
+    win.moveBottom()
+    win.setIgnoreMouseEvents(true, { forward: true })
+  } catch (error) {
+    console.error('[桌面融合穿透] 应用融合窗口状态失败:', error?.message || error)
+  }
+}
+
+// 恢复原生窗口状态（关闭融合后）：重新置顶；开启前是 kiosk 全屏则还原。
+const restoreNativeWindowState = (win) => {
+  if (!win || win.isDestroyed()) return
+  try {
+    win.setAlwaysOnTop(true)
+    win.moveTop()
+    if (desktopFusionSavedKiosk) win.setKiosk(true)
+    win.setIgnoreMouseEvents(false)
+  } catch (error) {
+    console.error('[桌面融合穿透] 恢复原生窗口状态失败:', error?.message || error)
+  }
+}
+
 // 还原分支需要"无条件退出全部扩大形态"：isKiosk()/isFullScreen() 在 kiosk 时序下可能
 // 返回 false，导致按状态判断的恢复被跳过（窗口一直停留在全屏，看起来"缩小没反应"）。
 // 对非对应状态的 setKiosk(false)/setFullScreen(false)/unmaximize() 调用是无害 no-op。
@@ -6070,37 +6169,66 @@ ipcMain.handle('window-is-maximized', () => {
 // 开启后：退出 kiosk、取消置顶并把窗口沉底（真实窗口浮在上层），
 // 由渲染端按光标是否悬停在组件上（mousemove + elementFromPoint）实时切换鼠标穿透，
 // 空区域点击穿透到真实桌面（可点文件夹/任务栏）。
+// 注意：穿透需要透明窗口，而 transparent 只在窗口创建时生效——普通模式用原生不透明
+// 窗口（系统圆角/阴影/对齐吸附），开启/关闭融合时销毁重建主窗口切换透明属性。
 let desktopFusionEnabled = false
 let desktopFusionSavedKiosk = false
 
 ipcMain.handle('desktop-fusion:get-state', () => ({ enabled: desktopFusionEnabled }))
 
-ipcMain.handle('desktop-fusion:set-enabled', (_event, enabled) => {
-  if (!mainWindow || mainWindow.isDestroyed()) return { success: false }
+// 设置融合状态并重建窗口（透明↔不透明）。供渲染端关闭融合、以及应用启动时
+// 从 localStorage 恢复融合态（此时主进程 desktopFusionEnabled 为 false）调用。
+ipcMain.handle('desktop-fusion:set-enabled', async (_event, enabled) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { success: false, canceled: false }
   const next = enabled === true
-  if (next === desktopFusionEnabled) return { success: true, enabled: desktopFusionEnabled }
+  if (next === desktopFusionEnabled) return { success: true, enabled: desktopFusionEnabled, recreated: false }
   desktopFusionEnabled = next
   try {
     if (next) {
-      // 记录并退出 kiosk（露出真实任务栏），取消置顶并沉底（真实窗口在上层）
+      // 开启：记录 kiosk 记忆，重建为透明窗口（启动恢复路径，无需确认）
       desktopFusionSavedKiosk = mainWindow.isKiosk()
-      if (mainWindow.isKiosk()) mainWindow.setKiosk(false)
-      if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
-      mainWindow.setAlwaysOnTop(false)
-      mainWindow.moveBottom()
-      // 初始整窗穿透（forward 让 mousemove 仍进页面，供组件悬停检测）
-      mainWindow.setIgnoreMouseEvents(true, { forward: true })
+      const win = await recreateMainWindow(true)
+      if (!win) { desktopFusionEnabled = false; return { success: false, canceled: false } }
+      applyFusionWindowState(win)
     } else {
-      // 恢复：重新置顶；若开启前是 kiosk 全屏则还原
-      mainWindow.setAlwaysOnTop(true)
-      mainWindow.moveTop()
-      if (desktopFusionSavedKiosk) mainWindow.setKiosk(true)
-      mainWindow.setIgnoreMouseEvents(false)
+      // 关闭：重建回原生不透明窗口并恢复置顶/kiosk
+      const win = await recreateMainWindow(false)
+      if (!win) { desktopFusionEnabled = true; return { success: false, canceled: false } }
+      restoreNativeWindowState(win)
     }
   } catch (error) {
     console.error('[桌面融合穿透] 切换失败:', error?.message || error)
   }
-  return { success: true, enabled: desktopFusionEnabled }
+  return { success: true, enabled: desktopFusionEnabled, recreated: true }
+})
+
+// 开启穿透需重建窗口（会中断当前播放/重载界面），先弹系统确认框告知用户
+ipcMain.handle('desktop-fusion:request-enable', async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { success: false, canceled: true }
+  if (desktopFusionEnabled) return { success: true, enabled: true, canceled: false, recreated: false }
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['取消', '继续并重建窗口'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: '启用桌面融合穿透',
+    message: '启用桌面融合需要把主窗口重建为透明窗口（以便透出真实桌面）。',
+    detail: '重建会重新加载界面，当前播放的音乐会中断。\n关闭桌面融合时会再次重建，恢复原生窗口。',
+  })
+  if (response !== 1) return { success: false, canceled: true }
+  desktopFusionSavedKiosk = mainWindow.isKiosk()
+  desktopFusionEnabled = true
+  try {
+    const win = await recreateMainWindow(true)
+    if (!win) { desktopFusionEnabled = false; return { success: false, canceled: false } }
+    applyFusionWindowState(win)
+  } catch (error) {
+    console.error('[桌面融合穿透] 重建窗口失败:', error?.message || error)
+    desktopFusionEnabled = false
+    return { success: false, canceled: false }
+  }
+  return { success: true, enabled: true, canceled: false, recreated: true }
 })
 
 // 渲染端报告「光标是否悬停在组件上」→ 切换鼠标穿透

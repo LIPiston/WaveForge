@@ -481,9 +481,29 @@ function App() {
   // 桌面融合穿透：桌面模式空区域鼠标穿透到真实桌面（退出 kiosk + 组件区可交互）
   const [desktopFusionEnabled, setDesktopFusionEnabled] = useState(() => localStorage.getItem('desktopFusionEnabled') === 'true')
   const handleDesktopFusionChange = useCallback(async (enabled: boolean) => {
-    setDesktopFusionEnabled(enabled)
-    localStorage.setItem('desktopFusionEnabled', enabled ? 'true' : 'false')
-    try { await window.electron?.desktopFusion.setEnabled(enabled) } catch { /* 忽略 */ }
+    if (enabled) {
+      // 开启穿透需要把主窗口重建为透明窗口（transparent 仅创建时生效，普通模式用原生
+      // 不透明窗口+系统圆角）。主进程会弹确认框告知会中断播放/重载界面。
+      // 先写 localStorage：确认后旧窗口随重建销毁，新窗口启动时据此恢复融合态
+      //（本实例不再执行后续代码，无需依赖返回结果）。
+      localStorage.setItem('desktopFusionEnabled', 'true')
+      let canceled = true
+      try {
+        const result = await window.electron?.desktopFusion.requestEnable?.()
+        canceled = result ? result.canceled === true : true
+      } catch {
+        canceled = false // 旧窗口已随重建销毁（invoke 通道关闭）＝融合已启用，无需回滚
+      }
+      if (canceled) {
+        // 用户取消：回滚
+        localStorage.setItem('desktopFusionEnabled', 'false')
+        setDesktopFusionEnabled(false)
+      }
+      return
+    }
+    setDesktopFusionEnabled(false)
+    localStorage.setItem('desktopFusionEnabled', 'false')
+    try { await window.electron?.desktopFusion.setEnabled(false) } catch { /* 忽略 */ }
   }, [])
   // 重启后同步主进程窗口状态（退出 kiosk / 置顶等），保证与 localStorage 一致
   useEffect(() => {

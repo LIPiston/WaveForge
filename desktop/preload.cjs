@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld('electron', {
   desktopFusion: {
     getState: () => ipcRenderer.invoke('desktop-fusion:get-state'),
     setEnabled: (enabled) => ipcRenderer.invoke('desktop-fusion:set-enabled', enabled),
+    // 开启穿透需重建窗口，主进程先弹确认框；返回 canceled=true 表示用户取消
+    requestEnable: () => ipcRenderer.invoke('desktop-fusion:request-enable'),
     setInteractive: (interactive) => ipcRenderer.send('desktop-fusion:set-interactive', interactive),
   },
 
