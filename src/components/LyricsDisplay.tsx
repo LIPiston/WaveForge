@@ -605,6 +605,11 @@ export default memo(function LyricsDisplay({
     }
 
     const tick = () => {
+      // 窗口隐藏时停帧（Electron backgroundThrottling 关闭，rAF 后台仍全速执行）
+      if (document.visibilityState === 'hidden') {
+        wordRafRef.current = null
+        return
+      }
       const now = performance.now()
       if (now - lastLyricFrameRef.current >= LYRIC_FRAME_INTERVAL_MS) {
         const elapsed = (now - rafTimeRef.current.startedAt) / 1000
@@ -614,9 +619,17 @@ export default memo(function LyricsDisplay({
       wordRafRef.current = requestAnimationFrame(tick)
     }
 
+    const onVisibilityChange = () => {
+      // 窗口恢复可见时重启平滑时钟（若组件仍应播放）
+      if (document.visibilityState === 'visible' && wordRafRef.current === null) {
+        wordRafRef.current = requestAnimationFrame(tick)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
     wordRafRef.current = requestAnimationFrame(tick)
 
     return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       if (wordRafRef.current !== null) {
         cancelAnimationFrame(wordRafRef.current)
         wordRafRef.current = null

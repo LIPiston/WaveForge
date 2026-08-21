@@ -42,19 +42,25 @@ function logStartupTiming(message) {
 
 const performanceSettingsPath = path.join(app.getPath('userData'), 'performance-settings.json')
 const shortcutSettingsPath = path.join(app.getPath('userData'), 'shortcut-settings.json')
+// 全局高刷：渲染帧率可选档位范围（跟随所在显示器刷新率，最高 360Hz）
+const HIGH_REFRESH_MIN_HZ = 30
+const HIGH_REFRESH_MAX_HZ = 360
 
 function readPerformanceSettings() {
-  const defaults = { hardwareAcceleration: true, gpuPreference: 'auto', pendingGpuChange: null }
+  const defaults = { hardwareAcceleration: true, gpuPreference: 'auto', pendingGpuChange: null, highRefreshRate: false, highRefreshHz: null }
   try {
     const parsed = JSON.parse(fs.readFileSync(performanceSettingsPath, 'utf8'))
     const gpuPreference = ['auto', 'discrete', 'integrated'].includes(parsed?.gpuPreference)
       ? parsed.gpuPreference
       : defaults.gpuPreference
     const pending = parsed?.pendingGpuChange
+    const savedHz = Number(parsed?.highRefreshHz)
     return {
       hardwareAcceleration: parsed?.hardwareAcceleration !== false,
       gpuPreference,
       pendingGpuChange: (pending && (pending.type === 'preference' || pending.type === 'acceleration')) ? pending : null,
+      highRefreshRate: parsed?.highRefreshRate === true,
+      highRefreshHz: Number.isInteger(savedHz) && savedHz >= 30 && savedHz <= HIGH_REFRESH_MAX_HZ ? savedHz : null,
     }
   } catch {
     return { ...defaults }
@@ -62,13 +68,22 @@ function readPerformanceSettings() {
 }
 
 function writePerformanceSettings(settings) {
-  const temporaryPath = `${performanceSettingsPath}.tmp`
-  fs.mkdirSync(path.dirname(performanceSettingsPath), { recursive: true })
-  fs.writeFileSync(temporaryPath, JSON.stringify(settings), 'utf8')
-  fs.renameSync(temporaryPath, performanceSettingsPath)
+  try {
+    const temporaryPath = `${performanceSettingsPath}.tmp`
+    fs.mkdirSync(path.dirname(performanceSettingsPath), { recursive: true })
+    fs.writeFileSync(temporaryPath, JSON.stringify(settings), 'utf8')
+    fs.renameSync(temporaryPath, performanceSettingsPath)
+  } catch (error) {
+    console.error('[性能设置] 保存失败:', error?.message || error)
+  }
 }
 
 const performanceSettings = readPerformanceSettings()
+// 全局高刷：用户手动选了具体档位时，启动即用 --force-frame-rate 强制 Chromium 帧率
+// （比运行时 setFrameRate 更可靠；「跟随显示器最高」档在 app ready 后按显示器实时应用）
+if (performanceSettings.highRefreshRate === true && performanceSettings.highRefreshHz) {
+  try { app.commandLine.appendSwitch('force-frame-rate', String(performanceSettings.highRefreshHz)) } catch { /* 忽略 */ }
+}
 // 软件合成标记：GPU 合成器禁用时置 true（app ready 后由 getGPUFeatureStatus 判定）。
 // createWindow 据此动态调整 splash 最短可见时间（软件合成下内容层提交慢）。
 let gpuCompositingDisabled = false
@@ -135,10 +150,14 @@ function readMediaKeysEnabled() {
 }
 
 function writeMediaKeysEnabled(enabled) {
-  const temporaryPath = `${shortcutSettingsPath}.tmp`
-  fs.mkdirSync(path.dirname(shortcutSettingsPath), { recursive: true })
-  fs.writeFileSync(temporaryPath, JSON.stringify({ mediaKeysEnabled: enabled === true }), 'utf8')
-  fs.renameSync(temporaryPath, shortcutSettingsPath)
+  try {
+    const temporaryPath = `${shortcutSettingsPath}.tmp`
+    fs.mkdirSync(path.dirname(shortcutSettingsPath), { recursive: true })
+    fs.writeFileSync(temporaryPath, JSON.stringify({ mediaKeysEnabled: enabled === true }), 'utf8')
+    fs.renameSync(temporaryPath, shortcutSettingsPath)
+  } catch (error) {
+    console.error('[快捷键设置] 保存失败:', error?.message || error)
+  }
 }
 
 function readDesktopWidgetDisks() {
@@ -761,8 +780,8 @@ ipcMain.on('desktop-lyrics:drag-to', (_event, point) => {
   const start = desktopLyricsDragSession
   desktopLyricsWindow.setBounds(clampDesktopLyricsBounds({
     ...start.bounds,
-    x: start.bounds.x + (Number(point?.x) - start.x),
-    y: start.bounds.y + (Number(point?.y) - start.y),
+    x: start.bounds.x + ((Number(point?.x) || 0) - start.x),
+    y: start.bounds.y + ((Number(point?.y) || 0) - start.y),
   }))
 })
 
@@ -786,8 +805,8 @@ ipcMain.on('desktop-lyrics:resize-start', (_event, point) => {
 ipcMain.on('desktop-lyrics:resize-to', (_event, point) => {
   if (!desktopLyricsWindow || desktopLyricsWindow.isDestroyed() || !desktopLyricsResizeSession) return
   const start = desktopLyricsResizeSession
-  const dx = Number(point?.x) - start.x
-  const dy = Number(point?.y) - start.y
+  const dx = (Number(point?.x) || 0) - start.x
+  const dy = (Number(point?.y) || 0) - start.y
   const fromLeft = start.edge.includes('w')
   const fromRight = start.edge.includes('e')
   const fromTop = start.edge.includes('n')
@@ -1018,8 +1037,8 @@ ipcMain.on('desktop-player:resize-to', (_event, point) => {
   if (!desktopPlayerWindow || desktopPlayerWindow.isDestroyed() || !desktopPlayerResizeSession) return
   const start = desktopPlayerResizeSession
   const workArea = getDesktopPlayerWorkArea(start.bounds)
-  const dx = Number(point?.x) - start.x
-  const dy = Number(point?.y) - start.y
+  const dx = (Number(point?.x) || 0) - start.x
+  const dy = (Number(point?.y) || 0) - start.y
   const fromLeft = start.edge.endsWith('w')
   const fromTop = start.edge.startsWith('n')
   const width = Math.min(720, Math.max(300, Math.round(start.bounds.width + (fromLeft ? -dx : dx))))
@@ -1278,12 +1297,16 @@ function updateTaskbar() {
 // 与 Echo 的「迷你底栏」对齐：窗口高度精确等于任务栏带高度，贴任务栏右侧（或居中），
 // 播放时显示封面/歌词行/进度并提供控制；默认鼠标穿透，悬停进入交互态不挡任务栏。
 // 设置（userData/taskbar-widget-settings.json）由「设置-个性化」控制开关/位置/宽度/模式。
-const TASKBAR_WIDGET_DEFAULTS = { enabled: false, position: 'right', width: 340, mode: 'normal' }
+const TASKBAR_WIDGET_DEFAULTS = { enabled: false, position: 'right', width: 340, mode: 'normal', darken: false, blur: false }
 let taskbarWidgetSettings = { ...TASKBAR_WIDGET_DEFAULTS }
 let taskbarWidgetWindow = null
 let taskbarWidgetClosedByUser = false
 let taskbarWidgetInteractive = false
+let taskbarWidgetExpanded = false
 let taskbarDisplayMetricsBound = false
+// 设置文件重载节流：updateTaskbarWidget 随播放进度每秒触发，避免每次同步读盘
+let taskbarWidgetSettingsLastLoad = 0
+const TASKBAR_WIDGET_SETTINGS_RELOAD_MS = 5000
 
 function getTaskbarWidgetSettingsPath() {
   return path.join(app.getPath('userData'), 'taskbar-widget-settings.json')
@@ -1295,6 +1318,9 @@ function sanitizeTaskbarWidgetSettings(input = {}, base = TASKBAR_WIDGET_DEFAULT
     position: input.position === 'right' || input.position === 'center' ? input.position : (base.position === 'center' ? 'center' : 'right'),
     width: Math.round(Math.min(420, Math.max(260, Number(input.width) || base.width))),
     mode: input.mode === 'pure' || input.mode === 'normal' ? input.mode : (base.mode === 'pure' ? 'pure' : 'normal'),
+    // 背景效果（用户自定义）：暗化遮罩 / 高斯模糊
+    darken: input.darken === undefined ? base.darken === true : input.darken === true,
+    blur: input.blur === undefined ? base.blur === true : input.blur === true,
   }
 }
 
@@ -1330,6 +1356,57 @@ function broadcastTaskbarWidgetSettings() {
   }
 }
 
+// 系统托盘（通知区域）左缘测量：Windows 下查询 TrayNotifyWnd 的物理像素矩形。
+// 右侧定位需要「紧贴托盘外侧」，固定留白在托盘宽度变化时会叠进托盘，故按真实托盘位置计算。
+let taskbarTrayCache = null // { left, right } 物理像素
+let taskbarTrayCacheAt = 0
+let taskbarTrayRequest = null
+const TASKBAR_TRAY_CACHE_MS = 30000
+// 托盘不可测时的保守预留：约 30% 屏宽，保证不叠进托盘（托盘实测后会自动贴齐）
+const TASKBAR_TRAY_FALLBACK_RATIO = 0.3
+
+function fetchTaskbarTrayRectPhysical() {
+  if (taskbarTrayRequest) return taskbarTrayRequest
+  const script = [
+    `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class T{[DllImport("user32.dll")]public static extern IntPtr FindWindow(string c,string t);[DllImport("user32.dll")]public static extern IntPtr FindWindowEx(IntPtr p,IntPtr c,string cn,string tn);[DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out R r);public struct R{public int L,T,Rt,B;}}'`,
+    `$t=[T]::FindWindow('Shell_TrayWnd',$null)`,
+    `$n=[T]::FindWindowEx($t,[IntPtr]::Zero,'TrayNotifyWnd',$null)`,
+    `if($n -eq [IntPtr]::Zero){'none'}else{$r=New-Object T+R;[T]::GetWindowRect($n,[ref]$r)|Out-Null;"$($r.L),$($r.Rt)"}`,
+  ].join(';')
+  taskbarTrayRequest = new Promise(resolve => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 3000 }, (error, stdout) => {
+      taskbarTrayRequest = null
+      if (error) return resolve(null)
+      const lines = String(stdout || '').trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+      const match = (lines[lines.length - 1] || '').match(/^(-?\d+),(-?\d+)$/)
+      if (!match) return resolve(null)
+      const rect = { left: Number(match[1]), right: Number(match[2]) }
+      taskbarTrayCache = rect
+      taskbarTrayCacheAt = Date.now()
+      resolve(rect)
+    })
+  })
+  return taskbarTrayRequest
+}
+
+function getTaskbarTrayLeftDip() {
+  if (taskbarTrayCache && Date.now() - taskbarTrayCacheAt < TASKBAR_TRAY_CACHE_MS) {
+    const { screen } = require('electron')
+    const scale = screen.getPrimaryDisplay().scaleFactor || 1
+    return Math.round(taskbarTrayCache.left / scale)
+  }
+  return null
+}
+
+/** 托盘缓存失效时后台刷新，完成后重新贴边（托盘图标增减导致宽度变化也能跟上） */
+function refreshTaskbarTray() {
+  if (getTaskbarTrayLeftDip() !== null) return Promise.resolve(taskbarTrayCache)
+  return fetchTaskbarTrayRectPhysical().then(rect => {
+    if (rect) dockTaskbarWidgetWindow()
+    return rect
+  })
+}
+
 function getTaskbarWidgetPosition() {
   const { screen } = require('electron')
   const display = screen.getPrimaryDisplay()
@@ -1343,7 +1420,15 @@ function getTaskbarWidgetPosition() {
   const taskbarRight = Math.round((bounds.x + bounds.width) - (workArea.x + workArea.width))
   const horizontalX = taskbarWidgetSettings.position === 'center'
     ? Math.round(bounds.x + (bounds.width - width) / 2)
-    : Math.round(bounds.x + bounds.width - width - 160) // 右侧：留足系统托盘区域（托盘宽度随用户后台数量变化）
+    : (() => {
+        // 右侧：紧贴系统托盘左侧外部（间隙 8px），避免叠进托盘/时钟区域
+        const trayLeft = getTaskbarTrayLeftDip()
+        if (trayLeft !== null && trayLeft - width - 8 >= bounds.x) {
+          return Math.round(trayLeft - width - 8)
+        }
+        // 托盘尚未测出：保守预留 30% 屏宽，绝不叠进托盘
+        return Math.round(bounds.x + bounds.width - width - Math.round(bounds.width * TASKBAR_TRAY_FALLBACK_RATIO))
+      })()
 
   if (taskbarBottom > 0) {
     // 底部任务栏（Windows 11 默认）
@@ -1369,7 +1454,12 @@ function dockTaskbarWidgetWindow() {
   if (!taskbarWidgetWindow || taskbarWidgetWindow.isDestroyed()) return
   const pos = getTaskbarWidgetPosition()
   try {
-    taskbarWidgetWindow.setBounds(pos)
+    // 展开状态保留：重新贴边时按当前展开/收起状态应用对应高度
+    if (taskbarWidgetExpanded) {
+      taskbarWidgetWindow.setBounds({ x: pos.x, y: pos.y - TASKBAR_WIDGET_POPUP_HEIGHT, width: pos.width, height: pos.height + TASKBAR_WIDGET_POPUP_HEIGHT })
+    } else {
+      taskbarWidgetWindow.setBounds(pos)
+    }
   } catch { /* 忽略 */ }
 }
 
@@ -1377,18 +1467,17 @@ function createTaskbarWidgetWindow() {
   if (taskbarWidgetWindow && !taskbarWidgetWindow.isDestroyed()) return taskbarWidgetWindow
   loadTaskbarWidgetSettings()
   const pos = getTaskbarWidgetPosition()
+  // 窗口参数与可正常点击的桌面播放器保持一致（不设 type:'toolbar'/focusable:false/movable:false）：
+  // 这三个参数组合在 Win11 透明置顶窗口上会导致系统命中测试跳过该窗口，点击永远落不进来。
   taskbarWidgetWindow = new BrowserWindow({
     ...pos,
-    type: 'toolbar',
     frame: false,
     transparent: true,
     resizable: false,
-    movable: false,
     minimizable: false,
     maximizable: false,
     alwaysOnTop: true,
     skipTaskbar: true,
-    focusable: false,
     show: false,
     backgroundColor: '#00000000',
     hasShadow: false,
@@ -1401,7 +1490,10 @@ function createTaskbarWidgetWindow() {
   })
   taskbarWidgetWindow.setAlwaysOnTop(true, 'screen-saver')
   taskbarWidgetWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  // 默认鼠标穿透（forward:true 让鼠标事件仍能进入网页触发 mouseenter/mouseleave）
+  // 默认鼠标穿透。注意：不能靠 forward:true 转发 mouseenter 来切换交互态——
+  // 在 Win11 + 透明置顶组合下，setIgnoreMouseEvents 每次切换都会让系统重新命中
+  // 测试并触发 mouseenter/mouseleave 振荡，交互态永远不稳定，点击无法落窗。
+  // 改为主进程光标轮询（startTaskbarWidgetPolling）检测悬停。
   try {
     taskbarWidgetWindow.setIgnoreMouseEvents(true, { forward: true })
   } catch { /* 忽略 */ }
@@ -1409,7 +1501,12 @@ function createTaskbarWidgetWindow() {
   taskbarWidgetWindow.on('closed', () => {
     taskbarWidgetWindow = null
     taskbarWidgetInteractive = false
+    taskbarWidgetExpanded = false
+    stopTaskbarWidgetPolling()
   })
+  startTaskbarWidgetPolling()
+  // 托盘位置后台测量：首次显示用保守预留，测出真实托盘后立即贴齐
+  refreshTaskbarTray()
   return taskbarWidgetWindow
 }
 
@@ -1419,7 +1516,9 @@ function bindTaskbarDisplayMetrics() {
   taskbarDisplayMetricsBound = true
   const { screen } = require('electron')
   screen.on('display-metrics-changed', () => {
+    taskbarTrayCache = null // 显示器变化后托盘位置作废，后台重测
     dockTaskbarWidgetWindow()
+    refreshTaskbarTray()
   })
 }
 
@@ -1435,9 +1534,19 @@ function bindTaskbarThemeSync() {
 }
 
 /** 把当前播放状态推送到 widget（并控制显隐） */
+// 仅进度变化时 1s 节流：避免渲染端每秒多次 timeupdate（约 4 次/s）把整份状态
+// （含逐词歌词 words）序列化推送，widget 内部按 lastCur + rAF 插值，1s 更新足够平滑。
+let taskbarWidgetLastSendAt = 0
+let taskbarWidgetLastSendKey = ''
+const TASKBAR_WIDGET_SEND_THROTTLE_MS = 1000
+
 function updateTaskbarWidget() {
   if (process.platform !== 'win32') return
-  loadTaskbarWidgetSettings()
+  // 设置仅在开关/更新设置时写入，这里节流重载（避免播放进度每秒触发同步读盘）
+  if (Date.now() - taskbarWidgetSettingsLastLoad > TASKBAR_WIDGET_SETTINGS_RELOAD_MS) {
+    loadTaskbarWidgetSettings()
+    taskbarWidgetSettingsLastLoad = Date.now()
+  }
   bindTaskbarDisplayMetrics()
   bindTaskbarThemeSync()
   const hasSong = Boolean(desktopPlayerState.song?.name)
@@ -1452,6 +1561,14 @@ function updateTaskbarWidget() {
   const song = desktopPlayerState.song || {}
   const lyric = desktopPlayerState.lyric || null
   const { nativeTheme } = require('electron')
+  // 内容键：歌曲/播放态/歌词行/静音/主题变化必须立即推送，仅进度变化时允许节流
+  const contentKey = `${song.name}|${desktopPlayerState.playing === true}|${lyric?.line || ''}|${desktopPlayerState.muted === true}|${nativeTheme.shouldUseDarkColors}`
+  const now = Date.now()
+  if (contentKey === taskbarWidgetLastSendKey && now - taskbarWidgetLastSendAt < TASKBAR_WIDGET_SEND_THROTTLE_MS) {
+    return
+  }
+  taskbarWidgetLastSendKey = contentKey
+  taskbarWidgetLastSendAt = now
   const payload = {
     title: song.name || '',
     artist: Array.isArray(song.artists) ? song.artists.join(' / ') : (song.artists || ''),
@@ -1504,6 +1621,62 @@ function setTaskbarWidgetVisible(visible) {
   return { success: true }
 }
 
+// 光标轮询：任务栏 widget 悬停检测。页面 mouseenter/mouseleave 转发在
+// 透明置顶窗口上会因 setIgnoreMouseEvents 切换而振荡，改由主进程每 120ms
+// 判断光标是否落在窗口内，据此稳定切换交互态（见 createTaskbarWidgetWindow 注释）。
+let taskbarWidgetPollTimer = null
+
+function taskbarWidgetCursorInside() {
+  if (!taskbarWidgetWindow || taskbarWidgetWindow.isDestroyed() || !taskbarWidgetWindow.isVisible()) return false
+  const { screen } = require('electron')
+  const pt = screen.getCursorScreenPoint()
+  const b = taskbarWidgetWindow.getBounds()
+  return pt.x >= b.x && pt.x < b.x + b.width && pt.y >= b.y && pt.y < b.y + b.height
+}
+
+function updateTaskbarWidgetInteractive() {
+  if (!taskbarWidgetWindow || taskbarWidgetWindow.isDestroyed()) return
+  // 窗口隐藏时无需轮询/发 hover IPC：直接停（创建窗口后、窗口销毁前由 show/hide 触发重测）
+  if (!taskbarWidgetWindow.isVisible()) {
+    if (taskbarWidgetInteractive) {
+      taskbarWidgetInteractive = false
+      try { taskbarWidgetWindow.setIgnoreMouseEvents(true, { forward: true }) } catch { /* 忽略 */ }
+    }
+    return
+  }
+  const inside = taskbarWidgetCursorInside()
+  if (inside !== taskbarWidgetInteractive) {
+    taskbarWidgetInteractive = inside
+    if (inside) {
+      try {
+        taskbarWidgetWindow.moveTop() // 进入交互态时确保窗口在该位置最顶，点击不被其他窗口截走
+      } catch { /* 忽略 */ }
+    }
+    try {
+      taskbarWidgetWindow.setIgnoreMouseEvents(!inside, { forward: true })
+    } catch { /* 忽略 */ }
+  }
+  if (taskbarWidgetWindow.isDestroyed()) return
+  // 通知页面悬停状态：进入取消收拢定时器，离开触发收拢（原 mouseleave 行为）
+  taskbarWidgetWindow.webContents.send('taskbar-widget:hover', inside === true)
+  // 托盘缓存过期时后台重测并贴齐（托盘图标增减改变宽度也能跟上）
+  if (inside && taskbarTrayCache && Date.now() - taskbarTrayCacheAt > TASKBAR_TRAY_CACHE_MS) {
+    refreshTaskbarTray()
+  }
+}
+
+function startTaskbarWidgetPolling() {
+  if (taskbarWidgetPollTimer) return
+  taskbarWidgetPollTimer = setInterval(updateTaskbarWidgetInteractive, 120)
+}
+
+function stopTaskbarWidgetPolling() {
+  if (taskbarWidgetPollTimer) {
+    clearInterval(taskbarWidgetPollTimer)
+    taskbarWidgetPollTimer = null
+  }
+}
+
 ipcMain.on('taskbar-widget:action', (_event, action, payload) => {
   if (action === 'close') {
     taskbarWidgetClosedByUser = true
@@ -1528,9 +1701,10 @@ ipcMain.on('taskbar-widget:action', (_event, action, payload) => {
 const TASKBAR_WIDGET_POPUP_HEIGHT = 218
 ipcMain.on('taskbar-widget:set-expanded', (_event, expanded) => {
   if (!taskbarWidgetWindow || taskbarWidgetWindow.isDestroyed()) return
+  taskbarWidgetExpanded = expanded === true
   try {
     const pos = getTaskbarWidgetPosition()
-    if (expanded) {
+    if (taskbarWidgetExpanded) {
       taskbarWidgetWindow.setBounds({ x: pos.x, y: pos.y - TASKBAR_WIDGET_POPUP_HEIGHT, width: pos.width, height: pos.height + TASKBAR_WIDGET_POPUP_HEIGHT })
     } else {
       taskbarWidgetWindow.setBounds({ x: pos.x, y: pos.y, width: pos.width, height: pos.height })
@@ -1539,12 +1713,9 @@ ipcMain.on('taskbar-widget:set-expanded', (_event, expanded) => {
 })
 
 ipcMain.on('taskbar-widget:set-interactive', (_event, interactive) => {
-  taskbarWidgetInteractive = interactive === true
-  if (taskbarWidgetWindow && !taskbarWidgetWindow.isDestroyed()) {
-    try {
-      taskbarWidgetWindow.setIgnoreMouseEvents(!taskbarWidgetInteractive, { forward: true })
-    } catch { /* 忽略 */ }
-  }
+  // 已废弃：交互态改由主进程光标轮询（updateTaskbarWidgetInteractive）维护，
+  // 页面驱动的 setInteractive 在透明置顶窗口上会造成 mouseenter/mouseleave 振荡。
+  // 保留空处理器仅为兼容旧 preload 调用，不再改变窗口鼠标穿透状态。
 })
 
 ipcMain.handle('taskbar-widget:set-visible', (_event, visible) => setTaskbarWidgetVisible(Boolean(visible)))
@@ -1833,8 +2004,10 @@ function createWindow() {
     minWidth: 1200,
     minHeight: 800,
     frame: false,
-    backgroundColor: '#0a0f14',
-    transparent: false,
+    backgroundColor: '#00000000',
+    // 桌面融合穿透：窗口需为透明，常规模式由 App 根部黑色层保持不透明；
+    // 桌面模式 + 融合穿透时隐藏根部黑色与桌面背景层，真实桌面从透明区透出。
+    transparent: true,
     titleBarStyle: 'hidden',
     title: 'WaveForge 澜音工坊',
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
@@ -2391,11 +2564,31 @@ function getWindowsWallpaper() {
             const wallpaper = await buildWallpaperPayload(wallpaperPath)
             const wallpaperEngine = await getWallpaperEngineSource()
             if (wallpaperEngine) wallpaper.wallpaperEngine = wallpaperEngine
+            // 多屏壁纸：Windows 把每块屏的独立壁纸转码为 Themes 目录的 TranscodedWallpaper 系列文件，
+            // 一并采集进 payload 供 watcher 判断「任一屏幕壁纸变化」。
+            try {
+              const themesDir = path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Themes')
+              if (fs.existsSync(themesDir)) {
+                const transcoded = fs.readdirSync(themesDir)
+                  .filter(file => /^TranscodedWallpaper(_\d+)?$/.test(file))
+                  .map(file => {
+                    const filePath = path.join(themesDir, file)
+                    let stat = null
+                    try { stat = fs.statSync(filePath) } catch { return null }
+                    return stat ? { file, path: filePath, mtimeMs: stat.mtimeMs, size: stat.size } : null
+                  })
+                  .filter(Boolean)
+                if (transcoded.length > 0) wallpaper.wallpapers = transcoded
+              }
+            } catch (scanError) {
+              logWallpaper('⚠️ [Wallpaper] 扫描多屏壁纸失败:', scanError?.message || scanError)
+            }
             logWallpaper('🔗 [Wallpaper] 转换后的URL:', wallpaper.fileUrl)
             logWallpaper('📊 [Wallpaper] 壁纸数据:', {
               mimeType: wallpaper.mimeType,
               size: wallpaper.size,
               mtimeMs: wallpaper.mtimeMs,
+              wallpapers: wallpaper.wallpapers?.length,
             })
             logWallpaper('✓ [Wallpaper] 壁纸获取成功')
             resolve(wallpaper)
@@ -2537,13 +2730,17 @@ function startWallpaperWatcher() {
       const currentSignature = isLiveEngineWallpaper
         ? engineSignature
         : `${wallpaper.path}:${wallpaper.mtimeMs}:${wallpaper.size}:${engineSignature}`
+      // 多屏：任一屏幕的独立壁纸（TranscodedWallpaper 系列）变化也视为壁纸变化
+      const multiScreenSignature = Array.isArray(wallpaper.wallpapers)
+        ? wallpaper.wallpapers.map(w => `${w.file}:${w.mtimeMs}:${w.size}`).join('|')
+        : ''
       
-      // 如果壁纸路径发生变化，通知渲染进程
-      if (currentSignature !== lastWallpaperSignature) {
+      // 如果壁纸路径/任一屏幕壁纸发生变化，通知渲染进程
+      if (`${currentSignature}|${multiScreenSignature}` !== lastWallpaperSignature) {
         logWallpaper('🎨 [Watcher] 检测到壁纸变化！')
         logWallpaper('   旧壁纸:', lastWallpaperSignature)
-        logWallpaper('   新壁纸:', currentSignature)
-        lastWallpaperSignature = currentSignature
+        logWallpaper('   新壁纸:', `${currentSignature}|${multiScreenSignature}`)
+        lastWallpaperSignature = `${currentSignature}|${multiScreenSignature}`
         if (mainWindow && !mainWindow.isDestroyed()) {
           logWallpaper('📡 [Watcher] 发送壁纸变化事件到渲染进程')
           safeSendToWindow(mainWindow, 'wallpaper-changed', wallpaper)
@@ -3541,6 +3738,9 @@ async function scrapeDouyinMusic(keyword) {
 }
 
 ipcMain.handle('soda-scrape-search', async (_event, keyword) => {
+  if (typeof keyword !== 'string' || keyword.trim().length === 0) {
+    return { success: false, error: '搜索关键词无效', items: [] }
+  }
   try {
     const items = await scrapeDouyinMusic(keyword)
     return { success: true, items }
@@ -3668,8 +3868,14 @@ ipcMain.handle('kugou-scrape-user-info', async () => {
 ipcMain.handle('apple-api', async (event, payload) => {
   const { path, method = 'GET', developerToken, mediaUserToken, body } = payload || {}
   if (!path || !developerToken) return { ok: false, status: 0, error: '缺少请求参数' }
+  // 校验输入类型：path 必须是字符串且以 / 开头（防协议/内网跳转拼接），method 白名单
+  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) {
+    return { ok: false, status: 0, error: '非法路径' }
+  }
+  const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+  const safeMethod = ALLOWED_METHODS.has(String(method).toUpperCase()) ? String(method).toUpperCase() : 'GET'
   // 路径归一化：appleAuth 传 /me/...（无 /v1），appleCatalog 传 /v1/...，统一补成带 /v1 的完整路径
-  const apiPath = String(path).startsWith('/v1') ? String(path) : `/v1${String(path)}`
+  const apiPath = path.startsWith('/v1') ? path : `/v1${path}`
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 15000)
   try {
@@ -3682,7 +3888,7 @@ ipcMain.handle('apple-api', async (event, payload) => {
     if (mediaUserToken) headers['Media-User-Token'] = mediaUserToken
     if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json'
     const response = await fetch(`https://amp-api.music.apple.com${apiPath}`, {
-      method,
+      method: safeMethod,
       headers,
       body: body !== undefined && body !== null ? body : undefined,
       signal: controller.signal,
@@ -3738,10 +3944,12 @@ ipcMain.handle('apple-account-info', async (event, cookies) => {
 
 // ── Apple 个人资料页（解析 og:image 头像，需主进程避免 CORS）──
 ipcMain.handle('apple-fetch-profile', async (event, profileUrl) => {
+  // 仅允许 https 的公开网页，防止传入 file:// 等本地路径被代理读取
+  const safeUrl = typeof profileUrl === 'string' && /^https:\/\/[^/]/.test(profileUrl) ? profileUrl : 'https://music.apple.com/profile'
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 15000)
   try {
-    const response = await fetch(String(profileUrl || 'https://music.apple.com/profile'), {
+    const response = await fetch(safeUrl, {
       headers: { 'User-Agent': APPLE_SAFARI_UA, Accept: 'text/html' },
       redirect: 'follow',
       signal: controller.signal,
@@ -5639,6 +5847,98 @@ ipcMain.handle('revert-gpu-change', () => {
   }
 })
 
+// ── 全局高刷：让所有窗口的渲染帧率跟随所在显示器的刷新率（默认软件渲染下 Chromium 锁 60Hz）──
+
+/** 窗口所在显示器的刷新率（Hz），夹在 [30, 360]，取不到时回退 60 */
+function getWindowDisplayFrequency(win) {
+  try {
+    const { screen } = require('electron')
+    if (!win || win.isDestroyed()) return 60
+    const display = screen.getDisplayMatching(win.getBounds())
+    const hz = Math.round(Number(display.displayFrequency) || 0)
+    if (hz <= 0) return 60
+    return Math.min(HIGH_REFRESH_MAX_HZ, Math.max(HIGH_REFRESH_MIN_HZ, hz))
+  } catch {
+    return 60
+  }
+}
+
+/** 把当前高刷设置应用到全部窗口的 webContents（渲染帧率跟随所在显示器） */
+function applyHighRefreshRate() {
+  const enabled = performanceSettings.highRefreshRate === true
+  const displayHz = getWindowDisplayFrequency(mainWindow)
+  // 开启：默认跟随所在显示器最高刷新率；用户手动选档时取其与显示器最高中的较小值
+  const targetHz = enabled
+    ? (performanceSettings.highRefreshHz ? Math.min(performanceSettings.highRefreshHz, displayHz) : displayHz)
+    : HIGH_REFRESH_MIN_HZ
+  const targets = [mainWindow, desktopPlayerWindow, desktopLyricsWindow, taskbarWidgetWindow]
+  for (const win of targets) {
+    try {
+      if (win && !win.isDestroyed() && win.webContents) win.webContents.setFrameRate(targetHz)
+    } catch { /* 忽略 */ }
+  }
+  return { enabled, hz: targetHz, displayFrequency: displayHz }
+}
+
+/** 显示器/主窗口移动后重新贴合所在显示器刷新率（只绑定一次，避免重复监听） */
+let highRefreshBound = false
+function rebindHighRefreshRate() {
+  const { screen } = require('electron')
+  if (performanceSettings.highRefreshRate === true) {
+    if (highRefreshBound) return
+    highRefreshBound = true
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        mainWindow.on('move', applyHighRefreshRate)
+        mainWindow.on('resize', applyHighRefreshRate)
+      } catch { /* 忽略 */ }
+    }
+    screen.on('display-metrics-changed', applyHighRefreshRate)
+  } else {
+    highRefreshBound = false
+  }
+}
+
+ipcMain.handle('display:get-info', () => {
+  try {
+    const { screen } = require('electron')
+    const mainWinDisplay = (mainWindow && !mainWindow.isDestroyed())
+      ? screen.getDisplayMatching(mainWindow.getBounds())
+      : screen.getPrimaryDisplay()
+    return {
+      highRefreshEnabled: performanceSettings.highRefreshRate === true,
+      highRefreshHz: performanceSettings.highRefreshHz,
+      currentHz: getWindowDisplayFrequency(mainWindow),
+      primary: screen.getPrimaryDisplay().displayFrequency,
+      mainWindowDisplayId: mainWinDisplay.id,
+      displays: screen.getAllDisplays().map(display => ({
+        id: display.id,
+        isPrimary: display.id === screen.getPrimaryDisplay().id,
+        isMainWindow: display.id === mainWinDisplay.id,
+        bounds: display.bounds,
+        workArea: display.workArea,
+        frequency: Math.round(Number(display.displayFrequency) || 0),
+        scaleFactor: display.scaleFactor,
+        label: `${display.bounds.width}×${display.bounds.height}${Math.round(Number(display.displayFrequency) || 0) ? ` @${Math.round(Number(display.displayFrequency) || 0)}Hz` : ''}`,
+      })),
+    }
+  } catch (error) {
+    return { error: error?.message || String(error) }
+  }
+})
+
+ipcMain.handle('display:set-high-refresh', (_event, enabled, hz) => {
+  performanceSettings.highRefreshRate = enabled === true
+  const savedHz = Number(hz)
+  performanceSettings.highRefreshHz = Number.isInteger(savedHz) && savedHz >= HIGH_REFRESH_MIN_HZ && savedHz <= HIGH_REFRESH_MAX_HZ
+    ? savedHz
+    : null
+  writePerformanceSettings(performanceSettings)
+  applyHighRefreshRate()
+  rebindHighRefreshRate()
+  return { success: true, enabled: performanceSettings.highRefreshRate, hz: getWindowDisplayFrequency(mainWindow) }
+})
+
 // 保存主窗口当前状态（窗口化/最大化/全屏覆盖任务栏 + 位置大小 + 所在显示器）
 function persistMainWindowState() {
   try {
@@ -5719,7 +6019,53 @@ ipcMain.handle('window-is-maximized', () => {
   return mainWindow ? mainWindow.isMaximized() : false
 })
 
-// IPC 处理：全屏控制?
+// 桌面融合穿透：把桌面模式「融合」进真实桌面。
+// 开启后：退出 kiosk、取消置顶并把窗口沉底（真实窗口浮在上层），
+// 由渲染端按光标是否悬停在组件上（mousemove + elementFromPoint）实时切换鼠标穿透，
+// 空区域点击穿透到真实桌面（可点文件夹/任务栏）。
+let desktopFusionEnabled = false
+let desktopFusionSavedKiosk = false
+
+ipcMain.handle('desktop-fusion:get-state', () => ({ enabled: desktopFusionEnabled }))
+
+ipcMain.handle('desktop-fusion:set-enabled', (_event, enabled) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { success: false }
+  const next = enabled === true
+  if (next === desktopFusionEnabled) return { success: true, enabled: desktopFusionEnabled }
+  desktopFusionEnabled = next
+  try {
+    if (next) {
+      // 记录并退出 kiosk（露出真实任务栏），取消置顶并沉底（真实窗口在上层）
+      desktopFusionSavedKiosk = mainWindow.isKiosk()
+      if (mainWindow.isKiosk()) mainWindow.setKiosk(false)
+      if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
+      mainWindow.setAlwaysOnTop(false)
+      mainWindow.moveBottom()
+      // 初始整窗穿透（forward 让 mousemove 仍进页面，供组件悬停检测）
+      mainWindow.setIgnoreMouseEvents(true, { forward: true })
+    } else {
+      // 恢复：重新置顶；若开启前是 kiosk 全屏则还原
+      mainWindow.setAlwaysOnTop(true)
+      mainWindow.moveTop()
+      if (desktopFusionSavedKiosk) mainWindow.setKiosk(true)
+      mainWindow.setIgnoreMouseEvents(false)
+    }
+  } catch (error) {
+    console.error('[桌面融合穿透] 切换失败:', error?.message || error)
+  }
+  return { success: true, enabled: desktopFusionEnabled }
+})
+
+// 渲染端报告「光标是否悬停在组件上」→ 切换鼠标穿透
+ipcMain.on('desktop-fusion:set-interactive', (_event, interactive) => {
+  if (!desktopFusionEnabled || !mainWindow || mainWindow.isDestroyed()) return
+  try {
+    mainWindow.setIgnoreMouseEvents(!(interactive === true), { forward: true })
+  } catch { /* 忽略 */ }
+})
+
+
+// IPC 处理：全屏控制
 ipcMain.handle('window-set-fullscreen', (event, fullscreen, kiosk = false) => {
   console.log('[全屏控制] fullscreen=', fullscreen, ', kiosk=', kiosk)
   console.log('[全屏控制] 当前状态: isKiosk=', mainWindow?.isKiosk(), ', isFullScreen=', mainWindow?.isFullScreen(), ', isMaximized=', mainWindow?.isMaximized())
@@ -6141,7 +6487,11 @@ app.whenReady().then(() => {
   // 应用更新：多源下载安装包 → sha256 校验 → 打开安装向导
   ipcMain.handle('update:download-and-install', async (_event, urls, expectedSha) => {
     const downloadDir = path.join(app.getPath('userData'), 'update')
-    fs.mkdirSync(downloadDir, { recursive: true })
+    try {
+      fs.mkdirSync(downloadDir, { recursive: true })
+    } catch (mkdirError) {
+      return { success: false, error: `无法创建下载目录：${mkdirError?.message || mkdirError}` }
+    }
     for (const url of Array.isArray(urls) ? urls : [urls]) {
       const destPath = path.join(downloadDir, `WaveForge-Setup-${Date.now()}.exe`)
       try {
@@ -6152,7 +6502,16 @@ app.whenReady().then(() => {
           const hash = crypto.createHash('sha256')
           const writeStream = fs.createWriteStream(destPath)
           let settled = false
-          const fail = (err) => { if (!settled) { settled = true; reject(err) } }
+          let finished = false
+          const fail = (err) => {
+            // 磁盘写失败 / HTTP 失败时关闭写流，避免文件句柄泄漏与无监听 stream error 崩溃主进程
+            if (!finished) {
+              finished = true
+              writeStream.destroy()
+            }
+            if (!settled) { settled = true; reject(err) }
+          }
+          writeStream.on('error', fail)
           request.on('response', (response) => {
             if (response.statusCode < 200 || response.statusCode >= 300) {
               fail(new Error(`HTTP ${response.statusCode}`))
@@ -6160,12 +6519,17 @@ app.whenReady().then(() => {
             }
             response.on('data', (chunk) => {
               hash.update(chunk)
-              writeStream.write(chunk)
+              if (!writeStream.write(chunk)) {
+                response.pause()
+                writeStream.once('drain', () => response.resume())
+              }
             })
             response.on('end', () => {
-              writeStream.end()
-              digest = hash.digest('hex')
-              if (!settled) { settled = true; resolve() }
+              writeStream.end(() => {
+                finished = true
+                digest = hash.digest('hex')
+                if (!settled) { settled = true; resolve() }
+              })
             })
             response.on('error', fail)
           })
@@ -6313,6 +6677,9 @@ app.whenReady().then(() => {
   createWindow()
   setGlobalMediaKeysEnabled(mediaKeysEnabled)
   updateTaskbar() // Windows 任务栏缩略图按钮与进度条初始化（渲染进程就绪后推送状态会再刷新）
+  // 全局高刷：若设置已开启，启动即应用（跟随所在显示器刷新率，最高 300Hz）
+  applyHighRefreshRate()
+  rebindHighRefreshRate()
   
   // 移除默认菜单栏
   if (mainWindow) {

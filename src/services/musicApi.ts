@@ -527,12 +527,7 @@ export async function searchAlbums(keywords: string, platform: MusicPlatform = '
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&type=album&devMode=${devMode}`)
       const data = await response.json()
-      if (devMode) {
-        if (data.albums && data.albums.length > 0) {
-        }
-      }
-      
-      const albums = (data.albums || []).map((item: any, index: number) => {
+      const albums = (data.albums || []).map((item: any) => {
         const album = {
           id: item.albumID,
           mid: item.albumMID,
@@ -542,17 +537,10 @@ export async function searchAlbums(keywords: string, platform: MusicPlatform = '
           publishTime: item.pub_time,
           platform: 'qq' as const
         }
-        
-        if (devMode && index === 0) {
-        }
-        
         return album
       })
-      if (devMode && albums.length > 0) {
-      }
       return albums
     }
-    
     const response = await fetch(`${API_BASE}/netease/search?keywords=${encodeURIComponent(keywords)}&type=10&devMode=${devMode}`)
     const data = await response.json()
     const albums = (data.result?.albums || []).map((item: any) => ({
@@ -1955,9 +1943,6 @@ export async function getArtistTopSongs(id: number | string, platform: MusicPlat
       const response = await fetch(`${API_BASE}/qq/artist/songs?mid=${id}`)
       const data = await response.json()
       console.log('📊 [getArtistTopSongs] QQ音乐返回数据keys:', Object.keys(data))
-      if (data.songs && data.songs.length > 0) {
-        const firstSong = data.songs[0]
-      }
       
       const songs = (data.songs || []).slice(0, 50).map((item: any) => {
         const song = {

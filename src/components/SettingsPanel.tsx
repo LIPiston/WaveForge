@@ -418,6 +418,8 @@ function SettingsPanel({
     position: 'right',
     width: 340,
     mode: 'normal',
+    darken: false,
+    blur: false,
   })
 
   useEffect(() => {
@@ -874,6 +876,57 @@ function SettingsPanel({
     gpus: Array<{ deviceString: string; vendorString: string; active: boolean; kind: 'discrete' | 'integrated' | 'unknown' }>
   } | null>(null)
   const [gpuPreference, setGpuPreference] = useState<'auto' | 'discrete' | 'integrated'>('auto')
+
+  // 全局高刷：显示器信息 + 开关 + 可选档位（null = 跟随显示器最高）
+  const [highRefreshEnabled, setHighRefreshEnabled] = useState(false)
+  const [highRefreshHz, setHighRefreshHz] = useState<number | null>(null)
+  const [displayInfo, setDisplayInfo] = useState<{
+    highRefreshEnabled: boolean
+    highRefreshHz: number | null
+    currentHz: number
+    primary: number
+    mainWindowDisplayId: number
+    error?: string
+    displays?: Array<{ id: number; isPrimary: boolean; isMainWindow: boolean; bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; frequency: number; scaleFactor: number; label: string }>
+  } | null>(null)
+  const HIGH_REFRESH_OPTIONS = [30, 60, 120, 144, 200, 240, 300, 360]
+
+  const refreshDisplayInfo = useCallback(() => {
+    void window.electron?.display.getInfo().then(info => {
+      if (!info) return
+      setHighRefreshEnabled(Boolean(info.highRefreshEnabled))
+      setHighRefreshHz(info.highRefreshHz ?? null)
+      setDisplayInfo(info)
+    }).catch(error => console.warn('读取显示器信息失败:', error))
+  }, [])
+
+  useEffect(() => { refreshDisplayInfo() }, [refreshDisplayInfo])
+
+  const handleHighRefreshToggle = async (enabled: boolean) => {
+    setHighRefreshEnabled(enabled)
+    try {
+      // 开启时默认跟随显示器最高（null）；用户后续可在档位里改
+      const result = await window.electron?.display.setHighRefresh(enabled, enabled ? highRefreshHz : null)
+      if (result) setHighRefreshEnabled(result.enabled)
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: enabled ? `全局高刷已开启（${result?.hz || '跟随显示器'}Hz）` : '已关闭全局高刷', type: 'info' } }))
+      refreshDisplayInfo()
+    } catch (error) {
+      setHighRefreshEnabled(!enabled)
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '切换全局高刷失败，请重试', type: 'error' } }))
+    }
+  }
+
+  const handleHighRefreshHzChange = async (hz: number | null) => {
+    setHighRefreshHz(hz)
+    if (!highRefreshEnabled) return
+    try {
+      const result = await window.electron?.display.setHighRefresh(true, hz)
+      if (result) window.dispatchEvent(new CustomEvent('showToast', { detail: { message: `已切换为 ${hz || '跟随显示器最高'}Hz`, type: 'info' } }))
+      refreshDisplayInfo()
+    } catch (error) {
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '切换刷新率失败，请重试', type: 'error' } }))
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -2408,7 +2461,7 @@ function SettingsPanel({
                             <div className={`${textPrimary} text-sm font-medium mb-3`}>显示模式</div>
                             <div className="grid grid-cols-2 gap-3">
                               {([
-                                ['normal', '常规', '封面 + 歌词 + 进度 + 进度条'],
+                                ['normal', '常规', '封面 + 上一曲/暂停/下一曲 + 歌词'],
                                 ['pure', '纯享', '只显示当前播放的歌词'],
                               ] as const).map(([value, label, hint]) => (
                                 <button
@@ -2427,6 +2480,42 @@ function SettingsPanel({
                                 </button>
                               ))}
                             </div>
+                          </div>
+
+                          <div>
+                            <div className={`${textPrimary} text-sm font-medium mb-3`}>背景效果</div>
+                            <div className="grid grid-cols-2 gap-3">
+                              {([
+                                ['darken', '暗化', '加深背景遮罩，文字更清晰'],
+                                ['blur', '模糊', '背景高斯模糊，弱化壁纸干扰'],
+                              ] as const).map(([value, label, hint]) => {
+                                const enabled = taskbarWidgetSettings[value] === true
+                                return (
+                                  <button
+                                    key={value}
+                                    type="button"
+                                    onClick={() => void handleTaskbarWidgetUpdate({ [value]: !enabled } as Partial<TaskbarWidgetSettings>)}
+                                    className="rounded-xl border px-3 py-2.5 text-xs transition-colors text-left flex items-center justify-between gap-2"
+                                    style={{
+                                      color: enabled ? accentColor : playerTheme === 'dark' ? 'rgba(255,255,255,.45)' : 'rgba(0,0,0,.45)',
+                                      borderColor: enabled ? `${accentColor}99` : playerTheme === 'dark' ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.1)',
+                                      background: enabled ? `${accentColor}18` : 'transparent',
+                                    }}
+                                  >
+                                    <span>
+                                      <div className="font-medium">{label}</div>
+                                      <div className={`${textTertiary} text-[10px] mt-0.5`}>{hint}</div>
+                                    </span>
+                                    <span className={`inline-block w-9 h-5 rounded-full relative shrink-0 transition-colors`} style={{ backgroundColor: enabled ? accentColor : playerTheme === 'dark' ? 'rgba(255,255,255,.2)' : 'rgba(0,0,0,.2)' }}>
+                                      <span className={`absolute top-[2px] start-[2px] w-4 h-4 rounded-full bg-white shadow transition-all`} style={{ transform: enabled ? 'translateX(16px)' : '' }} />
+                                    </span>
+                                  </button>
+                                )
+                              })}
+                            </div>
+                            <p className={`${textTertiary} text-[10px] mt-2 leading-4`}>
+                              默认无背景，播控栏完全透明；开启后可按需叠加暗化遮罩与高斯模糊。
+                            </p>
                           </div>
 
                           <div>
@@ -3344,6 +3433,91 @@ function SettingsPanel({
                       <div className={`${textTertiary} text-xs mt-3 p-3 rounded-lg`} style={{ backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
                         默认使用独立显卡以获得最佳动画流畅度；笔记本想省电或独显驱动异常时可切换为核显或自动。切换后需重启软件生效。
                       </div>
+                    </div>
+
+                    {/* 全局高刷：渲染帧率跟随所在显示器刷新率（最高 300Hz） */}
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mb-4`} data-tv-hide="desktop">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className={`${textPrimary} font-medium mb-1`}>全局高刷</div>
+                          <div className={`${textSecondary} text-sm`}>解除 60Hz 帧率限制，全局渲染跟随显示器刷新率（最高 360Hz），尤其提升播放页动画流畅度</div>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={highRefreshEnabled}
+                            onChange={(e) => void handleHighRefreshToggle(e.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)] after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: highRefreshEnabled ? accentColor : '' }}></div>
+                        </label>
+                      </div>
+
+                      {highRefreshEnabled && (
+                        <>
+                          {/* 档位选择：跟随显示器最高 / 30-360 */}
+                          <div className="mt-4">
+                            <div className={`mb-2 text-xs font-medium ${textSecondary}`}>渲染帧率</div>
+                            <div className="flex flex-wrap gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => void handleHighRefreshHzChange(null)}
+                                className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-all ${highRefreshHz === null ? 'border-transparent text-white' : `${borderColor} ${textSecondary} hover:opacity-80`}`}
+                                style={highRefreshHz === null ? { backgroundColor: accentColor, boxShadow: `0 0 10px ${accentColor}44` } : undefined}
+                              >
+                                跟随显示器
+                              </button>
+                              {HIGH_REFRESH_OPTIONS.map(hz => {
+                                const active = highRefreshHz === hz
+                                const displayMax = displayInfo?.currentHz || 60
+                                const clamped = highRefreshEnabled && displayMax < hz
+                                return (
+                                  <button
+                                    key={hz}
+                                    type="button"
+                                    onClick={() => void handleHighRefreshHzChange(hz)}
+                                    className={`rounded-full border px-3 py-1.5 text-xs font-medium tabular-nums transition-all ${active ? 'border-transparent text-white' : `${borderColor} ${textSecondary} hover:opacity-80`} ${clamped ? 'opacity-55' : ''}`}
+                                    style={active ? { backgroundColor: accentColor, boxShadow: `0 0 10px ${accentColor}44` } : undefined}
+                                    title={clamped ? `显示器最高 ${displayMax}Hz，超出将被限制` : `${hz}Hz`}
+                                  >
+                                    {hz}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                            {highRefreshHz !== null && displayInfo && displayInfo.currentHz < highRefreshHz && (
+                              <div className={`mt-2 text-[11px] text-amber-400`}>当前窗口所在显示器最高 {displayInfo.currentHz}Hz，已按此限制生效</div>
+                            )}
+                            {highRefreshHz === null && (
+                              <div className={`mt-2 text-[11px] ${textTertiary}`}>跟随窗口所在显示器最高刷新率（当前 {displayInfo?.currentHz || 60}Hz），窗口移到其他显示器自动跟随</div>
+                            )}
+                          </div>
+                        </>
+                      )}
+
+                      {displayInfo && (
+                        <div className={`mt-3 space-y-1 rounded-lg p-3 text-xs ${textTertiary}`} style={{ backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-[13px]" style={{ color: textPrimary }}>当前渲染帧率</span>
+                            <span className="tabular-nums" style={{ color: highRefreshEnabled ? accentColor : undefined }}>{displayInfo.currentHz || 60} Hz</span>
+                            {highRefreshEnabled && <span className="ml-1 rounded-full px-2 py-0.5 text-[10px] text-white" style={{ background: accentColor }}>高刷已开启</span>}
+                          </div>
+                          <div className="mt-2 space-y-0.5">
+                            {displayInfo.displays?.map(display => (
+                              <div key={display.id} className="flex items-center justify-between gap-2">
+                                <span className="truncate">
+                                  {display.isMainWindow ? '🖥️ ' : ''}{display.label}
+                                  {display.isPrimary ? ' · 主屏' : ''}
+                                  {display.isMainWindow ? ' · 窗口所在' : ''}
+                                </span>
+                                {display.frequency >= 120 && <span className="shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-400">高刷屏</span>}
+                              </div>
+                            ))}
+                          </div>
+                          {displayInfo.error && <div className="mt-1 text-amber-400">显示器信息读取失败：{displayInfo.error}</div>}
+                          <div className="mt-1">开启后立即生效；窗口移到其他显示器时自动跟随该显示器刷新率。</div>
+                        </div>
+                      )}
                     </div>
 
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>

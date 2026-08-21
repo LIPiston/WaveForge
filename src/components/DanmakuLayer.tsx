@@ -199,12 +199,24 @@ export default function DanmakuLayer({ items, settings, isPlaying, videoRef, get
       active.push(...nowAlive)
       ctx.globalAlpha = 1
 
+      // 时间未推进（暂停）且无可见/待播弹幕时停帧；窗口隐藏时也停（Electron backgroundThrottling 关闭）
+      const paused = effDt <= 0
+      const hasVisible = active.length > 0 || spawnIndex < filtered.length
+      if ((paused && !hasVisible) || document.visibilityState === 'hidden') {
+        raf = 0
+        return
+      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && raf === 0) raf = requestAnimationFrame(tick)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
       cancelAnimationFrame(raf)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       ro.disconnect()
     }
     // 依赖 items 引用：loadVideo 每次成功会替换新列表

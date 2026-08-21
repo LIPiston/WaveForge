@@ -1223,11 +1223,12 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     video.addEventListener('timeupdate', onTimeUpdate)
     video.addEventListener('loadedmetadata', onLoadedMetadata)
     video.addEventListener('ended', handleVideoEnded)
-    video.addEventListener('error', () => {
+    const onVideoError = () => {
       setPlayError('视频播放失败（可能已失效或网络异常）')
       setStatus('error')
       reportVideoActive(false)
-    })
+    }
+    video.addEventListener('error', onVideoError)
     const onAudioEnded = () => {
       // 音频先结束：跟随视频状态（视频 ended 触发 handleVideoEnded）
       if (video.ended) return
@@ -1268,6 +1269,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
       video.removeEventListener('timeupdate', onTimeUpdate)
       video.removeEventListener('loadedmetadata', onLoadedMetadata)
       video.removeEventListener('ended', handleVideoEnded)
+      video.removeEventListener('error', onVideoError)
       audio?.removeEventListener('ended', onAudioEnded)
       audio?.removeEventListener('loadedmetadata', onAudioLoaded)
     }

@@ -137,6 +137,34 @@ export interface ElectronAPI {
     confirmGpuChange: () => Promise<{ success: boolean }>
     revertGpuChange: () => Promise<{ success: boolean; hardwareAcceleration: boolean; gpuPreference: 'auto' | 'discrete' | 'integrated' }>
   }
+  /** 全局高刷：显示器信息与全局渲染帧率控制（跟随所在显示器，最高 360Hz） */
+  display: {
+    getInfo: () => Promise<{
+      highRefreshEnabled: boolean
+      highRefreshHz: number | null
+      currentHz: number
+      primary: number
+      mainWindowDisplayId: number
+      error?: string
+      displays: Array<{
+        id: number
+        isPrimary: boolean
+        isMainWindow: boolean
+        bounds: { x: number; y: number; width: number; height: number }
+        workArea: { x: number; y: number; width: number; height: number }
+        frequency: number
+        scaleFactor: number
+        label: string
+      }>
+    }>
+    setHighRefresh: (enabled: boolean, hz?: number | null) => Promise<{ success: boolean; enabled: boolean; hz: number }>
+  }
+  /** 桌面融合穿透：桌面模式空区域鼠标穿透到真实桌面，组件区保持可交互 */
+  desktopFusion: {
+    getState: () => Promise<{ enabled: boolean }>
+    setEnabled: (enabled: boolean) => Promise<{ success: boolean; enabled: boolean }>
+    setInteractive: (interactive: boolean) => void
+  }
   mediaKeys: {
     setEnabled: (enabled: boolean) => Promise<{
       success: boolean
@@ -350,8 +378,12 @@ export interface TaskbarWidgetSettings {
   enabled: boolean
   position: 'right' | 'center'
   width: number
-  /** 常规（封面+歌词+进度）/ 纯享（只显示当前歌词） */
+  /** 常规（封面+歌词+进度+上一曲/暂停/下一曲）/ 纯享（只显示当前歌词） */
   mode: 'normal' | 'pure'
+  /** 背景暗化遮罩（用户自定义背景效果） */
+  darken: boolean
+  /** 背景高斯模糊（用户自定义背景效果） */
+  blur: boolean
 }
 
 export interface AirplayDeviceInfo {

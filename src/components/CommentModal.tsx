@@ -202,6 +202,7 @@ const CommentItem = memo(function CommentItem({
         <img
           src={comment.user.avatarUrl ? `http://localhost:3001/api/proxy-image?url=${encodeURIComponent(comment.user.avatarUrl)}` : ''}
           alt={comment.user.nickname}
+          loading="lazy"
           className="w-10 h-10 rounded-full object-cover flex-shrink-0"
           onError={(e) => {
             const target = e.target as HTMLImageElement;
@@ -664,8 +665,8 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           // 对于有回复的评论，自动加载前2条回复作为预览
           const commentsWithReplies = comments.filter(c => c.replyCount > 0)
           if (commentsWithReplies.length > 0) {
-            // 并行加载所有有回复的评论的楼中楼数据
-            const replyPromises = commentsWithReplies.map(async (comment) => {
+            // 加载楼中楼预览：分批并发（每批 6 个），避免热评多的歌曲一次性打出几十个请求
+            const floorOf = async (comment: any) => {
               try {
                 const floorResponse = await fetch(
                   `http://localhost:3001/api/netease/comment/floor?id=${encodeURIComponent(String(songId))}&parentCommentId=${comment.commentId}&limit=2&type=${commentType}&cookie=${encodeURIComponent(localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || '')}`
@@ -692,9 +693,13 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
                 console.error(`[加载回复预览] 评论${comment.commentId}失败:`, error)
               }
               return null
-            })
-            
-            const replyResults = await Promise.all(replyPromises)
+            }
+            const replyResults: any[] = []
+            const BATCH = 6
+            for (let start = 0; start < commentsWithReplies.length; start += BATCH) {
+              const batch = commentsWithReplies.slice(start, start + BATCH)
+              replyResults.push(...await Promise.all(batch.map(floorOf)))
+            }
             
             // 更新评论的回复数据
             replyResults.forEach(result => {

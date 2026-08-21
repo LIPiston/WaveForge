@@ -59,6 +59,9 @@ interface DesktopViewProps {
   onVolumeChange: (volume: number) => void
   onRemoveQueueItem: (index: number) => void
   onMoveQueueItem: (from: number, to: number) => void
+  /** 桌面融合穿透：空区域鼠标穿透到真实桌面，组件区保持可交互 */
+  desktopFusionEnabled?: boolean
+  onDesktopFusionChange?: (enabled: boolean) => void
   
   // 登录状态
   authRevision?: number
@@ -162,6 +165,8 @@ function DesktopView({
   onVolumeChange,
   onRemoveQueueItem,
   onMoveQueueItem,
+  desktopFusionEnabled = false,
+  onDesktopFusionChange,
   authRevision = 0,
   neteaseLoggedIn,
   neteaseUserId,
@@ -245,6 +250,30 @@ function DesktopView({
     window.addEventListener('viewModeChanged', closeForModeSwitch)
     return () => window.removeEventListener('viewModeChanged', closeForModeSwitch)
   }, [])
+
+  // 桌面融合穿透：光标悬停在组件上时窗口可交互，空区域点击穿透到真实桌面。
+  // 利用 setIgnoreMouseEvents(true,{forward:true}) 的 mousemove 转发，由页面实时判定交互区。
+  useEffect(() => {
+    if (!desktopFusionEnabled) return
+    let lastSend = 0
+    let disposed = false
+    const INTERACTIVE_SELECTOR = '.desktop-widget-card, .desktop-lyrics-fusion, [data-desktop-interactive]'
+    const onMouseMove = (event: MouseEvent) => {
+      const now = Date.now()
+      if (now - lastSend < 40) return // 节流 IPC
+      lastSend = now
+      const target = document.elementFromPoint(event.clientX, event.clientY) as Element | null
+      const interactive = Boolean(target && target.closest && target.closest(INTERACTIVE_SELECTOR))
+      window.electron?.desktopFusion?.setInteractive(interactive)
+    }
+    window.electron?.desktopFusion?.setInteractive(false) // 初始穿透
+    document.addEventListener('mousemove', onMouseMove)
+    return () => {
+      disposed = true
+      document.removeEventListener('mousemove', onMouseMove)
+      window.electron?.desktopFusion?.setInteractive(false)
+    }
+  }, [desktopFusionEnabled])
   const [showSettings, setShowSettings] = useState(false)
   const [settingsModuleMounted, setSettingsModuleMounted] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
@@ -1866,7 +1895,7 @@ function DesktopView({
             animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
             exit={{ opacity: 0, scale: 0.985, filter: 'blur(12px)' }}
             transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
-            className={`absolute z-20 flex items-center justify-center overflow-hidden ${isTvUi ? 'bottom-72' : 'bottom-16'}`}
+            className={`desktop-lyrics-fusion absolute z-20 flex items-center justify-center overflow-hidden ${isTvUi ? 'bottom-72' : 'bottom-16'}`}
             style={{
               top: 'clamp(178px, 19vh, 224px)',
               left: '6vw',
@@ -2198,6 +2227,25 @@ function DesktopView({
                 )}
               </motion.button>
 
+              {/* 桌面融合穿透开关 */}
+              <motion.button
+                whileHover={{ scale: 1.08 }}
+                whileTap={{ scale: 0.94 }}
+                onClick={() => onDesktopFusionChange?.(!desktopFusionEnabled)}
+                title={desktopFusionEnabled ? '桌面融合穿透：已开启（空区域可操作真实桌面，点击关闭）' : '桌面融合穿透：关闭（点击开启，空区域穿透到真实桌面）'}
+                className="flex h-9 w-9 items-center justify-center rounded-full transition-all"
+                style={{
+                  background: desktopFusionEnabled ? 'rgba(236, 72, 153, 0.25)' : 'rgba(255, 255, 255, 0.1)',
+                  border: `1px solid ${desktopFusionEnabled ? 'rgba(236, 72, 153, 0.6)' : 'rgba(255, 255, 255, 0.2)'}`,
+                  color: desktopFusionEnabled ? '#f9a8d4' : 'rgba(255,255,255,0.7)',
+                }}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
+                  <path d="M3 9h18M9 21V9M6 6h.01M10 6h.01" />
+                </svg>
+              </motion.button>
+
               {/* 设置按钮 */}
               <motion.button
                 whileHover={{ scale: 1.1 }}
@@ -2281,6 +2329,7 @@ function DesktopView({
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 20, opacity: 0 }}
             className="absolute bottom-0 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3"
+            data-desktop-interactive
             style={{
               paddingTop: '40px',
               paddingBottom: '8px'

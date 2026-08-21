@@ -43,8 +43,14 @@ function AlbumCoverPlayer({
       if (!surface) return
       const restlessPulse = pulseStore.getSnapshot().restless
       const nextPulseActive = restlessPulse > 0
+      // transform 走合成器、廉价可每帧写；filter(brightness/saturate) 会触发整块封面重绘，
+      // 仅在节拍爆发（restless>0）时写入，平时清空避免每帧 repaint
       surface.style.transform = `translate3d(0, 0, 0) scale(${1 + restlessPulse * 0.022})`
-      surface.style.filter = `brightness(${1 + restlessPulse * 0.045}) saturate(${1 + restlessPulse * 0.055})`
+      if (nextPulseActive) {
+        surface.style.filter = `brightness(${1 + restlessPulse * 0.045}) saturate(${1 + restlessPulse * 0.055})`
+      } else if (surface.style.filter) {
+        surface.style.filter = ''
+      }
       if (nextPulseActive !== pulseActive) {
         pulseActive = nextPulseActive
         surface.style.transition = nextPulseActive

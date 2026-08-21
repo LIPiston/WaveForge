@@ -117,6 +117,9 @@ export default function ModengPlayerPage({
 }: ModengPlayerPageProps) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const [size, setSize] = useState({ width: 1312, height: 951 })
+  // 拖拽期间挂在 window 的 pointer 监听器：组件卸载时也要移除，避免外溢
+  const dragCleanupRef = useRef<(() => void) | null>(null)
+  useEffect(() => () => { dragCleanupRef.current?.() }, [])
 
   useEffect(() => {
     const node = rootRef.current
@@ -233,7 +236,8 @@ export default function ModengPlayerPage({
     const tick = (wall: number) => {
       const extrapolated = playing ? (wall - anchorWall) / 1000 : 0
       paint(anchorTime + extrapolated)
-      raf = playing ? requestAnimationFrame(tick) : 0
+      // 窗口隐藏时停帧（Electron backgroundThrottling 关闭，隐藏后 rAF 仍全速执行 60fps 样式写）
+      raf = playing && document.visibilityState === 'visible' ? requestAnimationFrame(tick) : 0
     }
 
     const sync = () => {
@@ -243,13 +247,18 @@ export default function ModengPlayerPage({
       playing = snapshot.isPlaying
       if (snapshot.duration > 0) durationRef.current = snapshot.duration
       paint(anchorTime)
-      if (playing && !raf) raf = requestAnimationFrame(tick)
+      if (playing && !raf && document.visibilityState === 'visible') raf = requestAnimationFrame(tick)
     }
 
     sync()
     const unsubscribe = playbackTimeStore.subscribe(sync)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && playing && !raf) raf = requestAnimationFrame(tick)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       unsubscribe()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       if (raf) cancelAnimationFrame(raf)
       raf = 0
     }
@@ -264,7 +273,9 @@ export default function ModengPlayerPage({
     const up = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      if (dragCleanupRef.current === up) dragCleanupRef.current = null
     }
+    dragCleanupRef.current = up
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }

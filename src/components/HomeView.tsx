@@ -2647,7 +2647,7 @@ function HomeView({
                 maxWidth: '100%'
               }}>
                 <AnimatePresence mode="popLayout">
-                {userPlaylists.map((playlist: any, index: number) => (
+                {userPlaylists.slice(0, 100).map((playlist: any, index: number) => (
                   <motion.div
                     key={`${platform || 'unknown'}-playlist-${playlist.id || index}`}
                     className="home-playlist-card relative group overflow-hidden rounded-xl cursor-pointer"

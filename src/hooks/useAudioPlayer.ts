@@ -1985,7 +1985,9 @@ export function useAudioPlayer(
     if (!active) return
     const wasPlaying = !active.paused
     cancelScheduledTransition('seek changed transition timing')
-    active.currentTime = Math.max(0, Math.min(time, active.duration || 0))
+    // 元数据未加载（duration 未知）时直接定位，不做 0 上限裁剪，避免拖动归零
+    const duration = Number.isFinite(active.duration) && active.duration > 0 ? active.duration : Infinity
+    active.currentTime = Math.max(0, Math.min(time, duration))
     // seek 越过已计划的过渡点后，旧计划已不可用（播放过期过渡会卡住/错位）：
     // 清空计划，让 prepareAutoMix 从当前位置重新规划（v1 行为：立刻可从当前进度 automix）。
     const plan = transitionPlanRef.current
@@ -2062,7 +2064,14 @@ export function useAudioPlayer(
           const cleanup = () => {
             target.removeEventListener('canplay', ready)
             target.removeEventListener('error', failed)
+            if (timeoutId !== null) window.clearTimeout(timeoutId)
           }
+          // 无缝接管时 CDN 卡住/加载被新播放打断可能永远不触发 canplay → 超时放弃并回退普通加载
+          let timeoutId: number | null = window.setTimeout(() => {
+            timeoutId = null
+            cleanup()
+            reject(new Error('adopt external audio timed out'))
+          }, 12000)
           target.addEventListener('canplay', ready, { once: true })
           target.addEventListener('error', failed, { once: true })
         })

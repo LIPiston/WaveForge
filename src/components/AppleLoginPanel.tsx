@@ -40,6 +40,7 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
   const [currentUser, setCurrentUser] = useState(() => getAppleAuthState())
   const [showGuide, setShowGuide] = useState(false)
   const mountedRef = useRef(true)
+  const autoTimeoutRef = useRef<number | null>(null)
   // 商店下拉框（自定义样式，替代原生 select）
   const [storefrontOpen, setStorefrontOpen] = useState(false)
   const storefrontRef = useRef<HTMLDivElement>(null)
@@ -56,7 +57,11 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
   // 登录方式：网页一键登录（桌面端默认）/ 手动填写 Token（同 QQ 的手动 Cookie 选项）
   const [loginMode, setLoginMode] = useState<'auto' | 'manual'>(hasNativeLogin ? 'auto' : 'manual')
 
-  useEffect(() => () => { mountedRef.current = false }, [])
+  useEffect(() => () => {
+    mountedRef.current = false
+    if (autoTimeoutRef.current !== null) window.clearTimeout(autoTimeoutRef.current)
+    autoTimeoutRef.current = null
+  }, [])
 
   type AccountInfo = Partial<AppleUserInfo>
   const completeLogin = async (dev: string, media: string, accountInfo?: AccountInfo) => {
@@ -136,10 +141,13 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
     // 兜底：登录窗口含用户交互（Apple 账户同意/拒绝弹窗、账户登录、2FA），
     // 等待可长达数分钟；仅当窗口真正卡死超过 6 分钟才强制退出并提示。
     const autoTimeoutId = window.setTimeout(() => {
+      if (autoTimeoutRef.current !== autoTimeoutId) return
+      autoTimeoutRef.current = null
       if (!mountedRef.current) return
       setStatus({ ok: false, message: '登录流程超时，请重试（可先手动获取开发者令牌）' })
       setAutoLoading(false)
     }, 6 * 60 * 1000)
+    autoTimeoutRef.current = autoTimeoutId
     try {
       const result = await window.electron!.appleLogin()
       if (!mountedRef.current) return
@@ -247,6 +255,7 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
       if (mountedRef.current) setStatus({ ok: false, message: error instanceof Error ? error.message : '自动登录失败' })
     } finally {
       window.clearTimeout(autoTimeoutId)
+      if (autoTimeoutRef.current === autoTimeoutId) autoTimeoutRef.current = null
       if (mountedRef.current) setAutoLoading(false)
     }
   }

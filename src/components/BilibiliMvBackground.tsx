@@ -552,10 +552,22 @@ export default function BilibiliMvBackground({
         lastReport = now
         onPlayStateChangeRef.current?.({ ...lastPlayStateRef.current, currentTime: active.currentTime || 0 })
       }
+      // 窗口隐藏时停帧（Electron backgroundThrottling 关闭）
+      if (document.visibilityState !== 'visible') {
+        raf = 0
+        return
+      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && raf === 0) raf = requestAnimationFrame(tick)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      cancelAnimationFrame(raf)
+    }
   }, [isPlaying, enabled])
 
   // 卸载清理

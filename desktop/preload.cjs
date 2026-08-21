@@ -39,6 +39,19 @@ contextBridge.exposeInMainWorld('electron', {
     revertGpuChange: () => ipcRenderer.invoke('revert-gpu-change'),
   },
 
+  // 全局高刷：查询显示器信息与刷新率，设置全局渲染帧率（hz=null 表示跟随显示器最高）
+  display: {
+    getInfo: () => ipcRenderer.invoke('display:get-info'),
+    setHighRefresh: (enabled, hz) => ipcRenderer.invoke('display:set-high-refresh', enabled, hz),
+  },
+
+  // 桌面融合穿透：桌面模式空区域鼠标穿透到真实桌面，组件区保持可交互
+  desktopFusion: {
+    getState: () => ipcRenderer.invoke('desktop-fusion:get-state'),
+    setEnabled: (enabled) => ipcRenderer.invoke('desktop-fusion:set-enabled', enabled),
+    setInteractive: (interactive) => ipcRenderer.send('desktop-fusion:set-interactive', interactive),
+  },
+
   mediaKeys: {
     setEnabled: (enabled) => ipcRenderer.invoke('media-keys:set-enabled', enabled),
     onControl: (callback) => {

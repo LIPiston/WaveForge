@@ -226,24 +226,28 @@ export default function BilibiliVideoPlayerOverlay({ bvid, title, onClose, initi
         if (!video.paused) void audio.play().catch(() => undefined)
       }
     }
+    const onEnded = () => {
+      setIsPlaying(false)
+      setShowReplay(true)
+      setShowControls(true)
+      audioRef.current?.pause()
+    }
+    const onError = () => setLoadError('视频播放失败（可能已失效或网络异常）')
     video.addEventListener('play', onPlay)
     video.addEventListener('pause', onPause)
     video.addEventListener('timeupdate', onTimeUpdate)
     video.addEventListener('loadedmetadata', onLoaded)
     video.addEventListener('seeked', syncAudio)
-    video.addEventListener('ended', () => {
-      setIsPlaying(false)
-      setShowReplay(true)
-      setShowControls(true)
-      audioRef.current?.pause()
-    })
-    video.addEventListener('error', () => setLoadError('视频播放失败（可能已失效或网络异常）'))
+    video.addEventListener('ended', onEnded)
+    video.addEventListener('error', onError)
     return () => {
       video.removeEventListener('play', onPlay)
       video.removeEventListener('pause', onPause)
       video.removeEventListener('timeupdate', onTimeUpdate)
       video.removeEventListener('loadedmetadata', onLoaded)
       video.removeEventListener('seeked', syncAudio)
+      video.removeEventListener('ended', onEnded)
+      video.removeEventListener('error', onError)
     }
   }, [videoUrl, audioUrl, subtitles, subtitleOn, initialSeek, seekApplied, scheduleControlsHide])
 

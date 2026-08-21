@@ -334,7 +334,7 @@ const SocialUserCard = memo(function SocialUserCard({
     >
       <div className="flex items-center gap-3">
         <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 bg-white/10">
-          {user.avatarUrl ? <img src={user.avatarUrl} alt={user.nickname} className="w-full h-full object-cover" /> : <User className="w-6 h-6 m-auto mt-3 text-white/30" />}
+          {user.avatarUrl ? <img src={user.avatarUrl} alt={user.nickname} loading="lazy" className="w-full h-full object-cover" /> : <User className="w-6 h-6 m-auto mt-3 text-white/30" />}
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-white text-sm font-medium truncate">{user.nickname}</p>
@@ -392,7 +392,7 @@ const QqSocialUserCard = memo(function QqSocialUserCard({
     >
       <div className="flex items-center gap-3">
         <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 bg-white/10">
-          {user.avatarUrl ? <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" /> : <Users className="w-6 h-6 m-auto mt-3 text-white/30" />}
+          {user.avatarUrl ? <img src={user.avatarUrl} alt={user.name} loading="lazy" className="w-full h-full object-cover" /> : <Users className="w-6 h-6 m-auto mt-3 text-white/30" />}
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-white text-sm font-medium truncate">{user.name}</p>
@@ -2198,7 +2198,7 @@ function ProfileView({
                 )}
                 {activeTab === 'created' && !(viewTarget && platform === 'qq') && (
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                    {createdPlaylists.map((playlist, index) => (
+                    {createdPlaylists.slice(0, 100).map((playlist, index) => (
                       <PlaylistGridCard
                         key={`created-${playlist.id || index}`}
                         playlist={playlist}
@@ -2221,7 +2221,7 @@ function ProfileView({
                 )}
                 {activeTab === 'subscribed' && !(viewTarget && platform === 'qq') && (
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                    {subscribedPlaylists.map((playlist, index) => (
+                    {subscribedPlaylists.slice(0, 100).map((playlist, index) => (
                       <PlaylistGridCard
                         key={`subscribed-${playlist.id || index}`}
                         playlist={playlist}
@@ -2461,7 +2461,7 @@ function ProfileView({
                         : collectedAlbums.length === 0 ? <div className="py-10 text-center text-white/45 text-sm">暂无收藏专辑</div>
                         : (
                           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                            {collectedAlbums.map((album, index) => {
+                            {collectedAlbums.slice(0, 200).map((album, index) => {
                               const albumId = album.id || album.albumid || album.albumId
                               const albumName = album.name || album.albumname || '未知专辑'
                               const cover = album.picUrl || album.pic || ''
@@ -2470,7 +2470,7 @@ function ProfileView({
                                 <div key={`${albumId || index}-${index}`} className="rounded-xl p-2.5 transition-all cursor-pointer" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
                                   onClick={() => { if (albumId && onOpenAlbum) onOpenAlbum(String(albumId), platform) }} title="点击打开专辑">
                                   <div className="relative w-full aspect-square rounded-lg overflow-hidden mb-2" style={{ background: 'rgba(255,255,255,0.08)' }}>
-                                    {cover ? <img src={cover} alt={albumName} className="w-full h-full object-cover" /> : <Music className="w-8 h-8 m-auto text-white/20" />}
+                                    {cover ? <img src={cover} alt={albumName} loading="lazy" className="w-full h-full object-cover" /> : <Music className="w-8 h-8 m-auto text-white/20" />}
                                   </div>
                                   <p className="text-white/90 text-xs font-medium truncate">{albumName}</p>
                                   <p className="text-white/40 text-[11px] truncate mt-0.5">{singerName}</p>
@@ -2488,7 +2488,7 @@ function ProfileView({
                       {collectedArtists.length === 0 ? <div className="py-10 text-center text-white/45 text-sm">暂无关注歌手</div>
                         : (
                           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                            {collectedArtists.map((artist, index) => {
+                            {collectedArtists.slice(0, 200).map((artist, index) => {
                               const artistId = artist.id || artist.singerid || artist.mid
                               const artistName = artist.name || artist.singername || '未知歌手'
                               const cover = artist.picUrl || artist.pic || artist.singerpic || ''
@@ -2496,7 +2496,7 @@ function ProfileView({
                                 <div key={`${artistId || index}-${index}`} className="rounded-xl p-4 transition-all cursor-pointer flex items-center gap-3" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
                                   onClick={() => { if (artistId && onOpenArtist) onOpenArtist(String(artistId), platform) }} title="点击打开歌手">
                                   <div className="w-12 h-12 rounded-full overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.1)' }}>
-                                    {cover ? <img src={cover} alt={artistName} className="w-full h-full object-cover" /> : <Music className="w-6 h-6 m-auto mt-3 text-white/30" />}
+                                    {cover ? <img src={cover} alt={artistName} loading="lazy" className="w-full h-full object-cover" /> : <Music className="w-6 h-6 m-auto mt-3 text-white/30" />}
                                   </div>
                                   <p className="text-white/90 text-xs font-medium truncate">{artistName}</p>
                                 </div>
@@ -2514,7 +2514,7 @@ function ProfileView({
                         {collectedMvs.length === 0 ? <div className="py-10 text-center text-white/45 text-sm">暂无收藏 MV</div>
                           : (
                             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                              {collectedMvs.map((mv, index) => {
+                              {collectedMvs.slice(0, 200).map((mv, index) => {
                                 const mvName = mv.name || mv.title || '未知 MV'
                                 const cover = mv.cover || mv.picUrl || mv.imgurl16v9 || ''
                                 return (
@@ -2542,7 +2542,7 @@ function ProfileView({
                                       <X className="w-3.5 h-3.5" />
                                     </button>
                                     <div className="relative w-full aspect-video rounded-lg overflow-hidden mb-2" style={{ background: 'rgba(255,255,255,0.08)' }}>
-                                      {cover ? <img src={cover} alt={mvName} className="w-full h-full object-cover" /> : <Film className="w-8 h-8 m-auto text-white/20" />}
+                                      {cover ? <img src={cover} alt={mvName} loading="lazy" className="w-full h-full object-cover" /> : <Film className="w-8 h-8 m-auto text-white/20" />}
                                     </div>
                                     <p className="text-white/90 text-xs font-medium truncate">{mvName}</p>
                                     <p className="text-white/40 text-[11px] truncate mt-0.5">{mv.artistName || mv.artist?.name || ''}</p>
@@ -2615,7 +2615,7 @@ function ProfileView({
                               >
                                 <span className="w-5 text-center text-xs text-white/40">{index + 1}</span>
                                 <div className="w-9 h-9 rounded-md overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.08)' }}>
-                                  {cover ? <img src={cover} alt="" className="w-full h-full object-cover" /> : <Music className="w-4 h-4 m-auto mt-2.5 text-white/30" />}
+                                  {cover ? <img src={cover} alt="" loading="lazy" className="w-full h-full object-cover" /> : <Music className="w-4 h-4 m-auto mt-2.5 text-white/30" />}
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <p className="text-white text-sm truncate">{songName}</p>

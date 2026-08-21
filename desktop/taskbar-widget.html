@@ -19,11 +19,11 @@
     color: #fff;
     font-size: var(--fs, 13px);
     transition: opacity 0.12s;
-    /* 深色模糊遮罩：文字在任何壁纸上都可读（不设成过深，避免盖住封面/壁纸细节） */
-    background: var(--scrim, rgba(12, 14, 20, 0.52));
-    backdrop-filter: blur(10px) saturate(140%);
+    /* 背景默认完全透明（跟随用户设置）：暗化/模糊由 --scrim / --backdrop 两个开关控制 */
+    background: var(--scrim, transparent);
+    backdrop-filter: var(--backdrop, none);
   }
-  body.light #root { background: rgba(255,255,255,0.68); color: #1a1a1a; }
+  body.light #root { color: #1a1a1a; }
   body.idle #root { opacity: 0.55; }
 
   .cover {
@@ -110,11 +110,10 @@
     gap: 6px;
     padding: 7px 10px;
     border-radius: 14px;
-    background: var(--scrim, rgba(12, 14, 20, 0.72));
-    backdrop-filter: blur(16px) saturate(150%);
+    background: var(--popup-bg, rgba(12, 14, 20, 0.72));
+    backdrop-filter: var(--popup-backdrop, blur(16px) saturate(150%));
     box-shadow: 0 8px 28px rgba(0,0,0,0.45);
   }
-  body.light #popup .panel { background: rgba(255,255,255,0.88); }
   .btn {
     width: calc(var(--fs, 13px) * 2.2);
     height: calc(var(--fs, 13px) * 2.2);
@@ -139,6 +138,36 @@
   .btn.close:hover { background: rgba(255,80,80,0.25); color: #ff8a8a; }
   .btn svg { width: 60%; height: 60%; }
 
+  /* 常规模式播控条内置控制按钮：上一曲 / 暂停 / 下一曲（比弹层面板按钮更紧凑） */
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+  body.pure .controls { display: none; }
+  .ctl {
+    width: calc(var(--fs, 13px) * 1.9);
+    height: calc(var(--fs, 13px) * 1.9);
+    min-width: 18px; min-height: 18px;
+    border: none; border-radius: 50%; cursor: pointer;
+    background: transparent; color: inherit;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0.9;
+    transition: background 0.12s, opacity 0.12s, transform 0.08s;
+  }
+  .ctl:hover { background: rgba(127,127,127,0.22); opacity: 1; }
+  .ctl:active { transform: scale(0.9); }
+  .ctl.play {
+    width: calc(var(--fs, 13px) * 2.3);
+    height: calc(var(--fs, 13px) * 2.3);
+    background: var(--accent, #FB7299);
+    color: #fff;
+    box-shadow: 0 1px 6px color-mix(in srgb, var(--accent, #FB7299) 40%, transparent);
+    opacity: 1;
+  }
+  .ctl svg { width: 58%; height: 58%; }
+
   .expand-hint {
     flex-shrink: 0;
     width: calc(var(--fs, 13px) * 1.4);
@@ -156,22 +185,30 @@
 <body>
   <div id="popup">
     <div class="panel" id="popupPanel">
-      <button class="btn" id="prev" title="上一首" aria-label="上一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6l-10 6 10 6z"/></svg></button>
-      <button class="btn play" id="play" title="播放/暂停" aria-label="播放/暂停">
-        <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-        <svg id="pauseIcon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+      <button class="btn" id="popPrev" title="上一首" aria-label="上一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6l-10 6 10 6z"/></svg></button>
+      <button class="btn play" id="popPlay" title="播放/暂停" aria-label="播放/暂停">
+        <svg id="popPlayIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="popPauseIcon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
       </button>
-      <button class="btn" id="next" title="下一首" aria-label="下一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l10 6-10 6z"/></svg></button>
-      <button class="btn" id="vol" title="静音" aria-label="音量">
-        <svg id="volOn" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zM16.5 12a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
-        <svg id="volOff" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M3 9v6h4l5 5V4L7 9H3zM16.5 12a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM19 9l4 6M23 9l-4 6"/></svg>
+      <button class="btn" id="popNext" title="下一首" aria-label="下一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l10 6-10 6z"/></svg></button>
+      <button class="btn" id="popVol" title="静音" aria-label="音量">
+        <svg id="popVolOn" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zM16.5 12a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+        <svg id="popVolOff" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M3 9v6h4l5 5V4L7 9H3zM16.5 12a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM19 9l4 6M23 9l-4 6"/></svg>
       </button>
-      <button class="btn close" id="close" title="隐藏" aria-label="隐藏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      <button class="btn close" id="popClose" title="隐藏" aria-label="隐藏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
   </div>
   <div id="root">
     <div class="cover" id="cover">
       <svg class="placeholder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+    </div>
+    <div class="controls" id="controls">
+      <button class="ctl" id="prev" title="上一首" aria-label="上一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6l-10 6 10 6z"/></svg></button>
+      <button class="ctl play" id="play" title="播放/暂停" aria-label="播放/暂停">
+        <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="pauseIcon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+      </button>
+      <button class="ctl" id="next" title="下一首" aria-label="下一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l10 6-10 6z"/></svg></button>
     </div>
     <div class="main">
       <div class="line-primary" id="linePrimary">未在播放</div>
@@ -182,7 +219,6 @@
     </div>
     <div class="progress" id="progress"><div class="fill" id="fill"></div></div>
   </div>
-<script src="./taskbar-widget-preload.cjs"></script>
 <script>
   const $ = (id) => document.getElementById(id)
   const bridge = window.taskbarWidget
@@ -190,7 +226,6 @@
   let mode = 'normal'
   let expanded = false
   let collapseTimer = null
-  let lastInteractive = false
 
   // 弹出面板高度（与主进程 TASKBAR_WIDGET_POPUP_HEIGHT 保持一致）
   const TASKBAR_POPUP_H = 218
@@ -339,8 +374,9 @@
 
   function applyMode() {
     document.body.classList.toggle('pure', mode === 'pure')
-    // 纯享模式隐藏封面与展开提示
+    // 纯享模式只显示歌词：隐藏封面、控制按钮与展开提示
     $('cover').style.display = mode === 'pure' ? 'none' : ''
+    $('controls').style.display = mode === 'pure' ? 'none' : ''
     $('expandHint').style.display = mode === 'pure' ? 'none' : ''
     // 主题色：播放按钮 + 进度条 + karaoke 填充色
     const accent = state.accent || '#FB7299'
@@ -464,6 +500,11 @@
   function startKaraokeRaf() {
     if (karaokeRaf) return
     const step = () => {
+      // 无歌/未播放/无逐字词/窗口隐藏时停帧，避免常驻任务栏 60fps 空转
+      if (!state.playing || !karaokeWords || karaokeWords.length === 0 || document.hidden) {
+        karaokeRaf = 0
+        return
+      }
       karaokeRaf = requestAnimationFrame(step)
       const cur = state.playing && lastCurAt
         ? lastCur + Math.max(0, (performance.now() - lastCurAt) / 1000)
@@ -512,11 +553,13 @@
       secondary.textContent = state.artist || ''
     }
 
-    // 播放/暂停与静音图标
+    // 播放/暂停与静音图标（播控条 + 弹层面板两处）
     $('playIcon').style.display = state.playing ? 'none' : 'block'
     $('pauseIcon').style.display = state.playing ? 'block' : 'none'
-    $('volOn').style.display = state.muted ? 'none' : 'block'
-    $('volOff').style.display = state.muted ? 'block' : 'none'
+    $('popPlayIcon').style.display = state.playing ? 'none' : 'block'
+    $('popPauseIcon').style.display = state.playing ? 'block' : 'none'
+    $('popVolOn').style.display = state.muted ? 'none' : 'block'
+    $('popVolOff').style.display = state.muted ? 'block' : 'none'
 
     // 进度条
     const ratio = state.dur > 0 ? Math.min(1, Math.max(0, state.cur / state.dur)) : 0
@@ -556,22 +599,40 @@
     apply()
   })
 
+  // 应用设置：显示模式 + 背景效果（暗化 / 模糊）。背景默认完全透明，开关控制遮罩与高斯模糊。
+  function applySettings(settings) {
+    if (!settings) return
+    if (typeof settings.mode === 'string') mode = settings.mode
+    const darken = settings.darken === true
+    const blur = settings.blur === true
+    document.documentElement.style.setProperty('--scrim', darken ? 'rgba(12, 14, 20, 0.5)' : 'transparent')
+    document.documentElement.style.setProperty('--backdrop', blur ? 'blur(12px) saturate(140%)' : 'none')
+    // 弹层面板：暗化开=深色玻璃，暗化关=浅色玻璃（保证按钮可见）；模糊跟随开关
+    document.documentElement.style.setProperty('--popup-bg', darken ? 'rgba(12, 14, 20, 0.82)' : 'rgba(12, 14, 20, 0.55)')
+    document.documentElement.style.setProperty('--popup-backdrop', blur ? 'blur(18px) saturate(150%)' : 'none')
+    layout()
+    apply()
+  }
+
   bridge.onSettings((settings) => {
-    if (settings && typeof settings.mode === 'string') mode = settings.mode
-    layout()
-    apply()
+    applySettings(settings)
   })
+
   void bridge.getSettings().then((settings) => {
-    if (settings && typeof settings.mode === 'string') mode = settings.mode
-    layout()
-    apply()
+    applySettings(settings)
   }).catch(() => layout())
 
-  $('play').addEventListener('click', () => bridge.action('toggle'))
-  $('prev').addEventListener('click', () => bridge.action('prev'))
-  $('next').addEventListener('click', () => bridge.action('next'))
-  $('vol').addEventListener('click', () => bridge.action('toggleMute'))
-  $('close').addEventListener('click', () => { setExpanded(false); bridge.action('close') })
+  // 播控条内置控制：上一曲/播放暂停/下一曲（点击不展开弹层）
+  const controlAction = (action) => (e) => { e.stopPropagation(); bridge.action(action) }
+  $('play').addEventListener('click', controlAction('toggle'))
+  $('prev').addEventListener('click', controlAction('prev'))
+  $('next').addEventListener('click', controlAction('next'))
+  // 弹层面板控制
+  $('popPlay').addEventListener('click', () => bridge.action('toggle'))
+  $('popPrev').addEventListener('click', () => bridge.action('prev'))
+  $('popNext').addEventListener('click', () => bridge.action('next'))
+  $('popVol').addEventListener('click', () => bridge.action('toggleMute'))
+  $('popClose').addEventListener('click', () => { setExpanded(false); bridge.action('close') })
   $('progress').addEventListener('click', (e) => {
     const rect = $('progress').getBoundingClientRect()
     const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
@@ -579,20 +640,35 @@
   })
   // 点击播控条（或展开提示）→ 弹出按钮面板。
   // 注意：点中歌词文字时 event.target 可能是文本节点，没有 .closest —— 先判 Element 避免抛错导致不展开
+  const isInteractiveChild = (target) => target instanceof Element && (
+    target.closest('.controls') || target.closest('.expand-hint') || target.closest('.progress')
+  )
   $('expandHint').addEventListener('click', (e) => { e.stopPropagation(); setExpanded(!expanded) })
   $('root').addEventListener('click', (e) => {
-    if (e.target instanceof Element && e.target.closest('.expand-hint')) return
+    if (isInteractiveChild(e.target)) return
     setExpanded(true)
   })
-
-  // 悬停进入 -> 交互态；移出窗口 -> 2 秒后收回面板并切回鼠标穿透
-  document.addEventListener('mouseenter', () => {
-    if (collapseTimer) { window.clearTimeout(collapseTimer); collapseTimer = null }
-    if (!lastInteractive) { lastInteractive = true; bridge.setInteractive(true) }
+  // mousedown 兜底触发展开：某些环境下 click 合成事件可能不生成，但鼠标按键仍会落在窗口上
+  $('root').addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || isInteractiveChild(e.target)) return
+    if (!expanded) setExpanded(true)
   })
-  document.addEventListener('mouseleave', () => {
-    if (expanded) collapseSoon()
-    if (lastInteractive) { lastInteractive = false; bridge.setInteractive(false) }
+  // 点击弹层空白处收起
+  $('popup').addEventListener('click', (e) => {
+    if (e.target instanceof Element && e.target.closest('.panel .btn')) return
+    setExpanded(false)
+  })
+
+  // 悬停状态由主进程光标轮询驱动（main.cjs updateTaskbarWidgetInteractive）。
+  // 不能再用页面 mouseenter/mouseleave + setInteractive：透明置顶窗口上
+  // setIgnoreMouseEvents 切换会触发系统重新命中测试，形成 enter/leave 无限振荡，
+  // 交互态永不稳定、点击落不到窗口。这里只响应主进程推送的悬停变化收拢面板。
+  bridge.onHover((hovering) => {
+    if (hovering) {
+      if (collapseTimer) { window.clearTimeout(collapseTimer); collapseTimer = null }
+    } else {
+      if (expanded) collapseSoon()
+    }
   })
   window.addEventListener('resize', () => layout())
 

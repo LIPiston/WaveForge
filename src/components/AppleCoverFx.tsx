@@ -137,14 +137,27 @@ export default function AppleCoverFx({ enabled, isPlaying, size, radius, accentC
       ctx.globalAlpha = 1
       ctx.restore()
 
-      raf = requestAnimationFrame(tick)
+      // 窗口隐藏、或无粒子且未播放时停帧，避免 60fps 空转（Electron backgroundThrottling 关闭）
+      if (document.visibilityState !== 'hidden' && (playingRef.current || particles.length > 0)) {
+        raf = requestAnimationFrame(tick)
+      } else {
+        raf = 0
+      }
     }
 
     raf = requestAnimationFrame(tick)
     const observer = new ResizeObserver(resize)
     observer.observe(canvas)
+    const onVisibilityChange = () => {
+      // 窗口恢复可见时若已停帧则重启
+      if (document.visibilityState === 'visible' && raf === 0) {
+        raf = requestAnimationFrame(tick)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       cancelAnimationFrame(raf)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       observer.disconnect()
     }
   }, [])

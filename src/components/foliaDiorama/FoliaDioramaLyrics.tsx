@@ -131,13 +131,23 @@ export default function FoliaDioramaLyrics({
     const tick = (now: number) => {
       const extrapolated = playing ? Math.min(0.5, (now - anchorWall) / 1000) : 0
       currentTime.set(anchorTime + extrapolated + timeOffset)
-      raf = requestAnimationFrame(tick)
+      // 未播放或窗口隐藏时停帧（Electron backgroundThrottling 关闭，隐藏后 rAF 仍全速）
+      if (playing && document.visibilityState === 'visible') {
+        raf = requestAnimationFrame(tick)
+      } else {
+        raf = 0
+      }
     }
     syncClock()
     const unsubscribe = playbackTimeStore.subscribe(syncClock)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && raf === 0 && playing) raf = requestAnimationFrame(tick)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
     raf = requestAnimationFrame(tick)
     return () => {
       unsubscribe()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       cancelAnimationFrame(raf)
     }
   }, [currentTime, playbackTimeStore, timeOffset])
@@ -294,6 +304,7 @@ export default function FoliaDioramaLyrics({
           key={canvasRecoveryKey}
           dpr={[1, 2]}
           flat
+          frameloop="demand"
           camera={{ fov: 55, near: 0.1, far: 140, position: [0, 0.6, 9] }}
           gl={{ powerPreference: 'high-performance' }}
           className="h-full w-full"

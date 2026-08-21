@@ -96,8 +96,9 @@ export default function ProgressiveGlyphText({
       const extrapolated = playing ? Math.min(0.5, (now - anchorWallTime) / 1000) : 0
       const currentTime = anchorTime + extrapolated + timeOffset
       updateFill(currentTime)
-      // 整行已唱完则停帧（外推值已无可见变化），等下一次播放时间发布再经 syncClock 重启。
-      animationFrame = playing && currentTime < lineEndTime ? requestAnimationFrame(tick) : null
+      // 整行已唱完则停帧（外推值已无可见变化），等下一次播放时间发布再经 syncClock 重启；
+      // 窗口隐藏时也停（Electron backgroundThrottling 关闭，隐藏后 rAF 仍全速 60fps 样式写）
+      animationFrame = playing && document.visibilityState === 'visible' && currentTime < lineEndTime ? requestAnimationFrame(tick) : null
     }
 
     const syncClock = () => {
@@ -106,7 +107,7 @@ export default function ProgressiveGlyphText({
       anchorWallTime = performance.now()
       playing = snapshot.isPlaying
       updateFill(anchorTime + timeOffset)
-      if (playing && animationFrame === null && anchorTime + timeOffset < lineEndTime) {
+      if (playing && animationFrame === null && anchorTime + timeOffset < lineEndTime && document.visibilityState === 'visible') {
         animationFrame = requestAnimationFrame(tick)
       }
     }
@@ -114,8 +115,15 @@ export default function ProgressiveGlyphText({
     fillRefs.current.length = glyphs.length
     syncClock()
     const unsubscribe = playbackTimeStore.subscribe(syncClock)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && playing && animationFrame === null) {
+        animationFrame = requestAnimationFrame(tick)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       unsubscribe()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       if (animationFrame !== null) cancelAnimationFrame(animationFrame)
     }
   }, [glowColor, glyphs, playbackTimeStore, timeOffset])

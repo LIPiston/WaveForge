@@ -1408,7 +1408,7 @@ export default function ArtistDetailModal({
                   </div>
                 ) : albums.length > 0 ? (
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                    {albums.map((album) => (
+                    {albums.slice(0, 100).map((album) => (
                       <ArtistAlbumCard
                         key={`album-${album.platform}-${album.mid || album.id}`}
                         album={album}
@@ -1436,7 +1436,7 @@ export default function ArtistDetailModal({
                   </div>
                 ) : mvs.length > 0 ? (
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                    {mvs.map((mv, index) => (
+                    {mvs.slice(0, 100).map((mv, index) => (
                       <ArtistMvCard
                         key={`mv-${mv.platform}-${mv.id}-${index}`}
                         mv={mv}

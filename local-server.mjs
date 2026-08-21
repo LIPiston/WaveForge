@@ -1292,6 +1292,12 @@ async function isBlockedFetchUrl(rawUrl) {
 }
 
 // 图片代理（解决防盗链和CORS）
+// 封面内存缓存：同一 URL 不重复请求上游。大歌单滚动浏览/反复进入歌单时，
+// 避免几千个封面请求反复打穿代理与上游 CDN。
+const coverCache = new Map()
+const COVER_CACHE_MAX = 800
+const COVER_CACHE_TTL_MS = 6 * 60 * 60 * 1000
+
 app.get('/api/cover', async (req, res) => {
   try {
     const { url, devMode } = req.query
@@ -1312,6 +1318,18 @@ app.get('/api/cover', async (req, res) => {
     }
 
     if (isDev) console.log('Fetching cover:', url)
+
+    // 缓存命中：直接回缓存字节（带 Cache-Control 供浏览器二次命中）
+    const cached = typeof url === 'string' ? coverCache.get(url) : null
+    if (cached && Date.now() - cached.at < COVER_CACHE_TTL_MS) {
+      res.set({
+        'Content-Type': cached.type,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'max-age=3600',
+      })
+      res.send(cached.buffer)
+      return
+    }
 
     // 重试机制：最多尝试3次
     let response
@@ -1382,8 +1400,23 @@ app.get('/api/cover', async (req, res) => {
       return
     }
 
-    // 流式转发（保留 Content-Length 预检 + 实际字节数兜底，不整读进内存）
-    streamProxyImage(response, res, 'Cover', 'Cover too large')
+    // 读取字节并写入缓存（≤10MB 才缓存），再返回给浏览器
+    const contentType = response.headers.get('content-type') || 'image/jpeg'
+    const arrayBuffer = await response.arrayBuffer()
+    const buf = Buffer.from(arrayBuffer)
+    if (typeof url === 'string' && buf.length <= 10 * 1024 * 1024) {
+      if (coverCache.size >= COVER_CACHE_MAX) {
+        const oldestKey = coverCache.keys().next().value
+        coverCache.delete(oldestKey)
+      }
+      coverCache.set(url, { buffer: buf, type: contentType, at: Date.now() })
+    }
+    res.set({
+      'Content-Type': contentType,
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'max-age=3600',
+    })
+    res.send(buf)
   } catch (error) {
     console.error('封面代理错误:', error)
     res.status(500).set('Access-Control-Allow-Origin', '*').send('Failed to load cover')
@@ -2243,7 +2276,7 @@ app.get('/api/netease/login/qr/key', async (req, res) => {
 app.get('/api/netease/login/qr/create', async (req, res) => {
   try {
     const { key } = req.query
-    if (!key) {
+    if (typeof key !== 'string' || !key) {
       return res.status(400).json({ error: '请提供key' })
     }
     if (!NeteaseAPI || !NeteaseAPI.login_qr_create) {
@@ -2274,7 +2307,7 @@ app.get('/api/netease/login/qr/create', async (req, res) => {
 app.get('/api/netease/login/qr/check', async (req, res) => {
   try {
     const { key } = req.query
-    if (!key) {
+    if (typeof key !== 'string' || !key) {
       return res.status(400).json({ error: '请提供key' })
     }
     if (!NeteaseAPI || !NeteaseAPI.login_qr_check) {
@@ -2291,8 +2324,9 @@ app.get('/api/netease/login/qr/check', async (req, res) => {
     }
   } catch (error) {
     console.error('检查登录状态错误:', error)
-    // 返回一个默认的等待扫码状态，避免中断轮询
-    res.json({ code: 801, message: '等待扫码' })
+    // 返回「已过期」而非「等待扫码」：网络失败/参数错误时不能让前端无限轮询假装在等待，
+    // 前端会显示「二维码已过期,请点击刷新」让用户手动重试
+    res.json({ code: 800, message: '检查登录状态失败，请刷新二维码' })
   }
 })
 
@@ -2302,8 +2336,12 @@ app.get('/api/netease/login/status', async (req, res) => {
     if (!NeteaseAPI || !NeteaseAPI.login_status) {
       return res.status(500).json({ error: 'API 未初始化' })
     }
-    const result = await NeteaseAPI.login_status({ cookie })
-    res.json(result.body)
+    const result = await NeteaseAPI.login_status({ cookie: typeof cookie === 'string' ? cookie : '' })
+    if (result && result.body) {
+      res.json(result.body)
+    } else {
+      res.status(502).json({ error: '登录状态查询失败' })
+    }
   } catch (error) {
     console.error('获取登录状态错误:', error)
     res.status(500).json({ error: error.message })
