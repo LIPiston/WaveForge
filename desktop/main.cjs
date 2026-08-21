@@ -5976,23 +5976,52 @@ ipcMain.handle('window-minimize', () => {
 // 全部为 false（kiosk 走独立全屏路径且不触发 maximize 事件），导致最大化按钮的第二次
 // 按压被误判为"非全屏"而重新进入全屏——看起来"按了没反应"。自记状态让进入/还原切换始终自洽。
 let mainWindowExpanded = false
+// 进入扩大态前的正常窗口边界：kiosk 退出后 Electron 在 Windows 上可能不恢复原位置/尺寸
+//（停留在左上角或全屏尺寸），还原时显式 setBounds 恢复。
+let mainWindowNormalBounds = null
+
+// 还原分支需要"无条件退出全部扩大形态"：isKiosk()/isFullScreen() 在 kiosk 时序下可能
+// 返回 false，导致按状态判断的恢复被跳过（窗口一直停留在全屏，看起来"缩小没反应"）。
+// 对非对应状态的 setKiosk(false)/setFullScreen(false)/unmaximize() 调用是无害 no-op。
+const restoreMainWindowFromExpanded = () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  try {
+    mainWindow.setKiosk(false)
+    mainWindow.setFullScreen(false)
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    // 显式恢复进入前边界；缺失时退回主屏居中默认尺寸
+    let bounds = mainWindowNormalBounds
+    mainWindowNormalBounds = null
+    if (!bounds) {
+      const { screen } = require('electron')
+      const wa = screen.getPrimaryDisplay().workArea
+      const width = Math.min(1400, wa.width - 80)
+      const height = Math.min(900, wa.height - 80)
+      bounds = {
+        x: wa.x + Math.round((wa.width - width) / 2),
+        y: wa.y + Math.round((wa.height - height) / 2),
+        width,
+        height,
+      }
+    }
+    mainWindow.setBounds(bounds)
+  } catch (error) {
+    console.error('[窗口最大化] 还原失败:', error?.message || error)
+  }
+}
 
 ipcMain.handle('window-maximize', async () => {
   if (!mainWindow || mainWindow.isDestroyed()) return
   if (mainWindowExpanded) {
     // 扩大态 → 还原窗口
     console.log('[窗口最大化] 还原窗口（当前为扩大态）')
-    try {
-      if (mainWindow.isKiosk()) mainWindow.setKiosk(false)
-      if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
-      if (mainWindow.isMaximized()) mainWindow.unmaximize()
-    } catch (error) {
-      console.error('[窗口最大化] 还原失败:', error?.message || error)
-    }
+    restoreMainWindowFromExpanded()
     mainWindowExpanded = false
   } else {
     // 正常窗口 → 按用户设置进入全屏或最大化
     try {
+      // 记录进入前边界，供还原时显式恢复（kiosk 退出后 Electron 可能不恢复原位置/尺寸）
+      mainWindowNormalBounds = mainWindow.getBounds()
       // 从渲染进程读取全屏模式设置
       const fullscreenMode = await mainWindow.webContents.executeJavaScript(`
         (() => {
@@ -6090,6 +6119,8 @@ ipcMain.handle('window-set-fullscreen', (event, fullscreen, kiosk = false) => {
   
   if (mainWindow) {
     if (fullscreen) {
+      // 记录进入前边界（kiosk 退出后 Electron 可能不恢复原位置/尺寸）
+      if (!mainWindowExpanded) mainWindowNormalBounds = mainWindow.getBounds()
       if (kiosk) {
         // 全屏模式（kiosk=true）- 覆盖任务栏
         console.log('[全屏控制] 启用全屏模式（覆盖任务栏）')
@@ -6117,20 +6148,9 @@ ipcMain.handle('window-set-fullscreen', (event, fullscreen, kiosk = false) => {
       }
       mainWindowExpanded = true
     } else {
-      // 退出所有全屏模式
+      // 退出所有全屏模式（不依赖 isKiosk()/isFullScreen() 可能不可靠的查询，无条件恢复）
       console.log('[全屏控制] 退出全屏')
-      if (mainWindow.isKiosk()) {
-        console.log('[全屏控制] 退出 Kiosk 模式')
-        mainWindow.setKiosk(false)
-      }
-      if (mainWindow.isFullScreen()) {
-        console.log('[全屏控制] 退出原生全屏')
-        mainWindow.setFullScreen(false)
-      }
-      if (mainWindow.isMaximized()) {
-        console.log('[全屏控制] 取消最大化')
-        mainWindow.unmaximize()
-      }
+      restoreMainWindowFromExpanded()
       mainWindowExpanded = false
     }
     
