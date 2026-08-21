@@ -506,6 +506,16 @@ function App() {
     if (desktopFusionEnabled) void window.electron?.desktopFusion.setEnabled(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  // 融合穿透的鼠标悬停检测只在桌面模式（DesktopView 内）运行；融合开启且处于其他
+  // 模式（简约播放页/探索/传统）时，应用 UI 铺满全窗、没有可穿透的空区域，
+  // 整窗强制可交互，避免 DesktopView 卸载后窗口残留 click-through（什么都点不了）。
+  // 例如：融合开启时点迷你播放器进播放页，播放页必须可操作。
+  useEffect(() => {
+    if (!desktopFusionEnabled) return
+    if (viewMode !== 'desktop') {
+      window.electron?.desktopFusion?.setInteractive(true)
+    }
+  }, [desktopFusionEnabled, viewMode])
   // 模式切换过渡动画：全屏覆盖掩盖新模式挂载卡顿。to=目标模式，ready=目标内容已就绪，
   // 收起条件 = ready 且 时长 ≥ 最短 3s（慢机 5~10s 加载期间动画无限循环，不会"断片"）。
   const [modeTransition, setModeTransition] = useState<{ to: 'explore' | 'minimal' | 'traditional' | 'desktop'; startedAt: number; ready: boolean } | null>(null)
@@ -2300,11 +2310,9 @@ function App() {
       playbackOriginRef.current = { mode, surface: mode === 'minimal' ? 'home' : 'mode-root' }
       if (mode === 'desktop') setShowHome(false)
       else setShowHome(true)
-      // 离开桌面模式时自动关闭融合穿透：DesktopView 卸载后没有鼠标悬停检测者，
-      // 不关闭会让窗口残留 click-through（什么都点不了）
-      if (mode !== 'desktop' && localStorage.getItem('desktopFusionEnabled') === 'true') {
-        void handleDesktopFusionChange(false)
-      }
+      // 注意：不在此关闭融合穿透——融合开启时跨模式切换不应重建窗口（会中断播放）。
+      // 非桌面模式下由 App 层融合效果强制整窗可交互（见 handleDesktopFusionEffect），
+      // 桌面模式由 DesktopView 的悬停检测负责，穿透状态始终有人接管。
       // 探索→简约 切模式时收回顶部歌词模式下拉框/自定义/箭头提示，避免占位残留
       setShowLyricModePanel(false)
       setShowLyricModeCustomize(false)
