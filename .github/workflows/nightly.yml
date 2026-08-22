@@ -60,14 +60,10 @@ jobs:
           BASE_VERSION=$(node -p "require('./package.json').version")
           NIGHTLY_VERSION="${BASE_VERSION}-nightly.${DATE}"
 
-          # 查找上一个 nightly tag；没有则回退到上一个正式 tag（v*）；都没有取最近 50 条提交
+          # 查找最近一个正式版 tag，changelog 始终覆盖正式版以来的全部提交；没有正式版 tag 时回退到最近 50 条提交
           LAST_NIGHTLY=$(git tag -l 'nightly' --sort=-creatordate | head -1)
-          if [ -n "$LAST_NIGHTLY" ]; then
-            RANGE="${LAST_NIGHTLY}..HEAD"
-          else
-            LAST_STABLE=$(git tag -l 'v*' --sort=-creatordate | head -1)
-            RANGE="${LAST_STABLE:+${LAST_STABLE}..HEAD}"
-          fi
+          LAST_STABLE=$(git tag -l 'v*' --sort=-creatordate | head -1)
+          RANGE="${LAST_STABLE:+${LAST_STABLE}..HEAD}"
 
           # 无新增提交判定（仅当存在上一个 nightly tag 且非 force 时生效）
           HAS_CHANGES="true"
@@ -84,12 +80,12 @@ jobs:
             echo "**版本号：${NIGHTLY_VERSION}（基础 ${BASE_VERSION} + 构建日期，非正式发版，不自动升级版本号）**"
             echo ""
             if [ -n "$RANGE" ]; then
-              echo "## 代码变动（${RANGE}）"
+              echo "## 代码变动（自最近正式版 ${LAST_STABLE} 起）"
               echo ""
               LOG=$(git log $RANGE --no-merges --pretty=format:"- %s (%h)" 2>/dev/null)
               if [ -z "$LOG" ]; then echo "- 无新增提交"; else echo "$LOG"; fi
             else
-              echo "## 代码变动（最近 50 条提交）"
+              echo "## 代码变动（暂无正式版 tag，最近 50 条提交）"
               echo ""
               git log -50 --no-merges --pretty=format:"- %s (%h)"
             fi
