@@ -1,6 +1,7 @@
 # 每日构建（Nightly）：每天北京时间 21:00 自动构建 Android TV + Windows 测试版。
 # - 不 bump 正式版本号，仅在工作区拼 "<基础版本>-nightly.<YYYYMMDD>" 用于产物命名，不推回仓库。
-# - 自动生成 changelog（自上次 nightly tag 以来的提交），打 nightly-YYYYMMDD tag 并发 GitHub 预发布。
+# - 固定使用 nightly tag/release，每次发布前覆盖上一版，GitHub Release 始终只保留一个当前 nightly。
+# - 自动生成 changelog（自上次 nightly tag 以来的提交），发布 GitHub 预发布。
 # - 不写/推 update.json、不发 Gitee —— 不影响正式版检查更新与正式发版流程。
 # 也可在 Actions 页面手动触发（force=true 可忽略「无新增提交」跳过逻辑强制构建）。
 
@@ -8,8 +9,8 @@ name: Nightly Build 每日构建
 
 on:
   schedule:
-    # UTC 13:00 = 北京时间 21:00
-    - cron: '0 13 * * *'
+    # UTC 21:00 = 北京时间 05:00
+    - cron: '0 21 * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -53,14 +54,14 @@ jobs:
         run: |
           # 北京时间日期作为构建标识
           DATE=$(TZ=Asia/Shanghai date +%Y%m%d)
-          NIGHTLY_TAG="nightly-${DATE}"
+          NIGHTLY_TAG="nightly"
 
           # 读取基础版本（package.json），不改仓库，只在工作区拼出 nightly 版本
           BASE_VERSION=$(node -p "require('./package.json').version")
           NIGHTLY_VERSION="${BASE_VERSION}-nightly.${DATE}"
 
           # 查找上一个 nightly tag；没有则回退到上一个正式 tag（v*）；都没有取最近 50 条提交
-          LAST_NIGHTLY=$(git tag -l 'nightly-*' --sort=-creatordate | head -1)
+          LAST_NIGHTLY=$(git tag -l 'nightly' --sort=-creatordate | head -1)
           if [ -n "$LAST_NIGHTLY" ]; then
             RANGE="${LAST_NIGHTLY}..HEAD"
           else
@@ -226,9 +227,9 @@ jobs:
           name: nightly-windows-installer
           path: release/*.exe
 
-  # ---------- 发 tag + 发布 GitHub 预发布 ----------
+  # ---------- 删除旧 nightly + 发布固定 nightly 预发布 ----------
   release:
-    name: 发 tag + 发布 GitHub Pre-release
+    name: 删除旧 nightly + 发布 GitHub Pre-release
     needs: [prepare, build-android, build-windows]
     if: ${{ needs.prepare.outputs.has_changes == 'true' && needs.build-android.result == 'success' && needs.build-windows.result == 'success' }}
     runs-on: ubuntu-latest
@@ -253,22 +254,23 @@ jobs:
           name: nightly-windows-installer
           path: artifacts
 
-      - name: 创建 tag + 发布 Pre-release（已存在则更新，支持手动重跑幂等）
+      - name: 删除上一版固定 nightly（保留 tag，避免破坏变更检测）
         env:
-          NIGHTLY_TAG: ${{ needs.prepare.outputs.nightly_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly -y || echo "没有需要删除的固定 nightly release"
+          git tag -f nightly "$GITHUB_SHA"
+          git push origin refs/tags/nightly --force
+
+      - name: 创建固定 nightly Pre-release
+        env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -la artifacts
-          if gh release view "$NIGHTLY_TAG" >/dev/null 2>&1; then
-            echo "release 已存在，更新产物与 changelog"
-            gh release upload "$NIGHTLY_TAG" artifacts/* --clobber
-            gh release edit "$NIGHTLY_TAG" --notes-file changelog.md --prerelease
-          else
-            gh release create "$NIGHTLY_TAG" \
-              --title "WaveForge Nightly $(echo $NIGHTLY_TAG | sed 's/nightly-//')" \
-              --notes-file changelog.md \
-              --prerelease \
-              --target master \
-              artifacts/*
-          fi
-          echo "已发布 $NIGHTLY_TAG（预发布，不覆盖正式 latest）"
+          gh release create nightly \
+            --title "WaveForge Nightly" \
+            --notes-file changelog.md \
+            --prerelease \
+            --target master \
+            artifacts/*
+          echo "已发布固定 nightly（预发布，不覆盖正式 latest）"
