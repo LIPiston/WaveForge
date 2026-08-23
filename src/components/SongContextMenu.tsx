@@ -12,6 +12,7 @@ import {
   loadFavoriteIdentifiers,
   peekSongFavoriteStatus,
 } from '../services/favoriteStatusService'
+import { addSodaSongToPlaylist, checkSodaLiked, isSodaLoggedIn, setSodaTrackLiked } from '../services/sodaService'
 
 interface SongContextMenuProps {
   show: boolean
@@ -149,6 +150,8 @@ export default function SongContextMenu({
 
   useEffect(() => {
     if (!show || !song) return
+    // 汽水不走通用收藏缓存（getFavoriteUserId 对汽水无正确归属，喜欢状态由下方 checkSodaLiked 单独查询）
+    if (resolvedPlatform === 'soda') return
     const cachedStatus = peekSongFavoriteStatus(song, resolvedPlatform, favoriteUserId)
     setFavoriteStatus(cachedStatus ?? (hideFavoriteAction ? true : null))
     if (!favoriteUserId || cachedStatus !== null) return
@@ -166,6 +169,28 @@ export default function SongContextMenu({
       })
     return () => { cancelled = true }
   }, [favoriteUserId, hideFavoriteAction, resolvedPlatform, show, song])
+
+  // 汽水平台喜欢状态：favoriteStatusService 不覆盖汽水（无对应喜欢列表来源），
+  // 菜单打开且已登录时自行调一次 checkSodaLiked([trackId])，
+  // 用于「我喜欢 / 从喜欢歌单中移除」的显示状态（仅 soda 平台生效，不影响其它平台逻辑）
+  const [sodaLiked, setSodaLiked] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (!show || !song || resolvedPlatform !== 'soda') return
+    const trackId = String(song.mid || song.id)
+    if (!trackId || !isSodaLoggedIn()) {
+      setSodaLiked(null)
+      return
+    }
+    let cancelled = false
+    void checkSodaLiked([trackId])
+      .then(likedMap => {
+        if (!cancelled) setSodaLiked(Boolean(likedMap[trackId]))
+      })
+      .catch(() => {
+        if (!cancelled) setSodaLiked(null)
+      })
+    return () => { cancelled = true }
+  }, [resolvedPlatform, show, song])
 
   useEffect(() => {
     const handleFavoriteChange = (event: Event) => {
@@ -311,7 +336,8 @@ export default function SongContextMenu({
   }
 
   const currentUserId = platform === 'apple' ? '' : (localStorage.getItem(getUserStorageKey(platform)) || '')
-  // 第三方平台（spotify/kugou/soda）操作拦截：未登录提示先登录；已登录 spotify 走官方收藏/加歌单接口
+  // 第三方平台（spotify/kugou/soda）操作拦截：未登录提示先登录；
+  // 已登录 spotify 走官方收藏/加歌单接口，已登录 soda 走 sodaService（喜欢/加歌单）
   const handleThirdPartyAction = (action: 'like' | 'unlike' | 'playlist', playlistId?: string): boolean => {
     const p = resolvedPlatform
     if (!isThirdPartyPlatform(p)) return false
@@ -335,22 +361,55 @@ export default function SongContextMenu({
       }
       return true
     }
+    if (p === 'soda') {
+      // 汽水：trackId 一律取 String(mid || id)；成功后同步本地喜欢状态的显示
+      const sodaTrackId = String(song.mid || song.id)
+      if (action === 'playlist' && playlistId) {
+        void addSodaSongToPlaylist(playlistId, song).then(ok => {
+          showMenuToast(ok ? '已添加到汽水歌单' : '添加到汽水歌单失败', ok ? 'success' : 'error')
+        })
+      } else if (action === 'like') {
+        void setSodaTrackLiked(sodaTrackId, true, song).then(ok => {
+          if (ok) setSodaLiked(true)
+          showMenuToast(ok ? '已加入汽水喜欢' : '喜欢失败，请检查登录状态', ok ? 'success' : 'error')
+        })
+      } else {
+        void setSodaTrackLiked(sodaTrackId, false, song).then(ok => {
+          if (ok) setSodaLiked(false)
+          showMenuToast(ok ? '已从汽水喜欢中移除' : '取消喜欢失败，请检查登录状态', ok ? 'success' : 'error')
+        })
+      }
+      return true
+    }
     showMenuToast('该平台暂不支持此操作', 'info')
     return true
   }
   const ownedPlaylists = userPlaylists.filter((playlist) => {
     if (playlist.isCollected || playlist.isLike) return false
-    if (playlist.platform && playlist.platform !== platform) return false
+    // 显式标注平台的歌单：平台需与菜单平台或当前歌曲平台一致
+    // （汽水歌曲右键时 platform prop 可能仍是浏览页平台，需按 resolvedPlatform 放行汽水歌单）
+    const declaredPlatform = playlist.platform as MusicPlatform | undefined
+    if (declaredPlatform && declaredPlatform !== platform && declaredPlatform !== resolvedPlatform) return false
     const mutationId = String(playlist.dirId || playlist.id)
     if (currentPlaylistId && mutationId === String(currentPlaylistId)) return false
+    // 归属校验按歌单自身平台取对应 userId；未标注平台的歌单沿用菜单平台，行为不变
+    const ownerPlatform = declaredPlatform || platform
     // Apple 资料库歌单无 userId 概念，直接放行
-    if (platform === 'apple') return true
+    if (ownerPlatform === 'apple') return true
     const playlistUserId = playlist.userId == null ? '' : String(playlist.userId)
+    const ownerUserId = ownerPlatform === platform
+      ? currentUserId
+      : (localStorage.getItem(getUserStorageKey(ownerPlatform)) || '')
     // 歌单列表本身来自当前登录用户；旧会话没有落盘 userId 时也应能显示自建歌单。
-    return !playlistUserId || !currentUserId || playlistUserId === currentUserId
+    return !playlistUserId || !ownerUserId || playlistUserId === ownerUserId
   })
-  const favoriteActionIsRemove = favoriteStatus ?? hideFavoriteAction
-  const favoriteStatusLoading = favoriteStatus === null && Boolean(favoriteUserId)
+  // 汽水平台：收藏显示状态以本地 checkSodaLiked 结果为准（favoriteStatus 对汽水恒为空）；
+  // 其它平台沿用通用收藏缓存逻辑，互不影响
+  const isSodaTarget = resolvedPlatform === 'soda'
+  const favoriteActionIsRemove = isSodaTarget ? Boolean(sodaLiked) : (favoriteStatus ?? hideFavoriteAction)
+  const favoriteStatusLoading = isSodaTarget
+    ? (sodaLiked === null && Boolean(String(song.mid || song.id)) && isSodaLoggedIn())
+    : (favoriteStatus === null && Boolean(favoriteUserId))
 
   const menuItems = [
     {

@@ -3174,7 +3174,9 @@ function HomeView({
         onViewArtist={(song) => {
           const songPlatform = song.platform || platform
           const artist = song.artists?.[0]
-          const artistId = songPlatform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
+          // 汽水无艺人 ID，约定传歌手名
+          const artistId = songPlatform === 'soda' ? (artist?.name || artist?.id)
+            : songPlatform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
           if (onOpenArtist && artistId) onOpenArtist(String(artistId), songPlatform)
           setContextMenuVisible(false)
         }}
