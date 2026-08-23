@@ -115,6 +115,17 @@ export interface HardwareAccelerationStatus {
   }>
 }
 
+/** 单目标联通状态结果（最多 8 次，整体超 1 分钟标记 timeout） */
+export interface HostLatencyResult {
+  timeout: boolean
+  total: number
+  loss: number
+  lossRate: number
+  avgLatency: number
+  minLatency: number
+  maxLatency: number
+}
+
 export interface ElectronAPI {
   analysis: AnalysisAPI
   system: {
@@ -293,6 +304,65 @@ export interface ElectronAPI {
       error?: string
     }>
   }
+  /** AI 混音模型（DJTransGAN 仓库 + 预训练权重 + 运行环境）下载/删除管理 */
+  aiModel?: {
+    getStatus: () => Promise<{
+      installed: boolean
+      repoReady: boolean
+      weightsReady: boolean
+      pythonFound: boolean
+      depsReady: boolean
+      engineAvailable: boolean
+      repoDir: string
+    }>
+    download: () => Promise<{ ok: boolean; already?: boolean }>
+    pause: () => Promise<{ ok: boolean }>
+    cancel: () => Promise<{ ok: boolean }>
+    delete: () => Promise<{ ok: boolean; error?: string }>
+    onProgress: (callback: (progress: {
+      status: 'idle' | 'downloading' | 'paused' | 'done' | 'error' | 'cancelled'
+      phase: 'python' | 'deps' | 'repo' | 'weights' | null
+      phaseLabel: string | null
+      phasePercent: number
+      overallPercent: number
+      error: string | null
+      done: boolean
+    }) => void) => () => void
+  }
+  /** 单目标联通状态结果（最多 8 次，整体超 1 分钟标记 timeout） */
+  proxyManager?: {
+    scan: () => Promise<Array<{ host: string; port: number; type: string; latency: number }>>
+    enable: (port: number) => Promise<{ enabled: boolean; proxy: { host: string; port: number; type: string } | null }>
+    disable: () => Promise<{ enabled: boolean; proxy: null }>
+    getState: () => Promise<{ enabled: boolean; proxy: { host: string; port: number; type: string } | null }>
+    setEnabled: (v: boolean) => Promise<{ enabled: boolean; proxy: { host: string; port: number; type: string } | null }>
+    consumeNotice: () => Promise<'startup-unavailable' | null>
+    getLatency: () => Promise<{
+      status: 'testing' | 'done'
+      result: {
+        baidu: HostLatencyResult
+        github: HostLatencyResult
+        google: HostLatencyResult
+      } | null
+    } | null>
+    probe: () => Promise<{
+      status: 'testing' | 'done'
+      result: {
+        baidu: HostLatencyResult
+        github: HostLatencyResult
+        google: HostLatencyResult
+      } | null
+    }>
+    onLatency: (callback: (latency: {
+      status: 'testing' | 'done'
+      result: {
+        baidu: HostLatencyResult
+        github: HostLatencyResult
+        google: HostLatencyResult
+      } | null
+    }) => void) => () => void
+    onNotice: (callback: (notice: { kind: 'disconnected' | 'startup-unavailable' }) => void) => () => void
+  }
   /** AutoMix 渲染进程诊断日志：写入后端 automix-backend.log（便于前后端合并定位） */
   automixLog?: (scope: string, message: string) => Promise<boolean>
   audioDownload: {
@@ -381,12 +451,10 @@ export interface TaskbarWidgetSettings {
   enabled: boolean
   position: 'right' | 'center'
   width: number
-  /** 常规（封面+歌词+进度+上一曲/暂停/下一曲）/ 纯享（只显示当前歌词） */
   mode: 'normal' | 'pure'
-  /** 背景暗化遮罩（用户自定义背景效果） */
   darken: boolean
-  /** 背景高斯模糊（用户自定义背景效果） */
-  blur: boolean
+  darkenLevel: number
+  hideControls: boolean
 }
 
 export interface AirplayDeviceInfo {

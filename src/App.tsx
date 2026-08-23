@@ -22,7 +22,10 @@ import { extractDominantColor, useColorThief } from './hooks/useColorThief'
 import { useAudioPlayer, type AudioGraphHandle } from './hooks/useAudioPlayer'
 import { airplayController } from './services/airplayController'
 import { useAudioAnalyzer } from './hooks/useAudioAnalyzer'
+import { useAppleDynamicCover } from './hooks/useAppleDynamicCover'
+import { FOLIA_STYLES } from './vendor/folia/stylesMeta'
 import { useAudioPulseStore, type AudioPulseStore } from './hooks/useAudioPulse'
+import { useAutoHideCursor } from './hooks/useAutoHideCursor'
 import { Song, getSongUrl, invalidateSongUrl, getLyrics, getProxiedImageUrl, getLocalAlbumIdentifier, resolveSongAlbumIdentifier, LyricLine } from './services/musicApi'
 import type { MusicPlatform } from './services/platforms'
 import { isPlatformVisible, platformLabel } from './services/platforms'
@@ -42,7 +45,7 @@ import { fetchExploreRecommendationBatch } from './services/exploreApi'
 import { scheduleBackgroundPrefetch } from './services/backgroundPrefetch'
 import { getDesktopSpectrumConsumerCount, subscribeDesktopSpectrumConsumers } from './services/desktopSpectrum'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Settings } from 'lucide-react'
+import { Settings, Sparkles, Image as ImageIcon } from 'lucide-react'
 import { getDeterministicNextIndex, getUpcomingIndices } from './audio/PlaybackQueue'
 import type { TrackAnalysis, TransitionCommit, TransitionDebugInfo, TransitionState, TransitionStrategy } from './audio/types'
 import type { PlaybackTimeStore } from './audio/playbackTimeStore'
@@ -97,6 +100,7 @@ const loadTranslationDisplay = () => import('./components/TranslationDisplay')
 const loadWallpaperLyrics = () => import('./components/WallpaperLyrics')
 const loadGloriousLyrics = () => import('./components/GloriousLyrics')
 const loadMultidimensionalLyrics = () => import('./components/MultidimensionalLyrics')
+const loadFoliaLyricsPage = () => import('./components/FoliaLyricsPage')
 const loadModengPlayer = () => import('./components/ModengPlayerPage')
 const loadBilibiliMvPlayer = () => import('./components/BilibiliMvPlayer')
 const loadBilibiliMvBackground = () => import('./components/BilibiliMvBackground')
@@ -107,6 +111,7 @@ const LazyTranslationDisplay = lazy(loadTranslationDisplay)
 const LazyWallpaperLyrics: any = lazy(loadWallpaperLyrics)
 const LazyGloriousLyrics: any = lazy(loadGloriousLyrics)
 const LazyMultidimensionalLyrics = lazy(loadMultidimensionalLyrics)
+const LazyFoliaLyricsPage: any = lazy(loadFoliaLyricsPage)
 const LazyModengPlayer: any = lazy(loadModengPlayer)
 const LazyBilibiliMvPlayer: any = lazy(loadBilibiliMvPlayer)
 const LazyBilibiliMvBackground: any = lazy(loadBilibiliMvBackground)
@@ -247,12 +252,14 @@ const buildDesktopLyricsWithInterludes = (lyrics: LyricLine[]): DesktopLyricLine
 }
 
 type CoverPulseMode = 'dynamic' | 'soft' | 'restless'
-type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'multidimensional' | 'modeng' | 'video'
+type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'multidimensional' | 'modeng' | 'video' | 'folia'
 
 const LYRIC_MODE_VISIBILITY_KEY = 'waveforge_visible_lyric_modes'
 const LYRIC_MODE_MODENG_MIGRATED_KEY = 'waveforge_modeng_mode_migrated'
 const LYRIC_MODE_VIDEO_MIGRATED_KEY = 'waveforge_video_mode_migrated'
-const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional', 'modeng', 'video']
+/** Folia 歌词样式（vendored Project Folia 可视化器）的持久化 key 与默认样式 */
+const FOLIA_STYLE_KEY = 'waveforge_folia_style'
+const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional', 'modeng', 'video', 'folia']
 const LYRIC_MODE_NAMES: Record<LyricDisplayMode, string> = {
   modern: '现代',
   immersive: '沉浸式',
@@ -261,6 +268,7 @@ const LYRIC_MODE_NAMES: Record<LyricDisplayMode, string> = {
   multidimensional: '多维',
   modeng: '摩登',
   video: '看歌',
+  folia: 'Folia',
 }
 
 function loadVisibleLyricModes(): LyricDisplayMode[] {
@@ -611,6 +619,7 @@ function App() {
         loadWallpaperLyrics(),
         loadGloriousLyrics(),
         loadMultidimensionalLyrics(),
+        loadFoliaLyricsPage(),
       ])
     }, { timeout: 2000 })
     return () => window.cancelIdleCallback(idleId)
@@ -677,6 +686,10 @@ function App() {
   const [lyrics, setLyrics] = useState<LyricLine[]>([])
   const [appleCoverUrl, setAppleCoverUrl] = useState<string | null>(null)
   const [lyricOffset, setLyricOffset] = useState(() => Number(localStorage.getItem('lyricOffset')) || 0)
+  const [lyricScrollTransitionStyle, setLyricScrollTransitionStyle] = useState<'classic' | 'amodern'>(() => {
+    const saved = localStorage.getItem('lyricScrollTransitionStyle')
+    return saved === 'amodern' ? 'amodern' : 'classic'
+  })
   const [playlist, setPlaylist] = useState<Song[]>([])
   const playlistRef = useRef<Song[]>([])
   const [currentIndex, setCurrentIndex] = useState(-1)
@@ -860,7 +873,7 @@ function App() {
   const [isPureMusic, setIsPureMusic] = useState(false)
   const [lyricDisplayMode, setLyricDisplayMode] = useState<LyricDisplayMode>(() => {
     const saved = localStorage.getItem('lyricDisplayMode')
-    return saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' || saved === 'multidimensional' ? saved : 'modern'
+    return saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' || saved === 'multidimensional' || saved === 'modeng' || saved === 'video' || saved === 'folia' ? saved : 'modern'
   })
   // 摩登模式状态 ref：resolveAppleCover 等回调读取最新值（AM 封面仅摩登使用）
   const lyricDisplayModeRef = useRef(lyricDisplayMode)
@@ -871,6 +884,29 @@ function App() {
   })
   const [showLyricModePanel, setShowLyricModePanel] = useState(false)
   const [showLyricModeCustomize, setShowLyricModeCustomize] = useState(false)
+  // 歌词面板第二页：Folia 歌词样式（vendored Project Folia 可视化器，12 种样式）
+  const [lyricPanelPage, setLyricPanelPage] = useState<'waveforge' | 'folia'>('waveforge')
+  const [foliaStyle, setFoliaStyle] = useState<string>(() => {
+    const saved = localStorage.getItem(FOLIA_STYLE_KEY)
+    return saved || 'classic'
+  })
+  // Folia 是否使用自己的背景（latent 封面取色 shader）：关闭后改用 WaveForge 封面背景
+  // （folia 层透明露出 App 的封面背景层）。默认开启，尊重喜欢 Folia 原生背景的用户。
+  const [foliaBackgroundEnabled, setFoliaBackgroundEnabled] = useState(() => {
+    const saved = localStorage.getItem('waveforge_folia_background')
+    return saved === null || saved !== 'false'
+  })
+  const handleFoliaBackgroundToggle = () => {
+    setFoliaBackgroundEnabled((prev) => {
+      const next = !prev
+      localStorage.setItem('waveforge_folia_background', JSON.stringify(next))
+      return next
+    })
+  }
+  // 打开歌词面板时按当前模式定位页：Folia 页模式直接落在第二页（样式页）
+  useEffect(() => {
+    if (showLyricModePanel) setLyricPanelPage(lyricDisplayModeRef.current === 'folia' ? 'folia' : 'waveforge')
+  }, [showLyricModePanel])
   const [visibleLyricModes, setVisibleLyricModes] = useState<LyricDisplayMode[]>(() => {
     const loaded = loadVisibleLyricModes()
     return loaded.includes(lyricDisplayMode) ? loaded : [...loaded, lyricDisplayMode]
@@ -1036,6 +1072,14 @@ function App() {
 
   // 当前背景是否为 MV 视频（供 QuickSettings 的模糊滑块切换两套值：MV 激活时调 MV 模糊，封面时调封面模糊）
   const mvBackgroundActive = Boolean(currentSong) && lyricDisplayMode !== 'video' && mvBackgroundEnabled && !mvBackgroundFallback
+  // Apple Music 动态封面（图层叠加式）：未开启/无动态封面/查询失败时为 null，封面永远回退平台静态图
+  const appleDynamicCover = useAppleDynamicCover({
+    title: currentSong?.name || '',
+    artist: (currentSong?.artists || []).map((artist: { name: string }) => artist.name).join(', '),
+    album: currentSong?.album?.name || '',
+    duration: currentSong?.duration,
+    trackKey: currentSong?.id || currentSong?.mid || '',
+  })
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('mvBackgroundActiveChanged', { detail: mvBackgroundActive }))
   }, [mvBackgroundActive])
@@ -1045,6 +1089,33 @@ function App() {
     window.addEventListener('mvBackgroundActiveQuery', onQuery as EventListener)
     return () => window.removeEventListener('mvBackgroundActiveQuery', onQuery as EventListener)
   }, [mvBackgroundActive])
+
+  // 代理自动配置通知：运行中代理断开 / 启动时未检测到代理端口 → 弹 toast
+  useEffect(() => {
+    // 延迟派发：挂载早期 showToast 监听器尚未注册，直接派发会被丢弃
+    const toast = (message: string) => {
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('showToast', { detail: { message, type: 'info' } }))
+      }, 0)
+    }
+    const off = window.electron?.proxyManager?.onNotice?.((notice) => {
+      if (notice.kind === 'disconnected') toast('检测到代理断开，已为您关闭自动代理')
+    })
+    // 启动提示：主进程的端口检测可能在渲染进程挂载后才完成，轮询几次兜底
+    let attempts = 0
+    const tryConsume = () => {
+      void window.electron?.proxyManager?.consumeNotice?.().then((notice) => {
+        if (notice === 'startup-unavailable') {
+          toast('由于您上次关闭时为自动代理，本次启动检测到无代理端口，已为您关闭自动代理功能')
+        } else if (attempts < 8) {
+          attempts += 1
+          window.setTimeout(tryConsume, 800)
+        }
+      }).catch(() => {})
+    }
+    tryConsume()
+    return () => off?.()
+  }, [])
   // 切歌时重置 MV 背景回退标记：上一首未找到 MV 不影响下一首重新匹配（回退期间 MV 层已卸载，无法自行上报）
   useEffect(() => {
     setMvBackgroundFallback(false)
@@ -1054,6 +1125,8 @@ function App() {
     () => (currentSong?.artists || []).map((artist: any) => artist.name),
     [currentSong],
   )
+  // 稳定的歌手名拼接串（folia 等歌词组件按值比较避免每秒重渲染）
+  const currentSongArtistLabel = useMemo(() => currentSongArtists.join(', '), [currentSongArtists])
   const isPlaybackPage = viewMode === 'minimal' && Boolean(currentSong) && !showHome
   const canShowUpNextOnCurrentSurface = isPlaybackPage || showUpNextOutsidePlayer
 
@@ -1326,6 +1399,14 @@ function App() {
     }
     window.addEventListener('lyricOffsetChanged', handleLyricOffsetChange)
     return () => window.removeEventListener('lyricOffsetChanged', handleLyricOffsetChange)
+  }, [])
+
+  useEffect(() => {
+    const handleLyricScrollTransitionStyleChange = (event: Event) => {
+      setLyricScrollTransitionStyle((event as CustomEvent<'classic' | 'amodern'>).detail)
+    }
+    window.addEventListener('lyricScrollTransitionStyleChanged', handleLyricScrollTransitionStyleChange)
+    return () => window.removeEventListener('lyricScrollTransitionStyleChanged', handleLyricScrollTransitionStyleChange)
   }, [])
 
   useEffect(() => {
@@ -2479,26 +2560,33 @@ function App() {
     setShowLyricModeCustomize(false)
     setShowLyricModeArrowHint(false)
 
-    // 切到看歌：记录音频位置 + 引擎淡出（无缝拼接：前段音源音频 → 后段视频音频）
+    // 切到看歌：记录音频位置 + 停引擎（视频接管音频输出）
     if (mode === 'video') {
       const engineEl = audioPlayerRef.current?.getAudioElement?.()
       const pos = Number(engineEl?.currentTime) || 0
       setWatchSyncSeek(pos > 0 ? pos : 0)
       watchEngineVolumeRef.current = engineEl?.volume ?? 1
-      // MV 背景正在播同一个视频 → 复用其已加载的视频流，看歌无需重新缓冲
+      watchEngineMutedRef.current = engineEl?.muted ?? false
       const mvState = mvBackgroundStateRef.current
       setWatchInitialVideo(mvState ? { ...mvState, currentTime: pos > 0 ? pos : 0 } : null)
-      if (engineEl && !engineEl.paused) {
-        // 淡出完成后立即暂停引擎：加载期间引擎不再走表，视频从"点击时刻"的位置续播，
-        // 两侧进度完全一致（此前引擎静音继续走表，视频起播点落后加载耗时 = 进度差/断开感）。
-        void fadeElementVolume(engineEl, engineEl.volume, 0, 200).then(() => {
-          const current = audioPlayerRef.current?.getAudioElement?.()
-          if (current && !current.paused) {
-            watchPausedEngineRef.current = true
-            audioPlayerRef.current?.togglePlay()
-          }
-        })
+      // 立即暂停引擎 + 直设音量为 0（用 pause() 而非 togglePlay()——toggle 是双向的，
+      // 引擎可能已被其他路径暂停，toggle 反而会恢复播放 → 双重奏）
+      watchPausedEngineRef.current = true
+      if (engineEl) {
+        engineEl.volume = 0
+        if (!engineEl.paused) engineEl.pause()
       }
+      // 看歌模式视频接管时间线：中止任何在途的音频过渡并清掉过渡视觉状态，
+      // 否则 transitionToTrack/预载会残留到切回歌词模式后，把下一首的 MV 叠到 MV 背景上
+      audioPlayerRef.current?.cancelTransition?.('enter watch mode', true)
+      clearTransitionResetTimer()
+      setIsTransitioning(false)
+      setTransitionProgress(0)
+      setTransitionFromTrack(null)
+      setTransitionToTrack(null)
+      setTransitionFromAccentColor(null)
+      setTransitionToAccentColor(null)
+      watchResumeHeldAtEndRef.current = false
       window.requestAnimationFrame(() => {
         setLyricDisplayMode(mode)
         localStorage.setItem('lyricDisplayMode', mode)
@@ -2511,29 +2599,24 @@ function App() {
     if (lyricDisplayModeRef.current === 'video') {
       const resumeTime = watchPlayerRef.current?.getCurrentTime?.() ?? watchVideoStateRef.current.time
       void (async () => {
-        try {
-          await watchPlayerRef.current?.fadeOutAudio?.()
-        } catch {
-          // 淡出失败不阻断切换
-        }
+        try { await watchPlayerRef.current?.fadeOutAudio?.() } catch { /* 淡出失败不阻断 */ }
         const engineEl = audioPlayerRef.current?.getAudioElement?.()
         if (engineEl && resumeTime > 0) {
           const dur = Number(engineEl.duration) || 0
-          engineEl.currentTime = Math.max(0, Math.min(resumeTime, dur > 0 ? dur - 0.2 : resumeTime))
+          if (dur > 0 && resumeTime >= dur - 0.5) {
+            // 看歌视频已播过歌曲音频末尾（MV 常比歌长）：续播位不能钳到 dur-0.2——
+            // 那会让引擎起播 0.2s 就 ended → 自动切到下一首（用户切个模式歌就被顶掉）。
+            // 停在歌曲末尾保持暂停，等用户手动播放/切歌（watchResumeHeldAtEndRef 让恢复 effect 跳过自动 play）。
+            engineEl.currentTime = Math.max(0, dur - 0.5)
+            watchResumeHeldAtEndRef.current = true
+          } else {
+            engineEl.currentTime = Math.max(0, Math.min(resumeTime, dur > 0 ? dur - 0.2 : resumeTime))
+          }
         }
         window.requestAnimationFrame(() => {
           setLyricDisplayMode(mode)
           localStorage.setItem('lyricDisplayMode', mode)
           window.dispatchEvent(new CustomEvent('lyricDisplayModeChanged', { detail: mode }))
-          // 引擎被 watchPausedEngineRef effect 恢复后，从 0 淡入到进入看歌前的音量。
-          // 不去掉 !paused 守卫：恢复竞态下引擎可能仍未 resume，守卫会跳过淡入导致引擎永远 0 音量；
-          // 对暂停元素设置音量同样安全（恢复播放时音量生效）。
-          window.setTimeout(() => {
-            const el = audioPlayerRef.current?.getAudioElement?.()
-            if (el) {
-              void fadeElementVolume(el, 0, Math.max(0.01, watchEngineVolumeRef.current), 200)
-            }
-          }, 60)
         })
       })()
       return
@@ -2545,7 +2628,14 @@ function App() {
       window.dispatchEvent(new CustomEvent('lyricDisplayModeChanged', { detail: mode }))
     })
   }
-  
+
+  /** 选择 Folia 歌词样式（第二页样式卡）：保存样式；未在 Folia 页时同时切入 */
+  const handleFoliaStyleSelect = (style: string) => {
+    setFoliaStyle(style)
+    localStorage.setItem(FOLIA_STYLE_KEY, style)
+    if (lyricDisplayModeRef.current !== 'folia') handleLyricDisplayModeChange('folia')
+  }
+
   // 同步其他视图修改的歌词模式可见性设置
   useEffect(() => {
     const handleLyricModesVisibilityChanged = () => setVisibleLyricModes(loadVisibleLyricModes())
@@ -2769,11 +2859,21 @@ function App() {
   const handleSongSelect = async (song: Song, playlistFromSource?: Song[], origin?: PlaybackOrigin) => {
     // 同步关闭所有覆盖层/详情弹窗（在任何 await 之前）：点歌即切播放页，防止
     // 艺人/专辑/歌单详情弹窗残留盖在播放页上面无法关闭
+    // （含整屏 backdrop-filter 的弹窗：退出节点在播放页挂载时会被卡住不卸载）
     setShowSearch(false)
+    setShowProfile(false)
     setShowArtistDetail(false)
     setShowAlbumDetail(false)
     setShowSongDetail(false)
     setShowPlaylist(false)
+    setShowLogin(false)
+    setShowCommentModal(false)
+    setShowRemote(false)
+    setShowSettings(false)
+    setShowMixingStudio(false)
+    setShowLyricModePanel(false)
+    setShowLyricModeCustomize(false)
+    setShowDeviceControl(false)
     setSelectedArtistId(null)
     setSelectedArtistAlbumId(undefined)
     setSelectedAlbumId(null)
@@ -2788,13 +2888,15 @@ function App() {
           ? loadWallpaperLyrics()
           : lyricDisplayMode === 'glorious'
             ? loadGloriousLyrics()
-            : lyricDisplayMode === 'multidimensional'
-              ? loadMultidimensionalLyrics()
-              : lyricDisplayMode === 'modeng'
-                ? loadModengPlayer()
-                : lyricDisplayMode === 'video'
-                  ? loadBilibiliMvPlayer()
-                  : Promise.resolve(),
+              : lyricDisplayMode === 'multidimensional'
+                ? loadMultidimensionalLyrics()
+                : lyricDisplayMode === 'folia'
+                  ? loadFoliaLyricsPage()
+                  : lyricDisplayMode === 'modeng'
+                    ? loadModengPlayer()
+                    : lyricDisplayMode === 'video'
+                      ? loadBilibiliMvPlayer()
+                      : Promise.resolve(),
     ])
     const inferredOrigin: PlaybackOrigin = origin
       ? { ...origin, mode: origin.mode || viewMode }
@@ -3686,6 +3788,12 @@ function App() {
           albumId: getLocalAlbumIdentifier(normalizedSong, platform) || undefined,
           albumCover: normalizedSong.album?.picUrl || undefined,
         })
+        // 看歌模式下引擎静默：视频接管音频，加载后立即暂停避免双重奏
+        if (started && lyricDisplayModeRef.current === 'video') {
+          const engineEl = audioPlayerRef.current?.getAudioElement?.()
+          if (engineEl) { engineEl.volume = 0; engineEl.pause() }
+          watchPausedEngineRef.current = true
+        }
       } catch (firstPlaybackError) {
         if (!isLatestLoad()) return
         // Signed playback URLs can expire or be rejected by the CDN before the
@@ -3723,6 +3831,11 @@ function App() {
           albumId: getLocalAlbumIdentifier(normalizedSong, platform) || undefined,
           albumCover: normalizedSong.album?.picUrl || undefined,
         })
+        if (started && lyricDisplayModeRef.current === 'video') {
+          const engineEl = audioPlayerRef.current?.getAudioElement?.()
+          if (engineEl) { engineEl.volume = 0; engineEl.pause() }
+          watchPausedEngineRef.current = true
+        }
       }
       if (!started || !isLatestLoad()) return
       
@@ -3878,6 +3991,9 @@ function App() {
   }
 
   // 看歌模式协调：视频播放时暂停音频引擎（视频为唯一时间线），视频让位/切走时恢复
+  const playbackSurfaceRef = useRef<HTMLDivElement>(null)
+  // 播放页（各歌词界面）：鼠标本体无操作 8s 自动渐隐，一动立即显示
+  const playbackCursorHideRef = useAutoHideCursor(8000)
   const watchPlayerRef = useRef<{
     togglePlay: () => boolean
     seekTo: (seconds: number) => void
@@ -3888,6 +4004,7 @@ function App() {
   const [watchVideoActive, setWatchVideoActive] = useState(false)
   /** 进入看歌时引擎音量（切回歌词模式时淡入到该值） */
   const watchEngineVolumeRef = useRef(1)
+  const watchEngineMutedRef = useRef(false)
   /** MV 背景当前播放的视频状态（切到看歌时复用已加载的流，避免重新缓冲卡顿） */
   const mvBackgroundStateRef = useRef<{ bvid: string; cid: number; videoUrl: string; cacheKey: string } | null>(null)
   const [watchInitialVideo, setWatchInitialVideo] = useState<{ bvid: string; cid: number; videoUrl: string; cacheKey: string; currentTime: number } | null>(null)
@@ -3917,6 +4034,11 @@ function App() {
   /** 切到看歌时的音频续播位置（秒） */
   const [watchSyncSeek, setWatchSyncSeek] = useState(0)
   const watchPausedEngineRef = useRef(false)
+  /**
+   * 切出看歌时视频进度已越过歌曲音频末尾（MV 往往比歌长）：引擎停在歌曲末尾保持暂停，
+   * 不再起播触发 ended → 自动切下一首（用户切个模式歌就被顶掉）。恢复 effect 据此跳过自动 play。
+   */
+  const watchResumeHeldAtEndRef = useRef(false)
 
   const handlePlayPause = useCallback(() => {
     // 看歌模式：有活动视频时由视频接管播放/暂停（引擎保持暂停，避免双声）
@@ -3929,24 +4051,25 @@ function App() {
 
   useEffect(() => {
     if (lyricDisplayMode !== 'video') {
-      // 切出看歌模式：若引擎是因视频而暂停，恢复出声
-      if (watchPausedEngineRef.current && !isPlaying) {
+      // 切出看歌：恢复引擎音量 + 播放（引擎在进入看歌时已被淡出回调暂停）
+      if (watchPausedEngineRef.current) {
         watchPausedEngineRef.current = false
-        audioPlayerRef.current.togglePlay()
+        const engineEl = audioPlayerRef.current?.getAudioElement?.()
+        if (engineEl) {
+          engineEl.volume = Math.max(0.01, watchEngineVolumeRef.current)
+          engineEl.muted = watchEngineMutedRef.current
+          // 视频进度越过歌曲末尾时停在末尾保持暂停（不自动切下一首），跳过自动起播
+          if (!watchResumeHeldAtEndRef.current && engineEl.paused) void engineEl.play().catch(() => {})
+        }
       }
       return
     }
+    // 进入看歌：只标记，不碰引擎（停顿由 handleLyricDisplayModeChange 的淡出异步完成；
+    // 此处若再调 togglePlay 会与淡出回调形成双次 toggle → 引擎反被恢复播放）
     if (watchVideoActive) {
-      if (isPlaying) {
-        watchPausedEngineRef.current = true
-        audioPlayerRef.current.togglePlay()
-      }
-    } else if (watchPausedEngineRef.current && !isPlaying) {
-      // 视频让位（搜索/兜底/切歌）→ 恢复音频引擎继续听
-      watchPausedEngineRef.current = false
-      audioPlayerRef.current.togglePlay()
+      watchPausedEngineRef.current = true
     }
-  }, [lyricDisplayMode, watchVideoActive, isPlaying])
+  }, [lyricDisplayMode, watchVideoActive])
 
   // ===== 桌面播放器：独立置顶小窗口的状态桥接 =====
   const isPlayingRef = useRef(isPlaying)
@@ -5379,6 +5502,8 @@ function App() {
 
   // 设置面板常驻挂载，关闭回调需稳定引用以配合 memo 跳过播放中的重渲染
   const closeSettings = useCallback(() => setShowSettings(false), [])
+  // 稳定引用：内联箭头函数会击穿 memo(SettingsPanel)，导致常驻挂载的巨型面板跟着 App 重渲染
+  const openRemote = useCallback(() => setShowRemote(true), [])
 
   // 歌曲详情 / 相似歌曲弹窗关闭回调需稳定引用以配合 memo 跳过播放中的重渲染
   const closeSongDetail = useCallback(() => setShowSongDetail(false), [])
@@ -5876,7 +6001,7 @@ function App() {
             backgroundBlur={backgroundBlur}
           />
         )}
-        {currentSong && lyricDisplayMode !== 'video' && (
+        {currentSong && (
           <LazyBilibiliMvBackground
             songTitle={currentSong.name}
             songArtists={currentSongArtists}
@@ -5888,6 +6013,10 @@ function App() {
             playerTheme={playerTheme}
             upcomingSongs={watchUpcomingSongs}
             enabled={mvBackgroundEnabled && !mvBackgroundFallback}
+            // 看歌模式：常驻挂载但隐藏（display:none + 暂停），保留已缓冲的视频——
+            // 切回歌词模式直接续播同一视频，不再重新搜索/拉流（与看歌复用同一数据源）
+            hidden={lyricDisplayMode === 'video'}
+            lyrics={lyrics}
             blur={mvBackgroundBlur}
             transitionToTrack={transitionToTrack}
             // 封面过渡只在过渡动画窗口内叠加（用户要求：从过渡动画开始，不是 automix 介入），
@@ -5953,7 +6082,7 @@ function App() {
           <LazySettingsPanel {...({
           show: showSettings,
           onClose: closeSettings,
-          onOpenRemote: () => setShowRemote(true),
+          onOpenRemote: openRemote,
           neteaseLoggedIn,
           neteaseUsername,
           onNeteaseLogin: viewCallbacks.onNeteaseLogin,
@@ -6175,6 +6304,7 @@ function App() {
               transition={{ duration: 0.46, ease: [0.22, 1, 0.36, 1] }}
               className="absolute inset-0 w-full h-full flex flex-col"
               style={{ willChange: 'transform, opacity, filter' }}
+              ref={(el) => { playbackSurfaceRef.current = el; playbackCursorHideRef(el) }}
               data-waveforge-playback-page="true"
             >
               <LazyPlaybackRadialMenu
@@ -6287,48 +6417,136 @@ function App() {
                         <div className={`relative h-[22vh] backdrop-blur-xl overflow-hidden ${playerTheme === 'dark' ? 'bg-black/40' : 'bg-white/55'}`}>
                           <div className="h-full flex flex-col items-center justify-center px-8 py-6">
                             <div className="w-full max-w-5xl flex flex-col items-center h-full">
-                              <h2 className={`text-xl font-bold mb-4 text-center ${playerTheme === 'dark' ? 'text-white' : 'text-black/90'}`}>歌词显示</h2>
-                              <div
-                                className="grid w-full gap-3"
-                                style={{ gridTemplateColumns: `repeat(${effectiveVisibleLyricModes.length}, minmax(0, 1fr))` }}
-                              >
-                                {([
-                                  ['modern', '现代', 'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)'],
-                                  ['immersive', '沉浸式', 'linear-gradient(135deg, #1e3a5f 0%, #0f1c2e 50%, #0a0a0a 100%)'],
-                                  ['wallpaper', '墙纸', `repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 18px), linear-gradient(135deg, ${dominantColor || '#6c5cff'} 0%, #18171c 58%, #09090b 100%)`],
-                                  ['glorious', '辉煌', `linear-gradient(118deg, #080713 0%, ${dominantColor || '#6f5cff'} 50%, #090911 78%, #101522 100%)`],
-                                  ['multidimensional', '多维', `linear-gradient(145deg, #05060c 0%, ${dominantColor || '#6657ff'} 48%, #0b1b2a 72%, #030409 100%)`],
-                                  ['modeng', '摩登', `linear-gradient(120deg, #3a3a3c 0%, #232325 45%, #101012 100%)`],
-                                  ['video', '看歌', `linear-gradient(120deg, #f8a5c2 0%, #fb7299 45%, #2d1b3d 100%)`],
-                                ] as const)
-                                  .filter(([mode]) => effectiveVisibleLyricModes.includes(mode))
-                                  .map(([mode, label, background]) => (
-                                    <motion.button
-                                      type="button"
-                                      key={mode}
-                                      whileHover={{ scale: 1.05 }}
-                                      whileTap={{ scale: 0.95 }}
-                                      onClick={() => handleLyricDisplayModeChange(mode)}
-                                      className="relative h-24 min-w-0 rounded-xl overflow-hidden cursor-pointer border-2 transition-all"
-                                      style={{
-                                        background,
-                                        borderColor: lyricDisplayMode === mode ? '#fff' : 'rgba(255,255,255,0.2)',
-                                        boxShadow: lyricDisplayMode === mode ? `0 0 18px ${(dominantColor || '#ffffff')}35` : 'none',
-                                      }}
-                                    >
-                                      <div className="absolute inset-0 flex items-center justify-center">
-                                        <span className="text-white font-medium text-base">{label}</span>
-                                      </div>
-                                      {lyricDisplayMode === mode && (
-                                        <div className="absolute top-2 right-2 bg-white/20 backdrop-blur-sm px-2 py-1 rounded-full text-xs text-white">
-                                          当前
-                                        </div>
-                                      )}
-                                    </motion.button>
-                                  ))}
-                              </div>
+                              {lyricPanelPage === 'waveforge' ? (
+                                <>
+                                  <h2 className={`text-xl font-bold mb-4 text-center ${playerTheme === 'dark' ? 'text-white' : 'text-black/90'}`}>歌词显示</h2>
+                                  <div
+                                    className="grid w-full gap-3"
+                                    style={{ gridTemplateColumns: `repeat(${effectiveVisibleLyricModes.length}, minmax(0, 1fr))` }}
+                                  >
+                                    {([
+                                      ['modern', '现代', 'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)'],
+                                      ['immersive', '沉浸式', 'linear-gradient(135deg, #1e3a5f 0%, #0f1c2e 50%, #0a0a0a 100%)'],
+                                      ['wallpaper', '墙纸', `repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 18px), linear-gradient(135deg, ${dominantColor || '#6c5cff'} 0%, #18171c 58%, #09090b 100%)`],
+                                      ['glorious', '辉煌', `linear-gradient(118deg, #080713 0%, ${dominantColor || '#6f5cff'} 50%, #090911 78%, #101522 100%)`],
+                                      ['multidimensional', '多维', `linear-gradient(145deg, #05060c 0%, ${dominantColor || '#6657ff'} 48%, #0b1b2a 72%, #030409 100%)`],
+                                      ['modeng', '摩登', `linear-gradient(120deg, #3a3a3c 0%, #232325 45%, #101012 100%)`],
+                                      ['video', '看歌', `linear-gradient(120deg, #f8a5c2 0%, #fb7299 45%, #2d1b3d 100%)`],
+                                    ] as const)
+                                      .filter(([mode]) => effectiveVisibleLyricModes.includes(mode))
+                                      .map(([mode, label, background]) => (
+                                        <motion.button
+                                          type="button"
+                                          key={mode}
+                                          whileHover={{ scale: 1.05 }}
+                                          whileTap={{ scale: 0.95 }}
+                                          onClick={() => handleLyricDisplayModeChange(mode)}
+                                          className="relative h-24 min-w-0 rounded-xl overflow-hidden cursor-pointer border-2 transition-all"
+                                          style={{
+                                            background,
+                                            borderColor: lyricDisplayMode === mode ? '#fff' : 'rgba(255,255,255,0.2)',
+                                            boxShadow: lyricDisplayMode === mode ? `0 0 18px ${(dominantColor || '#ffffff')}35` : 'none',
+                                          }}
+                                        >
+                                          <div className="absolute inset-0 flex items-center justify-center">
+                                            <span className="text-white font-medium text-base">{label}</span>
+                                          </div>
+                                          {lyricDisplayMode === mode && (
+                                            <div className="absolute top-2 right-2 bg-white/20 backdrop-blur-sm px-2 py-1 rounded-full text-xs text-white">
+                                              当前
+                                            </div>
+                                          )}
+                                        </motion.button>
+                                      ))}
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <h2 className={`text-xl font-bold mb-1 text-center ${playerTheme === 'dark' ? 'text-white' : 'text-black/90'}`}>Folia 歌词</h2>
+                                  <p className={`mb-3 text-center text-[11px] ${playerTheme === 'dark' ? 'text-white/45' : 'text-black/40'}`}>
+                                    12 种歌词视觉 · 设计来源 Project Folia
+                                  </p>
+                                  <div
+                                    className="grid w-full gap-2"
+                                    style={{ gridTemplateColumns: `repeat(${FOLIA_STYLES.length}, minmax(0, 1fr))` }}
+                                  >
+                                    {FOLIA_STYLES.map((style) => {
+                                      const active = lyricDisplayMode === 'folia' && foliaStyle === style.id
+                                      return (
+                                        <motion.button
+                                          type="button"
+                                          key={style.id}
+                                          whileHover={{ scale: 1.06 }}
+                                          whileTap={{ scale: 0.94 }}
+                                          onClick={() => handleFoliaStyleSelect(style.id)}
+                                          className="relative h-20 min-w-0 rounded-xl overflow-hidden cursor-pointer border-2 transition-all"
+                                          style={{
+                                            background: style.gradient,
+                                            borderColor: active ? '#fff' : 'rgba(255,255,255,0.2)',
+                                            boxShadow: active ? `0 0 16px ${(dominantColor || '#ffffff')}40` : 'none',
+                                          }}
+                                        >
+                                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
+                                            <span className="text-white font-medium text-sm leading-none">{style.zhName}</span>
+                                            <span className="text-white/50 text-[9px] leading-none">{style.id}</span>
+                                          </div>
+                                          {active && (
+                                            <div className="absolute top-1.5 right-1.5 bg-white/20 backdrop-blur-sm px-1.5 py-0.5 rounded-full text-[10px] text-white">
+                                              当前
+                                            </div>
+                                          )}
+                                        </motion.button>
+                                      )
+                                    })}
+                                  </div>
+                                </>
+                              )}
                             </div>
                           </div>
+                          {/* Folia 歌词样式页切换：自定义按钮左侧，一键切到第二页（12 种 Folia 样式） */}
+                          <button
+                            type="button"
+                            aria-label="Folia 歌词样式"
+                            title="Folia 歌词样式（设计来源 Project Folia）"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setLyricPanelPage((page) => (page === 'waveforge' ? 'folia' : 'waveforge'))
+                            }}
+                            className={`absolute bottom-4 z-30 flex h-9 w-9 items-center justify-center rounded-full border transition-[background-color,color] ${
+                              lyricPanelPage === 'folia' ? 'right-32' : 'right-20'
+                            } ${
+                              lyricPanelPage === 'folia'
+                                ? 'border-transparent text-white'
+                                : playerTheme === 'dark'
+                                  ? 'border-white/15 bg-white/[0.08] text-white/85 hover:bg-white/[0.16] hover:text-white'
+                                  : 'border-black/10 bg-black/[0.06] text-black/70 hover:bg-black/[0.12] hover:text-black'
+                            }`}
+                            style={lyricPanelPage === 'folia' ? { backgroundColor: dominantColor || '#7c6cff', boxShadow: `0 0 12px ${(dominantColor || '#7c6cff')}55` } : undefined}
+                          >
+                            <Sparkles className="h-[18px] w-[18px]" />
+                          </button>
+                          {/* Folia 背景按钮：仅 Folia 样式页显示；开 = Folia 原生背景（封面取色），关 = WaveForge 封面背景 */}
+                          {lyricPanelPage === 'folia' && (
+                            <button
+                              type="button"
+                              aria-label="使用 Folia 背景"
+                              title={foliaBackgroundEnabled ? '使用 Folia 背景（点击改用封面背景）' : '使用 WaveForge 封面背景（点击改用 Folia 背景）'}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                handleFoliaBackgroundToggle()
+                              }}
+                              className={`absolute bottom-4 right-20 z-30 flex h-9 w-9 items-center justify-center rounded-full border transition-[background-color,color] ${
+                                foliaBackgroundEnabled
+                                  ? 'border-transparent text-white'
+                                  : playerTheme === 'dark'
+                                    ? 'border-white/15 bg-white/[0.08] text-white/85 hover:bg-white/[0.16] hover:text-white'
+                                    : 'border-black/10 bg-black/[0.06] text-black/70 hover:bg-black/[0.12] hover:text-black'
+                              }`}
+                              style={foliaBackgroundEnabled ? { backgroundColor: dominantColor || '#7c6cff', boxShadow: `0 0 12px ${(dominantColor || '#7c6cff')}55` } : undefined}
+                            >
+                              <ImageIcon className="h-[18px] w-[18px]" />
+                            </button>
+                          )}
                           <button
                             type="button"
                             aria-label="自定义歌词模式显示"
@@ -6443,8 +6661,10 @@ function App() {
                       transitionFromTrack={transitionFromTrack}
                       transitionToTrack={transitionToTrack}
                       pulseStore={audioPulseStore}
+                      animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
+                      animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
                     />
-                    
+
                     {/* 歌曲信息 - 过渡时双层淡入淡出 */}
                     <div className="relative w-full max-w-4xl space-y-3 text-center">
                       {isVisualTransitioning && overlayProgress > 0 && transitionFromTrack && transitionToTrack ? (
@@ -6578,6 +6798,37 @@ function App() {
                     onSeek={audioPlayer.seek}
                   />
                 </motion.div>
+              ) : lyricDisplayMode === 'folia' ? (
+                <motion.div
+                  key="folia-lyrics-player"
+                  initial={{ opacity: 0, scale: 1.02 }}
+                  animate={{ opacity: isLyricsTransitioning ? 0 : 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.99 }}
+                  transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                  className="flex-1 w-full min-h-0"
+                >
+                  <LazyFoliaLyricsPage
+                    lyrics={lyrics}
+                    currentIndex={currentLyricIndex}
+                    playbackTimeStore={audioPlayer.playbackTimeStore}
+                    timeOffset={lyricOffset - 0.2}
+                    isPlaying={isPlaying}
+                    playerTheme={playerTheme}
+                    accentColor={dominantColor || '#fff'}
+                    songTitle={currentSong.name}
+                    songArtist={currentSongArtistLabel}
+                    songAlbum={currentSong.album?.name}
+                    coverUrl={displayCoverUrl}
+                    trackId={currentSong.id || currentSong.mid}
+                    translationEnabled={translationEnabled}
+                    romanEnabled={romanEnabled}
+                    onSeek={audioPlayer.seek}
+                    analyzerStore={audioAnalyzer}
+                    foliaStyle={foliaStyle}
+                    foliaBackgroundEnabled={foliaBackgroundEnabled}
+                    mvBackgroundActive={mvBackgroundActive}
+                  />
+                </motion.div>
               ) : lyricDisplayMode === 'glorious' ? (
                 <motion.div
                   key="glorious-lyrics-player"
@@ -6627,6 +6878,8 @@ function App() {
                     songAlbum={currentSong.album?.name}
                     coverUrl={displayCoverUrl}
                     appleCoverUrl={appleCoverUrl || undefined}
+                    animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
+                    animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
                     trackId={currentSong.id || currentSong.mid}
                     translationEnabled={translationEnabled}
                     romanEnabled={romanEnabled}
@@ -6665,8 +6918,10 @@ function App() {
                       transitionFromTrack={transitionFromTrack}
                       transitionToTrack={transitionToTrack}
                       pulseStore={audioPulseStore}
+                      animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
+                      animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
                     />
-                    
+
                     {/* 歌曲信息 - 过渡时双层淡入淡出 */}
                     <div className="relative min-h-[5.25rem] w-full max-w-xl space-y-2 px-4 text-center">
                       {isVisualTransitioning && transitionProgress > 0 && transitionFromTrack && transitionToTrack ? (
@@ -6726,6 +6981,7 @@ function App() {
                           trackId={currentSong?.id || currentSong?.mid}
                           pulseStore={audioPulseStore}
                           playerTheme={playerTheme}
+                          scrollTransitionStyle={lyricScrollTransitionStyle}
                         />
                       </div>
                     </div>
@@ -7004,9 +7260,11 @@ function App() {
         </AnimatePresence>
       </Suspense>
 
-      {/* Global singleton prevents duplicate overlays during view-mode changes. */}
+      {/* Global singleton prevents duplicate overlays during view-mode changes.
+          不用 AnimatePresence 包裹（与搜索面板同款故障）：ProfileView 的玻璃遮罩带整屏
+          backdrop-filter，退出节点在播放页挂载时会被 Chromium/framer-motion 卡住不卸载
+          → 最近播放等弹窗选歌后残留盖在播放页上；普通条件渲染关闭即当帧卸载。 */}
       <Suspense fallback={null}>
-        <AnimatePresence>
           {showProfile && (neteaseLoggedIn || qqLoggedIn || appleLoggedIn) && (
             <LazyProfileView
             initialPlatform={profileInitialPlatform}
@@ -7030,7 +7288,6 @@ function App() {
             onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
-        </AnimatePresence>
       </Suspense>
     </Suspense>
     </>

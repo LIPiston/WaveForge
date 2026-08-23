@@ -25,6 +25,8 @@ interface Particle {
 
 /** 节拍周期（与律动背景脉冲一致的 1.2s 时间驱动节拍） */
 const BEAT_PERIOD = 1.2
+// 高刷屏限 120fps：粒子每帧重绘开销大，120fps 与 240fps 肉眼无差异
+const FRAME_MIN_INTERVAL_MS = 1000 / 120
 
 const roundedRectPath = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) => {
   const radius = Math.max(0, Math.min(r, w / 2, h / 2))
@@ -96,6 +98,11 @@ export default function AppleCoverFx({ enabled, isPlaying, size, radius, accentC
     }
 
     const tick = (now: number) => {
+      // 限 120fps：dt 由实际执行的帧间隔计算，跳帧不影响粒子运动
+      if (now - last < FRAME_MIN_INTERVAL_MS) {
+        raf = requestAnimationFrame(tick)
+        return
+      }
       const dt = Math.min(0.05, (now - last) / 1000)
       last = now
       const currentSize = sizeRef.current

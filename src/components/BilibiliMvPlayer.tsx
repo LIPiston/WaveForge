@@ -18,6 +18,7 @@ import {
   Settings as SettingsIcon, ThumbsDown, RotateCcw, Home, ListMusic, Info, AudioLines, MessageCircle, MessageCircleOff, PlayCircle, Shuffle,
 } from 'lucide-react'
 import { useTvMode, useTvBack } from '../tv/tvCore'
+import { useAutoHideCursor } from '../hooks/useAutoHideCursor'
 
 /** B 站小电视图标（简化版 logo：圆角机身 + 顶部双鳍天线 + 屏幕） */
 function BiliTvIcon({ size = 15 }: { size?: number }) {
@@ -211,8 +212,46 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
   const watchAccent = dominantColor || BILI_PINK
 
   const videoRef = useRef<HTMLVideoElement>(null)
+  const ambientCanvasRef = useRef<HTMLCanvasElement>(null)
+  // 氛围模式（Infuse 风格）：采样视频边缘颜色填充黑边，柔和/鲜艳/极致三档
+  const [ambientMode, setAmbientMode] = useState<'off' | 'soft' | 'vivid' | 'extreme'>(() => {
+    const saved = localStorage.getItem('bilibiliAmbientMode')
+    return saved === 'soft' || saved === 'vivid' || saved === 'extreme' ? saved : 'off'
+  })
   const audioRef = useRef<HTMLAudioElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  // 看歌模式：鼠标本体无操作 8s 自动渐隐，一动立即显示（不影响控件显隐逻辑）
+  const cursorHideRef = useAutoHideCursor(8000)
+  /**
+   * 视频实际宽高比（videoWidth/videoHeight，loadedmetadata/resize 时更新）。
+   * 氛围模式用：把视频元素精确贴合成 object-contain 的显示矩形（居中），
+   * 四周不盖住氛围画布——Chromium 的 <video> 黑边是媒体合成器强制画的，
+   * CSS 背景透明无效，必须让元素本身不覆盖四周。
+   */
+  const [videoAspect, setVideoAspect] = useState<number | null>(null)
+  const [containerSize, setContainerSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const update = () => {
+      const rect = el.getBoundingClientRect()
+      setContainerSize({ w: rect.width, h: rect.height })
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const updateVideoAspect = () => {
+    const v = videoRef.current
+    if (v && v.videoWidth > 0 && v.videoHeight > 0) setVideoAspect(v.videoWidth / v.videoHeight)
+  }
+  // object-contain 显示矩形（居中，保持比例，四周留白给氛围光）
+  const videoContainRect = useMemo(() => {
+    if (!videoAspect || !containerSize.w || !containerSize.h) return null
+    const scale = Math.min(containerSize.w / videoAspect, containerSize.h)
+    return { width: videoAspect * scale, height: scale }
+  }, [videoAspect, containerSize])
   /** 视频音效引擎：DASH 音频轨经统一音效 adapter（v1/v2/HSE 同 App 引擎）效果链输出 */
   const videoEffectsRef = useRef<{ ctx: AudioContext; adapter: IAudioEngineAdapter } | null>(null)
   /** 续播目标位置（音频秒数；加载新视频后 seek 一次即清除） */
@@ -394,11 +433,11 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
         setShowVolumeSlider(false)
         setShowQualityMenu(false)
       }
-    }, 2000)
+    }, 3000)
   }, [tvMode])
 
   /** 底部 / 左上角鼠标区域联动：只有悬停在底部栏位置才显示底部栏（连带左上信息）；
-   *  只有悬停在左上角歌名处才单独显示左上信息；其余位置不弹控件，离开 2 秒后隐藏 */
+   *  只有悬停在左上角歌名处才单独显示左上信息；其余位置不弹控件，离开 3 秒后隐藏 */
   const handleContainerMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
@@ -511,16 +550,19 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
           setStatus('playing')
           reportVideoActive(true)
 
-          // 弹幕（非阻塞，失败不影响播放）；风控/瞬时失败重试一次
+          // 弹幕（非阻塞，失败不影响播放）；风控/瞬时网络失败递增重试最多 3 次
           setDanmakuItems([])
           const loadDanmaku = async (attempt = 0) => {
             if (controller.signal.aborted) return
+            const retry = () => {
+              if (attempt < 3) window.setTimeout(() => void loadDanmaku(attempt + 1), 1500 * (attempt + 1))
+            }
             try {
               const dm = await getBilibiliDanmaku(cid, controller.signal)
               if (dm.code === 0) setDanmakuItems((dm.danmaku || []).slice().sort((a, b) => a.time - b.time))
-              else if (attempt === 0) window.setTimeout(() => void loadDanmaku(1), 1500)
+              else retry()
             } catch {
-              if (attempt === 0) window.setTimeout(() => void loadDanmaku(1), 1500)
+              retry()
             }
           }
           void loadDanmaku()
@@ -688,6 +730,37 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     onSearchFailedChange?.(failed)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status])
+
+  // 氛围模式渲染：缩略画布采样视频帧 → 宽模糊泛光（Infuse 风格，不抢戏）
+  useEffect(() => {
+    if (ambientMode === 'off') return
+    const canvas = ambientCanvasRef.current
+    const video = videoRef.current
+    if (!canvas || !video) return
+    let raf = 0
+    let lastDraw = 0
+    // 柔和 600ms/鲜艳 450ms/极致 300ms 采样——给泛光呼吸感
+    const interval = ambientMode === 'soft' ? 600 : ambientMode === 'vivid' ? 450 : 300
+    const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: false })
+    if (!ctx) return
+    const draw = () => {
+      raf = requestAnimationFrame(draw)
+      // 兜底捕获视频宽高比：loadedmetadata 事件偶发不可靠，绘制循环里持续检查
+      if (videoAspect === null && video.videoWidth > 0 && video.videoHeight > 0) {
+        setVideoAspect(video.videoWidth / video.videoHeight)
+      }
+      const now = performance.now()
+      if (now - lastDraw < interval || video.readyState < 2) return
+      lastDraw = now
+      // 缩略采样（1/8 分辨率）：天然模糊 + 性能友好，泛光感来自大面积高斯叠加
+      const dw = Math.max(1, Math.floor(canvas.clientWidth / 8))
+      const dh = Math.max(1, Math.floor(canvas.clientHeight / 8))
+      if (canvas.width !== dw || canvas.height !== dh) { canvas.width = dw; canvas.height = dh }
+      try { ctx.drawImage(video, 0, 0, dw, dh) } catch { /* 跨域静默 */ }
+    }
+    raf = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(raf)
+  }, [ambientMode, videoUrl, videoAspect])
 
   // 卸载清理
   useEffect(() => {
@@ -857,6 +930,8 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
         // 忽略
       }
     }
+    // 静音/恢复同步全局音量（其它播放模式跟随，保证音量跨模式共用）
+    reportVideoState()
   }
 
   // 音量滑条（内联在底部控件栏内）：点击展开；鼠标离开音量区域约 1.5 秒后自动收回
@@ -1004,6 +1079,17 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
 
   // ===== 视频元素事件 =====
 
+  // 确保视频在 URL 就绪后开始播放（autoPlay 在组件重挂载/快速切换时可能不触发）
+  useEffect(() => {
+    const video = videoRef.current
+    const audio = audioRef.current
+    if (!video || !videoUrl) return
+    if (video.paused && video.readyState >= 1) {
+      void video.play().catch(() => undefined)
+      if (audio && audio.paused && audio.currentSrc) void audio.play().catch(() => undefined)
+    }
+  }, [videoUrl])
+
   const handleTogglePlay = useCallback((): boolean => {
     const video = videoRef.current
     const audio = audioRef.current
@@ -1021,17 +1107,19 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     return true
   }, [videoUrl])
 
-  /** 上报当前视频播放状态（迷你播放器/桌面小窗按视频进度显示） */
+  /** 上报当前视频播放状态（迷你播放器/桌面小窗按视频进度显示）。
+   *  音量必须上报"用户设定音量"（isMuted ? 0 : volume）而非元素实时音量 audio.volume：
+   *  进入看歌会先 0 淡入、切出看歌会淡出到 0，若上报这些瞬态值，App 会把全局音量
+   *  写回为 0/中途值 → 下次切进看歌默认静音（用户实测的"看歌音量不共用"根因）。 */
   const reportVideoState = useCallback(() => {
     const video = videoRef.current
-    const audio = audioRef.current
     onVideoStateChange?.({
       playing: Boolean(video && !video.paused && !video.ended),
       time: video?.currentTime || 0,
       duration: (video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : videoDuration) || 0,
-      volume: audio ? audio.volume : volume,
+      volume: isMuted ? 0 : volume,
     })
-  }, [onVideoStateChange, videoDuration, volume])
+  }, [onVideoStateChange, videoDuration, volume, isMuted])
 
   /** 跳转视频进度（秒）——迷你播放器/桌面播放器控制视频用 */
   const handleSeekTo = useCallback((seconds: number) => {
@@ -1452,6 +1540,8 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     const list = acceptQuality.length ? acceptQuality : quality > 0 ? [quality] : []
     return Array.from(new Set(list)).sort((a, b) => b - a)
   }, [acceptQuality, quality])
+  /** 仅杜比视界等特殊编码时无可选画质，显示提示而非空菜单 */
+  const qualityIsLocked = acceptQuality.length === 0 && quality > 0
 
   // ===== 候选列表（登录门/确认态/更换视频共用，带类型徽章） =====
   const renderCandidateList = (list: CandidateScore[], emptyText: string) => (
@@ -1584,7 +1674,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
   // ===== 主渲染 =====
   return (
     <div
-      ref={containerRef}
+      ref={(el) => { containerRef.current = el; cursorHideRef(el) }}
       className="relative w-full h-full overflow-hidden"
       data-tv-scope
       onMouseMove={handleContainerMouseMove}
@@ -1659,6 +1749,19 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
           <audio ref={audioRef} src={audioUrl || undefined} preload="auto" autoPlay />
 
           {/* 全屏视频（看歌模式：点击不暂停，避免误触中断观看） */}
+          {/* 氛围模式画布：模糊延展视频边缘，填充黑边（Infuse 风格） */}
+          {ambientMode !== 'off' && (
+            <canvas
+              ref={ambientCanvasRef}
+              className="absolute inset-0 w-full h-full z-[5]"
+              style={{
+                filter: `blur(${ambientMode === 'soft' ? 90 : ambientMode === 'vivid' ? 60 : 40}px) saturate(${ambientMode === 'soft' ? 0.8 : ambientMode === 'vivid' ? 1.0 : 1.3})`,
+                opacity: ambientMode === 'soft' ? 0.28 : ambientMode === 'vivid' ? 0.4 : 0.7,
+                transform: 'scale(1.1)',
+                imageRendering: 'pixelated',
+              }}
+            />
+          )}
           <video
             ref={videoRef}
             src={videoUrl}
@@ -1666,7 +1769,29 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
             autoPlay
             playsInline
             muted
-            className="absolute inset-0 w-full h-full object-contain z-10"
+            onCanPlay={() => {
+              const video = videoRef.current
+              const audio = audioRef.current
+              if (video && video.paused) void video.play().catch(() => undefined)
+              if (audio && audio.paused && audio.currentSrc) void audio.play().catch(() => undefined)
+            }}
+            onLoadedMetadata={updateVideoAspect}
+            onLoadedData={updateVideoAspect}
+            onResize={updateVideoAspect}
+            // 按视频实际宽高比精确贴合成显示矩形（居中），四周露出氛围光：
+            // Chromium 的 <video> 黑边是媒体合成器强制绘制，CSS 背景透明无效
+            className={videoContainRect ? 'absolute z-10' : 'absolute inset-0 w-full h-full object-contain z-10'}
+            style={videoContainRect
+              ? {
+                  width: videoContainRect.width,
+                  height: videoContainRect.height,
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  left: '50%',
+                  top: '50%',
+                  transform: 'translate(-50%, -50%)',
+                }
+              : undefined}
           />
 
           {/* 弹幕层（canvas，覆盖视频之上、字幕/控件之下）；时钟用音频时间（音画分离时视频可能未实际播放） */}
@@ -1828,7 +1953,9 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
                             transition={{ duration: 0.15 }}
                             className="absolute bottom-full right-0 mb-2 w-40 rounded-xl bg-black/85 backdrop-blur-xl border border-white/15 p-1.5 shadow-2xl z-40"
                           >
-                            {qualityOptions.map((qn) => (
+                            {qualityIsLocked ? (
+                              <div className="px-2.5 py-1.5 text-xs text-white/40">当前视频仅支持杜比视界</div>
+                            ) : qualityOptions.map((qn) => (
                               <button
                                 key={qn}
                                 type="button"
@@ -2213,7 +2340,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
 
       {/* 看歌设置弹窗 */}
       {showSettings && (
-        <BilibiliWatchSettingsModal onClose={() => setShowSettings(false)} playerTheme={playerTheme} />
+        <BilibiliWatchSettingsModal onClose={() => setShowSettings(false)} playerTheme={playerTheme} ambientMode={ambientMode} onAmbientModeChange={(mode) => { setAmbientMode(mode); localStorage.setItem('bilibiliAmbientMode', mode) }} />
       )}
 
       {/* B 站个人主页 */}

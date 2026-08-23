@@ -95,6 +95,11 @@ export default memo(function QuickSettings({
     return saved !== null ? JSON.parse(saved) : true
   })
 
+  const [lyricScrollTransition, setLyricScrollTransition] = useState<'classic' | 'amodern'>(() => {
+    const saved = localStorage.getItem('lyricScrollTransitionStyle')
+    return saved === 'amodern' ? 'amodern' : 'classic'
+  })
+
   const [coverPulseEnabled, setCoverPulseEnabled] = useState(() => {
     const saved = localStorage.getItem('coverPulseEnabled')
     return saved !== null ? JSON.parse(saved) : false
@@ -189,6 +194,12 @@ export default memo(function QuickSettings({
     setLyricGlow(newValue)
     localStorage.setItem('lyricGlow', JSON.stringify(newValue))
     window.dispatchEvent(new Event('lyricGlowChanged'))
+  }
+
+  const handleLyricScrollTransitionChange = (style: 'classic' | 'amodern') => {
+    setLyricScrollTransition(style)
+    localStorage.setItem('lyricScrollTransitionStyle', style)
+    window.dispatchEvent(new CustomEvent('lyricScrollTransitionStyleChanged', { detail: style }))
   }
 
   const handleCoverPulseToggle = () => {
@@ -893,6 +904,54 @@ export default memo(function QuickSettings({
                             </div>
                           </div>
                         )}
+
+                        <div className="flex flex-col gap-2">
+                          <span className={`text-xs ${playerTheme === 'dark' ? 'text-white/60' : 'text-black/60'}`}>
+                            歌词切换动画
+                          </span>
+                          <div className="grid grid-cols-2 gap-2">
+                            {([
+                              ['classic', '传统', '当前效果'],
+                              ['amodern', '崭新', 'Apple 风弹簧'],
+                            ] as const).map(([style, label, hint]) => (
+                              <button
+                                key={style}
+                                onClick={() => handleLyricScrollTransitionChange(style)}
+                                className="flex min-h-[48px] flex-col items-center justify-center rounded-lg px-1.5 py-1.5 text-xs font-medium leading-tight transition-all"
+                                style={{
+                                  backgroundColor:
+                                    lyricScrollTransition === style
+                                      ? accentColor
+                                      : playerTheme === 'dark'
+                                      ? 'rgba(255,255,255,0.1)'
+                                      : 'rgba(0,0,0,0.1)',
+                                  color:
+                                    lyricScrollTransition === style
+                                      ? '#fff'
+                                      : playerTheme === 'dark'
+                                      ? 'rgba(255,255,255,0.65)'
+                                      : 'rgba(0,0,0,0.65)',
+                                  boxShadow:
+                                    lyricScrollTransition === style ? `0 0 8px ${accentColor}30` : 'none',
+                                }}
+                              >
+                                <span>{label}</span>
+                                <span
+                                  className="mt-0.5 text-[10px] font-normal"
+                                  style={{
+                                    color: lyricScrollTransition === style
+                                      ? 'rgba(255,255,255,0.78)'
+                                      : playerTheme === 'dark'
+                                      ? 'rgba(255,255,255,0.42)'
+                                      : 'rgba(0,0,0,0.42)',
+                                  }}
+                                >
+                                  {hint}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
 
                         <div className="flex items-center justify-between">
                           <span className={`text-sm ${playerTheme === 'dark' ? 'text-white/80' : 'text-black/80'}`}>

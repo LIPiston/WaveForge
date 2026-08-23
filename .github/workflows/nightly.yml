@@ -10,7 +10,7 @@ name: Nightly Build 每日构建
 on:
   schedule:
     # UTC 21:00 = 北京时间 05:00
-    - cron: '0 21 * * *'
+    - cron: '0 13 * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -60,10 +60,14 @@ jobs:
           BASE_VERSION=$(node -p "require('./package.json').version")
           NIGHTLY_VERSION="${BASE_VERSION}-nightly.${DATE}"
 
-          # 查找最近一个正式版 tag，changelog 始终覆盖正式版以来的全部提交；没有正式版 tag 时回退到最近 50 条提交
+          # changelog 只覆盖上一次 nightly 构建之后的提交；首次运行（无 nightly tag）时回退最近正式版 tag，两者皆无则回退最近 50 条提交
           LAST_NIGHTLY=$(git tag -l 'nightly' --sort=-creatordate | head -1)
           LAST_STABLE=$(git tag -l 'v*' --sort=-creatordate | head -1)
-          RANGE="${LAST_STABLE:+${LAST_STABLE}..HEAD}"
+          if [ -n "$LAST_NIGHTLY" ]; then
+            RANGE="${LAST_NIGHTLY}..HEAD"
+          else
+            RANGE="${LAST_STABLE:+${LAST_STABLE}..HEAD}"
+          fi
 
           # 无新增提交判定（仅当存在上一个 nightly tag 且非 force 时生效）
           HAS_CHANGES="true"
@@ -80,12 +84,12 @@ jobs:
             echo "**版本号：${NIGHTLY_VERSION}（基础 ${BASE_VERSION} + 构建日期，非正式发版，不自动升级版本号）**"
             echo ""
             if [ -n "$RANGE" ]; then
-              echo "## 代码变动（自最近正式版 ${LAST_STABLE} 起）"
+              echo "## 代码变动（自上次 Nightly 构建 ${RANGE%%..*} 起）"
               echo ""
               LOG=$(git log $RANGE --no-merges --pretty=format:"- %s (%h)" 2>/dev/null)
               if [ -z "$LOG" ]; then echo "- 无新增提交"; else echo "$LOG"; fi
             else
-              echo "## 代码变动（暂无正式版 tag，最近 50 条提交）"
+              echo "## 代码变动（暂无 nightly / 正式版 tag，最近 50 条提交）"
               echo ""
               git log -50 --no-merges --pretty=format:"- %s (%h)"
             fi

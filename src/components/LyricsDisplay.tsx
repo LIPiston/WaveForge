@@ -1,4 +1,4 @@
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, useSpring } from 'framer-motion'
 import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudioPulse'
 import { memo, useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { reconcileBoundaryParentheses } from '../utils/lyricBoundaryParentheses'
@@ -451,6 +451,8 @@ interface LyricsDisplayProps {
   trackId?: string | number
   pulseStore?: AudioPulseStore
   playerTheme?: 'light' | 'dark'
+  /** 歌词切换动画：传统（原生 scrollTo 居中）或 崭新（弹簧 transform，零布局跳动，Apple Music 风） */
+  scrollTransitionStyle?: 'classic' | 'amodern'
 }
 
 export default memo(function LyricsDisplay({ 
@@ -480,8 +482,10 @@ export default memo(function LyricsDisplay({
   trackId,
   pulseStore = EMPTY_AUDIO_PULSE_STORE,
   playerTheme = 'dark',
+  scrollTransitionStyle = 'classic',
 }: LyricsDisplayProps) {
   const isLightTheme = playerTheme === 'light'
+  const isModernScroll = displayMode === 'scroll' && scrollTransitionStyle === 'amodern'
   // 浅色主题下歌词用深色文字，保证在淡白雾背景上可读
   const activeLyricColor = isLightTheme ? 'rgba(15, 15, 15, 0.92)' : 'rgba(255, 255, 255, 1)'
   const inactiveLyricColor = isLightTheme ? 'rgba(0, 0, 0, 0.38)' : 'rgba(255, 255, 255, 0.38)'
@@ -531,6 +535,11 @@ export default memo(function LyricsDisplay({
   const effectiveAnimationMode = animationModeOverride ?? animationMode
   const isDesktopLayout = layoutContext === 'desktop'
   const containerRef = useRef<HTMLDivElement>(null)
+  // 崭新模式：弹簧 transform 滚动引擎（零布局跳动，Apple Music 风）
+  const springY = useSpring(0, { stiffness: 190, damping: 26, mass: 1.1 })
+  const springWrapRef = useRef<HTMLDivElement>(null)
+  const [modernManualY, setModernManualY] = useState(0)
+  const modernReturnTimerRef = useRef<number | null>(null)
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const jumpAnimationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const returnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -646,6 +655,15 @@ export default memo(function LyricsDisplay({
 
   const scheduleReturnAfterPointerLeave = () => {
     clearReturnTimer()
+    if (isModernScroll) {
+      modernReturnTimerRef.current = window.setTimeout(() => {
+        modernReturnTimerRef.current = null
+        if (isPointerInsideRef.current) return
+        setIsManualScrolling(false)
+        setModernManualY(0)
+      }, 2000)
+      return
+    }
     returnTimerRef.current = setTimeout(() => {
       returnTimerRef.current = null
       if (isPointerInsideRef.current) return
@@ -683,8 +701,22 @@ export default memo(function LyricsDisplay({
     })
   }
   
+  // 崭新模式：滚轮手动偏移（累积 px，2 秒无操作弹簧归位）
+  const handleModernWheel = (e: React.WheelEvent) => {
+    if (isJumping) return
+    isManualScrollingRef.current = true
+    setIsManualScrolling(true)
+    setModernManualY((prev) => {
+      const next = prev + e.deltaY
+      if (modernReturnTimerRef.current) { window.clearTimeout(modernReturnTimerRef.current); modernReturnTimerRef.current = null }
+      return next
+    })
+    scheduleReturnAfterPointerLeave()
+  }
+
   // 处理鼠标滚轮滚动
   const handleWheel = (e: React.WheelEvent) => {
+    if (isModernScroll) { handleModernWheel(e); return }
     // React onWheel may be passive, so this handler does not call preventDefault
     // Handle only the lyric scrolling state here
     
@@ -952,7 +984,7 @@ export default memo(function LyricsDisplay({
 
   // Automatically scroll to the active lyric
   useEffect(() => {
-    if (isManualScrolling) return
+    if (isModernScroll || isManualScrolling) return
     if (currentIndex >= 0) {
       scheduleScrollLineToCenter(currentIndex, 'smooth')
     }
@@ -968,7 +1000,7 @@ export default memo(function LyricsDisplay({
   ])
 
   useEffect(() => {
-    if (isManualScrolling || currentIndex < 0 || typeof ResizeObserver === 'undefined') return
+    if (isModernScroll || isManualScrolling || currentIndex < 0 || typeof ResizeObserver === 'undefined') return
 
     const container = containerRef.current
     const el = container?.querySelector(`[data-index="${currentIndex}"]`) as HTMLElement | null
@@ -998,6 +1030,30 @@ export default memo(function LyricsDisplay({
     effectiveWordByWordEnabled,
     effectiveWordByWordEffectMode,
   ])
+
+  // 崭新模式：弹簧 transform 驱动滚动（零布局跳动）
+  useEffect(() => {
+    if (!isModernScroll) return
+    const container = containerRef.current
+    if (!container) return
+    const measure = () => {
+      const track = springWrapRef.current
+      if (!track) return
+      const el = track.querySelector(`[data-index="${currentIndex}"]`) as HTMLElement | null
+      if (!el) return
+      const focalY = container.clientHeight * 0.36
+      if (focalY <= 0) return  // 容器尚未完成布局，待 ResizeObserver 触发真实尺寸
+      const relTop = el.offsetTop
+      const target = focalY - (relTop + el.offsetHeight / 2) - modernManualY
+      springY.set(target)
+    }
+    // 初始测量：容器有尺寸时直接算，否则等 ResizeObserver 异步触发
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(container)
+    if (springWrapRef.current) observer.observe(springWrapRef.current)
+    return () => observer.disconnect()
+  }, [isModernScroll, currentIndex, modernManualY, effectiveLyricSize, displayLyricsData, isManualScrolling, springY])
 
   if (!lyrics || lyrics.length === 0) {
     return null
@@ -1893,11 +1949,11 @@ export default memo(function LyricsDisplay({
       <div 
         ref={containerRef}
         data-is-playing={isPlaying}
-        className="w-full h-full relative overflow-y-auto overflow-x-hidden scrollbar-hide"
+        className={`w-full h-full relative ${isModernScroll ? 'overflow-hidden' : 'overflow-y-auto'} overflow-x-hidden scrollbar-hide`}
         onWheel={handleWheel}
         onMouseEnter={handleContainerMouseEnter}
         onMouseLeave={handleContainerMouseLeave}
-        style={{
+        style={isModernScroll ? undefined : {
           WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%)',
           maskImage: 'linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%)',
         }}
@@ -1920,10 +1976,16 @@ export default memo(function LyricsDisplay({
             paddingBottom: '0',
           }}
         >
+        {/* 崭新模式：弹簧 transform 轨道（替代原生 scroll，零布局跳动） */}
+        <motion.div
+          ref={springWrapRef}
+          style={{ y: springY, willChange: 'transform' }}
+          className="w-full"
+        >
         <div
           aria-hidden="true"
           className="w-full shrink-0 pointer-events-none"
-          style={{ height: '46%' }}
+          style={{ height: isModernScroll ? '0%' : '46%' }}
         />
         {!isTransitioning && preparedLyricsData.map((preparedLyric, index) => {
           const lyric = preparedLyric.lyric
@@ -1976,13 +2038,15 @@ export default memo(function LyricsDisplay({
           // Apple 模式（逆向 LyricsBlossom）：非当前行**常驻**模糊（当前行清晰），
           // 手动滚动时**暂时取消**模糊（看清内容），滚动结束弹簧过渡恢复。
           const isAppleLineMode = effectiveWordByWordEffectMode === 'apple'
-          const lineFilter = isAppleLineMode
-            ? `blur(${isManualScrolling ? 0 : (isCurrent ? 0 : 2.2)}px)`
-            : `blur(${Math.max(timingBlur, immersiveDistanceBlur)}px)`
-          const lineFontSize = isAppleLineMode
+          const lineFilter = isModernScroll
+            ? (isManualScrolling ? 'none' : `blur(${isCurrent ? 0 : distanceFromCurrent >= 3 ? 3.4 : distanceFromCurrent >= 2 ? 2.2 : 1.1}px)`)
+            : isAppleLineMode
+              ? `blur(${isManualScrolling ? 0 : (isCurrent ? 0 : 2.2)}px)`
+              : `blur(${Math.max(timingBlur, immersiveDistanceBlur)}px)`
+          const lineFontSize = isModernScroll || isAppleLineMode
             ? `${effectiveLyricSize}rem`
             : isCurrent ? `${effectiveLyricSize}rem` : `${effectiveLyricSize * 0.63}rem`
-          const lineFontWeight = isAppleLineMode ? 500 : (isCurrent ? 700 : 400)
+          const lineFontWeight = isModernScroll ? 600 : (isAppleLineMode ? 500 : (isCurrent ? 700 : 400))
           
           return (
             <motion.div
@@ -2002,12 +2066,14 @@ export default memo(function LyricsDisplay({
                 opacity: isBlinking ? [opacityValue, 0.95, opacityValue] : opacityValue,
                 y: skiaY,
                 filter: lineFilter,
+                ...(isModernScroll ? { scale: isCurrent ? 1 : distanceFromCurrent >= 2 ? 0.74 : 0.80 } : {}),
               }}
               style={{
                 transformOrigin: scrollAlignment === 'center' ? 'center center' : 'left center',
-                // Apple 模式不缩放（已播/正在播/未播一样大）
-                scale: isAppleLineMode ? 1 : (isCurrent ? 'var(--restless-lyric-scale, 1.008)' : 1),
-                transition: 'scale 140ms cubic-bezier(0.22, 1, 0.36, 1)',
+                // 崭新模式：缩放由帧动画 animate 驱动（弹簧过渡，零布局跳动）；
+                // Apple 模式不缩放（已播/正在播/未播一样大）；传统模式 current 微脉动
+                scale: isModernScroll ? undefined : (isAppleLineMode ? 1 : (isCurrent ? 'var(--restless-lyric-scale, 1.008)' : 1)),
+                transition: isModernScroll ? undefined : 'scale 140ms cubic-bezier(0.22, 1, 0.36, 1)',
                 zIndex: isCurrent ? 2 : lineTiming.upcomingProgress > 0 ? 1 : 0,
               }}
               transition={{ 
@@ -2015,6 +2081,7 @@ export default memo(function LyricsDisplay({
                   ? { duration: 2.0, repeat: Infinity, ease: [0.4, 0, 0.6, 1] }
                   : transitionConfig.opacity,
                 y: { duration: 0.04, ease: 'linear' },
+                scale: isModernScroll ? { type: 'spring', stiffness: 240, damping: 24, mass: 0.9 } : { duration: 0 },
                 // filter 不能用 spring（framer-motion 的 spring 只支持数值属性），
                 // 用 tween 过渡让滚动时虚化取消/恢复有动画。
                 filter: { duration: 0.45, ease: [0.22, 1, 0.36, 1] },
@@ -2238,8 +2305,9 @@ export default memo(function LyricsDisplay({
         <div
           aria-hidden="true"
           className="w-full shrink-0 pointer-events-none"
-          style={{ height: '56%' }}
+          style={{ height: isModernScroll ? '36%' : '56%' }}
         />
+        </motion.div>
         </motion.div>
         </AnimatePresence>
       </div>

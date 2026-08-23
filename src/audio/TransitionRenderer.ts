@@ -244,7 +244,15 @@ export class TransitionRenderer {
     // AI 长混音路径（useAiMix）本身即模型产物，无需额外注入。
     if (plan.strategy === 'smart-rendered-v2' && typeof renderBridge.aiMixAutomation === 'function') {
       try {
-        const automation = await renderBridge.aiMixAutomation(plan, sourceRenderPath, targetRenderPath)
+        // 引擎缺失/半装（有 torch 无权重、worker 启动卡住）时 automation 可能长时间挂起，
+        // 阻塞整个过渡渲染（内部超时 180s）。加 8s 竞速超时：拿不到就回退规则曲线，
+        // 不让可疑引擎拖垮 DSP 过渡（无模型时增强版出现"过渡噪音/割裂"的防御性修复）。
+        const automation = await Promise.race([
+          renderBridge.aiMixAutomation(plan, sourceRenderPath, targetRenderPath),
+          new Promise<null>((resolve) => {
+            window.setTimeout(() => resolve(null), 8000)
+          }),
+        ])
         if (isStale?.()) throw new Error('Transition render superseded')
         if (automation?.success && Array.isArray(automation.params) && automation.params.length === 2) {
           plan.v2 = { ...plan.v2, automation: automation.params }

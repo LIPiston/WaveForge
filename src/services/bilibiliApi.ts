@@ -1063,6 +1063,37 @@ export function scoreCandidate(
   if (songTitleNorm.length <= 4 && !signals.hasArtist) score -= 15
   // 未命中歌手 + 却带官方/MV 标记 → 极可能是"别的歌手的官方MV"（张冠李戴，如王艺瑾-喜欢你），再重罚
   if (!signals.hasArtist && (signals.officialMarker || signals.mvMarker)) score -= 40
+  // 无歌手命中 + live 标记 → "别人的演唱会现场"（如日语曲匹配到张国荣热情演唱会），同级别重罚
+  if (!signals.hasArtist && LIVE_MARKERS.some((m) => titleNorm.includes(m))) score -= 30
+  // 「他人《歌名》」形态：书名号前的文本通常是演唱者（如「张国荣Leslie《春夏秋冬》」）。
+  // 去掉【..】与画质/规格标签后仍有实质文本、且不含本曲歌手/别名 → 明确演唱者不符。
+  // 书名号会被 normalizeText 剥掉，须在原始标题上检测。
+  if (!signals.hasArtist) {
+    const rawTitle = String(video.title || '')
+    const bracketMatches = rawTitle.match(/《[^《》]{1,60}》/g) || []
+    for (const bracket of bracketMatches) {
+      const inner = normalizeText(bracket.slice(1, -1)).replace(/\s+/g, '')
+      if (!songTitleVariants.some((t) => t.replace(/\s+/g, '') === inner)) continue
+      const prefix = normalizeText(rawTitle.slice(0, rawTitle.indexOf(bracket)))
+        .replace(/【[^】]*】/g, '')
+        .replace(/4k\d*fps?|1080p|hi-?res|khz|\d+bit|mad|hdr|高清|超清|修复|重制|字幕|中字/g, '')
+        .replace(/\s+/g, '')
+      if (prefix.length >= 2
+        && !artistNormList.some((a) => prefix.includes(a))
+        && !aliasNormList.some((a) => prefix.includes(a))) {
+        score -= 45
+      }
+      break
+    }
+  }
+  // 语言一致性辅助信号：歌手/歌名含假名（日文曲）而候选标题与作者完全无假名且未命中歌手
+  // → 大概率是中文同名曲（正确的候选也可能无假名，如 romaji 写法，故仅作辅助降权）
+  const KANA_RE = /[\u3040-\u309F\u30A0-\u30FF]/
+  if (!signals.hasArtist
+    && KANA_RE.test(artistNormList.join('') + songTitleNorm)
+    && !KANA_RE.test(titleNorm + authorNorm)) {
+    score -= 15
+  }
 
   // 分区
   if (video.typename === '音乐') score += 15
@@ -1116,8 +1147,12 @@ export function scoreCandidate(
   // 听歌要的是完整版 → 降级，让同曲的完整版/MV 排到前面
   if (isOpEdTitle && compareDuration >= 70 && compareDuration <= 110) score -= 25
 
-  // 播放量（对数加权，热门更可能是正片）
-  if (video.play > 0) score += Math.min(30, Math.log10(video.play) * 6)
+  // 播放量（对数加权，热门更可能是正片）；未命中歌手时大幅衰减——
+  // 热门救不回货不对板（日语曲被同名中文歌高播放现场版压过的案例）
+  if (video.play > 0) {
+    const playBonus = Math.min(30, Math.log10(video.play) * 6)
+    score += signals.hasArtist ? playBonus : Math.min(8, playBonus)
+  }
 
   // 搜索排名（B 站相关度顺序是强信号，靠前的轻微加权）
   score += Math.max(0, 15 - rank) * 0.8

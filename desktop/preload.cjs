@@ -133,6 +133,42 @@ contextBridge.exposeInMainWorld('electron', {
     aiMixAutomation: (plan, sourceAudioPath, targetAudioPath) =>
       ipcRenderer.invoke('render:aiMixAutomation', plan, sourceAudioPath, targetAudioPath),
   },
+
+  // AI 混音模型（DJTransGAN 仓库 + 预训练权重）下载/删除管理
+  aiModel: {
+    getStatus: () => ipcRenderer.invoke('ai-model:get-status'),
+    download: () => ipcRenderer.invoke('ai-model:download'),
+    pause: () => ipcRenderer.invoke('ai-model:pause'),
+    cancel: () => ipcRenderer.invoke('ai-model:cancel'),
+    delete: () => ipcRenderer.invoke('ai-model:delete'),
+    onProgress: (callback) => {
+      const listener = (_event, progress) => callback(progress)
+      ipcRenderer.on('ai-model:progress', listener)
+      return () => ipcRenderer.removeListener('ai-model:progress', listener)
+    },
+  },
+
+  // 代理自动配置：模型下载/应用更新走本地代理
+  proxyManager: {
+    scan: () => ipcRenderer.invoke('proxy-manager:scan'),
+    enable: (port) => ipcRenderer.invoke('proxy-manager:enable', port),
+    disable: () => ipcRenderer.invoke('proxy-manager:disable'),
+    getState: () => ipcRenderer.invoke('proxy-manager:get-state'),
+    setEnabled: (v) => ipcRenderer.invoke('proxy-manager:set-enabled', v),
+    consumeNotice: () => ipcRenderer.invoke('proxy-manager:consume-notice'),
+    getLatency: () => ipcRenderer.invoke('proxy-manager:get-latency'),
+    probe: () => ipcRenderer.invoke('proxy-manager:probe'),
+    onLatency: (callback) => {
+      const listener = (_event, latency) => callback(latency)
+      ipcRenderer.on('proxy-manager:latency', listener)
+      return () => ipcRenderer.removeListener('proxy-manager:latency', listener)
+    },
+    onNotice: (callback) => {
+      const listener = (_event, notice) => callback(notice)
+      ipcRenderer.on('proxy-manager:notice', listener)
+      return () => ipcRenderer.removeListener('proxy-manager:notice', listener)
+    },
+  },
   
   // AutoMix 渲染进程诊断日志：写入后端 automix-backend.log
   automixLog: (scope, message) => ipcRenderer.invoke('automix-log:append', scope, message),

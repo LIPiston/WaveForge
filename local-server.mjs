@@ -28,6 +28,7 @@ import { registerLocationRoutes } from './server/location-api.mjs'
 import { registerBilibiliRoutes } from './server/bilibili-api.mjs'
 // 汽水音乐（/api/soda/*）：登录态由前端每次请求的 cookie 参数传入，后端绝不持久化
 import { registerSodaRoutes } from './server/qishui-api.mjs'
+import { registerAppleArtworkRoutes } from './server/apple-artwork-api.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -960,6 +961,7 @@ registerHazardRoutes(app)
 registerLocationRoutes(app)
 registerBilibiliRoutes(app)
 registerSodaRoutes(app)
+registerAppleArtworkRoutes(app)
 
 const fetchLocationProvider = async (url, normalize) => {
   const controller = new AbortController()

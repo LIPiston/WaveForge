@@ -2,9 +2,11 @@
 @source './';
 @source '../*.html';
 
-/* 深浅色切换过渡动画 - 0.3s 平滑过渡 */
+/* 深浅色切换过渡动画 - 0.3s 平滑过渡
+   注意：不要给 box-shadow / backdrop-filter 加全局过渡——模糊与阴影在过渡期间每帧重新栅格化，
+   是高刷下交互掉帧的主要来源；个别需要平滑过渡的组件自行声明。 */
 html, body, html * {
-  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, backdrop-filter 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
 }
 /* 修复日语注音（Ruby Text）显示位置 */
 ruby {
