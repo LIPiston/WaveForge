@@ -1,6 +1,6 @@
 import React, { memo, useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence, Reorder } from 'framer-motion'
-import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, ChevronLeft, Trash2, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone, Gamepad2, Eye, EyeOff, FileText, Music, FolderHeart, Trash } from 'lucide-react'
+import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, ChevronLeft, Trash2, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Gift, Headphones, MonitorSmartphone, Gamepad2, Eye, EyeOff, FileText, Music, FolderHeart, Trash, AlertTriangle } from 'lucide-react'
 import LoginButton from './LoginButton'
 import type { AppleUserInfo } from '../services/appleAuth'
 import {
@@ -419,7 +419,8 @@ function SettingsPanel({
     width: 340,
     mode: 'normal',
     darken: false,
-    blur: false,
+    darkenLevel: 0.5,
+    hideControls: false,
   })
 
   useEffect(() => {
@@ -1246,6 +1247,194 @@ function SettingsPanel({
     void probe()
     return () => { cancelled = true }
   }, [autoMixEnabled, autoMixEnhanced])
+
+  // AI 混音模型（DJTransGAN 仓库 + 权重）下载/删除管理
+  const [aiModelStatus, setAiModelStatus] = useState<{
+    installed: boolean
+    repoReady: boolean
+    weightsReady: boolean
+    pythonFound: boolean
+    depsReady: boolean
+    engineAvailable: boolean
+    repoDir: string
+  } | null>(null)
+  const [aiModelProgress, setAiModelProgress] = useState<{
+    status: 'idle' | 'downloading' | 'paused' | 'done' | 'error' | 'cancelled'
+    phase: 'python' | 'pip' | 'deps' | 'repo' | 'weights' | null
+    phaseLabel: string | null
+    phasePercent: number
+    overallPercent: number
+    error: string | null
+    done: boolean
+  } | null>(null)
+  const [showAiModelDownloadDialog, setShowAiModelDownloadDialog] = useState(false)
+  const [showAiModelDeleteDialog, setShowAiModelDeleteDialog] = useState(false)
+
+  const probeAiModelStatus = useCallback(async () => {
+    try {
+      const status = await window.electron?.aiModel?.getStatus?.()
+      if (status) setAiModelStatus(status)
+    } catch { /* 探测失败保持现状 */ }
+  }, [])
+
+  useEffect(() => {
+    if (!autoMixEnabled || !autoMixEnhanced) return
+    void probeAiModelStatus()
+    const off = window.electron?.aiModel?.onProgress?.((progress) => {
+      setAiModelProgress(progress)
+      // 下载完成（含从暂停/错误恢复后完成）：toast 提示
+      if (progress.done && progress.status === 'done') {
+        window.dispatchEvent(new CustomEvent('showToast', {
+          detail: { message: 'DJTransGAN 模型下载完成，AI 混音已可用', type: 'success' },
+        }))
+        void probeAiModelStatus()
+      }
+    })
+    return () => off?.()
+  }, [autoMixEnabled, autoMixEnhanced, probeAiModelStatus])
+
+  const handleAiModelDownload = () => {
+    setShowAiModelDownloadDialog(false)
+    void window.electron?.aiModel?.download?.()
+  }
+  const handleAiModelPause = () => {
+    void window.electron?.aiModel?.pause?.()
+  }
+  const handleAiModelResume = () => {
+    void window.electron?.aiModel?.download?.()
+  }
+  const handleAiModelCancel = () => {
+    void window.electron?.aiModel?.cancel?.()
+    setAiModelProgress(null)
+  }
+  const handleAiModelDelete = () => {
+    setShowAiModelDeleteDialog(false)
+    void (async () => {
+      const result = await window.electron?.aiModel?.delete?.()
+      if (result?.ok) {
+        window.dispatchEvent(new CustomEvent('showToast', {
+          detail: { message: '已删除 DJTransGAN 模型', type: 'success' },
+        }))
+        setAiModelProgress(null)
+      } else {
+        window.dispatchEvent(new CustomEvent('showToast', {
+          detail: { message: result?.error || '删除模型失败', type: 'error' },
+        }))
+      }
+      void probeAiModelStatus()
+    })()
+  }
+
+  // ── 代理自动配置（高级设置）：网络不佳时扫描本地代理端口，模型下载/更新走代理 ──
+  const [proxyEnabled, setProxyEnabled] = useState(false)
+  const [proxyScanning, setProxyScanning] = useState(false)
+  const [proxyList, setProxyList] = useState<Array<{ host: string; port: number; type: string; latency: number }>>([])
+  const [proxyState, setProxyState] = useState<{ enabled: boolean; proxy: { host: string; port: number; type: string } | null }>({ enabled: false, proxy: null })
+  const [proxyLatency, setProxyLatency] = useState<{
+    status: 'testing' | 'done'
+    result: {
+      baidu: { timeout: boolean; total: number; loss: number; lossRate: number; avgLatency: number; minLatency: number; maxLatency: number }
+      github: { timeout: boolean; total: number; loss: number; lossRate: number; avgLatency: number; minLatency: number; maxLatency: number }
+      google: { timeout: boolean; total: number; loss: number; lossRate: number; avgLatency: number; minLatency: number; maxLatency: number }
+    } | null
+  } | null>(null)
+
+  // 触发联通测试并展示（开关开启/重启仍开启时后台测）；75s 兜底超时显示"连接超时"
+  const probeAndShow = () => {
+    setProxyLatency({ status: 'testing', result: null })
+    const timeoutResult = {
+      baidu: { timeout: true, total: 0, loss: 0, lossRate: 100, avgLatency: 0, minLatency: 0, maxLatency: 0 },
+      github: { timeout: true, total: 0, loss: 0, lossRate: 100, avgLatency: 0, minLatency: 0, maxLatency: 0 },
+      google: { timeout: true, total: 0, loss: 0, lossRate: 100, avgLatency: 0, minLatency: 0, maxLatency: 0 },
+    }
+    const guard = window.setTimeout(() => setProxyLatency({ status: 'done', result: timeoutResult }), 75_000)
+    void window.electron?.proxyManager?.probe?.()
+      .then((r) => { window.clearTimeout(guard); if (r) setProxyLatency(r) })
+      .catch(() => { window.clearTimeout(guard); setProxyLatency({ status: 'done', result: timeoutResult }) })
+  }
+
+  useEffect(() => {
+    const refresh = () => {
+      void window.electron?.proxyManager?.getState?.().then((s) => {
+        if (s) { setProxyEnabled(s.enabled); setProxyState(s) }
+      }).catch(() => {})
+      // 功能开启时测 ping（重启后仍开启：后台测完填入）
+      void window.electron?.proxyManager?.getLatency?.().then((r) => {
+        if (r) setProxyLatency(r)
+        else if (proxyEnabled) probeAndShow()
+      }).catch(() => {})
+    }
+    refresh()
+    // 主进程自动关闭（运行中断开/启动无代理）时同步开关状态
+    const off = window.electron?.proxyManager?.onNotice?.(() => refresh())
+    const offLatency = window.electron?.proxyManager?.onLatency?.((r) => { if (r) setProxyLatency(r) })
+    return () => { off?.(); offLatency?.() }
+  }, [])
+
+  const handleProxyToggle = (enabled: boolean) => {
+    setProxyEnabled(enabled)
+    if (!enabled) {
+      void window.electron?.proxyManager?.disable?.().then((s) => { if (s) setProxyState(s) }).catch(() => {})
+      setProxyList([])
+      return
+    }
+    // 开启：扫描本地代理端口并自动选最优
+    setProxyScanning(true)
+    void (async () => {
+      try {
+        const list = await window.electron?.proxyManager?.scan?.()
+        const found = list || []
+        setProxyList(found)
+        if (found.length > 0) {
+          const best = found[0]
+          const s = await window.electron?.proxyManager?.enable?.(best.port)
+          if (s) { setProxyState(s); setProxyEnabled(true) }
+          probeAndShow() // 开启即测一次 ping 延迟/丢包
+          window.dispatchEvent(new CustomEvent('showToast', {
+            detail: { message: `已自动配置代理 127.0.0.1:${best.port}（延迟 ${best.latency}ms）`, type: 'success' },
+          }))
+        } else {
+          setProxyEnabled(false)
+          window.dispatchEvent(new CustomEvent('showToast', {
+            detail: { message: '未检测到可用的本地代理，请确认代理软件已开启', type: 'error' },
+          }))
+        }
+      } catch {
+        setProxyEnabled(false)
+        window.dispatchEvent(new CustomEvent('showToast', {
+          detail: { message: '代理扫描失败', type: 'error' },
+        }))
+      } finally {
+        setProxyScanning(false)
+      }
+    })()
+  }
+
+  const handleProxyRescan = () => {
+    setProxyScanning(true)
+    void (async () => {
+      try {
+        const list = await window.electron?.proxyManager?.scan?.()
+        const found = list || []
+        setProxyList(found)
+        if (found.length > 0) {
+          const best = found[0]
+          const s = await window.electron?.proxyManager?.enable?.(best.port)
+          if (s) setProxyState(s)
+        } else {
+          window.dispatchEvent(new CustomEvent('showToast', {
+            detail: { message: '未检测到可用的本地代理', type: 'error' },
+          }))
+        }
+      } catch {
+        window.dispatchEvent(new CustomEvent('showToast', {
+          detail: { message: '代理扫描失败', type: 'error' },
+        }))
+      } finally {
+        setProxyScanning(false)
+      }
+    })()
+  }
   
   const handleCrossfadeToggle = (enabled: boolean) => {
     // Crossfade 和 AutoMix、Gapless 互斥
@@ -2487,7 +2676,6 @@ function SettingsPanel({
                             <div className="grid grid-cols-2 gap-3">
                               {([
                                 ['darken', '暗化', '加深背景遮罩，文字更清晰'],
-                                ['blur', '模糊', '背景高斯模糊，弱化壁纸干扰'],
                               ] as const).map(([value, label, hint]) => {
                                 const enabled = taskbarWidgetSettings[value] === true
                                 return (
@@ -2513,8 +2701,25 @@ function SettingsPanel({
                                 )
                               })}
                             </div>
+                            {taskbarWidgetSettings.darken && (
+                              <div className="mt-3">
+                                <div className="flex items-center justify-between mb-2"><span className={`${textPrimary} text-xs font-medium`}>暗化程度</span><span className={`${textTertiary} text-[10px] tabular-nums`}>{Math.round(taskbarWidgetSettings.darkenLevel * 100)}%</span></div>
+                                <input type="range" min="5" max="95" step="5" value={Math.round(taskbarWidgetSettings.darkenLevel * 100)} onChange={(e) => void handleTaskbarWidgetUpdate({ darkenLevel: Number(e.target.value) / 100 })} className="w-full" style={{ accentColor }} />
+                              </div>
+                            )}
+                            {(taskbarWidgetSettings.mode || 'normal') === 'normal' && (
+                              <div className="mt-3 flex items-center justify-between">
+                                <span className={`${textPrimary} text-xs font-medium`}>隐藏控件</span>
+                                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                  <input type="checkbox" checked={taskbarWidgetSettings.hideControls} onChange={(e) => void handleTaskbarWidgetUpdate({ hideControls: e.target.checked })} className="sr-only peer" />
+                                  <div className={`w-9 h-5 rounded-full relative shrink-0 transition-colors`} style={{ backgroundColor: taskbarWidgetSettings.hideControls ? accentColor : playerTheme === 'dark' ? 'rgba(255,255,255,.2)' : 'rgba(0,0,0,.2)' }}>
+                                    <span className={`absolute top-[2px] start-[2px] w-4 h-4 rounded-full bg-white shadow transition-all`} style={{ transform: taskbarWidgetSettings.hideControls ? 'translateX(16px)' : '' }} />
+                                  </div>
+                                </label>
+                              </div>
+                            )}
                             <p className={`${textTertiary} text-[10px] mt-2 leading-4`}>
-                              默认无背景，播控栏完全透明；开启后可按需叠加暗化遮罩与高斯模糊。
+                              仅 Windows 可用。迷你播控栏覆盖在任务栏带区域，只有播控按钮可点击，其余区域鼠标穿透。
                             </p>
                           </div>
 
@@ -3040,6 +3245,73 @@ function SettingsPanel({
                                   <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: autoMixAiMix ? accentColor : '' }}></div>
                                 </label>
                               </div>
+
+                              {/* DJTransGAN 模型：下载 / 进度 / 删除 */}
+                              <div className={`rounded-xl border p-3 ${playerTheme === 'dark' ? 'border-white/10 bg-white/[0.03]' : 'border-black/10 bg-black/[0.02]'}`}>
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className={`${textPrimary} text-sm font-medium mb-0.5`}>DJTransGAN 模型</div>
+                                    <div className={`${textSecondary} text-xs leading-relaxed`}>
+                                      {aiModelStatus?.installed
+                                        ? '已安装，可直接使用 AI 混音'
+                                        : aiModelProgress?.status === 'downloading'
+                                          ? `${aiModelProgress.phaseLabel || '下载中'}… ${Math.round(aiModelProgress.phasePercent)}%`
+                                          : aiModelProgress?.status === 'paused'
+                                            ? '下载已暂停'
+                                            : aiModelProgress?.status === 'error'
+                                              ? `下载失败：${aiModelProgress.error || '未知错误'}`
+                                              : aiModelStatus
+                                                ? aiModelStatus.repoReady && !aiModelStatus.weightsReady
+                                                  ? '已下载仓库，缺少预训练权重'
+                                                  : '未安装（点击下载将自动安装运行环境 + 模型）'
+                                                : '检测中…'}
+                                    </div>
+                                  </div>
+                                  {aiModelStatus?.installed ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => setShowAiModelDeleteDialog(true)}
+                                      className="flex-shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors"
+                                      style={{
+                                        color: '#f87171',
+                                        background: playerTheme === 'dark' ? 'rgba(239,68,68,0.12)' : 'rgba(239,68,68,0.08)',
+                                        border: '1px solid rgba(239,68,68,0.25)',
+                                      }}
+                                    >
+                                      删除模型
+                                    </button>
+                                  ) : aiModelProgress?.status === 'downloading' || aiModelProgress?.status === 'paused' ? (
+                                    <div className="flex flex-shrink-0 items-center gap-1.5">
+                                      {aiModelProgress.status === 'paused' ? (
+                                        <button type="button" onClick={handleAiModelResume} className="rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-85" style={{ background: accentColor }}>继续</button>
+                                      ) : (
+                                        <button type="button" onClick={handleAiModelPause} className="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors" style={{ color: playerTheme === 'dark' ? '#f2f3f7' : '#1c1d22', background: playerTheme === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}>暂停</button>
+                                      )}
+                                      <button type="button" onClick={handleAiModelCancel} className="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors" style={{ color: playerTheme === 'dark' ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.65)', background: 'transparent', border: `1px solid ${playerTheme === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.15)'}` }}>取消</button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => setShowAiModelDownloadDialog(true)}
+                                      className="flex-shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-transform hover:scale-[1.03] active:scale-95"
+                                      style={{ background: accentColor }}
+                                    >
+                                      下载模型
+                                    </button>
+                                  )}
+                                </div>
+                                {aiModelProgress && (aiModelProgress.status === 'downloading' || aiModelProgress.status === 'paused') && (
+                                  <div className="mt-2.5">
+                                    <div className="flex items-center justify-between text-[11px] mb-1">
+                                      <span className={textSecondary}>{aiModelProgress.phaseLabel || '下载中'}</span>
+                                      <span className={textSecondary}>{Math.round(aiModelProgress.phasePercent)}%</span>
+                                    </div>
+                                    <div className={`h-1.5 w-full overflow-hidden rounded-full ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
+                                      <div className="h-full rounded-full transition-[width] duration-300" style={{ width: `${Math.max(0, Math.min(100, aiModelProgress.phasePercent))}%`, background: accentColor }} />
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
                             </>
                           )}
 
@@ -3537,6 +3809,122 @@ function SettingsPanel({
                       <div className={`${textTertiary} text-xs mt-3 p-3 rounded-lg`} style={{ backgroundColor: playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
                         关闭后会降低 CPU 占用，适合低性能设备或省电场景。
                       </div>
+                    </div>
+                  </div>
+
+                  {/* 代理自动配置：模型下载 / 应用更新走本地代理 */}
+                  <div>
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>网络与代理</h3>
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className={`${textPrimary} font-medium mb-1`}>代理自动配置</div>
+                          <div className={`${textSecondary} text-xs leading-relaxed`}>
+                            网络环境不佳时，当您打开代理后请打开此功能，此功能会自动配置相关功能。
+                            <br />
+                            开启后自动扫描本机代理端口，模型下载与应用更新将走代理。
+                          </div>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={proxyEnabled}
+                            disabled={proxyScanning}
+                            onChange={(e) => handleProxyToggle(e.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: proxyEnabled ? accentColor : '' }}></div>
+                        </label>
+                      </div>
+
+                      {proxyScanning && (
+                        <div className={`mt-3 text-xs ${textSecondary}`}>正在扫描本地代理端口…</div>
+                      )}
+
+                      {/* 当前连接信息 */}
+                      {proxyEnabled && proxyState.proxy && (
+                        <div className="mt-3 flex items-center gap-2 flex-wrap text-xs">
+                          <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1" style={{ backgroundColor: `${accentColor}22`, color: accentColor, border: `1px solid ${accentColor}55` }}>
+                            已连接
+                          </span>
+                          <span className={`${textPrimary}`}>端口：{proxyState.proxy.port}</span>
+                          <span className={`${textPrimary}`}>地址：{proxyState.proxy.host}</span>
+                          {(() => {
+                            const cur = proxyList.find((p) => p.port === proxyState.proxy?.port)
+                            return cur ? <span className={`${textPrimary}`}>探测延迟：{cur.latency}ms</span> : null
+                          })()}
+                          <button type="button" onClick={handleProxyRescan} disabled={proxyScanning} className="rounded-lg px-2.5 py-1 transition-colors" style={{ color: accentColor, background: `${accentColor}18`, border: `1px solid ${accentColor}44` }}>
+                            重新扫描
+                          </button>
+                        </div>
+                      )}
+
+                      {/* 三路并行联通测试：网络联通（百度）/ GitHub / Google，各最多 8 次、整体超 1 分钟显示连接超时 */}
+                      {proxyEnabled && (
+                        <div className="mt-3 space-y-1.5">
+                          {([
+                            ['baidu', '网络联通状态'],
+                            ['github', 'GitHub 联通状态'],
+                            ['google', 'Google 联通状态'],
+                          ] as const).map(([key, label]) => {
+                            const item = proxyLatency?.status === 'done' ? proxyLatency.result?.[key] : null
+                            return (
+                              <div key={key} className={`flex items-center gap-2 text-xs ${textSecondary}`}>
+                                <span className="w-28 shrink-0 whitespace-nowrap">{label}：</span>
+                                {proxyLatency?.status === 'testing' ? (
+                                  <span className="inline-flex items-center gap-1.5">
+                                    <span className="inline-block h-3 w-3 rounded-full border-2 border-transparent animate-spin" style={{ borderTopColor: accentColor, borderRightColor: accentColor }} />
+                                    正在测试中…
+                                  </span>
+                                ) : item?.timeout ? (
+                                  <span className="text-red-400">连接超时</span>
+                                ) : item ? (
+                                  <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <span className={item.avgLatency < 150 ? 'text-green-500' : item.avgLatency < 400 ? 'text-yellow-500' : 'text-red-400'}>
+                                      延迟 {item.avgLatency}ms
+                                    </span>
+                                    <span className={textTertiary}>({item.minLatency}~{item.maxLatency}ms)</span>
+                                    <span className={item.lossRate === 0 ? 'text-green-500' : 'text-red-400'}>
+                                      丢包 {item.lossRate}%
+                                    </span>
+                                    <span className={textTertiary}>{item.loss}/{item.total} 次</span>
+                                  </span>
+                                ) : (
+                                  <span>等待测试…</span>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+
+                      {/* 扫描结果列表 */}
+                      {proxyList.length > 0 && (
+                        <div className="mt-3 space-y-1.5">
+                          <div className={`${textSecondary} text-xs mb-1`}>检测到的本地代理（按延迟排序）：</div>
+                          {proxyList.map((p) => (
+                            <button
+                              key={p.port}
+                              type="button"
+                              disabled={proxyScanning}
+                              onClick={() => void window.electron?.proxyManager?.enable?.(p.port).then((s) => { if (s) setProxyState(s) })}
+                              className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-xs transition-colors disabled:opacity-50"
+                              style={{
+                                background: proxyState.proxy?.port === p.port ? `${accentColor}20` : playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)',
+                                border: `1px solid ${proxyState.proxy?.port === p.port ? `${accentColor}66` : playerTheme === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'}`,
+                              }}
+                            >
+                              <span className={`${textPrimary}`}>127.0.0.1:{p.port}</span>
+                              <span className="flex items-center gap-2">
+                                <span className={p.latency < 100 ? 'text-green-500' : p.latency < 300 ? 'text-yellow-500' : 'text-red-400'}>
+                                  {p.latency}ms
+                                </span>
+                                {proxyState.proxy?.port === p.port && <span style={{ color: accentColor }}>使用中</span>}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -4420,6 +4808,131 @@ function SettingsPanel({
                 style={{ backgroundColor: '#ef4444', boxShadow: deleteLicenseCountdown > 0 ? undefined : '0 10px 28px rgba(239, 68, 68, 0.24)' }}
               >
                 确定{deleteLicenseCountdown > 0 ? `（${deleteLicenseCountdown}）` : ''}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+
+      {/* DJTransGAN 模型下载确认弹窗（参考删除歌单弹窗样式） */}
+      {showAiModelDownloadDialog && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(10px)' }}
+          onClick={() => setShowAiModelDownloadDialog(false)}
+        >
+          <motion.div
+            data-tv-scope
+            initial={{ scale: 0.94, opacity: 0, y: 12 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.94, opacity: 0, y: 12 }}
+            transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm overflow-hidden rounded-3xl shadow-2xl relative"
+          >
+            <div className="absolute inset-0 rounded-3xl overflow-hidden">
+              <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg, rgba(0,0,0,0.3) 0%, rgba(20,20,30,0.5) 50%, rgba(0,0,0,0.4) 100%)', backdropFilter: 'blur(80px) saturate(200%)', WebkitBackdropFilter: 'blur(80px) saturate(200%)' }} />
+              <div className="absolute inset-0 rounded-3xl" style={{ border: '1px solid rgba(255,255,255,0.2)', boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.15)', pointerEvents: 'none' }} />
+            </div>
+            <div className="relative z-10 p-5 border-b" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: 'rgba(251,191,36,0.18)' }}>
+                  <AlertTriangle className="w-5 h-5 text-amber-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-base font-semibold text-white">下载 DJTransGAN 模型</h3>
+                  <p className="text-white/70 text-sm mt-1 leading-relaxed">
+                    将自动下载并安装运行环境与模型（约 400MB，需要几分钟），安装完成后可直接使用 AI 混音。
+                  </p>
+                </div>
+                <button type="button" onClick={() => setShowAiModelDownloadDialog(false)} className="p-2 rounded-full transition-colors hover:bg-white/15 -m-1">
+                  <X className="w-5 h-5 text-white/60" />
+                </button>
+              </div>
+            </div>
+            <div className="relative z-10 flex gap-3 p-4">
+              <button
+                type="button"
+                onClick={() => setShowAiModelDownloadDialog(false)}
+                className="flex-1 py-2.5 px-4 text-white/80 rounded-xl transition-colors hover:bg-white/10"
+                style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleAiModelDownload}
+                className="flex-1 py-2.5 px-4 rounded-xl font-medium text-white transition-transform hover:scale-[1.02]"
+                style={{ background: 'linear-gradient(135deg, #7c6cff, #5a4bd8)', boxShadow: '0 4px 16px rgba(124,108,255,0.4)' }}
+              >
+                确认下载
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+
+      {/* DJTransGAN 模型删除确认弹窗 */}
+      {showAiModelDeleteDialog && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(10px)' }}
+          onClick={() => setShowAiModelDeleteDialog(false)}
+        >
+          <motion.div
+            data-tv-scope
+            initial={{ scale: 0.94, opacity: 0, y: 12 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.94, opacity: 0, y: 12 }}
+            transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm overflow-hidden rounded-3xl shadow-2xl relative"
+          >
+            <div className="absolute inset-0 rounded-3xl overflow-hidden">
+              <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg, rgba(0,0,0,0.3) 0%, rgba(20,20,30,0.5) 50%, rgba(0,0,0,0.4) 100%)', backdropFilter: 'blur(80px) saturate(200%)', WebkitBackdropFilter: 'blur(80px) saturate(200%)' }} />
+              <div className="absolute inset-0 rounded-3xl" style={{ border: '1px solid rgba(255,255,255,0.2)', boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.15)', pointerEvents: 'none' }} />
+            </div>
+            <div className="relative z-10 p-5 border-b" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: 'rgba(239,68,68,0.18)' }}>
+                  <AlertTriangle className="w-5 h-5 text-red-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-base font-semibold text-white">删除 DJTransGAN 模型</h3>
+                  <p className="text-white/60 text-sm mt-1">
+                    确定要删除已下载的 DJTransGAN 模型吗？
+                  </p>
+                  <p className="text-white/40 text-xs mt-1.5">
+                    删除后 AI 混音（60s 长混音）将不可用，需重新下载。此操作不可撤销。
+                  </p>
+                </div>
+                <button type="button" onClick={() => setShowAiModelDeleteDialog(false)} className="p-2 rounded-full transition-colors hover:bg-white/15 -m-1">
+                  <X className="w-5 h-5 text-white/60" />
+                </button>
+              </div>
+            </div>
+            <div className="relative z-10 flex gap-3 p-4">
+              <button
+                type="button"
+                onClick={() => setShowAiModelDeleteDialog(false)}
+                className="flex-1 py-2.5 px-4 text-white/80 rounded-xl transition-colors hover:bg-white/10"
+                style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleAiModelDelete}
+                className="flex-1 py-2.5 px-4 rounded-xl font-medium text-white"
+                style={{ background: 'linear-gradient(135deg, #ef4444, #dc2626)', boxShadow: '0 4px 16px rgba(239,68,68,0.4)' }}
+              >
+                删除
               </button>
             </div>
           </motion.div>

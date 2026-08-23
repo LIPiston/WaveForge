@@ -26,6 +26,7 @@ import { getCommentMutationMessage, isCommentMutationSuccessful } from './server
 import { registerHazardRoutes } from './server/hazard-api.mjs'
 import { registerLocationRoutes } from './server/location-api.mjs'
 import { registerBilibiliRoutes } from './server/bilibili-api.mjs'
+import { registerAppleArtworkRoutes } from './server/apple-artwork-api.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -957,6 +958,7 @@ app.use(express.urlencoded({ extended: true, limit: '12mb' }))
 registerHazardRoutes(app)
 registerLocationRoutes(app)
 registerBilibiliRoutes(app)
+registerAppleArtworkRoutes(app)
 
 const fetchLocationProvider = async (url, normalize) => {
   const controller = new AbortController()

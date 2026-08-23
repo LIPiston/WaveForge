@@ -1297,7 +1297,7 @@ function updateTaskbar() {
 // 与 Echo 的「迷你底栏」对齐：窗口高度精确等于任务栏带高度，贴任务栏右侧（或居中），
 // 播放时显示封面/歌词行/进度并提供控制；默认鼠标穿透，悬停进入交互态不挡任务栏。
 // 设置（userData/taskbar-widget-settings.json）由「设置-个性化」控制开关/位置/宽度/模式。
-const TASKBAR_WIDGET_DEFAULTS = { enabled: false, position: 'right', width: 340, mode: 'normal', darken: false, blur: false }
+const TASKBAR_WIDGET_DEFAULTS = { enabled: false, position: 'right', width: 340, mode: 'normal', darken: false, darkenLevel: 0.5, hideControls: false }
 let taskbarWidgetSettings = { ...TASKBAR_WIDGET_DEFAULTS }
 let taskbarWidgetWindow = null
 let taskbarWidgetClosedByUser = false
@@ -1318,9 +1318,9 @@ function sanitizeTaskbarWidgetSettings(input = {}, base = TASKBAR_WIDGET_DEFAULT
     position: input.position === 'right' || input.position === 'center' ? input.position : (base.position === 'center' ? 'center' : 'right'),
     width: Math.round(Math.min(420, Math.max(260, Number(input.width) || base.width))),
     mode: input.mode === 'pure' || input.mode === 'normal' ? input.mode : (base.mode === 'pure' ? 'pure' : 'normal'),
-    // 背景效果（用户自定义）：暗化遮罩 / 高斯模糊
     darken: input.darken === undefined ? base.darken === true : input.darken === true,
-    blur: input.blur === undefined ? base.blur === true : input.blur === true,
+    darkenLevel: Math.min(0.95, Math.max(0.05, Number(input.darkenLevel) || base.darkenLevel)),
+    hideControls: input.hideControls === undefined ? base.hideControls === true : input.hideControls === true,
   }
 }
 
@@ -1362,8 +1362,8 @@ let taskbarTrayCache = null // { left, right } 物理像素
 let taskbarTrayCacheAt = 0
 let taskbarTrayRequest = null
 const TASKBAR_TRAY_CACHE_MS = 30000
-// 托盘不可测时的保守预留：约 30% 屏宽，保证不叠进托盘（托盘实测后会自动贴齐）
-const TASKBAR_TRAY_FALLBACK_RATIO = 0.3
+// 托盘不可测时靠右贴齐：留 12px 边距
+const TASKBAR_TRAY_FALLBACK_RATIO = 0.04
 
 function fetchTaskbarTrayRectPhysical() {
   if (taskbarTrayRequest) return taskbarTrayRequest
@@ -1550,7 +1550,8 @@ function updateTaskbarWidget() {
   bindTaskbarDisplayMetrics()
   bindTaskbarThemeSync()
   const hasSong = Boolean(desktopPlayerState.song?.name)
-  if (!taskbarWidgetSettings.enabled || !hasSong || taskbarWidgetClosedByUser) {
+  // 开启时始终显示（冷启动无歌时显示品牌名），关闭/用户手动关闭才隐藏
+  if (!taskbarWidgetSettings.enabled || taskbarWidgetClosedByUser) {
     if (taskbarWidgetWindow && !taskbarWidgetWindow.isDestroyed() && taskbarWidgetWindow.isVisible()) {
       taskbarWidgetWindow.hide()
     }
@@ -6527,6 +6528,20 @@ app.whenReady().then(() => {
   setupRenderIPC(ipcMain, configManager.getCachePath(), toMediaUrl)
   // AI 混音（DJTransGAN）运行时：可选引擎，未安装时 render:transitionAiMix 抛错、前端回退 DSP
   setupAiMixIPC(ipcMain, configManager.getCachePath())
+  // AI 混音模型（DJTransGAN 仓库 + 预训练权重）下载/删除管理：设置面板「下载模型」用
+  try {
+    const { setupAiModelIPC } = require('./ai-model-manager.cjs')
+    setupAiModelIPC(ipcMain, (scope, message) => automixLog.log(scope, message))
+  } catch (error) {
+    console.error('⚠️ [AI Model] 模型下载管理器初始化失败:', error instanceof Error ? error.message : error)
+  }
+  // 代理自动配置：模型下载/应用更新走用户本地代理（设置 → 高级 → 代理自动配置）
+  try {
+    const { setupProxyIPC } = require('./proxy-manager.cjs')
+    setupProxyIPC(ipcMain, (scope, message) => automixLog.log(scope, message))
+  } catch (error) {
+    console.error('⚠️ [Proxy] 代理管理器初始化失败:', error instanceof Error ? error.message : error)
+  }
 
   // AirPlay 投送端：mDNS 设备发现 + RAOP/AirPlay2 会话管理（纯 JS，无原生依赖）
   try {
@@ -6637,9 +6652,15 @@ app.whenReady().then(() => {
       const destPath = path.join(downloadDir, `WaveForge-Setup-${Date.now()}.exe`)
       try {
         let digest = ''
-        await new Promise((resolve, reject) => {
-          const request = net.request(String(url))
-          request.setRedirectMode('follow')
+        await new Promise(async (resolve, reject) => {
+          // Electron 42：setRedirectMode 已移除（默认自动跟随重定向）；
+          // 代理自动配置开启时显式路由到本地代理会话
+          let proxySession = null
+          try {
+            const { getState, getProxySession } = require('./proxy-manager.cjs')
+            if (getState().enabled) proxySession = await getProxySession()
+          } catch { /* 代理未配置则直连 */ }
+          const request = proxySession ? net.request({ url: String(url), session: proxySession }) : net.request(String(url))
           const hash = crypto.createHash('sha256')
           const writeStream = fs.createWriteStream(destPath)
           let settled = false

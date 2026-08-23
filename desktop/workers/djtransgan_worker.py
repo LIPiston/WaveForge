@@ -27,6 +27,17 @@ import numpy as np  # noqa: E402
 
 SR = 44100
 
+
+def _plan_beats(plan, key):
+    """App 分析好的节拍注入（替代仓库内 madmom 节拍检测——madmom 无 wheel 且
+    不支持 Py3.13，无法自动安装）。plan 携带 source/target 的 bpm 与拍点，
+    4/4 主拍网格下每 4 拍取一个 downbeat 近似（真实歌曲以 4/4 为主）。"""
+    prefix = 'source' if key == 'prev' else 'target'
+    beats = plan.get(f'{prefix}BeatTimes') or []
+    bpm = float(plan.get(f'{prefix}Bpm') or 120.0)
+    downbeats = beats[::4] if beats else []
+    return {'bpm': bpm, 'downbeats': downbeats}
+
 # ── v2 编排特效层（与 render_worker.py 同实现的独立副本，只依赖 numpy/scipy）──
 # AI worker 运行在带 torch 的 venv（无 pedalboard），无法 import render_worker；
 # 这里内嵌 riser/噪声扫频/鼓点填充/回声 + 依赖的 filtered/beat_automation/kick，
@@ -238,7 +249,10 @@ def extract_automation(plan, source_path, target_path):
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
-        (pair_audio, timestamps), (pair_audio_for_g, cue_for_g), _ratio = preprocess(prev_audio, next_audio, prev_cue, next_cue)
+        # WaveForge 适配：节拍用 App 分析注入（preprocess 第 5 参），preprocess 返回 2 值
+        plan_beats = {'prev': _plan_beats(plan, 'prev'), 'next': _plan_beats(plan, 'next')}
+        (pair_audio, timestamps), (pair_audio_for_g, cue_for_g) = preprocess(prev_audio, next_audio, prev_cue, next_cue, plan_beats)
+        pair_audio_for_g = [t.float() for t in pair_audio_for_g]  # preprocess 部分输出 float64，模型需要 float32
         with torch.no_grad():
             in_vecs, _in_mags = generator.encode(pair_audio_for_g)
             render_params = [generator.unzipper(processor(*in_vecs)) for processor in generator.post_processors]
@@ -272,7 +286,11 @@ def render_ai_transition(plan, source_path, target_path, output_path):
     try:
         # 模型窗口起点/终点（源曲/目标曲内的绝对时间，由 preprocess 的 timestamps 给出：
         # timestamps[i] = [start_sample, end_sample]；next 侧为"拉伸后"时间轴）
-        (pair_audio, timestamps), (pair_audio_for_g, cue_for_g), stretch_ratio = preprocess(prev_audio, next_audio, prev_cue, next_cue)
+        # WaveForge 适配：节拍用 App 分析注入，preprocess 返回 2 值；stretch_ratio 由 plan bpm 计算
+        plan_beats = {'prev': _plan_beats(plan, 'prev'), 'next': _plan_beats(plan, 'next')}
+        (pair_audio, timestamps), (pair_audio_for_g, cue_for_g) = preprocess(prev_audio, next_audio, prev_cue, next_cue, plan_beats)
+        pair_audio_for_g = [t.float() for t in pair_audio_for_g]  # preprocess 部分输出 float64，模型需要 float32
+        stretch_ratio = float(plan.get('sourceBpm') or 120.0) / max(1.0, float(plan.get('targetBpm') or 120.0))
         transition_start = timestamps[0][0] / SR      # 源曲内（未拉伸轴）：混音窗口起始
         # 目标曲恢复点：timestamps[1][1] 在"拉伸后"时间轴，必须乘回拉伸比
         # （ratio = prev_bpm/next_bpm，next 被 sync_bpm 拉伸）才是原始时间轴位置，

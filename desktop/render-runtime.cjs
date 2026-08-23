@@ -551,8 +551,8 @@ function aiPythonCandidates() {
   if (process.env.WAVEFORGE_AI_MIX_PYTHON) candidates.push(process.env.WAVEFORGE_AI_MIX_PYTHON)
   // 开发目录：D:\opencode\DJTransGAN\.venv\Scripts\python.exe（__dirname = WaveForge/desktop）
   candidates.push(path.join(__dirname, '..', '..', 'DJTransGAN', '.venv', 'Scripts', 'python.exe'))
-  // 未来「可选下载」位置：userData/ai-mix-engine/python.exe
-  if (app && app.getPath) candidates.push(path.join(app.getPath('userData'), 'ai-mix-engine', 'python.exe'))
+  // 一键下载位置：应用安装目录/ai-mix-engine/python.exe（用户要求不占系统用户目录）
+  if (app && app.getPath) candidates.push(path.join(path.dirname(app.getPath('exe')), 'ai-mix-engine', 'python.exe'))
   return candidates.filter(candidate => typeof candidate === 'string' && fs.existsSync(candidate))
 }
 
@@ -619,7 +619,14 @@ class AiMixRuntime {
       }
       try {
         console.log('[AI Mix] Spawning worker with:', python)
-        const worker = spawn(python, [workerPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+        // 下载的模型仓库（应用安装目录/ai-mix-engine/DJTransGAN）优先作为 REPO_DIR；
+        // 未下载时 worker 内部默认 D:\opencode\DJTransGAN（开发目录）
+        const spawnEnv = { ...process.env }
+        const downloadedRepo = path.join(path.dirname(app.getPath('exe')), 'ai-mix-engine', 'DJTransGAN')
+        if (fs.existsSync(path.join(downloadedRepo, 'djtransgan', 'model', '__init__.py'))) {
+          spawnEnv.WAVEFORGE_DJTRANSGAN_DIR = downloadedRepo
+        }
+        const worker = spawn(python, [workerPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: spawnEnv })
         this.worker = worker
         worker.on('error', (error) => {
           console.error('[AI Mix] Worker spawn error:', error)
