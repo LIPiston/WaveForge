@@ -5545,7 +5545,7 @@ function App() {
       onSpotifyLogout: () => latest.current.onSpotifyLogout(),
       onKugouLogin: (cookie, username) => latest.current.onKugouLogin(cookie, username),
       onKugouLogout: () => latest.current.onKugouLogout(),
-      onSodaLogin: (cookie, username) => latest.current.onSodaLogin(cookie, username),
+      onSodaLogin: (cookie, username, extra) => latest.current.onSodaLogin(cookie, username, extra),
       onSodaLogout: () => latest.current.onSodaLogout(),
       onRemoveQueueItem: (index) => latest.current.onRemoveQueueItem(index),
       onMoveQueueItem: (from, to) => latest.current.onMoveQueueItem(from, to),
