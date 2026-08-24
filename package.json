@@ -133,6 +133,7 @@
     "opencc-js": "^1.0.5",
     "pixi.js": "^8.20.0",
     "qq-music-api": "^1.1.2",
+    "qrcode": "^1.5.4",
     "qrcode.react": "^4.2.0",
     "react": "^19.0.1",
     "react-colorful": "^5.8.0",

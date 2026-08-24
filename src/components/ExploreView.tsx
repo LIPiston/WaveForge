@@ -848,11 +848,19 @@ function ExploreView({
         })
       return () => { active = false }
     }
-    // 汽水：侧栏用户歌单暂无独立数据源；探索页的推荐歌单卡已由 exploreApi
-    // 经 /api/soda/user/playlists 写入 payload.playlists，这里保持侧栏状态为空即可
+    // 汽水：侧栏直接拉取真实用户歌单（含"我喜欢"虚拟歌单；未登录自然返回空数组）
     if (platform === 'soda') {
-      setUserPlaylists([])
-      return
+      let active = true
+      const shouldForceRefresh = authRevision !== playlistAuthRevisionRef.current
+      playlistAuthRevisionRef.current = authRevision
+      void getUserPlaylists('soda', '', sodaUsername, { forceRefresh: shouldForceRefresh })
+        .then(playlists => {
+          if (active) setUserPlaylists(playlists || [])
+        })
+        .catch(() => {
+          if (active) setUserPlaylists([])
+        })
+      return () => { active = false }
     }
     const isLoggedIn = platform === 'qq' ? qqLoggedIn : neteaseLoggedIn
     const userId = platform === 'qq' ? qqUserId || '' : neteaseUserId || ''

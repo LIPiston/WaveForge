@@ -3370,11 +3370,53 @@ ipcMain.handle('open-spotify-login', async (_event, clientId) => {
   }
 })
 
-// ── 汽水音乐登录（Electron 弹窗扫码，抓 token）──────────────────────────
+// ── 汽水音乐登录：汽水自有 Passport 二维码流程（移植自 Mineradio qishui-auth-v6，GPL-3.0-only）──
+// 生成二维码 → 轮询 check_qrconnect → 确认后捕获 .qishui.com 会话 Cookie + 用户资料。
+// 旧方案（sso.douyin.com 抖音 SSO）抓到的是 .douyin.com Cookie，luna Web API 一律 403，已废弃。
 let sodaLoginWindow = null
+
+function sodaLoginPageHtml(qrDataUrl) {
+  return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>汽水音乐扫码登录</title>' +
+    '<style>' +
+    'body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#111318;font-family:"Microsoft YaHei",system-ui,sans-serif;color:#fff}' +
+    '.card{width:340px;text-align:center;padding:32px 28px;border-radius:20px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}' +
+    'h2{margin:0 0 6px;font-size:20px}' +
+    '.sub{margin:0 0 18px;font-size:12px;color:rgba(255,255,255,.45)}' +
+    '.qrbox{position:relative;width:280px;height:280px;margin:0 auto 18px;background:#fff;border-radius:14px;padding:10px;box-sizing:border-box}' +
+    'img{width:100%;height:100%;display:block}' +
+    '#status{font-size:14px;color:rgba(255,255,255,.75);min-height:20px;margin:0 0 14px}' +
+    '.tip{font-size:11px;color:rgba(255,255,255,.3);line-height:1.7}' +
+    '</style></head><body><div class="card">' +
+    '<h2>汽水音乐扫码登录</h2><p class="sub">WaveForge · 澜音工坊</p>' +
+    '<div class="qrbox"><img id="waveforge-qr" src="' + qrDataUrl + '" alt="二维码"></div>' +
+    '<p id="status">请打开「汽水音乐」App 扫描二维码</p>' +
+    '<p class="tip">扫码登录即代表同意汽水音乐用户协议<br>本窗口由 WaveForge 本地渲染，凭据仅保存在本机</p>' +
+    '</div>' +
+    '<script>(function(){var b=document.createElement("div");b.innerHTML="✕";b.style.cssText="position:fixed;top:12px;right:14px;width:30px;height:30px;line-height:30px;text-align:center;background:rgba(255,255,255,.1);border-radius:50%;cursor:pointer;z-index:2147483647;color:#fff;font-size:14px";b.addEventListener("click",function(){window.close()});document.body.appendChild(b)})();' +
+    'window.__wfSetStatus=function(s){var e=document.getElementById("status");if(e)e.textContent=s};' +
+    'window.__wfSetQr=function(src){var e=document.getElementById("waveforge-qr");if(e)e.src=src};' +
+    '</script></body></html>'
+}
+
+async function sodaFetchProfile(cookie) {
+  // 复用本地后端的 luna/pc/me 能力取昵称/头像/ID（后端在 3001 端口随应用启动）
+  try {
+    const resp = await fetch('http://127.0.0.1:3001/api/soda/status?cookie=' + encodeURIComponent(cookie), { signal: AbortSignal.timeout(12000) })
+    const json = await resp.json()
+    if (json && json.profile && (json.profile.nickname || json.profile.userId)) {
+      return {
+        username: String(json.profile.nickname || ''),
+        avatar: String(json.profile.avatarUrl || ''),
+        userId: String(json.profile.userId || ''),
+      }
+    }
+  } catch { /* 后端未就绪时静默，字段留空不阻塞登录 */ }
+  return { username: '', avatar: '', userId: '' }
+}
+
 async function createSodaLoginWindow() {
   return new Promise((resolve) => {
-    if (sodaLoginWindow) {
+    if (sodaLoginWindow && !sodaLoginWindow.isDestroyed()) {
       sodaLoginWindow.focus()
       resolve({ success: false, error: '汽水音乐登录窗口已打开' })
       return
@@ -3383,147 +3425,127 @@ async function createSodaLoginWindow() {
     const finish = (result) => {
       if (settled) return
       settled = true
+      if (sodaLoginWindow && !sodaLoginWindow.isDestroyed()) sodaLoginWindow.close()
       resolve(result)
     }
     void (async () => {
       try {
-        const iconPath = path.join(__dirname, '..', 'build', 'icon.ico')
-        sodaLoginWindow = new BrowserWindow({
-          width: 1000,
-          height: 700,
+        const auth = require('./qishui-auth-v6.cjs')
+        // 凭据/设备指纹持久化到 userData（deviceId 稳定可降低风控概率；cookie 登录后写入）
+        const configFile = path.join(app.getPath('userData'), 'soda-qr-login.json')
+        const readCfg = () => { try { return JSON.parse(fs.readFileSync(configFile, 'utf8')) } catch { return {} } }
+        const writeCfg = (patch) => {
+          try { fs.writeFileSync(configFile, JSON.stringify({ ...readCfg(), ...(patch || {}) }, null, 2), 'utf8') } catch {}
+        }
+        auth.configure({
+          getConfig: () => ({
+            deviceId: '', installId: '', verifyPortraitId: '',
+            computerName: os.hostname() || 'Windows-PC', cookie: '', msToken: '',
+            ...readCfg(),
+          }),
+          updateConfig: (patch) => writeCfg(patch),
+        })
+
+        let qrWindow = new BrowserWindow({
+          width: 420,
+          height: 600,
           parent: mainWindow,
           modal: true,
           frame: false,
+          resizable: false,
           backgroundColor: '#111318',
           title: 'WaveForge 澜音工坊 - 汽水音乐登录',
-          icon: fs.existsSync(iconPath) ? iconPath : undefined,
+          icon: path.join(__dirname, '..', 'build', 'icon.ico'),
           webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
-            session: mainWindow.webContents.session,
           },
         })
-        // 抖音风控对 Electron UA 直接拦截（验证码「系统繁忙」/扫码「访问太频繁」）：
-        // 伪装为普通 Chrome，并从干净会话开始登录。
-        const sodaSession = sodaLoginWindow.webContents.session
-        sodaLoginWindow.webContents.setUserAgent(REAL_CHROME_UA)
-        // 每次打开清空 .douyin.com 域 Cookie（含上次登录留下的会话与风控标记）：
-        // 从干净会话开始，便于登录其他账号；localStorage 的 soda_token 在成功前保持不变。
-        try {
-          const existing = await sodaSession.cookies.get({ domain: '.douyin.com' })
-          if (existing.length) {
-            await Promise.all(existing.map(c => removeSessionCookie(sodaSession, c)))
-            console.log('🧹 [汽水音乐] 已清理抖音域 Cookie，从干净会话开始登录')
-          }
-        } catch { /* 清理失败不阻塞登录 */ }
-        // 导航守卫：只放行抖音系域（登录/认证跳转），外链交系统浏览器
-        const isSodaDomain = (url) => {
-          try {
-            const hostname = new URL(String(url || '')).hostname.toLowerCase()
-            return hostname === 'douyin.com' || hostname.endsWith('.douyin.com')
-              || hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')
-              || hostname.endsWith('.byteimg.com') || hostname.endsWith('.ibytedapm.com')
-              || hostname.endsWith('.snssdk.com') || hostname.endsWith('.zijieapi.com')
-          } catch { return false }
+        qrWindow.setMenuBarVisibility(false)
+        sodaLoginWindow = qrWindow
+
+        const setStatus = (text) => {
+          try { if (qrWindow && !qrWindow.isDestroyed()) void qrWindow.webContents.executeJavaScript('window.__wfSetStatus && window.__wfSetStatus(' + JSON.stringify(text) + ')') } catch {}
         }
-        sodaLoginWindow.webContents.on('will-navigate', (event, url) => {
-          if (!isSodaDomain(url)) {
-            event.preventDefault()
-            if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(String(url)).catch(() => {})
+
+        // 生成并刷新二维码（过期自动重取，最多 4 次）
+        let qrToken = ''
+        let expiredCount = 0
+        const buildQr = async () => {
+          const qr = await auth.getQrCode()
+          const data = qr.data || {}
+          qrToken = String(data.token || '')
+          if (!qrToken || !data.qrcode) throw new Error('二维码生成数据不完整')
+          if (qrWindow && !qrWindow.isDestroyed()) {
+            await qrWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(sodaLoginPageHtml(String(data.qrcode))))
           }
-        })
-        sodaLoginWindow.webContents.setWindowOpenHandler(({ url }) => {
-          if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(String(url)).catch(() => {})
-          return { action: 'deny' }
-        })
-        // 加载抖音登录页（sso.douyin.com 展示抖音扫码二维码；汽水音乐使用抖音账号体系）
-        // 注意：sodamusic.com 域名已停用（仅剩占位页），不能作为登录入口。
-        sodaLoginWindow.loadURL('https://sso.douyin.com/?service=https%3A%2F%2Fwww.douyin.com%2F&type=login')
-        // 注入关闭按钮
-        sodaLoginWindow.webContents.on('did-finish-load', () => {
-          sodaLoginWindow.webContents.executeJavaScript(`
-            (function() {
-              if (document.getElementById('waveforge-close-btn')) return;
-              const b = document.createElement('div');
-              b.id = 'waveforge-close-btn';
-              b.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
-              b.style.cssText = 'position:fixed;top:12px;right:12px;width:32px;height:32px;background:rgba(0,0,0,0.55);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:2147483647;color:#fff;';
-              b.addEventListener('click', () => window.close());
-              document.body.appendChild(b);
-            })();
-          `).catch(() => {})
-        })
-        // 每 2 秒检查登录态（抖音扫码成功后 .douyin.com 域出现 sessionid 等会话 Cookie）
-        const checkInterval = setInterval(async () => {
-          if (!sodaLoginWindow || sodaLoginWindow.isDestroyed()) {
-            clearInterval(checkInterval)
-            return
-          }
+        }
+
+        await buildQr()
+
+        // 轮询扫码状态；check_qrconnect 可能因二次验证(MFA)长时间阻塞——用 inFlight 防止调用堆积
+        let pollTimer = null
+        let inFlight = false
+        let consecutiveErrors = 0
+        pollTimer = setInterval(async () => {
+          if (!qrWindow || qrWindow.isDestroyed() || settled) { clearInterval(pollTimer); return }
+          if (inFlight) return
+          inFlight = true
           try {
-            const cookies = await sodaLoginWindow.webContents.session.cookies.get({ domain: '.douyin.com' })
-            const session = cookies.find(c => c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'sid_guard')
-            if (session && session.value) {
-              // 捕获完整抖音会话 Cookie（供后续抖音系接口使用）
-              const cookieString = cookies
-                .filter(c => /sessionid|sid_guard|uid_tt|passport|ttwid|odin_tt/i.test(c.name) && c.value)
-                .map(c => `${c.name}=${c.value}`)
-                .join('; ')
-              console.log('✓ [汽水音乐] 登录成功，捕获抖音会话')
-              clearInterval(checkInterval)
-              // 抓取昵称/头像/ID（登录后跳转 www.douyin.com 从页面/接口提取）
-              let username = ''
-              let avatar = ''
-              let userId = ''
-              try {
-                await sodaLoginWindow.loadURL('https://www.douyin.com/').catch(() => {})
-                await new Promise(r => setTimeout(r, 4500))
-                const userInfo = await sodaLoginWindow.webContents.executeJavaScript(`(async () => {
-                  const tryFetch = async (url) => {
-                    try {
-                      const r = await fetch(url, { credentials: 'include' });
-                      if (!r.ok) return null;
-                      const t = await r.text();
-                      try { return JSON.parse(t); } catch { return t; }
-                    } catch { return null; }
-                  };
-                  // 1. 抖音 passport 用户信息接口（带会话 Cookie；兼容 acc.data 与 acc.data.data 双层结构）
-                  const acc = await tryFetch('https://passport.douyin.com/web/account/info/v2/');
-                  const user = (acc && acc.data && acc.data.data && typeof acc.data.data === 'object') ? acc.data.data : (acc && acc.data) || {};
-                  if (user && (user.nickname || user.name)) {
-                    return JSON.stringify({
-                      name: user.nickname || user.name || '',
-                      avatar: user.avatar_url || user.avatar || '',
-                      id: String(user.uid || user.user_id || user.id || '')
-                    });
-                  }
-                  // 2. 页面 DOM：头像/昵称（选择器覆盖新旧版抖音首页）
-                  const avEl = document.querySelector('img[src*="douyinpic.com/aweme-avatar"], img[data-e2e="nav-avatar"], [data-e2e="nav-avatar"] img, img[data-e2e="user-avatar"], [data-e2e="user-avatar"] img');
-                  const nameEl = document.querySelector('[data-e2e="user-info-name"], .user-nickname, [class*="nickname"], [data-e2e="user-name"]');
-                  // 3. 头像/昵称 img alt 兜底（新版首页头像 img 的 alt 常为昵称）
-                  const altName = avEl ? (avEl.getAttribute('alt') || '').trim() : '';
-                  return JSON.stringify({
-                    name: nameEl ? (nameEl.textContent || '').trim() : (altName || ''),
-                    avatar: avEl ? (avEl.src || '') : '',
-                    id: ''
-                  });
-                })()`)
-                const parsed = JSON.parse(userInfo || '{}')
-                username = parsed.name || ''
-                avatar = parsed.avatar || ''
-                userId = parsed.id || ''
-                console.log(`✓ [汽水音乐] 用户: name=${username} id=${userId || '(未取到)'}`)
-              } catch (e) {
-                console.error('❌ [汽水音乐] 获取用户信息失败:', e)
+            const envelope = await auth.checkQrConnect(qrToken)
+            consecutiveErrors = 0
+            const d = envelope.data || {}
+            const errorCode = Number(d.error_code)
+            if (errorCode === 2) {
+              // 二维码已过期：自动刷新
+              expiredCount += 1
+              if (expiredCount > 4) {
+                clearInterval(pollTimer)
+                finish({ success: false, error: '二维码已多次过期，请重新打开登录' })
+                return
               }
-              finish({ success: true, cookie: cookieString, username, avatar, userId })
-              sodaLoginWindow.close()
+              setStatus('二维码已过期，正在刷新…')
+              await buildQr()
+              setStatus('请使用「汽水音乐」App 扫描新二维码')
+              return
             }
+            if (errorCode === 7) {
+              clearInterval(pollTimer)
+              finish({ success: false, error: '请求过于频繁，请一分钟后再试' })
+              return
+            }
+            if (errorCode === 0 && (String(d.status) === '3' || d.session_cookie)) {
+              setStatus('✓ 登录成功，正在获取用户信息…')
+              clearInterval(pollTimer)
+              const cfg = readCfg()
+              const cookie = String(cfg.cookie || '')
+              if (!cookie) throw new Error('会话 Cookie 捕获失败')
+              const profile = await sodaFetchProfile(cookie)
+              console.log(`✓ [汽水音乐] Passport 登录成功: name=${profile.username} id=${profile.userId || '(未取到)'}`)
+              finish({ success: true, cookie, username: profile.username, avatar: profile.avatar, userId: profile.userId })
+              return
+            }
+            if (String(d.status) === '2') setStatus('已扫码 ✓ 请在手机上确认登录')
           } catch (err) {
-            console.error('❌ [汽水音乐] 检查登录状态失败:', err)
+            if (err && err.code === 'QISHUI_MFA_CANCELLED') {
+              clearInterval(pollTimer)
+              finish({ success: false, error: err.message || '安全验证已取消' })
+              return
+            }
+            consecutiveErrors += 1
+            if (consecutiveErrors >= 5) {
+              clearInterval(pollTimer)
+              finish({ success: false, error: (err && err.message) || '登录状态检查连续失败' })
+            } else {
+              setStatus('网络波动，正在重试… (' + consecutiveErrors + '/5)')
+            }
+          } finally {
+            inFlight = false
           }
         }, 2000)
-        sodaLoginWindow.on('closed', () => {
-          clearInterval(checkInterval)
+
+        qrWindow.on('closed', () => {
+          if (pollTimer) clearInterval(pollTimer)
           sodaLoginWindow = null
           finish({ success: false, error: '用户取消登录' })
         })
@@ -3531,13 +3553,12 @@ async function createSodaLoginWindow() {
         console.error('[汽水音乐] 初始化登录窗口失败:', error)
         if (sodaLoginWindow && !sodaLoginWindow.isDestroyed()) sodaLoginWindow.destroy()
         sodaLoginWindow = null
-        finish({ success: false, error: error?.message || '汽水音乐登录窗口初始化失败' })
+        finish({ success: false, error: (error && error.message) || '汽水音乐登录初始化失败' })
       }
     })()
   })
 }
-
-ipcMain.handle('open-soda-login', async () => {
+rnipcMain.handle('open-soda-login', async () => {
   try {
     const result = await createSodaLoginWindow()
     // 登录成功后把用户名/头像通知渲染进程持久化

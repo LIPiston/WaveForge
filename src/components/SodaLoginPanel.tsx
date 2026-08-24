@@ -5,7 +5,7 @@ import { useTvBack } from '../tv/tvCore'
 
 interface SodaLoginPanelProps {
   onClose: () => void
-  onLoginSuccess: (token: string, username?: string) => void
+  onLoginSuccess: (token: string, username?: string, extra?: { avatar?: string; userId?: string }) => void
 }
 
 /**
@@ -38,7 +38,8 @@ export default function SodaLoginPanel({ onClose, onLoginSuccess }: SodaLoginPan
       const result = await (window as any).electron.openSodaLogin()
       if (!mountedRef.current) return
       if (result?.success && (result.cookie || result.token)) {
-        onLoginSuccess(result.cookie || result.token, result.username)
+        // 转发完整结果：主进程已抓取昵称/头像/ID，App 层据此落盘显示
+        onLoginSuccess(result.cookie || result.token, result.username, { avatar: result.avatar, userId: result.userId })
       } else {
         setError(result?.error || '登录失败，请重试')
       }
@@ -84,7 +85,7 @@ export default function SodaLoginPanel({ onClose, onLoginSuccess }: SodaLoginPan
           {/* 说明 */}
           <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 mb-6">
             <p className="text-yellow-200 text-sm">
-              汽水音乐使用抖音账号体系，打开抖音登录页扫码即可，登录后自动完成
+              弹出窗口展示汽水官方二维码，使用「汽水音乐」App 扫码确认后自动完成登录
             </p>
           </div>
 
@@ -95,7 +96,7 @@ export default function SodaLoginPanel({ onClose, onLoginSuccess }: SodaLoginPan
                 1
               </div>
               <div className="flex-1">
-                <h3 className="text-white font-medium mb-2">打开抖音登录页并扫码</h3>
+                <h3 className="text-white font-medium mb-2">弹出窗口扫码（汽水音乐 App）</h3>
                 {hasNativeLogin ? (
                   <button
                     onClick={() => void handleLogin()}
@@ -108,12 +109,12 @@ export default function SodaLoginPanel({ onClose, onLoginSuccess }: SodaLoginPan
                   </button>
                 ) : (
                   <button
-                    onClick={() => window.open('https://sso.douyin.com/', '_blank')}
+                    onClick={() => window.open('https://www.qishui.com/', '_blank')}
                     className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors"
                     style={{ backgroundColor: accent }}
                   >
                     <ExternalLink className="w-4 h-4" />
-                    打开抖音登录页
+                    打开汽水音乐网页版
                   </button>
                 )}
               </div>
