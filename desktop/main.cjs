@@ -3429,6 +3429,9 @@ async function createSodaLoginWindow() {
           }),
           updateConfig: (patch) => writeCfg(patch),
         })
+        // 每次打开登录窗都重置凭据文件中的会话字段（保留 deviceId/msToken 设备指纹）：
+        // 1) 防止历史/测试残留会话被成功判定误读为"秒登录"；2) 换账号从干净会话开始
+        writeCfg({ cookie: '' })
 
         let qrWindow = new BrowserWindow({
           width: 420,
