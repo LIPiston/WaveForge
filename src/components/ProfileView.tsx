@@ -13,6 +13,7 @@ import DeletePlaylistModal from './DeletePlaylistModal'
 import {
   createPlaylist,
   deletePlaylist,
+  getPlaylistDetail,
   getUserPlaylists,
   removeSongFromPlaylist,
   subscribePlaylist,
@@ -645,15 +646,20 @@ function ProfileView({
     setLoading(true)
     try {
       const playlists = await getUserPlaylists(platform, userId, undefined, { forceRefresh: true })
+      // 汽水：与 fetchUserData 分栏规则一致——收藏的进收藏栏，自建（非我喜欢）进创建栏
       const created = playlists.filter((playlist: Playlist) => (
         platform === 'qq'
           ? !playlist.isCollected
-          : playlist.userId?.toString() === userId.toString()
+          : platform === 'soda'
+            ? !playlist.isCollected && !playlist.isLike
+            : playlist.userId?.toString() === userId.toString()
       ))
       const subscribed = playlists.filter((playlist: Playlist) => (
         platform === 'qq'
           ? Boolean(playlist.isCollected)
-          : playlist.userId?.toString() !== userId.toString()
+          : platform === 'soda'
+            ? Boolean(playlist.isCollected)
+            : playlist.userId?.toString() !== userId.toString()
       ))
       setCreatedPlaylists(created)
       setSubscribedPlaylists(subscribed)
@@ -1012,6 +1018,16 @@ function ProfileView({
         setSelectedPlaylist({ ...playlist, platform: 'spotify' })
         setManagementPlaylist({ ...playlist, platform: 'spotify' })
         setPlaylistSongs(tracks.map(track => spotifyTrackToSong(track)))
+        return
+      }
+
+      // 汽水：经 playlistService 统一详情（分页合并全量曲目，支持虚拟歌单 id）
+      if (platform === 'soda') {
+        const data = await getPlaylistDetail(String(playlist.id || ''), 'soda')
+        const detailed = { ...playlist, ...data?.playlist, platform: 'soda', isCollected: playlist.isCollected }
+        setSelectedPlaylist(detailed)
+        setManagementPlaylist(detailed)
+        setPlaylistSongs(Array.isArray(data?.tracks) ? data.tracks : [])
         return
       }
       
@@ -1824,7 +1840,7 @@ function ProfileView({
       setCreatedPlaylists(playlists)
       setSubscribedPlaylists([])
     } else if (platform === 'soda') {
-      // 汽水：本地登录态资料（登录时已落盘）；歌单暂不支持读取，返回空
+      // 汽水：本地登录态资料（登录时已落盘）；歌单经 /api/soda/user/playlists 读取
       const username = localStorage.getItem('soda_username') || ''
       const avatar = localStorage.getItem('soda_avatar') || ''
       const sodaUid = localStorage.getItem('soda_user_id') || ''
@@ -1833,10 +1849,48 @@ function ProfileView({
         avatarUrl: avatar || '',
         userId: sodaUid,
       })
-      setCreatedPlaylists([])
-      setSubscribedPlaylists([])
+      // 未登录保持空列表，不发请求
+      const createdPlaylists: Playlist[] = []
+      const subscribedPlaylists: Playlist[] = []
+      try {
+        // 字段映射参考上方酷狗分支；「汽水我的喜欢」虚拟歌单（isLikedLike）不进两个分栏，
+        // 喜欢歌曲由全局红心/我喜欢入口承担
+        const { fetchSodaUserPlaylists, isSodaLoggedIn } = await import('../services/sodaService')
+        if (!isSodaLoggedIn()) {
+          setCreatedPlaylists([])
+          setSubscribedPlaylists([])
+        } else {
+          const list = await fetchSodaUserPlaylists()
+          for (const item of list) {
+            if (item.collected) {
+              subscribedPlaylists.push({
+                id: item.id,
+                name: item.name || '未命名歌单',
+                coverImgUrl: item.coverUrl || '',
+                trackCount: item.trackCount || 0,
+                platform: 'soda',
+                isCollected: true,
+              })
+            } else if (!item.isLikedLike) {
+              createdPlaylists.push({
+                id: item.id,
+                name: item.name || '未命名歌单',
+                coverImgUrl: item.coverUrl || '',
+                trackCount: item.trackCount || 0,
+                platform: 'soda',
+              })
+            }
+          }
+          setCreatedPlaylists(createdPlaylists)
+          setSubscribedPlaylists(subscribedPlaylists)
+        }
+      } catch (error) {
+        console.error('获取汽水用户歌单失败:', error)
+        setCreatedPlaylists([])
+        setSubscribedPlaylists([])
+      }
     }
-    
+
     setLoading(false)
   }
 

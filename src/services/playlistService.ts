@@ -197,8 +197,24 @@ async function fetchUserPlaylists(
       platform: 'kugou',
     }))
   }
-  // 汽水：暂无用户歌单接口，返回空（不报错）
-  if (platform === 'soda') return []
+  // 汽水：抖音歌单网关（首项为「汽水我的喜欢」虚拟歌单，isLikedLike 标记；collected 标记收藏的他人歌单）
+  if (platform === 'soda') {
+    const { fetchSodaUserPlaylists } = await import('./sodaService')
+    const playlists = await fetchSodaUserPlaylists()
+    // 未登录/接口失败时返回空数组，与酷狗分支一致（不报错）
+    const sodaUid = localStorage.getItem('soda_user_id') || ''
+    return playlists.map(p => ({
+      id: p.id,
+      name: p.name,
+      coverImgUrl: p.coverUrl || '',
+      trackCount: p.trackCount || 0,
+      platform: 'soda',
+      // 自建歌单归属当前用户，收藏歌单无 userId——对齐 QQ 分支的字段约定
+      userId: p.collected ? undefined : sodaUid,
+      isLike: Boolean(p.isLikedLike),
+      isCollected: Boolean(p.collected),
+    }))
+  }
   if (!userId.trim()) return []
   
   // 获取 cookie（如果有）
@@ -461,9 +477,43 @@ export async function getPlaylistDetail(
       privileges: { 1: true, 0: true },
     }
   }
-  // 汽水音乐：暂不支持歌单详情
+  // 汽水音乐：抖音歌单曲目接口（支持 qishui-feed / qishui-liked / qishui-recent 虚拟歌单）。
+  // 后端单页上限 50 条，这里分页合并全部曲目；接口失败时返回空歌单壳（不抛错）
   if (platform === 'soda') {
-    return { playlist: { id: playlistId, name: '汽水歌单' }, tracks: [], privileges: {} }
+    const { fetchSodaPlaylistTracks } = await import('./sodaService')
+    let allTracks: any[] = []
+    const seenIds = new Set<string>()
+    let name = ''
+    let coverUrl = ''
+    let trackCount = 0
+    let offset = 0
+    // 20 页 × 50 条封顶，防止异常数据导致超大循环；按曲目 id 去重兜底 offset 不生效的场景
+    for (let page = 0; page < 20; page += 1) {
+      const detail = await fetchSodaPlaylistTracks(playlistId, offset)
+      if (!name && detail.name) name = detail.name
+      if (!coverUrl && detail.coverUrl) coverUrl = detail.coverUrl
+      if (detail.trackCount > trackCount) trackCount = detail.trackCount
+      if (!Array.isArray(detail.tracks) || detail.tracks.length === 0) break
+      for (const track of detail.tracks) {
+        const key = String((track as any)?.mid || (track as any)?.id || '')
+        if (key && seenIds.has(key)) continue
+        if (key) seenIds.add(key)
+        allTracks.push(track)
+      }
+      offset += detail.tracks.length
+      if (!detail.hasMore || offset >= trackCount) break
+    }
+    return {
+      playlist: {
+        id: playlistId,
+        name: name || '汽水歌单',
+        coverImgUrl: coverUrl,
+        trackCount: trackCount || allTracks.length,
+        platform: 'soda',
+      },
+      tracks: allTracks,
+      privileges: {},
+    }
   }
   const url = platform === 'netease'
     ? `http://localhost:3001/api/netease/playlist/detail?id=${encodeURIComponent(playlistId)}&cookie=${encodeURIComponent(localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || '')}`
@@ -587,6 +637,25 @@ export async function getLikedSongs(
       ids: tracks.map(track => track.catalogId || track.id),
     }
   }
+  // 汽水：喜欢列表 =「qishui-liked」虚拟歌单曲目；返回 ids 供喜欢状态比对（favoriteStatusService 消费）。
+  // 后端单页上限 50 条，这里分页拉全量，保证超过一页的喜欢列表红心状态仍准确
+  if (platform === 'soda') {
+    const { fetchSodaPlaylistTracks } = await import('./sodaService')
+    const ids = new Set<string>()
+    let offset = 0
+    // 与歌单详情一致：20 页 × 50 条封顶
+    for (let page = 0; page < 20; page += 1) {
+      const detail = await fetchSodaPlaylistTracks('qishui-liked', offset)
+      if (!Array.isArray(detail.tracks) || detail.tracks.length === 0) break
+      for (const track of detail.tracks) {
+        const key = String((track as any)?.mid || (track as any)?.id || '').trim()
+        if (key) ids.add(key)
+      }
+      offset += detail.tracks.length
+      if (!detail.hasMore || offset >= detail.trackCount) break
+    }
+    return { ids: [...ids] }
+  }
   const cookie = getPlatformCookie(platform)
   const url = platform === 'netease'
     ? `${API_BASE}/netease/likelist?uid=${encodeURIComponent(userId)}&cookie=${encodeURIComponent(cookie)}`
@@ -653,6 +722,14 @@ export async function likeSong(
     invalidateUserPlaylistsCache(platform, userId)
     return { result: 100, platform: 'kugou' }
   }
+  // 汽水：抖音喜欢接口（标识为汽水原始曲目 id，songMid 优先；返回形状与酷狗一致）
+  if (platform === 'soda') {
+    const { setSodaTrackLiked } = await import('./sodaService')
+    const ok = await setSodaTrackLiked(String(options.songMid || songId), like)
+    if (!ok) throw new Error('汽水音乐喜欢操作失败')
+    invalidateUserPlaylistsCache(platform, userId)
+    return { result: 100, platform: 'soda' }
+  }
 
   const response = await fetch(`${API_BASE}/${platform}/like`, {
     method: 'POST',
@@ -711,6 +788,21 @@ export async function addSongToPlaylist(
     invalidateUserPlaylistsCache(platform, userId)
     return { result: 100, platform: 'kugou' }
   }
+  // 汽水：抖音加歌接口（后端按 song.id 补全资料；与酷狗一致传最小桩对象，songMid 优先）
+  if (platform === 'soda') {
+    const { addSodaSongToPlaylist } = await import('./sodaService')
+    const ok = await addSodaSongToPlaylist(playlistId, {
+      id: Number(songId) || 0,
+      mid: options.songMid || songId,
+      name: '',
+      artists: [],
+      album: { name: '', picUrl: '' },
+      duration: 0,
+    })
+    if (!ok) throw new Error('汽水音乐添加歌曲失败')
+    invalidateUserPlaylistsCache(platform, userId)
+    return { result: 100, platform: 'soda' }
+  }
 
   const url = platform === 'netease'
     ? `http://localhost:3001/api/netease/playlist/tracks`
@@ -763,6 +855,10 @@ export async function removeSongFromPlaylist(
     if (!ok) throw new Error('Spotify 删除歌曲失败（token 失效或网络异常）')
     invalidateUserPlaylistsCache(platform, userId)
     return { result: 200, platform: 'spotify' }
+  }
+  // 汽水：暂无「从歌单移除歌曲」逆向接口，抛出明确错误由调用方 toast 提示（不 crash）
+  if (platform === 'soda') {
+    throw new Error('汽水音乐暂不支持从歌单移除歌曲')
   }
 
   const url = platform === 'netease'
@@ -833,6 +929,10 @@ export async function createPlaylist(
     invalidateUserPlaylistsCache(platform, '')
     return { id, result: 200, platform: 'spotify' }
   }
+  // 汽水：暂不支持创建歌单，明确报错由调用方 toast 提示（不 crash）
+  if (platform === 'soda') {
+    throw new Error('汽水音乐暂不支持创建歌单')
+  }
 
   const cookie = getPlatformCookie(platform, options.cookie)
   const url = platform === 'qq'
@@ -865,7 +965,12 @@ export async function deletePlaylist(
   } = {}
 ): Promise<any> {
   console.log(`🗑️ 删除歌单: ${playlistId}`)
-  
+
+  // 汽水：暂不支持删除歌单，明确报错由调用方 toast 提示（不 crash）
+  if (platform === 'soda') {
+    throw new Error('汽水音乐暂不支持删除歌单')
+  }
+
   const cookie = getPlatformCookie(platform, options.cookie)
   const url = platform === 'qq'
     ? `${API_BASE}/qq/playlist/delete`
@@ -889,7 +994,7 @@ export async function deletePlaylist(
  */
 export async function updatePlaylist(
   playlistId: string,
-  platform: 'netease' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: {
     name?: string
     desc?: string
@@ -898,6 +1003,10 @@ export async function updatePlaylist(
   } = {}
 ): Promise<any> {
   console.log(`✏️ 更新歌单: ${playlistId}`)
+  // 汽水：暂不支持修改歌单信息，明确报错由调用方 toast 提示（不 crash）
+  if (platform === 'soda') {
+    throw new Error('汽水音乐暂不支持修改歌单信息')
+  }
   const cookie = options.cookie || localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
   const url = 'http://localhost:3001/api/netease/playlist/update'
   
@@ -923,9 +1032,13 @@ export async function updatePlaylist(
 export async function updatePlaylistCover(
   playlistId: string,
   imageData: string,
-  platform: 'netease' = 'netease',
+  platform: MusicPlatform = 'netease',
   options: { cookie?: string } = {}
 ): Promise<any> {
+  // 汽水：暂不支持修改歌单封面，明确报错由调用方 toast 提示（不 crash）
+  if (platform === 'soda') {
+    throw new Error('汽水音乐暂不支持修改歌单封面')
+  }
   const cookie = options.cookie || localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
   const response = await fetch('http://localhost:3001/api/netease/playlist/cover', {
     method: 'POST',
@@ -963,6 +1076,14 @@ export async function subscribePlaylist(
     if (!ok) throw new Error('Spotify 收藏歌单失败（token 失效或网络异常）')
     invalidateUserPlaylistsCache(platform, '')
     return { result: 200, platform: 'spotify' }
+  }
+  // 汽水：抖音收藏/取消收藏歌单
+  if (platform === 'soda') {
+    const { collectSodaPlaylist } = await import('./sodaService')
+    const ok = await collectSodaPlaylist(playlistId, subscribe)
+    if (!ok) throw new Error(subscribe ? '汽水音乐收藏歌单失败' : '汽水音乐取消收藏失败')
+    invalidateUserPlaylistsCache(platform, localStorage.getItem('soda_user_id') || '')
+    return { result: 200, platform: 'soda' }
   }
 
   const cookie = getPlatformCookie(platform, options.cookie)

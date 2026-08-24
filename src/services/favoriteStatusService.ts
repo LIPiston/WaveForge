@@ -14,9 +14,10 @@ export function getFavoriteUserId(platform: FavoritePlatform): string {
     // Apple 无 userId；用固定归属键（登录态存在时），凭据失效即自然失效
     return localStorage.getItem('appleMediaUserToken') ? 'apple-user' : ''
   }
-  return platform === 'qq'
-    ? localStorage.getItem('qq_user_id') || ''
-    : localStorage.getItem('netease_user_id') || ''
+  if (platform === 'qq') return localStorage.getItem('qq_user_id') || ''
+  // 汽水：归属键用自身登录态（kugou 等其它平台维持 netease 回落的既有现状）
+  if (platform === 'soda') return localStorage.getItem('soda_user_id') || ''
+  return localStorage.getItem('netease_user_id') || ''
 }
 
 export function getFavoriteSongIdentifiers(song: Song): string[] {

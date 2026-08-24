@@ -29,7 +29,7 @@ import { useAudioPulseStore, type AudioPulseStore } from './hooks/useAudioPulse'
 import { useAutoHideCursor } from './hooks/useAutoHideCursor'
 import { Song, getSongUrl, invalidateSongUrl, getLyrics, getProxiedImageUrl, getLocalAlbumIdentifier, resolveSongAlbumIdentifier, LyricLine } from './services/musicApi'
 import type { MusicPlatform } from './services/platforms'
-import { isPlatformVisible } from './services/platforms'
+import { isPlatformVisible, platformLabel } from './services/platforms'
 import { getAppleMusicSettings, resolveAppleTrack } from './services/appleMusic'
 import { getAppleAuthState, clearAppleLogin, type AppleUserInfo } from './services/appleAuth'
 import { recordLogin, clearLoginExpiry, isLoginExpired } from './services/loginExpiry'
@@ -1251,7 +1251,8 @@ function App() {
     if (isFresh && cached.lyricsPromise) return cached.lyricsPromise
 
     const platform = song.platform || 'netease'
-    const songId = platform === 'qq' ? (song.mid || song.id) : song.id
+    // 汽水的 item_id 是超长数字串，Number 化会截断失配，必须用原始 mid
+    const songId = (platform === 'qq' || platform === 'soda') ? (song.mid || song.id) : song.id
     const lyricsCacheGeneration = lyricsCacheGenerationRef.current
     let lyricsLoadedFromPersistentCache = false
     // 歌词缓存版本：评分/数据源/解析逻辑变更时递增，使旧缓存（旧解析选中的劣质/残缺源）失效。
@@ -3080,7 +3081,7 @@ function App() {
       const userId = getPlatformUserId(platform)
       
       if (!userId) {
-        addToast(`请先登录${platform === 'netease' ? '网易云音乐' : 'QQ音乐'}`, 'error')
+        addToast(`请先登录${platformLabel(platform)}`, 'error')
         return
       }
       
@@ -3156,7 +3157,7 @@ function App() {
       const userId = getPlatformUserId(platform)
       
       if (!userId) {
-        addToast(`请先登录${platform === 'netease' ? '网易云音乐' : 'QQ音乐'}`, 'error')
+        addToast(`请先登录${platformLabel(platform)}`, 'error')
         return
       }
       
@@ -3270,7 +3271,7 @@ function App() {
         ? resolvePlayableSong(song).then(resolved => resolved
             ? { songId: resolved.platform === 'qq' ? resolved.mid || resolved.id : resolved.id, platform: resolved.platform || 'netease' }
             : null)
-        : Promise.resolve({ songId: platform === 'qq' ? (song.mid || song.id) : song.id, platform })
+        : Promise.resolve({ songId: (platform === 'qq' || platform === 'soda') ? (song.mid || song.id) : song.id, platform })
       
       // 检查缓存是否已存在且未过期（5分钟内有效）
       const cached = preloadCacheRef.current.get(cacheKey)
@@ -3453,7 +3454,7 @@ function App() {
         cached?.url
         && Date.now() - (cached.urlTimestamp ?? cached.timestamp) < 5 * 60 * 1000
       )
-      const songId = resolvedPlatform === 'qq' ? (playable.mid || playable.id) : playable.id
+      const songId = (resolvedPlatform === 'qq' || resolvedPlatform === 'soda') ? (playable.mid || playable.id) : playable.id
       const audioUrlGeneration = audioUrlCacheGenerationRef.current
       const url = cachedUrlIsFresh ? cached!.url : await getSongUrl(songId, resolvedPlatform)
       if (!url || url === 'SONG_UNAVAILABLE') return null
@@ -3648,11 +3649,11 @@ function App() {
       setIsPlaying(false)
       
       let normalizedSong = normalizeSongCover(song)
-      // 需要跨平台载体转换的平台：apple（始终）、spotify/soda（无自源音源，始终）。
-      // kugou 先试原生播放（m.kugou.com 免费歌可播），付费/失败时在 URL 为空分支匹配网易云/QQ。
+      // 需要跨平台载体转换的平台：apple（始终）、spotify（无自源音源，始终）。
+      // kugou/soda 先试原生播放（汽水走逆向 Web API，免费/试听流可播），
+      // 付费/失败时在 URL 为空分支再匹配网易云/QQ 同款。
       const needsCarrier = normalizedSong.platform === 'apple'
         || normalizedSong.platform === 'spotify'
-        || normalizedSong.platform === 'soda'
       let audioSong: Song = normalizedSong
       if (needsCarrier) {
         const resolved = await resolvePlayableSong(normalizedSong)
@@ -3676,7 +3677,7 @@ function App() {
       setCurrentTranslation('')
       
       const platform = audioSong.platform || 'netease'
-      const songId = platform === 'qq' ? (audioSong.mid || audioSong.id) : audioSong.id
+      const songId = (platform === 'qq' || platform === 'soda') ? (audioSong.mid || audioSong.id) : audioSong.id
       debugLog(`  歌手: ${normalizedSong.artists.map(a => a.name).join(', ')}`)
       if (platform === 'qq') {
         const cookie = localStorage.getItem('qq_cookie')
@@ -3733,12 +3734,20 @@ function App() {
         }, 3000)
         return
       }
+
+      // 汽水：原生音源解析成功后上报播放（回传个性化推荐数据；失败静默）。
+      // 走缓存 URL 或降级到网易云/QQ 载体时不重复上报。
+      if (platform === 'soda' && url) {
+        void import('./services/sodaService')
+          .then(m => m.reportSodaPlay(String(normalizedSong.mid || normalizedSong.id)))
+          .catch(() => undefined)
+      }
       
       if (!url) {
-        // 酷狗：原生播放失败（付费/版权）→ 尝试网易云/QQ 同款匹配播放
-        if (normalizedSong.platform === 'kugou') {
+        // 酷狗/汽水：原生播放失败（付费/版权/未登录）→ 尝试网易云/QQ 同款匹配播放
+        if (normalizedSong.platform === 'kugou' || normalizedSong.platform === 'soda') {
           const resolved = await resolvePlayableSong(normalizedSong)
-          if (resolved && resolved.platform !== 'kugou') {
+          if (resolved && resolved.platform !== normalizedSong.platform) {
             const carrierUrl = await getSongUrl(resolved.platform === 'qq' ? (resolved.mid || resolved.id) : resolved.id, resolved.platform)
             if (carrierUrl && carrierUrl !== 'SONG_UNAVAILABLE') {
               normalizedSong = resolved
@@ -3746,7 +3755,9 @@ function App() {
             }
           }
           if (!url) {
-            addToast('该歌曲为酷狗付费/版权受限曲目，且未找到可播放版本', 'error')
+            addToast(normalizedSong.platform === 'kugou'
+              ? '该歌曲为酷狗付费/版权受限曲目，且未找到可播放版本'
+              : '该歌曲为汽水 VIP/版权受限曲目，且未找到可播放版本', 'error')
             return
           }
         } else {
@@ -4159,7 +4170,9 @@ function App() {
         handleViewComments(current)
       } else if (action === 'show-artist') {
         const artist = Array.isArray(current.artists) ? current.artists[0] : null
-        const artistId = platform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
+        // 汽水无艺人 ID，约定传歌手名
+        const artistId = platform === 'soda' ? (artist?.name || artist?.id)
+          : platform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
         if (!artistId) {
           addToast('当前歌曲缺少歌手信息', 'error')
           return

@@ -848,7 +848,8 @@ function ExploreView({
         })
       return () => { active = false }
     }
-    // 汽水：暂无用户歌单接口，不发起请求
+    // 汽水：侧栏用户歌单暂无独立数据源；探索页的推荐歌单卡已由 exploreApi
+    // 经 /api/soda/user/playlists 写入 payload.playlists，这里保持侧栏状态为空即可
     if (platform === 'soda') {
       setUserPlaylists([])
       return
@@ -1622,9 +1623,17 @@ function ExploreView({
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                   {[
                     {
-                      label: payload.dailySongs.length ? '每日推荐' : '今日热选',
-                      title: payload.dailySongs.length ? '只属于你的每日歌单' : '今天大家都在听',
-                      copy: payload.dailySongs.length ? '根据近期口味持续更新' : '无需登录，也能发现好音乐',
+                      // 汽水登录态下后端返回个性化日推（payload.personalized），
+                      // 标题体现「汽水·每日推荐」；未登录为公开热歌回退，文案如实标注
+                      label: payload.dailySongs.length
+                        ? (platform === 'soda' && payload.personalized ? '汽水·每日推荐' : '每日推荐')
+                        : '今日热选',
+                      title: payload.dailySongs.length
+                        ? (platform === 'soda' && !payload.personalized ? '汽水实时热门歌曲' : '只属于你的每日歌单')
+                        : '今天大家都在听',
+                      copy: payload.dailySongs.length
+                        ? (platform === 'soda' && !payload.personalized ? '登录汽水音乐后升级为个性化日推' : '根据近期口味持续更新')
+                        : '无需登录，也能发现好音乐',
                       icon: Sparkles,
                       cover: payload.dailySongs[1]?.album.picUrl || payload.newSongs[0]?.album.picUrl,
                       songs: payload.dailySongs.length ? payload.dailySongs : payload.newSongs,

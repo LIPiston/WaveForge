@@ -147,6 +147,8 @@ export interface Song {
 export function getLocalAlbumIdentifier(song: Song, platform: MusicPlatform): string | null {
   const raw = song as any
   const album = raw.album || raw.al || {}
+  // 汽水：无专辑 ID 体系，约定用「专辑名」作标识（艺人/专辑弹窗按名查询）
+  if (platform === 'soda') return album.name ? String(album.name) : null
   const id = platform === 'qq'
     ? (album.mid || raw.albummid || album.pmid || album.id || raw.albumid)
     : (album.id || raw.albumid || raw.al?.id)
@@ -156,6 +158,8 @@ export function getLocalAlbumIdentifier(song: Song, platform: MusicPlatform): st
 export async function resolveSongAlbumIdentifier(song: Song, platform: MusicPlatform): Promise<string | null> {
   // Apple 歌曲的 album 无网易云/QQ 专辑 id，不向平台接口查询
   if (platform === 'apple') return null
+  // 汽水：直接返回专辑名标识，不向网易云/QQ 查询详情
+  if (platform === 'soda') return getLocalAlbumIdentifier(song, 'soda')
   const localId = getLocalAlbumIdentifier(song, platform)
   if (localId) return localId
 
@@ -299,9 +303,11 @@ export async function searchSongs(keywords: string, limit = 30, platform: MusicP
       const tracks = await searchSpotifySongs(keywords, limit)
       return { songs: tracks.map(spotifyTrackToSong), songCount: tracks.length }
     }
-    // 汽水音乐：接口需签名，暂返回空（融合搜索会跳过；单独搜索显示空结果提示）
+    // 汽水音乐：走逆向 Web API 搜索（后端 /api/soda/search，签名在服务端完成）
     if (platform === 'soda') {
-      return { songs: [], songCount: 0 }
+      const { searchSodaSongs } = await import('./sodaService')
+      const songs = await searchSodaSongs(keywords, limit)
+      return { songs, songCount: songs.length }
     }
     const endpoint = platform === 'qq' ? '/qq/search' : '/netease/search'
     const response = await fetch(`${API_BASE}${endpoint}?keywords=${encodeURIComponent(keywords)}&limit=${limit}&devMode=${devMode}`)
@@ -592,8 +598,19 @@ export async function getSongUrl(id: number | string, platform: MusicPlatform = 
         const kgCookie = localStorage.getItem('kugou_cookie') || ''
         apiUrl = `${API_BASE}/kugou/song/url?hash=${encodeURIComponent(String(id))}${kgCookie ? `&cookie=${encodeURIComponent(kgCookie)}` : ''}`
         readUrl = data => data.url || null
-      } else if (platform === 'spotify' || platform === 'soda') {
-        // Spotify/汽水：未登录无自源音源，返回 null → 上层降级网易云/QQ
+      } else if (platform === 'soda') {
+        // 汽水音乐：逆向 Web API 音源（VIP/SVIP 分层过滤在服务端完成；
+        // 未登录或无可用流时 url 为空 → 返回 null 走上层网易云/QQ 降级匹配）
+        const { preference } = getAudioQualityRequest('soda')
+        apiUrl = `${API_BASE}/soda/song/url?id=${encodeURIComponent(String(id))}&quality=${encodeURIComponent(preference)}${
+          (() => {
+            const sdCookie = localStorage.getItem('soda_token') || ''
+            return sdCookie ? '&cookie=' + encodeURIComponent(sdCookie) : ''
+          })()
+        }`
+        readUrl = data => data.url || null
+      } else if (platform === 'spotify') {
+        // Spotify：未登录无自源音源，返回 null → 上层降级网易云/QQ
         return null
       } else {
         const cookie = localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''

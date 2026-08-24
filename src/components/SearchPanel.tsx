@@ -550,8 +550,8 @@ export default function SearchPanel({
     
     try {
       if (platform === 'fused') {
-        // 融合搜索覆盖全部可搜索平台（soda 接口暂不可用，跳过避免无效请求）
-        const platforms: MusicPlatform[] = ['netease', 'qq', 'apple', 'spotify', 'kugou']
+        // 融合搜索覆盖全部可搜索平台（汽水已接入逆向 Web API 搜索）
+        const platforms: MusicPlatform[] = ['netease', 'qq', 'apple', 'spotify', 'kugou', 'soda']
         const requests = platforms.flatMap(sourcePlatform => ([
           { sourcePlatform, kind: 'songs' as const, promise: withSearchTimeout(searchSongs(finalKeyword, 100, sourcePlatform)) },
           { sourcePlatform, kind: 'artists' as const, promise: withSearchTimeout(searchArtists(finalKeyword, sourcePlatform)) },
@@ -583,7 +583,7 @@ export default function SearchPanel({
             apple: { loggedIn: false, vip: false },
             spotify: { loggedIn: false, vip: false },
             kugou: { loggedIn: false, vip: false },
-            soda: { loggedIn: false, vip: false },
+            soda: { loggedIn: Boolean(localStorage.getItem('soda_token')), vip: false },
           },
         })
         setFusionUnavailablePlatforms(unavailable)
@@ -1625,7 +1625,9 @@ export default function SearchPanel({
         onViewArtist={(song) => {
           const songPlatform = song.platform || 'netease'
           const artist = song.artists?.[0]
-          const artistId = songPlatform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
+          // 汽水无艺人 ID，约定传歌手名
+        const artistId = songPlatform === 'soda' ? (artist?.name || artist?.mid || artist?.id)
+          : songPlatform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
           if (artistId) onOpenArtist?.(String(artistId), songPlatform)
         }}
         onCopyInfo={onCopyInfo}
