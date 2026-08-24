@@ -3483,9 +3483,9 @@ async function createSodaLoginWindow() {
         // 此前在这里同步等资料接口，接口一旦迟滞会把整个登录流程卡死在窗口不关。
         const completeLogin = (cookie) => {
           if (settled) return
-          settled = true
           if (pollTimer) clearInterval(pollTimer)
           console.log('[SodaLogin] 会话已建立，完成登录闭环')
+          // 注意：settled 由 finish 内部置位；这里若提前置位会让 finish 的防重护栏短路
           finish({ success: true, cookie, username: '', avatar: '', userId: '' })
         }
         pollTimer = setInterval(async () => {
