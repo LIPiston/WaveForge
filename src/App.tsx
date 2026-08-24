@@ -10,6 +10,7 @@ import LyricsDisplay from './components/LyricsDisplay'
 import PlayerControls from './components/PlayerControls'
 import TitleBar from './components/TitleBar'
 import FusionEnableConfirmModal from './components/FusionEnableConfirmModal'
+import UpdateManager from './components/UpdateManager'
 import UpdatePrompt from './components/UpdatePrompt'
 import CrossfadeBackground from './components/CrossfadeBackground'
 
@@ -829,12 +830,12 @@ function App() {
   const suppressUpNextUntilRef = useRef(0)
   
   // 添加Toast的辅助函数
-  const addToast = (message: string, type: 'success' | 'error' | 'info', accentColor?: string) => {
+  const addToast = (message: string, type: 'success' | 'error' | 'info', accentColor?: string, duration = 4000) => {
     const id = toastIdRef.current++
     setToasts(prev => [...prev, { id, message, type, accentColor }])
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id))
-    }, 4000)
+    }, duration)
   }
 
   useEffect(() => () => {
@@ -1092,11 +1093,13 @@ function App() {
 
   // 代理自动配置通知：运行中代理断开 / 启动时未检测到代理端口 → 弹 toast
   useEffect(() => {
-    // 延迟派发：挂载早期 showToast 监听器尚未注册，直接派发会被丢弃
-    const toast = (message: string) => {
+    // 派发前先等 showToast 监听器注册（挂载早期直接派发会被丢弃）。
+    // 启动类提示额外延后数秒——刚启动界面还没稳定，立即弹用户来不及看；
+    // 同时把展示时长拉长到 8s 保证可读。运行中断开提示保持即时。
+    const toast = (message: string, delay = 0, duration = 4000) => {
       window.setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('showToast', { detail: { message, type: 'info' } }))
-      }, 0)
+        window.dispatchEvent(new CustomEvent('showToast', { detail: { message, type: 'info', duration } }))
+      }, delay)
     }
     const off = window.electron?.proxyManager?.onNotice?.((notice) => {
       if (notice.kind === 'disconnected') toast('检测到代理断开，已为您关闭自动代理')
@@ -1106,7 +1109,9 @@ function App() {
     const tryConsume = () => {
       void window.electron?.proxyManager?.consumeNotice?.().then((notice) => {
         if (notice === 'startup-unavailable') {
-          toast('由于您上次关闭时为自动代理，本次启动检测到无代理端口，已为您关闭自动代理功能')
+          toast('由于您上次关闭时为自动代理，本次启动检测到无代理端口，已为您关闭自动代理功能', 3500, 8000)
+        } else if (notice === 'startup-unusable') {
+          toast('上次使用的代理已失效（端口在但隧道不通），已为您关闭自动代理功能', 3500, 8000)
         } else if (attempts < 8) {
           attempts += 1
           window.setTimeout(tryConsume, 800)
@@ -2240,8 +2245,8 @@ function App() {
 
   useEffect(() => {
     const handleShowToast = (e: CustomEvent) => {
-      const { message, type } = e.detail
-      addToast(message, type as 'success' | 'error' | 'info', localStorage.getItem('accentColor') || '#3B82F6')
+      const { message, type, duration } = e.detail
+      addToast(message, type as 'success' | 'error' | 'info', localStorage.getItem('accentColor') || '#3B82F6', duration)
     }
     window.addEventListener('showToast', handleShowToast as EventListener)
     return () => {
@@ -6020,6 +6025,8 @@ function App() {
             className="absolute inset-0 h-screen w-full flex items-center justify-center overflow-hidden"
             style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: 2 }}
           >
+      {/* 更新中心：详情/下载进度/就绪/确认重启/更新日志弹窗 + 启动自动检测提示 */}
+      <UpdateManager />
       {/* Toast通知 - 支持显示多个Toast堆叠 */}
       <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[100000] flex flex-col gap-3 pointer-events-none">
         {toasts.map((toast, index) => (

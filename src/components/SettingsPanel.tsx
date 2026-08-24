@@ -24,6 +24,7 @@ import LegalAgreement from './legal/LegalAgreement'
 import { LocaleSwitcher, type LocaleCode } from '../i18n'
 import packageInfo from '../../package.json'
 import { getVersionDisplay } from '../services/versionInfo'
+import { VERSION_HISTORY } from '../services/versionHistory'
 import { getDebugPanelVisible, setDebugPanelVisible } from '../tv/debugStore'
 import { isTvModeActive } from '../platform'
 import {
@@ -57,11 +58,17 @@ import {
 } from '../services/bilibiliApi'
 
 type UpdateCheckState = {
-  status: 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'error'
+  status: 'idle' | 'checking' | 'current' | 'available' | 'error'
   message?: string
-  url?: string
-  downloadUrls?: string[]
-  sha256?: string
+}
+/** 检查到的更新详情（查看详情/下载弹窗由全局 UpdateManager 承接） */
+type UpdateDetail = {
+  version: string
+  notes: string
+  hotUrls?: string[]
+  hotSha?: string
+  installUrls?: string[]
+  installSha?: string
 }
 type DeviceGrant = { feature: string; label: string; issuedAt: number; expiresAt: number | null; note?: string }
 type DeviceState = { status: 'idle' | 'loading' | 'ready' | 'error'; deviceId: string; storage?: 'registry' | 'file'; grants: DeviceGrant[]; message?: string }
@@ -121,6 +128,21 @@ interface SettingsPanelProps {
   onSodaLogin: (cookie: string, username?: string) => void
   onSodaLogout: () => void
   playerTheme?: 'light' | 'dark'
+}
+
+// 模型下载速率/剩余时间展示
+const formatDownloadSpeed = (bytesPerSec: number) => {
+  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return ''
+  if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / 1024 / 1024).toFixed(1)} MB/s`
+  if (bytesPerSec >= 1024) return `${Math.round(bytesPerSec / 1024)} KB/s`
+  return `${bytesPerSec} B/s`
+}
+const formatDownloadEta = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds < 1) return '即将完成'
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`
 }
 
 function SettingsPanel({
@@ -504,6 +526,18 @@ function SettingsPanel({
   const [showRedeemModal, setShowRedeemModal] = useState(false)
   const [deviceIdForModal, setDeviceIdForModal] = useState('')
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckState>({ status: 'idle' })
+  const [updateDetail, setUpdateDetail] = useState<UpdateDetail | null>(null)
+  const [pendingUpdate, setPendingUpdate] = useState<{ version: string; stagedAt?: number } | null>(null)
+  const [showVersionHistory, setShowVersionHistory] = useState(false)
+  const [autoCheckUpdate, setAutoCheckUpdate] = useState(() => parseStoredBoolean(localStorage.getItem('autoCheckUpdate'), true))
+  const [skippedVersion, setSkippedVersion] = useState<string | null>(() => localStorage.getItem('skippedUpdateVersion'))
+
+  // 待应用更新常驻提示（上次「稍后」/ 已下载完成的更新，重启即生效）
+  useEffect(() => {
+    void window.electron?.update?.getPending?.().then((p) => {
+      if (p?.version) setPendingUpdate(p)
+    }).catch(() => {})
+  }, [])
   const [deviceState, setDeviceState] = useState<DeviceState>({ status: 'idle', deviceId: '', grants: [] })
   const [redeemCode, setRedeemCode] = useState('')
   const [redeemMessage, setRedeemMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null)
@@ -812,7 +846,8 @@ function SettingsPanel({
 
       // 桌面/网页：拉多源更新清单（Gitee 主源 → ghproxy 加速的 GitHub → GitHub 直连），比较版本号
       const { UPDATE_MANIFEST_URLS, withDownloadProxies } = await import('../services/updateConstants')
-      let manifest: { version?: string; artifacts?: Record<string, { urls?: string[]; sha256?: string }> } | null = null
+      let manifest: { version?: string; notes?: string; artifacts?: Record<string, { urls?: string[]; sha256?: string }> } | null = null
+      let httpStatus = 0
       for (const url of UPDATE_MANIFEST_URLS) {
         try {
           const res = await fetch(url, { cache: 'no-store' })
@@ -820,50 +855,81 @@ function SettingsPanel({
             manifest = await res.json()
             break
           }
+          httpStatus = res.status // 404 等：清单大概率还没发布
         } catch {
-          // 尝试下一个源
+          // 网络异常，继续尝试下一个源
         }
       }
-      if (!manifest?.version) throw new Error('更新清单不可用，请检查网络')
+      if (!manifest?.version) {
+        // 区分「未发布」与「网络问题」，方便用户判断
+        throw new Error(httpStatus ? `更新清单不可用（HTTP ${httpStatus}），请确认已发布更新` : '更新清单不可用，请检查网络')
+      }
 
       const remoteVersion = String(manifest.version)
-      const winArtifact = manifest.artifacts?.['win-x64']
-      const winUrl = winArtifact?.urls?.[0]
-      const sha256 = winArtifact?.sha256 || ''
-      const fallbackUrl = 'https://gitee.com/kirito666233/wave-forge/releases'
-
       if (compareVersions(remoteVersion, packageInfo.version) <= 0) {
-        setUpdateCheck({ status: 'current', message: '当前已是最新版本' })
-      } else {
-        setUpdateCheck({
-          status: 'available',
-          message: `发现新版本 ${getVersionDisplay(remoteVersion)}`,
-          url: winUrl || fallbackUrl,
-          // 桌面端（Electron）可用多源下载安装；纯浏览器只跳发布页
-          downloadUrls: winUrl ? withDownloadProxies(winUrl) : undefined,
-          sha256,
-        })
+        setUpdateCheck({ status: 'current', message: `当前版本 ${packageInfo.version} 为最新版本` })
+        return
       }
+
+      const winArtifact = manifest.artifacts?.['win-x64']
+      const hotArtifact = manifest.artifacts?.['win-x64-hot']
+      const winUrl = winArtifact?.urls?.[0]
+      const hotUrl = hotArtifact?.urls?.[0]
+      const detail: UpdateDetail = {
+        version: remoteVersion,
+        notes: manifest.notes || '',
+        hotUrls: hotUrl ? withDownloadProxies(hotUrl) : undefined,
+        hotSha: hotArtifact?.sha256 || '',
+        installUrls: winUrl ? withDownloadProxies(winUrl) : undefined,
+        installSha: winArtifact?.sha256 || '',
+      }
+      setUpdateDetail(detail)
+      setUpdateCheck({ status: 'available', message: `当前版本：${packageInfo.version}  新版本：${getVersionDisplay(remoteVersion)}` })
+      // 详情/下载/就绪/重启弹窗由全局 UpdateManager 承接（应用内美化弹窗）
+      window.dispatchEvent(new CustomEvent('waveforge:update-open-details', { detail }))
     } catch (error) {
       setUpdateCheck({ status: 'error', message: `检查失败：${error instanceof Error ? error.message : '网络不可用'}` })
     }
   }
 
-  const handleDownloadUpdate = async () => {
-    const urls = updateCheck.downloadUrls
-    const bridge = window.electron?.update
-    if (!urls?.length || !bridge?.downloadAndInstall) return
-    setUpdateCheck((prev) => ({ ...prev, status: 'downloading', message: '正在下载更新安装包…' }))
-    try {
-      const result = await bridge.downloadAndInstall(urls, updateCheck.sha256 || '')
-      setUpdateCheck((prev) =>
-        result.success
-          ? { ...prev, status: 'current', message: '安装包已下载，请在弹出的安装向导中完成安装' }
-          : { ...prev, status: 'error', message: `下载失败：${result.error || '未知错误'}` }
-      )
-    } catch (err) {
-      setUpdateCheck((prev) => ({ ...prev, status: 'error', message: `下载失败：${err instanceof Error ? err.message : '未知错误'}` }))
+  const openUpdateDetails = () => {
+    if (updateDetail?.version) {
+      window.dispatchEvent(new CustomEvent('waveforge:update-open-details', { detail: updateDetail }))
     }
+  }
+
+  // 待更新已就绪：拉起 updater 并立即退出重启（重启后即为新版本）
+  const handleRestartForUpdate = async () => {
+    await window.electron?.update?.applyPending?.()
+    await window.electron?.update?.restartForUpdate?.()
+  }
+
+  // 跳过此版本：把当前最新版本记入跳过列表，自动检测不再提示；手动检查仍可更新
+  const handleSkipVersion = async () => {
+    try {
+      const { fetchUpdateManifest } = await import('../services/updateConstants')
+      const manifest = await fetchUpdateManifest()
+      const remote = manifest?.version
+      if (!remote) {
+        window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '当前无法获取更新清单，请稍后再试', type: 'info' } }))
+        return
+      }
+      if (compareVersions(remote, packageInfo.version) <= 0) {
+        window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '当前已是最新版本，无需跳过', type: 'info' } }))
+        return
+      }
+      localStorage.setItem('skippedUpdateVersion', remote)
+      setSkippedVersion(remote)
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: `已跳过版本 ${getVersionDisplay(remote)} 的更新提示，仍可手动检查更新`, type: 'success' } }))
+    } catch {
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '跳过失败，请检查网络', type: 'error' } }))
+    }
+  }
+
+  const handleUnskipVersion = () => {
+    localStorage.removeItem('skippedUpdateVersion')
+    setSkippedVersion(null)
+    window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '已恢复该版本的更新提示', type: 'success' } }))
   }
   
   const [gpuAcceleration, setGpuAcceleration] = useState(() => {
@@ -1232,21 +1298,22 @@ function SettingsPanel({
   })
   // AI 混音引擎可用性（null=检测中 / true=可用 / false=未安装）
   const [aiMixAvailable, setAiMixAvailable] = useState<boolean | null>(null)
+  // 序号防竞态：模型下载完成/删除后的重探不能覆盖更早的在途结果
+  const aiMixProbeSeq = useRef(0)
+  const probeAiMixAvailable = useCallback(async () => {
+    const seq = ++aiMixProbeSeq.current
+    try {
+      const status = await window.electron?.render?.aiMixStatus?.()
+      if (seq === aiMixProbeSeq.current) setAiMixAvailable(status?.available === true)
+    } catch {
+      if (seq === aiMixProbeSeq.current) setAiMixAvailable(false)
+    }
+  }, [])
   useEffect(() => {
     if (!autoMixEnabled || !autoMixEnhanced) return
-    let cancelled = false
-    const probe = async () => {
-      try {
-        const status = await window.electron?.render?.aiMixStatus?.()
-        if (!cancelled) setAiMixAvailable(status?.available === true)
-      } catch {
-        if (!cancelled) setAiMixAvailable(false)
-      }
-    }
     setAiMixAvailable(null)
-    void probe()
-    return () => { cancelled = true }
-  }, [autoMixEnabled, autoMixEnhanced])
+    void probeAiMixAvailable()
+  }, [autoMixEnabled, autoMixEnhanced, probeAiMixAvailable])
 
   // AI 混音模型（DJTransGAN 仓库 + 权重）下载/删除管理
   const [aiModelStatus, setAiModelStatus] = useState<{
@@ -1259,13 +1326,15 @@ function SettingsPanel({
     repoDir: string
   } | null>(null)
   const [aiModelProgress, setAiModelProgress] = useState<{
-    status: 'idle' | 'downloading' | 'paused' | 'done' | 'error' | 'cancelled'
-    phase: 'python' | 'pip' | 'deps' | 'repo' | 'weights' | null
+    status: 'idle' | 'downloading' | 'paused' | 'done' | 'error' | 'cancelled' | 'deleting'
+    phase: 'python' | 'pip' | 'deps' | 'repo' | 'weights' | 'delete' | null
     phaseLabel: string | null
     phasePercent: number
     overallPercent: number
     error: string | null
     done: boolean
+    downloadSpeed: number
+    downloadEta: number | null
   } | null>(null)
   const [showAiModelDownloadDialog, setShowAiModelDownloadDialog] = useState(false)
   const [showAiModelDeleteDialog, setShowAiModelDeleteDialog] = useState(false)
@@ -1282,16 +1351,18 @@ function SettingsPanel({
     void probeAiModelStatus()
     const off = window.electron?.aiModel?.onProgress?.((progress) => {
       setAiModelProgress(progress)
-      // 下载完成（含从暂停/错误恢复后完成）：toast 提示
+      // 下载完成（含从暂停/错误恢复后完成）：toast 提示，并重探引擎可用性（
+      // 开关的 aiMixAvailable 之前探测时权重可能还没就绪）
       if (progress.done && progress.status === 'done') {
         window.dispatchEvent(new CustomEvent('showToast', {
           detail: { message: 'DJTransGAN 模型下载完成，AI 混音已可用', type: 'success' },
         }))
         void probeAiModelStatus()
+        void probeAiMixAvailable()
       }
     })
     return () => off?.()
-  }, [autoMixEnabled, autoMixEnhanced, probeAiModelStatus])
+  }, [autoMixEnabled, autoMixEnhanced, probeAiModelStatus, probeAiMixAvailable])
 
   const handleAiModelDownload = () => {
     setShowAiModelDownloadDialog(false)
@@ -1322,6 +1393,7 @@ function SettingsPanel({
         }))
       }
       void probeAiModelStatus()
+      void probeAiMixAvailable() // 删除后同步禁用 AI 混音开关
     })()
   }
 
@@ -3252,22 +3324,34 @@ function SettingsPanel({
                                   <div className="min-w-0">
                                     <div className={`${textPrimary} text-sm font-medium mb-0.5`}>DJTransGAN 模型</div>
                                     <div className={`${textSecondary} text-xs leading-relaxed`}>
-                                      {aiModelStatus?.installed
-                                        ? '已安装，可直接使用 AI 混音'
-                                        : aiModelProgress?.status === 'downloading'
-                                          ? `${aiModelProgress.phaseLabel || '下载中'}… ${Math.round(aiModelProgress.phasePercent)}%`
-                                          : aiModelProgress?.status === 'paused'
-                                            ? '下载已暂停'
-                                            : aiModelProgress?.status === 'error'
-                                              ? `下载失败：${aiModelProgress.error || '未知错误'}`
-                                              : aiModelStatus
-                                                ? aiModelStatus.repoReady && !aiModelStatus.weightsReady
-                                                  ? '已下载仓库，缺少预训练权重'
-                                                  : '未安装（点击下载将自动安装运行环境 + 模型）'
-                                                : '检测中…'}
+                                      {aiModelProgress?.status === 'deleting'
+                                        ? '正在删除模型…'
+                                        : aiModelStatus?.installed
+                                          ? '已安装，可直接使用 AI 混音'
+                                          : aiModelProgress?.status === 'downloading'
+                                            ? `${aiModelProgress.phaseLabel || '下载中'}… ${Math.round(aiModelProgress.phasePercent)}%`
+                                            : aiModelProgress?.status === 'paused'
+                                              ? '下载已暂停'
+                                              : aiModelProgress?.status === 'error'
+                                                ? `下载失败：${aiModelProgress.error || '未知错误'}`
+                                                : aiModelStatus
+                                                  ? aiModelStatus.repoReady && !aiModelStatus.weightsReady
+                                                    ? '已下载仓库，缺少预训练权重'
+                                                    : '未安装（点击下载将自动安装运行环境 + 模型）'
+                                                  : '检测中…'}
                                     </div>
                                   </div>
-                                  {aiModelStatus?.installed ? (
+                                  {aiModelProgress?.status === 'deleting' ? (
+                                    <button
+                                      type="button"
+                                      disabled
+                                      className="flex flex-shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+                                      style={{ color: playerTheme === 'dark' ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.55)', background: playerTheme === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)' }}
+                                    >
+                                      <span className="inline-block h-3 w-3 rounded-full border-2 border-transparent animate-spin" style={{ borderTopColor: accentColor, borderRightColor: accentColor }} />
+                                      删除中…
+                                    </button>
+                                  ) : aiModelStatus?.installed ? (
                                     <button
                                       type="button"
                                       onClick={() => setShowAiModelDeleteDialog(true)}
@@ -3309,6 +3393,16 @@ function SettingsPanel({
                                     <div className={`h-1.5 w-full overflow-hidden rounded-full ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
                                       <div className="h-full rounded-full transition-[width] duration-300" style={{ width: `${Math.max(0, Math.min(100, aiModelProgress.phasePercent))}%`, background: accentColor }} />
                                     </div>
+                                    {(aiModelProgress.downloadSpeed > 0 || typeof aiModelProgress.downloadEta === 'number') && (
+                                      <div className="flex items-center justify-between text-[11px] mt-1">
+                                        {aiModelProgress.downloadSpeed > 0 ? (
+                                          <span className={textTertiary}>下载速度 {formatDownloadSpeed(aiModelProgress.downloadSpeed)}</span>
+                                        ) : <span />}
+                                        {typeof aiModelProgress.downloadEta === 'number' && (
+                                          <span className={textTertiary}>剩余约 {formatDownloadEta(aiModelProgress.downloadEta)}</span>
+                                        )}
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </div>
@@ -3887,7 +3981,10 @@ function SettingsPanel({
                                     <span className={item.lossRate === 0 ? 'text-green-500' : 'text-red-400'}>
                                       丢包 {item.lossRate}%
                                     </span>
-                                    <span className={textTertiary}>{item.loss}/{item.total} 次</span>
+                                    {/* 只有被 1 分钟截止截断、没跑满 8 次时才显示 x/8（结果不完整） */}
+                                    {item.total < 8 && (
+                                      <span className={textTertiary}>{item.loss}/{item.total} 次</span>
+                                    )}
                                   </span>
                                 ) : (
                                   <span>等待测试…</span>
@@ -4098,7 +4195,7 @@ function SettingsPanel({
                             <p className={`text-xs ${textTertiary} mb-1`}>开发者</p>
                             <p className={`text-lg font-semibold leading-6 ${textPrimary}`}>Yoshino / Castorice</p>
                             <p className={`text-lg font-semibold leading-6 ${textPrimary}`}>IceFire_Icer</p>
-                            <p className={`text-sm leading-6 ${textSecondary} mt-1`}>WaveForge 澜音工坊的开发与维护</p>
+                            <p className={`text-sm leading-6 ${textSecondary} mt-1`} style={{ textWrap: 'pretty' }}>WaveForge 澜音工坊的开发与维护</p>
                           </div>
                         </div>
                         <button
@@ -4128,22 +4225,75 @@ function SettingsPanel({
                       </div>
 
                       <div className={`mt-4 pt-4 border-t ${borderColor}`}>
-                        <button onClick={() => void checkForUpdates()} disabled={updateCheck.status === 'checking' || updateCheck.status === 'downloading'} className={`w-full py-3 px-4 rounded-xl ${playerTheme === 'dark' ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'} ${textPrimary} font-medium transition-colors disabled:opacity-60`}>
-                          {updateCheck.status === 'checking' ? '正在检查新版本…' : updateCheck.status === 'downloading' ? '正在下载更新安装包…' : '检查新版本'}
-                        </button>
+                        {/* 检查新版本 + 版本历史 */}
+                        <div className="flex gap-3 w-full">
+                          <button onClick={() => void checkForUpdates()} disabled={updateCheck.status === 'checking'} className={`flex-1 py-3 px-4 rounded-xl ${playerTheme === 'dark' ? 'bg-white/10 hover:bg-white/15' : 'bg-black/5 hover:bg-black/10'} ${textPrimary} font-medium transition-colors disabled:opacity-60`}>
+                            {updateCheck.status === 'checking' ? '正在检查新版本…' : '检查新版本'}
+                          </button>
+                          <button onClick={() => setShowVersionHistory(true)} className={`py-3 px-4 rounded-xl border ${borderColor} ${textPrimary} text-sm font-medium transition-colors ${hoverBg}`}>版本历史</button>
+                        </div>
+
+                        {/* 检查结果：有更新 → 当前/新版本 + 查看详情；无更新 → 当前为最新 */}
                         {updateCheck.message && (
-                          <p className={`${updateCheck.status === 'error' ? 'text-red-400' : textSecondary} mt-3 text-center text-sm`}>
-                            {updateCheck.message}
-                            {updateCheck.status === 'available' && (
-                              <>
-                                {updateCheck.downloadUrls?.length && window.electron?.update?.downloadAndInstall ? (
-                                  <button onClick={() => void handleDownloadUpdate()} className="ml-2 rounded-lg px-3 py-1 text-sm font-medium text-white" style={{ backgroundColor: accentColor }}>下载并安装</button>
-                                ) : null}
-                                {updateCheck.url && <button onClick={() => openExternal(updateCheck.url || '')} className="ml-2 underline">查看发布页</button>}
-                              </>
+                          <div className="mt-3">
+                            {updateCheck.status === 'available' ? (
+                              <div className="flex items-center justify-between gap-3 rounded-xl px-4 py-3" style={{ background: `${accentColor}12`, border: `1px solid ${accentColor}33` }}>
+                                <span className={`text-sm ${textPrimary}`}>{updateCheck.message}</span>
+                                <button onClick={openUpdateDetails} className="shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium text-white" style={{ backgroundColor: accentColor }}>查看详情</button>
+                              </div>
+                            ) : (
+                              <p className={`${updateCheck.status === 'error' ? 'text-red-400' : textSecondary} text-center text-sm`}>{updateCheck.message}</p>
                             )}
-                          </p>
+                          </div>
                         )}
+
+                        {/* 待应用更新常驻提示（上次「稍后」/ 已下载完成，重启即生效） */}
+                        {pendingUpdate?.version && (
+                          <div className="mt-3 flex items-center justify-between gap-3 rounded-xl px-4 py-3" style={{ background: `${accentColor}12`, border: `1px solid ${accentColor}33` }}>
+                            <span className={`text-sm ${textPrimary}`}>新版本 {getVersionDisplay(pendingUpdate.version)} 已就绪，重启软件生效</span>
+                            <button onClick={() => void handleRestartForUpdate()} className="shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium text-white" style={{ backgroundColor: accentColor }}>立即重启</button>
+                          </div>
+                        )}
+
+                        {/* 自动检测新版本（可关闭） */}
+                        <div className="mt-3 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className={`text-sm font-medium ${textPrimary}`}>自动检测新版本</p>
+                            <p className={`text-xs ${textTertiary} mt-0.5`}>每次启动时后台检测，发现新版本仅提示</p>
+                          </div>
+                          <label className="relative inline-flex flex-shrink-0 items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={autoCheckUpdate}
+                              onChange={(e) => {
+                                setAutoCheckUpdate(e.target.checked)
+                                localStorage.setItem('autoCheckUpdate', JSON.stringify(e.target.checked))
+                              }}
+                              className="sr-only peer"
+                            />
+                            <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)]`} style={{ backgroundColor: autoCheckUpdate ? accentColor : '' }} />
+                          </label>
+                        </div>
+
+                        {/* 跳过此版本：自动检测不再提示该版本，手动检查仍可更新 */}
+                        <div className="mt-2 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className={`text-sm font-medium ${textPrimary}`}>跳过此版本</p>
+                            <p className={`text-xs ${textTertiary} mt-0.5`}>
+                              {skippedVersion
+                                ? `已跳过版本 ${getVersionDisplay(skippedVersion)} 的更新提示，您仍可手动检查新版本进行更新`
+                                : '当前版本不再提示更新，但是您仍可手动检查新版本进行更新'}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={skippedVersion ? handleUnskipVersion : () => void handleSkipVersion()}
+                            className={`shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${skippedVersion ? `${textSecondary} border ${borderColor} hover:bg-white/5` : 'text-white'}`}
+                            style={skippedVersion ? undefined : { backgroundColor: accentColor }}
+                          >
+                            {skippedVersion ? '取消跳过' : '跳过此版本'}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </section>
@@ -4640,6 +4790,55 @@ function SettingsPanel({
       )}
 
       {/* 法律声明弹窗 */}
+      {showVersionHistory && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[300] flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(10px)' }}
+          onClick={() => setShowVersionHistory(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.94, opacity: 0, y: 12 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.94, opacity: 0, y: 12 }}
+            transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md overflow-hidden rounded-3xl shadow-2xl relative"
+          >
+            <div className="absolute inset-0 rounded-3xl overflow-hidden">
+              <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg, rgba(30,30,45,0.96) 0%, rgba(20,20,30,0.98) 50%, rgba(12,12,20,0.98) 100%)', backdropFilter: 'blur(80px) saturate(200%)' }} />
+              <div className="absolute inset-0 rounded-3xl" style={{ border: '1px solid rgba(255,255,255,0.14)', boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.12)', pointerEvents: 'none' }} />
+            </div>
+            <div className="relative z-10 p-5 border-b flex items-center justify-between" style={{ borderColor: 'rgba(255,255,255,0.1)' }}>
+              <div>
+                <h3 className="text-base font-semibold text-white">版本历史</h3>
+                <p className="text-white/55 text-xs mt-0.5">WaveForge 澜音工坊 各版本更新内容</p>
+              </div>
+              <button type="button" onClick={() => setShowVersionHistory(false)} className="p-2 rounded-full transition-colors hover:bg-white/15 -m-1">
+                <X className="w-5 h-5 text-white/60" />
+              </button>
+            </div>
+            <div className="relative z-10 max-h-[60vh] overflow-y-auto p-5 space-y-5">
+              {VERSION_HISTORY.map((entry) => (
+                <div key={entry.version} className="rounded-2xl p-4" style={entry.current ? { background: 'rgba(99,102,241,0.14)', border: '1px solid rgba(99,102,241,0.35)' } : { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-sm font-semibold text-white">v{entry.version}</span>
+                    <span className="text-xs text-white/40">{entry.date}</span>
+                    {entry.current && <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full text-white" style={{ background: 'rgba(99,102,241,0.6)' }}>当前版本</span>}
+                  </div>
+                  <pre className="text-xs leading-relaxed whitespace-pre-wrap text-white/75 font-sans" style={{ margin: 0 }}>{entry.notes}</pre>
+                </div>
+              ))}
+            </div>
+            <div className="relative z-10 p-5 pt-0">
+              <button type="button" onClick={() => setShowVersionHistory(false)} className="w-full py-2.5 px-4 rounded-xl font-medium text-white transition-colors hover:bg-white/10" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}>关闭</button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+
       {showLegalModal && (
         <motion.div
           initial={{ opacity: 0 }}

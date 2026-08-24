@@ -320,13 +320,15 @@ export interface ElectronAPI {
     cancel: () => Promise<{ ok: boolean }>
     delete: () => Promise<{ ok: boolean; error?: string }>
     onProgress: (callback: (progress: {
-      status: 'idle' | 'downloading' | 'paused' | 'done' | 'error' | 'cancelled'
-      phase: 'python' | 'deps' | 'repo' | 'weights' | null
+      status: 'idle' | 'downloading' | 'paused' | 'done' | 'error' | 'cancelled' | 'deleting'
+      phase: 'python' | 'pip' | 'deps' | 'repo' | 'weights' | 'delete' | null
       phaseLabel: string | null
       phasePercent: number
       overallPercent: number
       error: string | null
       done: boolean
+      downloadSpeed: number
+      downloadEta: number | null
     }) => void) => () => void
   }
   /** 单目标联通状态结果（最多 8 次，整体超 1 分钟标记 timeout） */
@@ -336,7 +338,7 @@ export interface ElectronAPI {
     disable: () => Promise<{ enabled: boolean; proxy: null }>
     getState: () => Promise<{ enabled: boolean; proxy: { host: string; port: number; type: string } | null }>
     setEnabled: (v: boolean) => Promise<{ enabled: boolean; proxy: { host: string; port: number; type: string } | null }>
-    consumeNotice: () => Promise<'startup-unavailable' | null>
+    consumeNotice: () => Promise<'startup-unavailable' | 'startup-unusable' | null>
     getLatency: () => Promise<{
       status: 'testing' | 'done'
       result: {
@@ -378,6 +380,12 @@ export interface ElectronAPI {
   /** 应用更新：下载安装包（多源逐个尝试）→ sha256 校验 → 打开安装向导 */
   update: {
     downloadAndInstall: (urls: string[], sha256: string) => Promise<{ success: boolean; error?: string; path?: string }>
+    downloadBackground: (payload: { version: string; notes: string; urls: string[]; sha256: string }) => Promise<{ success: boolean; error?: string }>
+    applyPending: () => Promise<{ success: boolean }>
+    restartForUpdate: () => Promise<{ success: boolean }>
+    getPending: () => Promise<{ version: string; notes: string; stagedAt: number } | null>
+    consumeLastApplied: () => Promise<{ version: string; notes: string; appliedAt: number } | null>
+    onDownloadStatus: (callback: (status: { state: 'progress' | 'done' | 'failed'; percent?: number; version?: string; notes?: string; error?: string }) => void) => () => void
   }
   config: {
     getCachePath: () => Promise<string>

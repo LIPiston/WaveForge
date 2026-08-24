@@ -184,10 +184,21 @@ contextBridge.exposeInMainWorld('electron', {
     clearCache: () => ipcRenderer.invoke('audio-download:clear-cache'),
   },
 
-  // 应用更新：多源下载安装包 → sha256 校验 → 打开安装向导
+  // 应用更新：后台静默下载 + 退出即应用 + 更新日志/版本历史
   update: {
     downloadAndInstall: (urls, sha256) =>
       ipcRenderer.invoke('update:download-and-install', urls, sha256),
+    downloadBackground: (payload) =>
+      ipcRenderer.invoke('update:download-background', payload),
+    applyPending: () => ipcRenderer.invoke('update:apply-pending'),
+    restartForUpdate: () => ipcRenderer.invoke('update:restart-for-update'),
+    getPending: () => ipcRenderer.invoke('update:get-pending'),
+    consumeLastApplied: () => ipcRenderer.invoke('update:consume-last-applied'),
+    onDownloadStatus: (callback) => {
+      const listener = (_event, status) => callback(status)
+      ipcRenderer.on('update:download-status', listener)
+      return () => ipcRenderer.removeListener('update:download-status', listener)
+    },
   },
   
   // 配置管理

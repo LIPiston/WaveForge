@@ -6471,6 +6471,14 @@ app.on('will-quit', () => {
 
 app.whenReady().then(() => {
   logStartupTiming('Electron app ready')
+  // 启动时应用上次「稍后」的待更新：拉起 updater 后立即退出，换完文件自动重启到新版本。
+  // 返回 true 表示正在重启应用，跳过本窗口创建流程。
+  try {
+    const { applyPendingAtStartup } = require('./update-manager.cjs')
+    if (applyPendingAtStartup()) return
+  } catch (error) {
+    console.error('⚠️ [更新] 启动应用待更新失败:', error instanceof Error ? error.message : error)
+  }
   // GPU 状态诊断：区分"splash 未渲染出来"（GPU 合成器异常）与"未加载出来"（资源失败）。
   // 每次启动写入日志，便于排查 splash 黑/白屏问题。
   try {
@@ -6661,77 +6669,14 @@ app.whenReady().then(() => {
     return { success: false }
   })
 
-  // 应用更新：多源下载安装包 → sha256 校验 → 打开安装向导
-  ipcMain.handle('update:download-and-install', async (_event, urls, expectedSha) => {
-    const downloadDir = path.join(app.getPath('userData'), 'update')
-    try {
-      fs.mkdirSync(downloadDir, { recursive: true })
-    } catch (mkdirError) {
-      return { success: false, error: `无法创建下载目录：${mkdirError?.message || mkdirError}` }
-    }
-    for (const url of Array.isArray(urls) ? urls : [urls]) {
-      const destPath = path.join(downloadDir, `WaveForge-Setup-${Date.now()}.exe`)
-      try {
-        let digest = ''
-        await new Promise(async (resolve, reject) => {
-          // Electron 42：setRedirectMode 已移除（默认自动跟随重定向）；
-          // 代理自动配置开启时显式路由到本地代理会话
-          let proxySession = null
-          try {
-            const { getState, getProxySession } = require('./proxy-manager.cjs')
-            if (getState().enabled) proxySession = await getProxySession()
-          } catch { /* 代理未配置则直连 */ }
-          const request = proxySession ? net.request({ url: String(url), session: proxySession }) : net.request(String(url))
-          const hash = crypto.createHash('sha256')
-          const writeStream = fs.createWriteStream(destPath)
-          let settled = false
-          let finished = false
-          const fail = (err) => {
-            // 磁盘写失败 / HTTP 失败时关闭写流，避免文件句柄泄漏与无监听 stream error 崩溃主进程
-            if (!finished) {
-              finished = true
-              writeStream.destroy()
-            }
-            if (!settled) { settled = true; reject(err) }
-          }
-          writeStream.on('error', fail)
-          request.on('response', (response) => {
-            if (response.statusCode < 200 || response.statusCode >= 300) {
-              fail(new Error(`HTTP ${response.statusCode}`))
-              return
-            }
-            response.on('data', (chunk) => {
-              hash.update(chunk)
-              if (!writeStream.write(chunk)) {
-                response.pause()
-                writeStream.once('drain', () => response.resume())
-              }
-            })
-            response.on('end', () => {
-              writeStream.end(() => {
-                finished = true
-                digest = hash.digest('hex')
-                if (!settled) { settled = true; resolve() }
-              })
-            })
-            response.on('error', fail)
-          })
-          request.on('error', fail)
-          request.end()
-        })
-        if (expectedSha && digest.toLowerCase() !== String(expectedSha).toLowerCase()) {
-          throw new Error('安装包校验失败（sha256 不匹配）')
-        }
-        const opened = await shell.openPath(destPath)
-        if (opened) throw new Error(`无法打开安装向导：${opened}`)
-        return { success: true, path: destPath }
-      } catch (err) {
-        console.error('❌ [更新] 下载失败:', url, err?.message || err)
-        try { fs.unlinkSync(destPath) } catch { /* ignore */ }
-      }
-    }
-    return { success: false, error: '所有下载源均失败' }
-  })
+  // 应用更新管理：后台静默下载 + 退出即应用 + 更新日志/版本历史。
+  // 处理器集中在 update-manager.cjs（下载进度经 update:download-status 事件广播）。
+  try {
+    const { setupUpdateIPC } = require('./update-manager.cjs')
+    setupUpdateIPC(ipcMain)
+  } catch (error) {
+    console.error('⚠️ [更新] 更新管理器初始化失败:', error instanceof Error ? error.message : error)
+  }
   
   // 配置管理 IPC 处理器
   ipcMain.handle('config:get-cache-path', () => {
