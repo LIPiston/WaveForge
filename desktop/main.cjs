@@ -3558,7 +3558,7 @@ async function createSodaLoginWindow() {
     })()
   })
 }
-rnipcMain.handle('open-soda-login', async () => {
+ipcMain.handle('open-soda-login', async () => {
   try {
     const result = await createSodaLoginWindow()
     // 登录成功后把用户名/头像通知渲染进程持久化
