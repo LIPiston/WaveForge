@@ -3398,22 +3398,6 @@ function sodaLoginPageHtml(qrDataUrl) {
     '</script></body></html>'
 }
 
-async function sodaFetchProfile(cookie) {
-  // 复用本地后端的 luna/pc/me 能力取昵称/头像/ID（后端在 3001 端口随应用启动）
-  try {
-    const resp = await fetch('http://127.0.0.1:3001/api/soda/status?cookie=' + encodeURIComponent(cookie), { signal: AbortSignal.timeout(12000) })
-    const json = await resp.json()
-    if (json && json.profile && (json.profile.nickname || json.profile.userId)) {
-      return {
-        username: String(json.profile.nickname || ''),
-        avatar: String(json.profile.avatarUrl || ''),
-        userId: String(json.profile.userId || ''),
-      }
-    }
-  } catch { /* 后端未就绪时静默，字段留空不阻塞登录 */ }
-  return { username: '', avatar: '', userId: '' }
-}
-
 async function createSodaLoginWindow() {
   return new Promise((resolve) => {
     if (sodaLoginWindow && !sodaLoginWindow.isDestroyed()) {
@@ -3483,19 +3467,46 @@ async function createSodaLoginWindow() {
 
         await buildQr()
 
-        // 轮询扫码状态；check_qrconnect 可能因二次验证(MFA)长时间阻塞——用 inFlight 防止调用堆积
+        // 轮询扫码状态；check_qrconnect 可能因二次验证(MFA)长时间阻塞——用 inFlight 防止调用堆积。
+        // 成功判定以「凭据文件里的 .qishui 会话 Cookie」为准：无论返回包形状如何、
+        // 甚至轮询中途抛错（MFA 完成后偶发响应异常），只要会话已落盘即视为登录成功。
         let pollTimer = null
         let inFlight = false
         let consecutiveErrors = 0
+        const hasRealSession = (cfg) => {
+          // 不用正则避免转义歧义：按分号拆 Cookie，看是否存在任一会话键
+          const names = String((cfg && cfg.cookie) || '').split(';').map(part => part.trim().split('=')[0].toLowerCase())
+          return names.includes('sessionid') || names.includes('sessionid_ss') || names.includes('sid_guard') || names.includes('sid_tt')
+        }
+        // 登录闭环立即完成，不做任何网络等待：昵称/头像/ID 由渲染层自愈逻辑
+        // （handleSodaLogin 缺字段时经 /api/soda/status 补齐）异步获取。
+        // 此前在这里同步等资料接口，接口一旦迟滞会把整个登录流程卡死在窗口不关。
+        const completeLogin = (cookie) => {
+          if (settled) return
+          settled = true
+          if (pollTimer) clearInterval(pollTimer)
+          console.log('[SodaLogin] 会话已建立，完成登录闭环')
+          finish({ success: true, cookie, username: '', avatar: '', userId: '' })
+        }
         pollTimer = setInterval(async () => {
           if (!qrWindow || qrWindow.isDestroyed() || settled) { clearInterval(pollTimer); return }
-          if (inFlight) return
+          if (inFlight) { console.log('[SodaLogin][tick] 跳过：上一次检查仍在进行'); return }
           inFlight = true
           try {
+            // 先看凭据文件：MFA/二次验证流程可能在任意时刻把会话写进来
+            const cfgSnapshot = readCfg()
+            console.log('[SodaLogin][tick] cookie字段=', String(cfgSnapshot.cookie || '').slice(0, 60))
+            if (hasRealSession(cfgSnapshot)) { console.log('[SodaLogin][tick] 检测到有效会话 → 完成登录'); completeLogin(String(cfgSnapshot.cookie || '')); return }
             const envelope = await auth.checkQrConnect(qrToken)
             consecutiveErrors = 0
             const d = envelope.data || {}
             const errorCode = Number(d.error_code)
+            // 返回包确认 → 再核对一次落盘 Cookie（persistSessionCookies 在 check 内部已完成）
+            const cfgAfter = readCfg()
+            if ((errorCode === 0 && (String(d.status) === '3' || d.session_cookie)) || hasRealSession(cfgAfter)) {
+              completeLogin(String(cfgAfter.cookie || ''))
+              return
+            }
             if (errorCode === 2) {
               // 二维码已过期：自动刷新
               expiredCount += 1
@@ -3514,30 +3525,23 @@ async function createSodaLoginWindow() {
               finish({ success: false, error: '请求过于频繁，请一分钟后再试' })
               return
             }
-            if (errorCode === 0 && (String(d.status) === '3' || d.session_cookie)) {
-              setStatus('✓ 登录成功，正在获取用户信息…')
-              clearInterval(pollTimer)
-              const cfg = readCfg()
-              const cookie = String(cfg.cookie || '')
-              if (!cookie) throw new Error('会话 Cookie 捕获失败')
-              const profile = await sodaFetchProfile(cookie)
-              console.log(`✓ [汽水音乐] Passport 登录成功: name=${profile.username} id=${profile.userId || '(未取到)'}`)
-              finish({ success: true, cookie, username: profile.username, avatar: profile.avatar, userId: profile.userId })
-              return
-            }
             if (String(d.status) === '2') setStatus('已扫码 ✓ 请在手机上确认登录')
           } catch (err) {
+            console.error('[SodaLogin][tick] check异常:', err && err.message)
+            // 异常路径同样先查落盘 Cookie：MFA 通过后的收尾请求偶发失败不影响会话有效性
+            const cfgErr = readCfg()
+            if (hasRealSession(cfgErr)) { completeLogin(String(cfgErr.cookie || '')); return }
             if (err && err.code === 'QISHUI_MFA_CANCELLED') {
               clearInterval(pollTimer)
               finish({ success: false, error: err.message || '安全验证已取消' })
               return
             }
             consecutiveErrors += 1
-            if (consecutiveErrors >= 5) {
+            if (consecutiveErrors >= 8) {
               clearInterval(pollTimer)
               finish({ success: false, error: (err && err.message) || '登录状态检查连续失败' })
             } else {
-              setStatus('网络波动，正在重试… (' + consecutiveErrors + '/5)')
+              setStatus(consecutiveErrors >= 2 ? '安全验证处理中/网络波动，正在重试… (' + consecutiveErrors + '/8)' : '正在检查扫码状态…')
             }
           } finally {
             inFlight = false
@@ -3547,6 +3551,13 @@ async function createSodaLoginWindow() {
         qrWindow.on('closed', () => {
           if (pollTimer) clearInterval(pollTimer)
           sodaLoginWindow = null
+          // 手动关闭窗口 ≠ 一定失败：若扫码+验证码已完成、会话已落盘，按登录成功收尾
+          const cfgOnClose = readCfg()
+          if (hasRealSession(cfgOnClose)) {
+            console.log('[SodaLogin] 窗口关闭时会话有效，按成功收尾')
+            finish({ success: true, cookie: String(cfgOnClose.cookie || ''), username: '', avatar: '', userId: '' })
+            return
+          }
           finish({ success: false, error: '用户取消登录' })
         })
       } catch (error) {
