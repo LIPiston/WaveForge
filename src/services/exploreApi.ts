@@ -13,6 +13,10 @@ const EXPLORE_MEMORY_CACHE_TTL = 9 * 60 * 1000
 
 const exploreHomeMemoryCache = new Map<string, { payload: ExplorePayload; expiresAt: number }>()
 const exploreHomePending = new Map<string, Promise<ExplorePayload>>()
+// 任一平台登录态变化（含汽水扫码成功）→ 失效探索页内存缓存，个性化数据立即可见
+if (typeof window !== 'undefined') {
+  window.addEventListener('waveforge-auth-changed', () => { exploreHomeMemoryCache.clear() })
+}
 
 export type ExplorePlatform = MusicPlatform
 

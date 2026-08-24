@@ -372,6 +372,8 @@ export async function searchSongs(keywords: string, limit = 30, platform: MusicP
 // 搜索建议
 export async function searchSuggest(keywords: string, platform: MusicPlatform = 'netease'): Promise<SearchSuggestion[]> {
   try {
+    // 汽水：逆向接口无搜索建议端点，返回空（避免误用网易云建议造成串台）
+    if (platform === 'soda') return []
     if (platform === 'qq') {
       const response = await fetch(`${API_BASE}/qq/suggest?keywords=${encodeURIComponent(keywords)}`)
       const data = await response.json()
@@ -1129,7 +1131,7 @@ export async function getLyrics(
     const useAdaptive = adaptiveLyrics !== null ? JSON.parse(adaptiveLyrics) : true
     // 如果禁用第三方或禁用自适应，直接使用当前平台
     if (!useThirdParty || !useAdaptive || primarySource === 'Platform') {
-      return await getPlatformLyrics(id, platform)
+      return await getPlatformLyrics(id, platform, songName, artistName)
     }
     
     // 官方歌词源必须与歌曲所属平台一致，禁止拿一个平台的歌曲 ID 请求另一个平台。
@@ -1154,12 +1156,13 @@ export async function getLyrics(
     const platformSourceName = platform === 'qq' ? 'QQ音乐' : isApplePlatform ? 'Apple Music' : platform === 'spotify' ? 'Spotify' : platform === 'kugou' ? '酷狗' : platform === 'soda' ? '汽水' : '网易云'
     
     // 平台互斥：QQ音乐歌曲不请求网易云API，网易云歌曲不请求QQ音乐API。
-    // Apple 曲目不请求网易云/QQ 平台源；Spotify/汽水无官方歌词接口（酷狗登录时除外）。
+    // Apple 曲目不请求网易云/QQ 平台源；Spotify 无官方歌词接口（酷狗登录时除外；
+    // 汽水已接入逆向歌词管线，走 getPlatformLyrics 内部含网易云同名匹配兜底）。
     const platformSourcePromise = isApplePlatform
       ? Promise.resolve([])
-      : (platform === 'spotify' || platform === 'soda')
+      : platform === 'spotify'
         ? Promise.resolve([])
-        : getPlatformLyrics(id, platform)
+        : getPlatformLyrics(id, platform, songName, artistName)
     const amllSourcePromise = isApplePlatform
       ? Promise.resolve([])
       : getAMLLTTMLLyrics(id, platform)
@@ -1457,7 +1460,7 @@ export async function getLyrics(
 }
 
 // 获取平台原生歌词（内部函数）
-async function getPlatformLyrics(id: number | string, platform: MusicPlatform): Promise<LyricLine[]> {
+async function getPlatformLyrics(id: number | string, platform: MusicPlatform, songName?: string, artistName?: string): Promise<LyricLine[]> {
   try {
     if (platform === 'kugou') {
       // 酷狗：krcs 歌词接口（无需登录；失败走 Lrclib/AMLL 兜底）
@@ -1471,9 +1474,27 @@ async function getPlatformLyrics(id: number | string, platform: MusicPlatform): 
       return parseLyric(lyricText)
     }
     if (platform === 'soda') {
-      // 汽水：火山公开目录详情歌词
+      // 汽水：逆向歌词管线（SEO → track_v2 → 公开目录）
       const { getSodaLyrics } = await import('./sodaService')
-      return getSodaLyrics(String(id))
+      const lines = await getSodaLyrics(String(id))
+      if (lines.length) return lines
+      // 汽水曲库缺词（纯音乐/翻唱常见）→ 网易云同名匹配兜底，保证"自动拉歌词"体验
+      const keyword = [songName, artistName].filter(Boolean).join(' ').trim()
+      if (keyword) {
+        try {
+          const res = await searchSongs(keyword, 5, 'netease')
+          const target = res.songs && res.songs[0]
+          if (target && target.id) {
+            const resp = await fetch(`${API_BASE}/netease/lyric?id=${encodeURIComponent(String(target.id))}`, { signal: AbortSignal.timeout(8000) })
+            if (resp.ok) {
+              const data = await resp.json().catch(() => null)
+              const lrc = String(data?.lrc?.lyric || data?.lyric || '')
+              if (lrc.includes('[')) return parseLyric(lrc)
+            }
+          }
+        } catch { /* 匹配失败静默 */ }
+      }
+      return []
     }
     if (platform === 'qq') {
       const qqCookie = localStorage.getItem('qq_cookie') || ''

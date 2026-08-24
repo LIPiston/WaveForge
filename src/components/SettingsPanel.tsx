@@ -125,7 +125,7 @@ interface SettingsPanelProps {
   onKugouLogout: () => void
   sodaLoggedIn: boolean
   sodaUsername: string
-  onSodaLogin: (cookie: string, username?: string) => void
+  onSodaLogin: (cookie: string, username?: string, extra?: { avatar?: string; userId?: string }) => void
   onSodaLogout: () => void
   playerTheme?: 'light' | 'dark'
 }

@@ -2688,6 +2688,23 @@ const SODA_CHART_DEFINITIONS = [
   { id: 'douyin-pop', name: '流行精选', keyword: '流行', group: '抖音榜', description: '流行度高的人气歌曲' },
 ]
 
+/** 榜单噪声过滤：公开搜索会命中两类垃圾——①标题≈关键词的歌（搜"热歌"返回《热歌》）②汇编合集（合集/串烧/DJ长串） */
+function filterSodaChartNoise(songs, keyword) {
+  const kw = sodaSearchComparable(keyword)
+  const candidates = Array.isArray(songs) ? songs : []
+  const COMPILATION_MARKS = ['合集', '串烧', '连播']
+  const isNoise = (song) => {
+    const rawTitle = String((song && song.name) || '')
+    if (!rawTitle.trim()) return true
+    const title = sodaSearchComparable(rawTitle)
+    if (!title) return true
+    // ① 标题与关键词完全同名（搜"热歌"返回《热歌》）→ 垃圾
+    if (title === kw) return true
+    return false
+  }
+  return candidates.filter(song => !isNoise(song))
+}
+
 /** 榜单聚合：每个榜单独立缓存（登录/未登录分别缓存），并行拉取，单项失败置空不影响其它 */
 async function handleSodaCharts(cookieText, chartLimit) {
   const cookie = normalizeSodaCookieInput(cookieText)
@@ -2700,16 +2717,35 @@ async function handleSodaCharts(cookieText, chartLimit) {
       let error = ''
       try {
         songs = await sodaChartCache.wrap(cacheKey, 10 * 60 * 1000, async () => {
+          const keep = (list) => {
+            const filtered = filterSodaChartNoise(list, def.keyword)
+            // 同名去重；含关键词 tag 的条目（真实歌曲的抖音版）沉底，真实歌曲优先
+            const seenTitles = new Set()
+            const clean = []
+            const tagged = []
+            for (const song of filtered) {
+              const title = sodaSearchComparable(song && song.name)
+              if (!title || seenTitles.has(title)) continue
+              seenTitles.add(title)
+              const kwC = sodaSearchComparable(def.keyword)
+              if (kwC && title.includes(kwC)) tagged.push(song)
+              else clean.push(song)
+            }
+            const out = [...clean, ...tagged].slice(0, limit)
+            console.log('[Charts][keep] kw=', def.keyword, 'clean=', clean.length, 'tagged=', tagged.length, 'top3=', out.slice(0, 3).map(s => s && s.name).join('/'))
+            return out
+          }
           if (loggedIn) {
             try {
-              const pc = await handleSodaPcSearch(def.keyword, limit, cookie, 0)
-              if (pc.songs && pc.songs.length) return pc.songs.slice(0, limit)
+              const pc = await handleSodaPcSearch(def.keyword, limit * 3, cookie, 0)
+              if (pc.songs && pc.songs.length) return keep(pc.songs)
             } catch {
               /* PC 搜索失败回退公开目录 */
             }
           }
-          const pub = await handleSodaPublicSearch(def.keyword, limit, '', 0)
-          return (pub.songs || []).slice(0, limit)
+          // 多拉候选：噪声过滤后仍需填满榜单
+          const pub = await handleSodaPublicSearch(def.keyword, limit * 3, '', 0)
+          return keep(pub.songs || [])
         })
       } catch (err) {
         error = (err && err.message) || 'SODA_CHART_FAILED'
@@ -2737,15 +2773,15 @@ async function handleSodaDaily(cookieText, limit) {
     if (feed.songs && feed.songs.length) {
       return { songs: feed.songs.slice(0, limit), personalized: true }
     }
-    const pub = await handleSodaPublicSearch('热歌', limit, '', 0)
+    const pub = await handleSodaPublicSearch('热歌', limit * 3, '', 0)
     return {
-      songs: (pub.songs || []).slice(0, limit),
+      songs: filterSodaChartNoise(pub.songs || [], '热歌').slice(0, limit),
       personalized: false,
       message: '汽水个性化推荐暂不可用，已回退公开热歌。' + (feed.error ? '（' + feed.error + '）' : ''),
     }
   }
-  const pub = await handleSodaPublicSearch('热歌', limit, '', 0)
-  return { songs: (pub.songs || []).slice(0, limit), personalized: false }
+  const pub = await handleSodaPublicSearch('热歌', limit * 3, '', 0)
+  return { songs: filterSodaChartNoise(pub.songs || [], '热歌').slice(0, limit), personalized: false }
 }
 
 /** 艺人歌曲：公开搜索 + 按歌手名相关性排序（rankSodaPublicSongs 已内置歌手权重） */
