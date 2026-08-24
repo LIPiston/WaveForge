@@ -25,12 +25,14 @@ const FRAME_MIN_INTERVAL_MS = 1000 / 120
 import CameraRig from './CameraRig'
 import DioramaScene from './DioramaScene'
 import DioramaPostFx from './dioramaPostFx'
-import { buildDioramaFontSpec, measureDioramaText } from './dioramaTextRaster'
+import { DIORAMA_RASTER_FONT_PX, buildDioramaFontSpec, measureDioramaText } from './dioramaTextRaster'
 import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../../hooks/useAudioPulse'
 import type { AudioAnalyzerStore } from '../../hooks/useAudioAnalyzer'
 
+// 字体栈：拉丁字体在前（西文歌词用 SF/Segoe 的拉丁字形，比中文字体的西文部分精致得多），
+// 中文按平台最优顺序回退；canvas 逐字形 fallback，不会影响中文字形选择
 const FONT_STACK =
-  '"PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "HarmonyOS Sans SC", system-ui, -apple-system, sans-serif'
+  '"SF Pro Display", "SF Pro Text", "Segoe UI Variable Display", "Segoe UI", "Inter", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "HarmonyOS Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, -apple-system, sans-serif'
 
 /** folia 的 Word 时间是歌曲内的绝对秒：行内毫秒 + 行起始时间 */
 const convertWord = (word: LyricWord, lineTime: number): Word => ({
@@ -112,9 +114,25 @@ export default function FoliaDioramaLyrics({
   const [flightActive, setFlightActive] = useState(false)
   const effectivePulse = pulseStore ?? EMPTY_AUDIO_PULSE_STORE
 
+  // 跟踪所有挂起的 setTimeout，组件卸载时统一清理，避免在已卸载组件上触发 setState
+  // （React 18 已无"卸载后 setState"警告，但飞行/出栈计时器在切歌快进时仍会命中陈旧闭包）
+  const pendingTimersRef = useRef<Set<number>>(new Set())
+  const scheduleTimeout = (fn: () => void, delayMs: number) => {
+    const id = window.setTimeout(() => {
+      pendingTimersRef.current.delete(id)
+      fn()
+    }, delayMs)
+    pendingTimersRef.current.add(id)
+    return id
+  }
+  useEffect(() => () => {
+    pendingTimersRef.current.forEach(id => window.clearTimeout(id))
+    pendingTimersRef.current.clear()
+  }, [])
+
   const beginFlight = () => {
     setFlightActive(true)
-    window.setTimeout(() => setFlightActive(false), (TRANSITION_DURATION + 0.4) * 1000)
+    scheduleTimeout(() => setFlightActive(false), (TRANSITION_DURATION + 0.4) * 1000)
   }
 
   // ── 播放时间 → MotionValue（rAF 外推，保证逐帧平滑） ───────────────────────────────────
@@ -186,7 +204,7 @@ export default function FoliaDioramaLyrics({
     setGlobalIndex(target)
     setTransitionEpoch(epoch)
     if (!isFirst) beginFlight()
-    window.setTimeout(() => setOutgoingGlobalIndex(null), (TRANSITION_DURATION + 0.6) * 1000)
+    scheduleTimeout(() => setOutgoingGlobalIndex(null), (TRANSITION_DURATION + 0.6) * 1000)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackKey])
 
@@ -234,7 +252,7 @@ export default function FoliaDioramaLyrics({
       setGlobalIndex(next.globalStart + Math.max(0, currentIndex))
       setTransitionEpoch(epoch)
       beginFlight()
-      window.setTimeout(() => setOutgoingGlobalIndex(null), (TRANSITION_DURATION + 0.6) * 1000)
+      scheduleTimeout(() => setOutgoingGlobalIndex(null), (TRANSITION_DURATION + 0.6) * 1000)
       return
     }
 
@@ -250,16 +268,15 @@ export default function FoliaDioramaLyrics({
   const activeLine = lines[Math.max(0, Math.min(currentIndex, lines.length - 1))]
   const activeWorldWidth = useMemo(() => {
     if (!activeLine?.fullText) return 0
-    const advancePx = Math.max(1, Math.ceil(measureDioramaText(activeLine.fullText, buildDioramaFontSpec(FONT_STACK, 700))))
-    return (advancePx / 128) * 0.62 // 与 DioramaScene 的 LINE_FONT_SIZE 一致
+    const advancePx = Math.max(1, Math.ceil(measureDioramaText(activeLine.fullText, buildDioramaFontSpec(FONT_STACK))))
+    return (advancePx / DIORAMA_RASTER_FONT_PX) * 0.62 // 与 DioramaScene 的 LINE_FONT_SIZE 一致
   }, [activeLine])
   activeLineWidthRef.current = activeWorldWidth
 
-  // ── 底部字幕覆盖（翻译 / 罗马音 / 下一行提示） ────────────────────────────────────────
+  // ── 底部字幕覆盖（翻译 / 罗马音；无下一句提示） ────────────────────────────────────────
   const activeText = activeLine?.fullText || ''
   const activeTranslation = translationEnabled ? activeLine?.translation : undefined
   const activeRoman = romanEnabled ? activeLine?.romanization : undefined
-  const nextLine = lines[currentIndex + 1]
 
   // ── WebGL 后台恢复兜底 ────────────────────────────────────────────────────────────────
   // 窗口后台一段时间后，Chromium 可能释放/丢失 GPU 上下文或停滞 rAF，切回前台 3D 画布会空白。
@@ -346,8 +363,8 @@ export default function FoliaDioramaLyrics({
             transitionEpoch={transitionEpoch}
           />
           {/* HDR UnrealBloom：发光体真实泛光（flat=NoToneMapping 与 OutputPass 配套）；
-              强度 0.28 + 门槛 0.85：柔和的氛围辉光，歌词点亮可见但不刺眼 */}
-          <DioramaPostFx strength={0.28} radius={0.45} threshold={0.85} />
+              强度 0.24 + 门槛 0.92：亮封面背景不会击穿阈值引发闪白，歌词点亮仍可见 */}
+          <DioramaPostFx strength={0.24} radius={0.45} threshold={0.92} />
         </Canvas>
       </div>
 
@@ -361,11 +378,6 @@ export default function FoliaDioramaLyrics({
         {activeTranslation && (
           <span className="max-w-[72vw] truncate rounded-full bg-black/30 px-5 py-1.5 text-[15px] font-medium text-white/85 backdrop-blur-md">
             {activeTranslation}
-          </span>
-        )}
-        {nextLine?.fullText && (
-          <span className="mt-0.5 max-w-[58vw] truncate text-[11px] font-semibold tracking-[0.08em] text-white/35">
-            下一句 · {nextLine.fullText}
           </span>
         )}
       </div>

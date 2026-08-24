@@ -30,6 +30,7 @@ import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../../hooks/useAu
 import { ANALYZER_SPECTRUM_BANDS, type AudioAnalyzerData, type AudioAnalyzerStore } from '../../hooks/useAudioAnalyzer';
 import { getProxiedImageUrl } from '../../services/musicApi';
 import {
+    DIORAMA_RASTER_FONT_PX,
     buildDioramaFontSpec,
     measureDioramaText,
     rasterDioramaLine,
@@ -52,12 +53,16 @@ const TEXT_DISSOLVE_END = 0.9;
 const TEXT_FADE_IN_START = 32;
 const TEXT_FADE_IN_END = 40;
 const NEIGHBOR_OPACITY: Record<number, number> = { [-1]: 0.3, [-2]: 0.1, 1: 0.34, 2: 0.16, 3: 0.06 };
+
+// 共享单位四边形：所有 plane mesh 复用同一份 BufferGeometry，按 mesh.scale 区分尺寸。
+// 原先每个 plane 各自 `<planeGeometry args={[w,h]}/>` 会为每字 4 层切片分配 4 个独立几何，
+// 15 字活动行 = 60 个 geometry；改为共享 + scale 后只剩 1 个，热路径零分配。
+// 几何体的 GPU 缓冲在 context loss 后会自动重上传（属性数据本身与上下文无关）。
+const SHARED_UNIT_QUAD = new THREE.PlaneGeometry(1, 1);
 /** 活动行字厚：每层深度切片的世界单位偏移（两层合计 ≈ 字高的 8%）。
  * 表面后方叠两层暗色同纹理切片，相机侧视/环绕时暴露出真实厚度（视差），
  * 字形读作立体雕刻而非平面贴纸；切片透明度随唱读"生长"。 */
-const TEXT_DEPTH_STEP = 0.024;
-const TEXT_SIDE_COLOR = '#464c66';
-const TEXT_BACK_COLOR = '#282c3e';
+const TEXT_DEPTH_STEP = 0.034;
 
 const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
 
@@ -159,8 +164,12 @@ interface VisibleLineEntry {
     isOutgoing: boolean;
 }
 
+// CJK 检测：合并覆盖 CJK 部首/康熙/符号/平假名/片假名/注音/谚文/CJK 统一/扩展 A
+// (\u2e80-\u9fff) + 兼容表意 (\uf900-\ufaff) + 全角形式 (\uff00-\uffef) +
+// 扩展 B-H 及兼容增补 (\u{20000}-\u{2fa1f})——原正则漏掉了扩展 B-H，导致
+// "𠮷/𫝆" 等扩展平面汉字被误判为拉丁文逐词聚合。`u` flag 让 \u{} 高位码点生效。
 const isCjkChar = (char: string): boolean =>
-    /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]/u.test(char);
+    /[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef\u{20000}-\u{2fa1f}]/u.test(char);
 
 interface ActiveUnit {
     text: string;
@@ -199,7 +208,7 @@ const buildActiveUnits = (line: Line): ActiveUnit[] => {
 };
 
 const measureWorldWidth = (text: string, fontSpec: string): number =>
-    (Math.max(1, Math.ceil(measureDioramaText(text, fontSpec))) / 128) * LINE_FONT_SIZE;
+    (Math.max(1, Math.ceil(measureDioramaText(text, fontSpec))) / DIORAMA_RASTER_FONT_PX) * LINE_FONT_SIZE;
 
 // ─── 活动行：逐字/逐词 3D 文字面片 + 光晕 + 随唱高亮 ───────────────────────────────────────────
 
@@ -214,7 +223,7 @@ const ActiveLineText: React.FC<{
 }> = ({ entry, currentTime, fontStack, accentColor, fitScale, onSeek, pulseStore }) => {
     const { line } = entry;
     const camera = useThree(state => state.camera);
-    const fontSpec = useMemo(() => buildDioramaFontSpec(fontStack, 700), [fontStack]);
+    const fontSpec = useMemo(() => buildDioramaFontSpec(fontStack), [fontStack]);
     const units = useMemo(() => buildActiveUnits(line), [line]);
     const measured = useMemo(() => units.map(unit => ({
         ...unit,
@@ -223,7 +232,7 @@ const ActiveLineText: React.FC<{
     const rasters = useMemo(() => measured.map(unit => rasterDioramaUnit(unit.text, fontSpec)), [measured, fontSpec]);
 
     const totalAdvancePx = rasters.reduce((sum, r) => sum + r.advancePx, 0) || 1;
-    const lineWorldWidth = (totalAdvancePx / 128) * LINE_FONT_SIZE * fitScale;
+    const lineWorldWidth = (totalAdvancePx / DIORAMA_RASTER_FONT_PX) * LINE_FONT_SIZE * fitScale;
     const groupRef = useRef<THREE.Group>(null);
     const baseMatRefs = useRef<Array<THREE.MeshBasicMaterial | null>>([]);
     const glowMatRefs = useRef<Array<THREE.MeshBasicMaterial | null>>([]);
@@ -233,7 +242,7 @@ const ActiveLineText: React.FC<{
     const glowSmoothRefs = useRef<number[]>([]);
     const white = useMemo(() => new THREE.Color('#ffffff'), []);
     // 未唱中性灰（明显压暗）：与已唱白拉开亮度差，逐字点亮才看得清
-    const unsungColor = useMemo(() => new THREE.Color('#b8bcd2'), []);
+    const unsungColor = useMemo(() => new THREE.Color('#a8adc8'), []);
     // 更浓的光晕色：适度提高主题色饱和度（克制，避免过艳）
     const vividAccent = useMemo(() => {
         const color = new THREE.Color(accentColor);
@@ -241,6 +250,18 @@ const ActiveLineText: React.FC<{
         color.getHSL(hsl);
         color.setHSL(hsl.h, Math.min(1, hsl.s * 1.2 + 0.08), Math.min(0.62, Math.max(0.46, hsl.l)));
         return color;
+    }, [accentColor]);
+    // 3D 厚切片配色随封面主色（压暗的主题色系）——比固定灰蓝更贴歌曲氛围
+    const depthColors = useMemo(() => {
+        const source = new THREE.Color(accentColor);
+        const hsl = { h: 0, s: 0, l: 0 };
+        source.getHSL(hsl);
+        const hue = Number.isFinite(hsl.h) ? hsl.h : 0.66;
+        const sat = Number.isFinite(hsl.s) && hsl.s > 0.04 ? hsl.s : 0.5;
+        return {
+            side: `#${new THREE.Color().setHSL(hue, Math.min(1, sat * 0.85), 0.22).getHexString()}`,
+            back: `#${new THREE.Color().setHSL(hue, Math.min(1, sat * 0.75), 0.13).getHexString()}`,
+        };
     }, [accentColor]);
     const worldPos = useMemo(() => new THREE.Vector3(), []);
     const tmpColor = useMemo(() => new THREE.Color(), []);
@@ -286,14 +307,14 @@ const ActiveLineText: React.FC<{
             // 颜色：未唱暗灰 → 已唱纯白；正在演唱中的字主题色倾向加强（明确"唱到哪"）
             tmpColor.copy(unsungColor).lerp(white, progress);
             if (isSinging) {
-                tmpColor.lerp(vividAccent, 0.18);
+                tmpColor.lerp(vividAccent, 0.28);
             }
             // 已唱字不再过驱泛光（用户多轮反馈太亮）：颜色停在纹理白，亮度全部交给透明度，
-            // 峰值 0.78 低于 bloom 阈值——歌词退出辉光通道，"正在唱"的提示由主题色倾向承担
+            // 峰值 0.84 低于 bloom 阈值——歌词退出辉光通道，"正在唱"的提示由主题色倾向承担
             base.color.copy(tmpColor);
-            // 亮度差：未唱 0.2 → 已唱 0.78；演唱窗口保留一线 sin 强调（幅度收敛）
-            const activeBoost = isSinging ? 1 + 0.03 * Math.sin(Math.PI * rawProgress) : 1;
-            base.opacity = life * (0.2 + 0.58 * progress) * activeBoost;
+            // 亮度差：未唱 0.18 → 已唱 0.84；演唱窗口保留一线 sin 强调（幅度收敛）
+            const activeBoost = isSinging ? 1 + 0.05 * Math.sin(Math.PI * rawProgress) : 1;
+            base.opacity = life * (0.18 + 0.66 * progress) * activeBoost;
             // 立体厚度层：暗色切片透明度随唱读"生长"——未唱时保持干净平面，
             // 唱到的字显出厚度（相机环绕/侧视时视差暴露字厚）
             const depthGain = 0.3 + 0.7 * progress;
@@ -301,23 +322,27 @@ const ActiveLineText: React.FC<{
             const backMat = backMatRefs.current[index];
             if (sideMat) sideMat.opacity = base.opacity * 0.85 * depthGain;
             if (backMat) backMat.opacity = base.opacity * 0.62 * depthGain;
-            // 逐字光晕：极弱余温，仅提示唱读位置
-            const targetGlow = 0.004 + 0.018 * progress;
+            // 逐字光晕：极弱余温提示唱读位置；仅"正在唱"的字叠加一丝柔光晕（其余保持近零，避免每字冒光）
+            const targetGlow = 0.004 + 0.018 * progress + (isSinging ? 0.02 * Math.sin(Math.PI * rawProgress) : 0);
             const smoothed = glowSmoothRefs.current[index]
                 + (targetGlow - glowSmoothRefs.current[index]) * (1 - Math.exp(-4 * Math.max(0.001, delta)));
             glowSmoothRefs.current[index] = smoothed;
             glow.color.copy(vividAccent);
             glow.opacity = life * smoothed * (1 + pulse.scale * 3);
-            // 已唱字保持极轻微的呼吸；演唱窗口内的字附加微小"唱读"膨胀（2.5%，正弦包络）
+            // 已唱字保持极轻微的呼吸；演唱窗口内的字附加微小"唱读"膨胀（3.5%，正弦包络）
             if (unitMesh && now >= unit.startTime) {
-                const singPop = isSinging ? 0.025 * Math.sin(Math.PI * rawProgress) : 0;
+                const singPop = isSinging ? 0.035 * Math.sin(Math.PI * rawProgress) : 0;
                 const scalePulse = 1 + Math.sin(now * 1.2 + index * 0.7) * 0.008 + singPop;
                 unitMesh.scale.set(scalePulse, scalePulse, 1);
             }
         }
     });
 
-    const seek = () => onSeek?.(line.startTime);
+    // 逐字点击 seek 到该字/词的起始时间（folia 原版交互：点字精确跳字，而非整行起跳）
+    const seekUnit = (index: number) => () => {
+        const unit = measured[index];
+        onSeek?.(unit?.startTime ?? line.startTime);
+    };
     let cursor = -totalAdvancePx / 2;
     const planes = rasters.map((raster, index) => {
         // 平面宽度必须用画布实际宽度（advance + 两侧 pad），不能用 advance：
@@ -325,10 +350,11 @@ const ActiveLineText: React.FC<{
         // 短词（如 "in"，advance≈110px）会被压到 ~38% 宽，扁得尤其明显（修复用户反馈）。
         // 多出的 pad 区域是全透明的，平面比字距宽只会与相邻平面透明重叠，无视觉副作用；
         // 字形左缘恰好落在 cursor 处（平面中心 = advance 中心，左右 pad 对称）。
-        const unitWorldWidth = (raster.canvasWidthPx / 128) * LINE_FONT_SIZE * fitScale;
-        const unitWorldHeight = (raster.canvasHeightPx / 128) * LINE_FONT_SIZE * fitScale;
-        const x = (cursor + raster.advancePx / 2) / 128 * LINE_FONT_SIZE * fitScale;
+        const unitWorldWidth = Math.max(0.01, (raster.canvasWidthPx / DIORAMA_RASTER_FONT_PX) * LINE_FONT_SIZE * fitScale);
+        const unitWorldHeight = Math.max(0.01, (raster.canvasHeightPx / DIORAMA_RASTER_FONT_PX) * LINE_FONT_SIZE * fitScale);
+        const x = (cursor + raster.advancePx / 2) / DIORAMA_RASTER_FONT_PX * LINE_FONT_SIZE * fitScale;
         cursor += raster.advancePx;
+        const planeScale: [number, number, number] = [unitWorldWidth, unitWorldHeight, 1];
         return (
             <group
                 key={`${index}`}
@@ -337,8 +363,7 @@ const ActiveLineText: React.FC<{
             >
                 {/* 光晕（最底层）：柔光在厚度切片之后，不遮住字厚。
                     光晕纹理与 base 共用同一画布几何，1:1 同尺寸映射才能精准套准笔画 */}
-                <mesh position={[0, 0, -TEXT_DEPTH_STEP * 3]} renderOrder={0}>
-                    <planeGeometry args={[Math.max(0.01, unitWorldWidth), Math.max(0.01, unitWorldHeight)]} />
+                <mesh position={[0, 0, -TEXT_DEPTH_STEP * 3]} scale={planeScale} renderOrder={0} geometry={SHARED_UNIT_QUAD}>
                     <meshBasicMaterial
                         ref={(mat) => { glowMatRefs.current[index] = mat; }}
                         map={raster.glowTexture}
@@ -351,12 +376,11 @@ const ActiveLineText: React.FC<{
                     />
                 </mesh>
                 {/* 立体厚度切片（后层）：同纹理暗色副本，与表面拉开真实 Z 距 */}
-                <mesh position={[0, 0, -TEXT_DEPTH_STEP * 2]} renderOrder={1}>
-                    <planeGeometry args={[Math.max(0.01, unitWorldWidth), Math.max(0.01, unitWorldHeight)]} />
+                <mesh position={[0, 0, -TEXT_DEPTH_STEP * 2]} scale={planeScale} renderOrder={1} geometry={SHARED_UNIT_QUAD}>
                     <meshBasicMaterial
                         ref={(mat) => { backMatRefs.current[index] = mat; }}
                         map={raster.baseTexture}
-                        color={TEXT_BACK_COLOR}
+                        color={depthColors.back}
                         transparent
                         depthWrite={false}
                         toneMapped={false}
@@ -365,12 +389,11 @@ const ActiveLineText: React.FC<{
                     />
                 </mesh>
                 {/* 立体厚度切片（中层） */}
-                <mesh position={[0, 0, -TEXT_DEPTH_STEP]} renderOrder={2}>
-                    <planeGeometry args={[Math.max(0.01, unitWorldWidth), Math.max(0.01, unitWorldHeight)]} />
+                <mesh position={[0, 0, -TEXT_DEPTH_STEP]} scale={planeScale} renderOrder={2} geometry={SHARED_UNIT_QUAD}>
                     <meshBasicMaterial
                         ref={(mat) => { sideMatRefs.current[index] = mat; }}
                         map={raster.baseTexture}
-                        color={TEXT_SIDE_COLOR}
+                        color={depthColors.side}
                         transparent
                         depthWrite={false}
                         toneMapped={false}
@@ -380,12 +403,13 @@ const ActiveLineText: React.FC<{
                 </mesh>
                 {/* 受光表面：bevel 渐变纹理，点击跳转 */}
                 <mesh
+                    scale={planeScale}
                     renderOrder={3}
-                    onClick={seek}
+                    geometry={SHARED_UNIT_QUAD}
+                    onClick={seekUnit(index)}
                     onPointerOver={onSeek ? () => { document.body.style.cursor = 'pointer' } : undefined}
                     onPointerOut={onSeek ? () => { document.body.style.cursor = 'auto' } : undefined}
                 >
-                    <planeGeometry args={[Math.max(0.01, unitWorldWidth), Math.max(0.01, unitWorldHeight)]} />
                     <meshBasicMaterial
                         ref={(mat) => { baseMatRefs.current[index] = mat; }}
                         map={raster.baseTexture}
@@ -402,8 +426,11 @@ const ActiveLineText: React.FC<{
     return (
         <group ref={groupRef} position={entry.position} quaternion={new THREE.Quaternion(...entry.quaternion)}>
             {/* 舞台光晕：活动行背后的径向柔光 */}
-            <mesh position={[0, 0, -2.4]} scale={[1, 1, 1]}>
-                <planeGeometry args={[Math.max(0.5, lineWorldWidth * 2.4), Math.max(0.6, 2.8 * LINE_FONT_SIZE * fitScale)]} />
+            <mesh
+                position={[0, 0, -2.4]}
+                scale={[Math.max(0.5, lineWorldWidth * 2.4), Math.max(0.6, 2.8 * LINE_FONT_SIZE * fitScale), 1]}
+                geometry={SHARED_UNIT_QUAD}
+            >
                 <meshBasicMaterial
                     ref={auraRef}
                     map={auraTexture}
@@ -452,11 +479,12 @@ const NeighborLineText: React.FC<{
     return (
         <group ref={groupRef} position={entry.position} quaternion={new THREE.Quaternion(...entry.quaternion)}>
             <mesh
+                scale={[Math.max(0.01, worldWidth), Math.max(0.01, worldHeight), 1]}
+                geometry={SHARED_UNIT_QUAD}
                 onClick={() => onSeek?.(entry.line.startTime)}
                 onPointerOver={onSeek ? () => { document.body.style.cursor = 'pointer' } : undefined}
                 onPointerOut={onSeek ? () => { document.body.style.cursor = 'auto' } : undefined}
             >
-                <planeGeometry args={[Math.max(0.01, worldWidth), Math.max(0.01, worldHeight)]} />
                 <meshBasicMaterial
                     ref={matRef}
                     map={raster.texture}
@@ -670,7 +698,7 @@ const LineGroup: React.FC<{
         [entry, shot],
     );
     const lineWorldWidth = useMemo(
-        () => measureWorldWidth(entry.line.fullText, buildDioramaFontSpec(fontStack, 700)),
+        () => measureWorldWidth(entry.line.fullText, buildDioramaFontSpec(fontStack)),
         [entry.line.fullText, fontStack],
     );
     const fitScale = useMemo(
@@ -813,8 +841,8 @@ export default function DioramaScene({
             <PathRail sequencer={sequencer} accentColor={accentColor} />
             <FloorMist accentColor={accentColor} />
 
-            {/* 音频创新层：波形河 / 节拍环 / 进度光点 */}
-            <WaveformRiver sequencer={sequencer} accentColor={accentColor} analyzerStore={analyzerStore} />
+            {/* 音频层：频谱双翼 / 节拍环 / 进度光点 */}
+            <SpectrumFlanks sequencer={sequencer} globalIndex={globalIndex} motion={motion} analyzerStore={analyzerStore} accentColor={accentColor} />
             <BeatRings sequencer={sequencer} globalIndex={globalIndex} analyzerStore={analyzerStore} accentColor={accentColor} />
             <ProgressOrb sequencer={sequencer} globalIndex={globalIndex} currentTime={currentTime} accentColor={accentColor} />
         </>
@@ -894,6 +922,32 @@ const getMilkyWayBand = (): Float32Array => {
     }
     milkyWayBandCache = band;
     return band;
+};
+
+// 预渲染银河带为 Canvas（一次性，所有切歌共用）：每像素存增益后的 RGB，后续切歌
+// 只需一次 drawImage('lighter') 合成，替代每张 1024×512 纹理重建时的 524k 像素 JS 循环。
+// 像素值 = band * {0.92, 0.95, 1.05} * 255，drawImage 时 globalAlpha = milkyGain/255 即恢复
+// 原始加法贡献 = band * {0.92,0.95,1.05} * milkyGain（与原逐像素循环数值等价）。
+let milkyWayCanvasCache: HTMLCanvasElement | null = null;
+const getMilkyWayCanvas = (): HTMLCanvasElement => {
+    if (milkyWayCanvasCache) return milkyWayCanvasCache;
+    const band = getMilkyWayBand();
+    const canvas = document.createElement('canvas');
+    canvas.width = SKY_TEX_W;
+    canvas.height = SKY_TEX_H;
+    const ctx = canvas.getContext('2d')!;
+    const image = ctx.createImageData(SKY_TEX_W, SKY_TEX_H);
+    const pixels = image.data;
+    for (let i = 0, j = 0; i < band.length; i += 1, j += 4) {
+        const m = band[i];
+        pixels[j] = Math.min(255, m * 0.92 * 255);
+        pixels[j + 1] = Math.min(255, m * 0.95 * 255);
+        pixels[j + 2] = Math.min(255, m * 1.05 * 255);
+        pixels[j + 3] = Math.min(255, m * 255);
+    }
+    ctx.putImageData(image, 0, 0);
+    milkyWayCanvasCache = canvas;
+    return canvas;
 };
 
 /** 星云纹理为白色（不依赖封面色），跨曲目共享；模块级缓存避免每次切歌重算。 */
@@ -1111,38 +1165,35 @@ const FloorMist: React.FC<{ accentColor: string }> = ({ accentColor }) => {
     );
 };
 
-/** 3D 频谱河：走廊两侧按真实 24 段对数频谱竖立的光柱（替代旧的 bass/mid/high 三档伪频谱）。
+/** 频谱双翼：活动歌词左右两侧的密集 EQ 频谱分析器（用户要求"柱子完全改成频谱"）。
  *
- * - 走廊方向 = 频率轴：段首（相机进入处）是低频，段尾是高频——相机飞行即"穿过频谱"；
- * - 颜色按歌曲封面主题色：低频 = 深主题色 → 高频 = 亮主题色（同色系微移相），能量再推白；
- * - 柱高快攻慢落（attack/release 指数平滑），分析器未启用时退化为轻柔的闲置微光波。 */
-const SPECTRUM_SAMPLES_PER_SIDE = 24;
-const WaveformRiver: React.FC<{ sequencer: SequencerState; accentColor: string; analyzerStore: AudioAnalyzerStore }> = ({ sequencer, accentColor, analyzerStore }) => {
-    const latest = sequencer.segments[sequencer.segments.length - 1];
-    const bars = useMemo(() => {
-        if (!latest || latest.frames.length < 2) return [];
-        const samples = Math.min(SPECTRUM_SAMPLES_PER_SIDE, latest.frames.length);
-        const result: Array<{ x: number; y: number; z: number; band: number; bandFrac: number; phase: number }> = [];
-        for (let i = 0; i < samples; i += 1) {
-            const frame = latest.frames[Math.min(latest.frames.length - 1, Math.floor(i * latest.frames.length / samples))];
-            const rightX = frame.right.x;
-            const rightZ = frame.right.z;
-            const len = Math.hypot(rightX, rightZ) || 1;
-            const rx = rightX / len;
-            const rz = rightZ / len;
-            // 走廊位置 → 对数频段（低频在段首，高频在段尾）
-            const band = Math.min(ANALYZER_SPECTRUM_BANDS - 1, Math.floor(i / samples * ANALYZER_SPECTRUM_BANDS));
-            const bandFrac = band / (ANALYZER_SPECTRUM_BANDS - 1);
-            const phase = (i * 1.7) % (Math.PI * 2);
-            result.push({ x: frame.position.x + rx * 4.3, y: frame.position.y - 0.4, z: frame.position.z + rz * 4.3, band, bandFrac, phase });
-            result.push({ x: frame.position.x - rx * 4.3, y: frame.position.y - 0.4, z: frame.position.z - rz * 4.3, band, bandFrac, phase: phase + 1.4 });
-        }
-        return result;
-        // 依赖 frames 数组引用：歌词晚到原位重建时换新 frames，频谱柱随之更新
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [latest, latest?.frames]);
-    const meshRefs = useRef<Array<THREE.Mesh | null>>([]);
-    const smoothLevelsRef = useRef<Float32Array | null>(null);
+ * 旧 WaveformRiver 是沿走廊每 8 单位一根的独立柱子——读作"柱子随频谱动"；
+ * 现在换成两列紧密排列（无大间隙）的频谱柱阵，低→高频从内到外连续排布，
+ * 观感就是标准的频谱分析器（EQ 显示器）：
+ * - 每侧 32 根细柱，柱高来自真实 24 段对数频谱（线性插值上采样），快攻慢落；
+ * - 颜色按封面主题色渐变：低频深主题色 → 高频亮主题色，能量推白；
+ * - 柱阵锚在活动歌词行的两侧（文字平面之后），随行移动；
+ * - 分析器未启用时退化为轻柔的闲置微光波。 */
+const SPECTRUM_FLANK_BARS = 32;
+const SPECTRUM_BAR_W = 0.105;
+const SPECTRUM_BAR_GAP = 0.014;
+/** 柱阵内侧边缘距歌词中线的横向距离（避开最长行的 72% 帧宽取景）。 */
+const SPECTRUM_FLANK_LATERAL = 4.7;
+/** 柱阵在文字平面之后的深度（沿路径 forward，相机一侧的反面）。 */
+const SPECTRUM_FLANK_DEPTH = 0.9;
+
+const SpectrumFlanks: React.FC<{
+    sequencer: SequencerState;
+    globalIndex: number;
+    motion: DioramaMotionParams;
+    analyzerStore: AudioAnalyzerStore;
+    accentColor: string;
+}> = ({ sequencer, globalIndex, motion, analyzerStore, accentColor }) => {
+    const resolved = useMemo(() => resolveGlobal(sequencer, globalIndex), [sequencer, globalIndex]);
+    const placement = useMemo(
+        () => getDioramaTextPlacement(resolved?.localIndex ?? 0, resolved?.segment.seed, motion.weaveScale),
+        [resolved, motion.weaveScale],
+    );
     const white = useMemo(() => new THREE.Color('#ffffff'), []);
     const tmpColor = useMemo(() => new THREE.Color(), []);
     // 封面主题色 → 频谱两端：低频深主题色，高频亮主题色（同色系 +0.08 微移相）
@@ -1153,54 +1204,105 @@ const WaveformRiver: React.FC<{ sequencer: SequencerState; accentColor: string; 
         const hue = Number.isFinite(hsl.h) ? hsl.h : 0.66;
         const sat = Number.isFinite(hsl.s) && hsl.s > 0.04 ? hsl.s : 0.5;
         return {
-            deep: new THREE.Color().setHSL(hue, Math.min(1, sat * 0.95 + 0.05), 0.42),
-            bright: new THREE.Color().setHSL((hue + 0.08) % 1, Math.min(1, sat * 1.1 + 0.08), 0.64),
+            deep: new THREE.Color().setHSL(hue, Math.min(1, sat * 0.95 + 0.05), 0.5),
+            bright: new THREE.Color().setHSL((hue + 0.08) % 1, Math.min(1, sat * 1.1 + 0.08), 0.74),
         };
     }, [accentColor]);
 
-    // 柱数随段重建变化：平滑缓存同步重建
+    // 布局 + 材质（随活动行/主题色重建；行变化时 mesh 随 key 重挂，材质由 effect 释放）
+    const bars = useMemo(() => {
+        if (!resolved || !resolved.line?.fullText) return [];
+        const step = SPECTRUM_BAR_W + SPECTRUM_BAR_GAP;
+        const list: Array<{ px: number; py: number; pz: number; bandFrac: number; mat: THREE.MeshBasicMaterial }> = [];
+        for (let side = -1; side <= 1; side += 2) {
+            for (let i = 0; i < SPECTRUM_FLANK_BARS; i += 1) {
+                // 从内到外排布：内侧低频 → 外侧高频（两侧对称镜像）
+                const lateral = SPECTRUM_FLANK_LATERAL + (i + 0.5) * step;
+                const bandFrac = i / (SPECTRUM_FLANK_BARS - 1);
+                const mat = new THREE.MeshBasicMaterial({
+                    color: bandPalette.deep.clone().lerp(bandPalette.bright, bandFrac),
+                    transparent: true,
+                    opacity: 0.14,
+                    blending: THREE.AdditiveBlending,
+                    depthWrite: false,
+                    toneMapped: false,
+                    fog: false,
+                });
+                const p = composeLocal(
+                    resolved.frame,
+                    side * lateral,
+                    (placement.offsetU ?? 0) - 0.55,
+                    SPECTRUM_FLANK_DEPTH,
+                );
+                list.push({ px: p.x, py: p.y, pz: p.z, bandFrac, mat });
+            }
+        }
+        return list;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [resolved, placement, bandPalette]);
+
+    const meshRefs = useRef<Array<THREE.Mesh | null>>([]);
+    const smoothRef = useRef<Float32Array>(new Float32Array(0));
+
+    // 行变化重建柱阵：平滑缓存清零、旧材质释放
     useEffect(() => {
-        smoothLevelsRef.current = new Float32Array(bars.length);
+        smoothRef.current = new Float32Array(bars.length);
+        return () => {
+            bars.forEach(bar => bar.mat.dispose());
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [bars]);
 
     useFrame((state, delta) => {
-        const smooth = smoothLevelsRef.current;
-        if (!smooth || smooth.length !== bars.length) return;
-        const spectrum = analyzerStore.getSnapshot().spectrum;
-        const time = state.clock.elapsedTime;
+        const smooth = smoothRef.current;
+        if (smooth.length !== bars.length) return;
+        const analysis = analyzerStore.getSnapshot();
+        const spectrum = analysis.spectrum;
+        const beat = analysis.beat;
         const dt = Math.max(0.001, delta);
-        const attack = 1 - Math.exp(-14 * dt); // 起音快
-        const release = 1 - Math.exp(-6 * dt); // 落音慢（余韵）
+        const attack = 1 - Math.exp(-16 * dt); // 起音快
+        const release = 1 - Math.exp(-5 * dt); // 落音慢（余韵）
+        const time = state.clock.elapsedTime;
         for (let index = 0; index < bars.length; index += 1) {
             const mesh = meshRefs.current[index];
             const bar = bars[index];
             if (!mesh || !bar) continue;
-            const energy = spectrum && spectrum.length > bar.band ? spectrum[bar.band] : 0;
-            // 分析器未启用（频谱全零）时保留轻柔的闲置微光波，场景不死寂
-            const idle = 0.1 + 0.08 * Math.sin(time * (0.9 + bar.bandFrac * 0.8) + bar.phase);
-            const target = Math.max(energy, idle);
+            // 24 段对数频谱 → 32 根柱：按 bandFrac 线性插值上采样
+            const pos = bar.bandFrac * (ANALYZER_SPECTRUM_BANDS - 1);
+            const i0 = Math.floor(pos);
+            const i1 = Math.min(ANALYZER_SPECTRUM_BANDS - 1, i0 + 1);
+            const frac = pos - i0;
+            const e0 = spectrum && spectrum.length > i0 ? spectrum[i0] : 0;
+            const e1 = spectrum && spectrum.length > i1 ? spectrum[i1] : 0;
+            const energy = e0 * (1 - frac) + e1 * frac;
+            // 分析器未启用（频谱全零）时保留轻柔闲置微光波，场景不死寂
+            const idle = 0.05 + 0.04 * Math.sin(time * (0.7 + bar.bandFrac * 0.9) + index * 0.31);
+            const target = Math.min(1, Math.max(energy, idle) * (1 + beat * 0.35));
             const prev = smooth[index];
             smooth[index] = prev + (target - prev) * (target > prev ? attack : release);
             const level = smooth[index];
-            const height = 0.25 + level * 3.1;
+            const height = 0.3 + level * 4.0;
             mesh.scale.y = height;
-            mesh.position.y = bar.y + height * 0.5;
-            const mat = mesh.material as THREE.MeshBasicMaterial;
-            if (mat) {
-                // 频段主题色渐变 + 能量推白
-                tmpColor.copy(bandPalette.deep).lerp(bandPalette.bright, bar.bandFrac).lerp(white, level * 0.4);
-                mat.color.copy(tmpColor);
-                mat.opacity = 0.12 + level * 0.45;
-            }
+            mesh.position.y = bar.py + height * 0.5;
+            const mat = bar.mat;
+            tmpColor.copy(bandPalette.deep).lerp(bandPalette.bright, bar.bandFrac).lerp(white, level * 0.35);
+            mat.color.copy(tmpColor);
+            mat.opacity = 0.22 + level * 0.6;
         }
     });
 
+    if (bars.length === 0) return null;
     return (
         <group>
             {bars.map((bar, index) => (
-                <mesh key={index} ref={(mesh) => { meshRefs.current[index] = mesh; }} position={[bar.x, bar.y, bar.z]}>
-                    <boxGeometry args={[0.08, 1, 0.08]} />
-                    <meshBasicMaterial color={accentColor} transparent opacity={0.12} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+                <mesh
+                    key={index}
+                    ref={(m) => { meshRefs.current[index] = m; }}
+                    position={[bar.px, bar.py, bar.pz]}
+                    renderOrder={0}
+                >
+                    <boxGeometry args={[SPECTRUM_BAR_W, 1, SPECTRUM_BAR_W]} />
+                    <primitive object={bar.mat} attach="material" />
                 </mesh>
             ))}
         </group>
@@ -1363,10 +1465,11 @@ const BackgroundGradient: React.FC<{ palette: BackgroundPalette; coverUrl?: stri
         // 封面即背景（用户要求：封面轮廓要能认出来）：
         // 封面铺满画布宽度（方形封面上下裁到 2:1 画布内，主体居中保留），
         // blur(14px) 只做软聚焦，不再摊没轮廓；saturate(1.1) 保色彩；
-        // 无 brightness 压暗（用户多轮反馈封面不够明显）。封面未加载/失败时渐变兜底。
+        // brightness(0.62) 压暗上限：部分封面局部过亮（如左半亮区）会击穿 bloom 阈值导致画面闪白，
+        // 压暗后封面仍可辨但不再过曝。封面未加载/失败时渐变兜底。
         if (coverImage) {
             ctx.save();
-            ctx.filter = 'blur(14px) saturate(1.1)';
+            ctx.filter = 'blur(14px) saturate(1.1) brightness(0.62)';
             const drawW = width;
             const drawH = width; // 方形封面：铺满宽，垂直居中裁切（球面竖向跨度 180° 由 2:1 画布承接）
             ctx.drawImage(coverImage, 0, (height - drawH) / 2, drawW, drawH);
@@ -1380,22 +1483,16 @@ const BackgroundGradient: React.FC<{ palette: BackgroundPalette; coverUrl?: stri
         glow.addColorStop(1, `rgba(${gr},${gg},${gb},0)`);
         ctx.fillStyle = glow;
         ctx.fillRect(0, 0, width, height);
-        // 银河带（模块缓存的 fBM 亮度层，略偏冷白）+ 低幅抖动去色带，一次遍历合并；
-        // 封面存在时银河带强度减半——用户要封面清晰可辨，斜向亮带别压过封面
-        const milky = getMilkyWayBand();
+        // 银河带：预渲染 canvas + drawImage('lighter') 合成，替代原 524k 像素 JS 循环。
+        // 封面存在时银河带强度减半——用户要封面清晰可辨，斜向亮带别压过封面。
+        // 去色带噪声省略：fBM 带本身平滑，且浏览器 2D 上下文对渐变已做 dither，post-bloom 进一步抹平。
+        const milkyCanvas = getMilkyWayCanvas();
         const milkyGain = coverImage ? 20 : 44;
-        const image = ctx.getImageData(0, 0, width, height);
-        const pixels = image.data;
-        let noiseSeed = 1234567;
-        for (let i = 0; i < pixels.length; i += 4) {
-            noiseSeed = (noiseSeed * 1664525 + 1013904223) % 4294967296;
-            const noise = (noiseSeed / 4294967296 - 0.5) * 5;
-            const m = milky[i >> 2] * milkyGain;
-            pixels[i] = Math.min(255, Math.max(0, pixels[i] + m * 0.92 + noise));
-            pixels[i + 1] = Math.min(255, Math.max(0, pixels[i + 1] + m * 0.95 + noise));
-            pixels[i + 2] = Math.min(255, Math.max(0, pixels[i + 2] + m * 1.05 + noise));
-        }
-        ctx.putImageData(image, 0, 0);
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = milkyGain / 255;
+        ctx.drawImage(milkyCanvas, 0, 0);
+        ctx.restore();
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.generateMipmaps = false;
@@ -1519,15 +1616,54 @@ const StarShell: React.FC = () => {
  *   亮粒在 HalfFloat 管线里积累 >1.0，经 bloom 泛出星芒。
  * - 粒子域跟随相机位置（原粒子域固定在世界原点附近，相机沿走廊飞远后整片星河被抛在身后，
  *   歌曲中后段背景空无一物）。
+ * - GPU 漂移：drift / 绕回 / twinkle / 双色系全在顶点着色器里算（与 FormationParticles 同模式），
+ *   CPU 每帧零循环、零缓冲上传，只写 4 个 uniform。
  */
+const STAR_RIVER_VERTEX = /* glsl */`
+attribute float aSeed;
+uniform float uTime;
+uniform float uFlowBoost;
+uniform float uTwinkleBoost;
+uniform float uScale;
+varying vec3 vColor;
+void main() {
+    // 起点 startZ = -50 - seed*10，越过 +4 即绕回；range = 54 + seed*10
+    float startZ = -50.0 - aSeed * 10.0;
+    float range = 54.0 + aSeed * 10.0;
+    float speed = 2.6 + aSeed * 5.4;
+    vec3 pos = position;
+    // position.z - startZ 是初始相位偏移；uTime 项线性累加，mod 自带绕回
+    pos.z = startZ + mod(position.z - startZ + uTime * speed * uFlowBoost, range);
+    // 逐粒闪烁 + 双色系（冷蓝白 / 暖金），加法混合下亮粒进入 HDR 区间
+    float twinkle = 0.3 + 0.7 * (0.5 + 0.5 * sin(uTime * (0.6 + aSeed * 1.6) + aSeed * 40.0));
+    float warm = step(0.78, aSeed);
+    vec3 base = mix(vec3(0.6, 0.68, 1.0), vec3(1.0, 0.86, 0.72), warm);
+    float level = min(1.25, twinkle * uTwinkleBoost);
+    vColor = base * level;
+    vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+    gl_PointSize = 0.17 * (uScale / -mvPosition.z);
+    gl_Position = projectionMatrix * mvPosition;
+}
+`;
+
+const STAR_RIVER_FRAGMENT = /* glsl */`
+uniform sampler2D uMap;
+uniform float uOpacity;
+varying vec3 vColor;
+void main() {
+    float mask = texture2D(uMap, gl_PointCoord).a;
+    if (mask < 0.02) discard;
+    gl_FragColor = vec4(vColor, mask * uOpacity);
+}
+`;
+
 const StarRiver: React.FC<{ count?: number; pulseStore: AudioPulseStore; flightActive: boolean }> = ({ count = 380, pulseStore, flightActive }) => {
     const groupRef = useRef<THREE.Group>(null);
-    const pointsRef = useRef<THREE.Points>(null);
     const camera = useThree(state => state.camera);
     const spriteTexture = useMemo(() => makeStarSpriteTexture(64), []);
-    const data = useMemo(() => {
+
+    const { geometry, material } = useMemo(() => {
         const positions = new Float32Array(count * 3);
-        const colors = new Float32Array(count * 3);
         const seeds = new Float32Array(count);
         for (let i = 0; i < count; i += 1) {
             const u = Math.abs((Math.sin(i * 12.9898) * 43758.5453) % 1);
@@ -1538,67 +1674,49 @@ const StarRiver: React.FC<{ count?: number; pulseStore: AudioPulseStore; flightA
             positions[i * 3 + 1] = (v - 0.32) * 15;
             positions[i * 3 + 2] = -2 - w * 50;
         }
-        return { positions, colors, seeds };
-    }, [count]);
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
+        const mat = new THREE.ShaderMaterial({
+            vertexShader: STAR_RIVER_VERTEX,
+            fragmentShader: STAR_RIVER_FRAGMENT,
+            uniforms: {
+                uMap: { value: spriteTexture },
+                uTime: { value: 0 },
+                uFlowBoost: { value: 1 },
+                uTwinkleBoost: { value: 1 },
+                uScale: { value: 400 },
+                uOpacity: { value: 0.8 },
+            },
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+        });
+        return { geometry: geo, material: mat };
+    }, [count, spriteTexture]);
 
-    useFrame((_, delta) => {
-        const points = pointsRef.current;
+    // geometry/材质为命令式创建（不经 R3F 自动 dispose），统一手动释放
+    useEffect(() => () => {
+        geometry.dispose();
+        material.dispose();
+    }, [geometry, material]);
+
+    useFrame((state) => {
         const group = groupRef.current;
-        if (!points || !group) return;
+        if (!group) return;
         // 粒子域锚在相机上：走廊飞多远，星河跟多远
         group.position.copy(camera.position);
-        const geometry = points.geometry;
-        const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
-        const col = geometry.getAttribute('color') as THREE.BufferAttribute;
-        const arr = pos.array as Float32Array;
-        const colArr = col.array as Float32Array;
-        const time = performance.now() / 1000;
         const pulse = pulseStore.getSnapshot();
         // 音律 + 飞行加速
-        const flowBoost = 1 + pulse.scale * 5 + (flightActive ? 1.7 : 0);
-        const twinkleBoost = 1 + pulse.scale * 2.5;
-        for (let i = 0; i < count; i += 1) {
-            const seed = data.seeds[i];
-            // 沿 +z（相对相机向后）流动，越过相机后绕回远处
-            arr[i * 3 + 2] += delta * (2.6 + seed * 5.4) * flowBoost;
-            if (arr[i * 3 + 2] > 4) {
-                arr[i * 3 + 2] = -50 - seed * 10;
-            }
-            // 逐粒闪烁 + 双色系（冷蓝白 / 暖金），加法混合下亮粒进入 HDR 区间
-            const twinkle = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(time * (0.6 + seed * 1.6) + seed * 40));
-            const warm = seed > 0.78;
-            const baseR = warm ? 1.0 : 0.6;
-            const baseG = warm ? 0.86 : 0.68;
-            const baseB = warm ? 0.72 : 1.0;
-            const level = Math.min(1.25, twinkle * twinkleBoost);
-            colArr[i * 3] = baseR * level;
-            colArr[i * 3 + 1] = baseG * level;
-            colArr[i * 3 + 2] = baseB * level;
-        }
-        pos.needsUpdate = true;
-        col.needsUpdate = true;
+        material.uniforms.uTime.value = state.clock.elapsedTime;
+        material.uniforms.uFlowBoost.value = 1 + pulse.scale * 5 + (flightActive ? 1.7 : 0);
+        material.uniforms.uTwinkleBoost.value = 1 + pulse.scale * 2.5;
+        material.uniforms.uScale.value = state.size.height * state.gl.getPixelRatio() * 0.5;
     });
 
     return (
         <group ref={groupRef}>
-            <points ref={pointsRef}>
-                <bufferGeometry>
-                    <bufferAttribute attach="attributes-position" args={[data.positions, 3]} />
-                    <bufferAttribute attach="attributes-color" args={[data.colors, 3]} />
-                </bufferGeometry>
-                <pointsMaterial
-                    map={spriteTexture}
-                    size={0.17}
-                    transparent
-                    opacity={0.8}
-                    sizeAttenuation
-                    depthWrite={false}
-                    blending={THREE.AdditiveBlending}
-                    vertexColors
-                    toneMapped={false}
-                    fog={false}
-                />
-            </points>
+            <points geometry={geometry} material={material} />
         </group>
     );
 };
