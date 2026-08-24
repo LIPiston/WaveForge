@@ -3,13 +3,14 @@
  *
  * 网络环境不佳时（模型下载/应用更新），用户打开代理软件后开启「代理自动配置」：
  * - 扫描本机常用代理端口（Clash 7890/7897、v2ray 10808/10809、SS 1080、8080/8888 等）
- * - 对每个端口发 CONNECT 探测（能建连 = 可用 HTTP 代理），测延迟
+ * - 对每个端口发 CONNECT 探测（能建连 = 可用 HTTP 代理），隧道内做真实 TLS 握手测延迟
  * - 选中后把软件内部的模型下载/更新请求显式路由到该代理（独立 Electron session）
  * - 配置持久化到应用安装目录（proxy-config.json，与模型同位置，不占系统用户目录）
  */
 
-const { app, net, session } = require('electron')
+const { app, BrowserWindow, net, session } = require('electron')
 const netMod = require('net')
+const tls = require('tls')
 const fs = require('fs')
 const path = require('path')
 
@@ -32,11 +33,12 @@ const PING_HOSTS = [
   { key: 'google', label: 'Google 联通', host: 'www.gstatic.com' },
 ]
 
-/** 经代理向 PING_HOST:443 发一次 CONNECT，返回耗时 ms；失败返回 null */
+/** 经代理向 PING_HOST:443 发一次 CONNECT，隧道建立后在隧道内完成一次真实 TLS 握手；
+ *  返回握手耗时 ms（即经代理到目标站的真实网络延迟），失败返回 null。
+ *  只有代理真的把隧道打通到目标站，握手才能完成——CONNECT 秒回 200 但隧道不通的假代理会全部超时。 */
 function connectThroughProxy(port, host, timeoutMs = 5000) {
   return new Promise((resolve) => {
     let done = false
-    const started = Date.now()
     const socket = netMod.connect({ port, host: '127.0.0.1' })
     const timer = setTimeout(() => {
       if (!done) { done = true; try { socket.destroy() } catch { /* ignore */ } resolve(null) }
@@ -45,10 +47,20 @@ function connectThroughProxy(port, host, timeoutMs = 5000) {
       socket.write(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`)
     })
     let buf = ''
+    let tunneled = false
     socket.on('data', (d) => {
+      if (tunneled) return // 隧道后的字节交给 tls 层处理
       buf += d.toString()
       if (buf.includes(' 200 ')) {
-        if (!done) { done = true; clearTimeout(timer); try { socket.destroy() } catch { /* ignore */ } resolve(Date.now() - started) }
+        tunneled = true
+        // 隧道已建立：向目标站发起真实 TLS 握手（关闭证书校验，只测连通与 RTT）
+        const tlsStart = Date.now()
+        const tlsSocket = tls.connect({ socket, servername: host, rejectUnauthorized: false }, () => {
+          if (!done) { done = true; clearTimeout(timer); try { tlsSocket.destroy() } catch { /* ignore */ } resolve(Date.now() - tlsStart) }
+        })
+        tlsSocket.on('error', () => {
+          if (!done) { done = true; clearTimeout(timer); try { socket.destroy() } catch { /* ignore */ } resolve(null) }
+        })
       } else if (/HTTP\/1\.[01] (4\d\d|5\d\d)/.test(buf)) {
         if (!done) { done = true; clearTimeout(timer); try { socket.destroy() } catch { /* ignore */ } resolve(null) }
       }
@@ -56,6 +68,16 @@ function connectThroughProxy(port, host, timeoutMs = 5000) {
     socket.on('error', () => { if (!done) { done = true; clearTimeout(timer); resolve(null) } })
     socket.on('close', () => { if (!done) { done = true; clearTimeout(timer); resolve(null) } })
   })
+}
+
+/** 快速可用性验证：经代理对三个目标各做一次真实 TLS 握手（短超时、并行），
+ *  至少一个成功即视为可用（部分目标不可达不代表代理整体失效） */
+async function verifyUsable(port) {
+  const deadline = Date.now() + 3000
+  const results = await Promise.all(
+    PING_HOSTS.map((h) => connectThroughProxy(port, h.host, Math.max(300, deadline - Date.now())))
+  )
+  return results.some((t) => t !== null)
 }
 
 /** 单个目标联通测试（最多 8 次）：整体超过 1 分钟则停止——
@@ -111,22 +133,26 @@ async function runProbe() {
 }
 
 function broadcastLatency() {
-  for (const win of app.getAllWindows()) {
-    if (!win.isDestroyed()) {
-      try { win.webContents.send('proxy-manager:latency', latencyState) } catch { /* 忽略 */ }
+  try {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        try { win.webContents.send('proxy-manager:latency', latencyState) } catch { /* 忽略 */ }
+      }
     }
-  }
+  } catch { /* 广播失败不阻断联通测试 */ }
 }
 
 function broadcastNotice(kind) {
-  for (const win of app.getAllWindows()) {
-    if (!win.isDestroyed()) {
-      try { win.webContents.send('proxy-manager:notice', { kind }) } catch { /* 忽略 */ }
+  try {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        try { win.webContents.send('proxy-manager:notice', { kind }) } catch { /* 忽略 */ }
+      }
     }
-  }
+  } catch { /* 忽略 */ }
 }
 
-/** 关闭并广播通知（运行中断开 / 启动时无代理） */
+/** 关闭并广播通知（运行中断开 / 启动时无代理 / 启动时代理不可用） */
 async function autoDisable(kind) {
   const wasEnabled = state.enabled
   state.enabled = false
@@ -137,6 +163,9 @@ async function autoDisable(kind) {
     if (kind === 'startup') {
       pendingNotice = 'startup-unavailable'
       logProxy(`代理自动关闭（启动时无代理端口）`)
+    } else if (kind === 'startup-unusable') {
+      pendingNotice = 'startup-unusable'
+      logProxy(`代理自动关闭（启动时代理不可用：端口在但隧道不通）`)
     } else {
       logProxy(`代理自动关闭（运行中代理断开）`)
       broadcastNotice('disconnected')
@@ -266,12 +295,20 @@ function getState() { return { ...state } }
 function setupProxyIPC(ipcMain, automixLogFn) {
   if (automixLogFn) setProxyLogger(automixLogFn)
   loadConfig()
-  // 启动检测：上次开着自动代理 → 验证代理是否还在；无代理端口则自动关闭并提示
+  // 启动检测：上次开着自动代理 → 验证代理是否真的可用。
+  // 端口能回 CONNECT 200 不代表可用（残留进程/假代理会占着端口），再做一次真实 TLS 握手验证；
+  // 端口不在 / 隧道不通都会自动关闭，并留待渲染进程消费的启动提示
   if (state.enabled && state.proxy) {
     testPort(state.proxy.port).then((r) => {
       if (r) {
-        startHealthCheck()
-        void runProbe() // 重启后功能仍开启：后台再测一次 ping 并填入
+        verifyUsable(state.proxy.port).then((usable) => {
+          if (usable) {
+            startHealthCheck()
+            void runProbe() // 重启后功能仍开启：后台再测一次 ping 并填入
+          } else {
+            void autoDisable('startup-unusable')
+          }
+        })
       } else {
         void autoDisable('startup')
       }

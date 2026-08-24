@@ -17,7 +17,7 @@
  * 阶段，可从该阶段续传）/取消（清理半成品）；已完成阶段跳过。
  */
 
-const { app, net } = require('electron')
+const { app, BrowserWindow, net } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
@@ -138,6 +138,11 @@ const state = {
   controller: null,
   running: null,
   done: false,
+  // 下载速率/剩余时间（仅文件下载阶段有效；pip 安装阶段无此信息，置 0/null）
+  downloadBytes: 0,
+  downloadTotal: 0,
+  downloadSpeed: 0,
+  downloadEta: null,
 }
 
 function emitProgress(win) {
@@ -149,11 +154,15 @@ function emitProgress(win) {
     error: state.error,
     done: state.done,
     phaseLabel: state.phase ? PHASE_LABEL[state.phase] || state.phase : null,
+    downloadSpeed: state.downloadSpeed,
+    downloadEta: state.downloadEta,
   }
   if (win && !win.isDestroyed()) win.webContents.send('ai-model:progress', payload)
 }
 function broadcastProgress() {
-  for (const win of app.getAllWindows()) emitProgress(win)
+  try {
+    for (const win of BrowserWindow.getAllWindows()) emitProgress(win)
+  } catch { /* 广播失败不阻断下载流程 */ }
 }
 
 let automixLogger = null
@@ -190,6 +199,13 @@ async function downloadFile(urls, destPath) {
         }
         const total = Number(response.headers['content-length'] || 0)
         let received = 0
+        // 本次文件的速率采样窗口（约每 500ms 采一次，避免逐 chunk 抖动）
+        let lastSpeedAt = Date.now()
+        let lastSpeedBytes = 0
+        state.downloadBytes = 0
+        state.downloadTotal = total
+        state.downloadSpeed = 0
+        state.downloadEta = null
         fs.mkdirSync(path.dirname(destPath), { recursive: true })
         const writeStream = fs.createWriteStream(destPath + '.part')
         let finished = false
@@ -198,8 +214,20 @@ async function downloadFile(urls, destPath) {
         response.on('data', (chunk) => {
           if (aborted) return
           received += chunk.length
+          state.downloadBytes = received
           if (total > 0) state.phasePercent = (received / total) * 100
           else state.phasePercent = Math.min(99, state.phasePercent + 0.05)
+          // 速率与剩余时间：带宽变化时按最近 500ms 采样估计
+          const now = Date.now()
+          const dt = now - lastSpeedAt
+          if (dt >= 500) {
+            state.downloadSpeed = Math.round(((received - lastSpeedBytes) * 1000) / dt)
+            if (total > 0 && state.downloadSpeed > 0) {
+              state.downloadEta = Math.max(0, Math.round((total - received) / state.downloadSpeed))
+            }
+            lastSpeedAt = now
+            lastSpeedBytes = received
+          }
           state.overallPercent = cumulativePercent()
           if (!writeStream.write(chunk)) { response.pause(); writeStream.once('drain', () => response.resume()) }
         })
@@ -209,6 +237,8 @@ async function downloadFile(urls, destPath) {
             finished = true
             fs.renameSync(destPath + '.part', destPath)
             state.phasePercent = 100
+            state.downloadSpeed = 0
+            state.downloadEta = null
             state.overallPercent = cumulativePercent()
             resolve(true)
           })
@@ -233,6 +263,9 @@ function cumulativePercent() {
 /** 执行命令并捕获输出（解析 pip 下载进度百分比）；返回退出码 */
 function runProcess(command, args, { cwd } = {}) {
   return new Promise((resolve) => {
+    // pip 安装阶段没有文件下载速率信息，清空避免残留上一阶段的数值
+    state.downloadSpeed = 0
+    state.downloadEta = null
     const child = spawn(command, args, { cwd, windowsHide: true })
     let buffer = ''
     state.controller.onAbort = () => { try { child.kill() } catch { /* ignore */ } }
@@ -254,9 +287,14 @@ async function setupPython() {
   if (pythonExists()) return true
   state.phase = 'python'
   state.phasePercent = 0
-  // 优先复制应用内置 Python（resources/python-embed），缺失才下载
-  const bundled = path.join(__dirname, '..', 'resources', 'python-embed')
-  if (fs.existsSync(path.join(bundled, 'python.exe'))) {
+  // 优先复制应用内置 Python（resources/python-embed），缺失才下载。
+  // 开发版在项目目录下，打包版在 resourcesPath（extraResources），双路径兼容不同安装位置
+  const bundledCandidates = [
+    path.join(__dirname, '..', 'resources', 'python-embed'),
+    path.join(process.resourcesPath, 'python-embed'),
+  ]
+  const bundled = bundledCandidates.find((p) => fs.existsSync(path.join(p, 'python.exe')))
+  if (bundled) {
     fs.mkdirSync(getModelRoot(), { recursive: true })
     try {
       // 递归复制（跳过 __pycache__）
@@ -417,34 +455,37 @@ async function downloadWeights() {
   return ok && weightsReady()
 }
 
-async function runDownload(win) {
+async function runDownload() {
   state.status = 'downloading'
   state.done = false
   state.error = null
-  emitProgress(win)
+  broadcastProgress()
+  // 下载/安装阶段内部按 chunk 更新 state 但不逐 chunk 广播（避免 IPC 风暴），
+  // 用 500ms 定时器统一广播，UI 进度条才能实时走动
+  const progressTimer = setInterval(() => broadcastProgress(), 500)
   try {
     const ok = await setupPython()
     if (!ok || state.status === 'cancelled' || state.status === 'paused') {
       if (state.status !== 'cancelled' && state.status !== 'paused') state.status = 'error'
-      emitProgress(win); return
+      broadcastProgress(); return
     }
     const okDeps = await installDeps()
     if (!okDeps || state.status === 'cancelled' || state.status === 'paused') {
       if (state.status !== 'cancelled' && state.status !== 'paused') state.status = 'error'
-      emitProgress(win); return
+      broadcastProgress(); return
     }
     if (!repoReady()) {
       const okRepo = await downloadRepo()
       if (!okRepo || state.status === 'cancelled' || state.status === 'paused') {
         if (state.status !== 'cancelled' && state.status !== 'paused') state.status = 'error'
-        emitProgress(win); return
+        broadcastProgress(); return
       }
     }
     if (!weightsReady()) {
       const okWeights = await downloadWeights()
       if (!okWeights || state.status === 'cancelled' || state.status === 'paused') {
         if (state.status !== 'cancelled' && state.status !== 'paused') state.status = 'error'
-        emitProgress(win); return
+        broadcastProgress(); return
       }
     }
     state.status = 'done'
@@ -452,18 +493,20 @@ async function runDownload(win) {
     state.phase = null
     state.phasePercent = 100
     state.overallPercent = 100
-    emitProgress(win)
+    broadcastProgress()
   } catch (error) {
     // 任何意外异常都落到 error 状态（而不是卡在 downloading）
     if (state.status !== 'cancelled' && state.status !== 'paused') {
       state.status = 'error'
       state.error = error instanceof Error ? error.message : String(error)
-      emitProgress(win)
+      broadcastProgress()
     }
+  } finally {
+    clearInterval(progressTimer)
   }
 }
 
-function startDownload(win) {
+function startDownload() {
   if (state.status === 'downloading') return { ok: true, already: true }
   state.controller = { abort: null, onAbort: null }
   state.controller.abort = () => {
@@ -471,7 +514,7 @@ function startDownload(win) {
       try { state.controller.onAbort() } catch { /* ignore */ }
     }
   }
-  state.running = runDownload(win)
+  state.running = runDownload()
   return { ok: true }
 }
 
@@ -507,14 +550,31 @@ function cleanupPartial() {
   }
 }
 
-function deleteModel() {
+async function deleteModel() {
   const root = getModelRoot()
   if (fs.existsSync(root)) {
-    try { fs.rmSync(root, { recursive: true, force: true }) } catch (error) {
+    // 删除可能耗时（数 GB 目录/数万文件）：先广播 deleting 状态让界面显示「删除中…」，
+    // 用异步 rm 避免同步递归删除期间卡死主进程
+    state.status = 'deleting'
+    state.phase = 'delete'
+    state.phasePercent = 0
+    state.error = null
+    broadcastProgress()
+    try {
+      await fs.promises.rm(root, { recursive: true, force: true })
+    } catch (error) {
+      state.status = 'idle'
+      state.phase = null
+      state.phasePercent = 0
+      broadcastProgress()
       return { ok: false, error: `删除失败: ${error?.message || error}` }
     }
   }
-  if (state.status === 'done') { state.status = 'idle'; state.done = false }
+  state.status = 'idle'
+  state.done = false
+  state.phase = null
+  state.phasePercent = 0
+  broadcastProgress()
   return { ok: true }
 }
 
@@ -522,7 +582,7 @@ function setupAiModelIPC(ipcMain, automixLogFn) {
   if (automixLogFn) setAutomixLogger(automixLogFn)
   cleanupLegacyLocation()
   ipcMain.handle('ai-model:get-status', () => getStatus())
-  ipcMain.handle('ai-model:download', (event) => startDownload(event.sender.getOwnerBrowserWindow?.() || null))
+  ipcMain.handle('ai-model:download', () => startDownload())
   ipcMain.handle('ai-model:pause', () => pauseDownload())
   ipcMain.handle('ai-model:cancel', () => cancelDownload())
   ipcMain.handle('ai-model:delete', () => deleteModel())

@@ -545,6 +545,8 @@ function getRenderRuntime(customCachePath = null) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const AI_WORKER_IDLE_TIMEOUT = 90_000
+// torch 冷启动导入实测 ~15s（含首次建 pyc 缓存），15s 超时很容易误杀正常 worker
+const AI_WORKER_STARTUP_TIMEOUT = 60_000
 
 function aiPythonCandidates() {
   const candidates = []
@@ -686,7 +688,7 @@ class AiMixRuntime {
               worker.kill()
               finish(new Error('AI Mix worker startup timeout'))
             }
-          }, 15000)
+          }, AI_WORKER_STARTUP_TIMEOUT)
         }
       } catch (error) {
         console.error('[AI Mix] Worker spawn error:', error)
@@ -859,19 +861,40 @@ class AiMixRuntime {
     return promise
   }
 
-  async getStatus() {
-    if (!this.getAvailable()) {
-      automixLog.log('aimix:status', 'available=false (engine-not-found)')
-      return { available: false, python: null, repoDir: null, reason: 'engine-not-found' }
-    }
+  /** 引擎可用性文件级快检：与 ai-model-manager 的 installed 判定一致（与模型卡片同源），
+   *  避免为开关状态冷启动 python+torch（导入需 ~15s，慢且容易超时误报未安装）；
+   *  worker 在真正渲染时才拉起 */
+  _fsEngineStatus() {
     try {
-      const result = await this._sendMessage('probe', {}, 20_000)
-      automixLog.log('aimix:status', `available=${result?.available === true} torch=${result?.hasTorch} weight=${result?.weightReady} repo=${result?.repoReady}`)
-      return result
-    } catch (error) {
-      automixLog.log('aimix:status', `available=false reason=${String(error?.message || error)}`)
-      return { available: false, python: this._resolveAiPython(), repoDir: null, reason: String(error?.message || error) }
+      const { getStatus } = require('./ai-model-manager.cjs')
+      const s = getStatus()
+      if (s.engineAvailable === true) {
+        return { available: true, python: this._resolveAiPython(), repoDir: s.repoDir }
+      }
+      // 兜底：开发目录 .venv 方案（ai-model-manager 只认下载位置 ai-mix-engine）
+      const python = this._resolveAiPython()
+      if (python && !python.includes('ai-mix-engine')) {
+        const venvRoot = path.dirname(path.dirname(python))
+        const repoDir = path.join(__dirname, '..', '..', 'DJTransGAN')
+        const weights = path.join(repoDir, 'pretrained', 'djtransgan_minmax.pt')
+        if (fs.existsSync(path.join(venvRoot, 'Lib', 'site-packages', 'torch'))
+          && fs.existsSync(path.join(repoDir, 'djtransgan', 'model', '__init__.py'))
+          && fs.existsSync(weights) && fs.statSync(weights).size > 1024 * 1024) {
+          return { available: true, python, repoDir }
+        }
+      }
+      return { available: false, python, repoDir: null, reason: 'engine-not-found' }
+    } catch {
+      return { available: false, python: this._resolveAiPython(), repoDir: null, reason: 'status-check-error' }
     }
+  }
+
+  async getStatus() {
+    const status = this._fsEngineStatus()
+    automixLog.log('aimix:status', status.available
+      ? 'available=true (files-ready)'
+      : `available=false reason=${status.reason || 'engine-not-found'}`)
+    return { available: status.available, python: status.python, repoDir: status.repoDir, reason: status.reason }
   }
 
   _validateInput(plan, sourceAudioPath, targetAudioPath) {
