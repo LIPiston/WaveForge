@@ -568,11 +568,30 @@ async function fetchSodaLyricText(id: string): Promise<{ lyric: string; tlyric: 
   return { lyric: '', tlyric: '' }
 }
 
-/** 汽水音乐歌词（LRC 解析为 LyricLine[]；无歌词返回 []） */
+/**
+ * 汽水音乐歌词（LRC 解析为 LyricLine[]；无歌词返回 []）。
+ * 单次请求同时取原文+翻译（与网易云 /lyric 一次拿 lrc+tlyric 同构），
+ * tlyric 按时间戳对齐后挂到对应主行的 translation（参考网易云翻译的挂载方式）。
+ */
 export async function getSodaLyrics(id: string): Promise<LyricLine[]> {
   if (!id) return []
-  const { lyric } = await fetchSodaLyricText(String(id))
-  return parseLrcLines(lyric)
+  const { lyric, tlyric } = await fetchSodaLyricText(String(id))
+  const lines = parseLrcLines(lyric)
+  const transLines = parseLrcLines(tlyric)
+  if (!lines.length || !transLines.length) return lines
+  // 时间戳贪心对齐：译文与主歌词行时间差 ≤500ms 视为同一行（规则与 getSodaTranslation 一致）
+  let pointer = 0
+  const TOLERANCE_SEC = 0.5
+  for (let i = 0; i < lines.length; i += 1) {
+    while (pointer < transLines.length && transLines[pointer].time < lines[i].time - TOLERANCE_SEC) {
+      pointer += 1
+    }
+    const candidate = transLines[pointer]
+    if (candidate && Math.abs(candidate.time - lines[i].time) <= TOLERANCE_SEC) {
+      lines[i] = { ...lines[i], translation: candidate.text }
+    }
+  }
+  return lines
 }
 
 /**
@@ -581,23 +600,13 @@ export async function getSodaLyrics(id: string): Promise<LyricLine[]> {
  */
 export async function getSodaTranslation(id: string): Promise<Record<number, string>> {
   if (!id) return {}
-  const { lyric, tlyric } = await fetchSodaLyricText(String(id))
-  const mainLines = parseLrcLines(lyric)
-  const transLines = parseLrcLines(tlyric)
-  if (!mainLines.length || !transLines.length) return {}
+  // 基于 getSodaLyrics 的投影：请求一次、对齐逻辑唯一实现，避免重复打 /api/soda/lyric
+  const mainLines = await getSodaLyrics(String(id))
   const result: Record<number, string> = {}
-  let pointer = 0
-  const TOLERANCE_SEC = 0.5
-  for (let i = 0; i < mainLines.length; i += 1) {
-    const mainTime = mainLines[i].time
-    while (pointer < transLines.length && transLines[pointer].time < mainTime - TOLERANCE_SEC) {
-      pointer += 1
-    }
-    const candidate = transLines[pointer]
-    if (candidate && Math.abs(candidate.time - mainTime) <= TOLERANCE_SEC) {
-      result[i] = candidate.text
-    }
-  }
+  mainLines.forEach((line, i) => {
+    const text = line.translation?.trim()
+    if (text) result[i] = text
+  })
   return result
 }
 

@@ -707,17 +707,38 @@ export async function fetchExplorePlaylist(playlist: ExplorePlaylist, signal?: A
       songs,
     }
   }
-  // 汽水歌单：逆向 Web API 歌单曲目页（支持 qishui-feed 等虚拟歌单 id），失败返回空壳由上层提示
+  // 汽水歌单：逆向 Web API 歌单曲目页（支持 qishui-feed 等虚拟歌单 id），失败返回空壳由上层提示。
+  // 后端单页上限 50 条，这里与 playlistService.getPlaylistDetail 同款分页合并全量曲目：
+  // hasMore/trackCount 终止 + mid 去重兜底 + 20 页封顶，避免超过 50 首的歌单只显示第一页。
   if (playlist.platform === 'soda') {
     const { fetchSodaPlaylistTracks } = await import('./sodaService')
-    const page = await fetchSodaPlaylistTracks(playlist.id)
-    const sodaSongs = page.tracks
+    const sodaSongs: Song[] = []
+    const seenMids = new Set<string>()
+    let name = ''
+    let coverUrl = ''
+    let trackCount = 0
+    let offset = 0
+    for (let page = 0; page < 20; page += 1) {
+      const detail = await fetchSodaPlaylistTracks(playlist.id, offset)
+      if (!name && detail.name) name = detail.name
+      if (!coverUrl && detail.coverUrl) coverUrl = detail.coverUrl
+      if (detail.trackCount > trackCount) trackCount = detail.trackCount
+      if (!Array.isArray(detail.tracks) || detail.tracks.length === 0) break
+      for (const song of detail.tracks) {
+        const key = String(song.mid || song.id || '')
+        if (key && seenMids.has(key)) continue
+        if (key) seenMids.add(key)
+        sodaSongs.push(song)
+      }
+      offset += detail.tracks.length
+      if (!detail.hasMore || offset >= trackCount) break
+    }
     return {
       playlist: {
         id: playlist.id,
-        name: page.name || playlist.name,
-        coverImgUrl: page.coverUrl || playlist.coverUrl,
-        trackCount: Number(page.trackCount || sodaSongs.length || playlist.trackCount || 0),
+        name: name || playlist.name,
+        coverImgUrl: coverUrl || playlist.coverUrl,
+        trackCount: Number(trackCount || sodaSongs.length || playlist.trackCount || 0),
         description: playlist.description || '',
         platform: 'soda',
       },

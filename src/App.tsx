@@ -5004,28 +5004,60 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 汽水登录态自愈：token 存在但昵称/头像/ID 缺失（旧版登录流程只落盘了 token）时，
-  // 经后端 luna/pc/me 补齐用户资料；Cookie 已失效则保持现状不误清。
+  // 汽水登录态自愈：
+  // ① token 存在但昵称/头像/ID 缺失（旧版登录流程只落盘了 token）时，经后端 luna/pc/me 补齐用户资料；
+  // ② 后端明确返回 loggedIn:false 且本地仍持有 cookie 时，判定 token 已失效——自动清除
+  //    soda_token/soda_username/soda_avatar/soda_user_id 四键并同步状态（等效退出登录），
+  //    让 UI 如实显示未登录，避免「假登录」壳（如汽水我的喜欢恒为空）一直误导。
   useEffect(() => {
     if (!sodaLoggedIn) return
-    if (localStorage.getItem('soda_user_id') && localStorage.getItem('soda_username')) return
     let cancelled = false
     void import('./services/sodaService').then(({ getSodaStatus }) =>
-      getSodaStatus().then(st => {
-        if (cancelled || !st?.loggedIn || !st.profile) return
-        const p = st.profile
-        if (p.nickname) {
-          setSodaUsername(p.nickname)
-          localStorage.setItem('soda_username', p.nickname)
+      getSodaStatus().then(async st => {
+        if (cancelled) return
+        if (st?.loggedIn) {
+          // 登录有效：仅当本地资料缺失时补齐昵称/头像/ID（原有「补全资料」逻辑保留）
+          if (localStorage.getItem('soda_user_id') && localStorage.getItem('soda_username')) return
+          const p = st.profile
+          if (!p) return
+          if (p.nickname) {
+            setSodaUsername(p.nickname)
+            localStorage.setItem('soda_username', p.nickname)
+          }
+          if (p.avatarUrl) {
+            setSodaAvatar(p.avatarUrl)
+            localStorage.setItem('soda_avatar', p.avatarUrl)
+          }
+          if (p.userId) {
+            setSodaUserId(String(p.userId))
+            localStorage.setItem('soda_user_id', String(p.userId))
+          }
+          return
         }
-        if (p.avatarUrl) {
-          setSodaAvatar(p.avatarUrl)
-          localStorage.setItem('soda_avatar', p.avatarUrl)
-        }
-        if (p.userId) {
-          setSodaUserId(String(p.userId))
-          localStorage.setItem('soda_user_id', String(p.userId))
-        }
+        // loggedIn:false 且 cookie 非空 → 疑似已失效。再确认一次：只有后端明确应答
+        // loggedIn:false 才清理；网络失败/超时一律不动凭据，防止误清有效登录态。
+        const cookie = localStorage.getItem('soda_token') || ''
+        if (!cookie) return
+        try {
+          const resp = await fetch(`http://localhost:3001/api/soda/status?cookie=${encodeURIComponent(cookie)}`, {
+            cache: 'no-store',
+            signal: AbortSignal.timeout(5000),
+          })
+          if (!resp.ok) return
+          const again = await resp.json()
+          if (cancelled || again?.loggedIn !== false) return
+          localStorage.removeItem('soda_token')
+          localStorage.removeItem('soda_username')
+          localStorage.removeItem('soda_avatar')
+          localStorage.removeItem('soda_user_id')
+          setSodaLoggedIn(false)
+          setSodaUsername('')
+          setSodaAvatar('')
+          setSodaUserId('')
+          setAuthRevision(previous => previous + 1)
+          window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'soda' } }))
+          addToast('汽水音乐登录态已失效，请重新登录', 'info')
+        } catch { /* 后端未就绪/网络失败：保持现状，下次启动再检 */ }
       }).catch(() => { /* 忽略 */ })
     )
     return () => { cancelled = true }

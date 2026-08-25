@@ -1474,11 +1474,12 @@ async function getPlatformLyrics(id: number | string, platform: MusicPlatform, s
       return parseLyric(lyricText)
     }
     if (platform === 'soda') {
-      // 汽水：逆向歌词管线（SEO → track_v2 → 公开目录）
+      // 汽水：逆向歌词管线（SEO → track_v2 → 公开目录）；getSodaLyrics 已随原文对齐挂载汽水自带翻译（tlyric）
       const { getSodaLyrics } = await import('./sodaService')
       const lines = await getSodaLyrics(String(id))
       if (lines.length) return lines
-      // 汽水曲库缺词（纯音乐/翻唱常见）→ 网易云同名匹配兜底，保证"自动拉歌词"体验
+      // 汽水曲库缺词（纯音乐/翻唱常见）→ 网易云同名匹配兜底，保证"自动拉歌词"体验；
+      // 命中时参考网易云主路径把 tlyric 翻译一并合并，避免兜底歌词丢翻译。
       const keyword = [songName, artistName].filter(Boolean).join(' ').trim()
       if (keyword) {
         try {
@@ -1489,7 +1490,11 @@ async function getPlatformLyrics(id: number | string, platform: MusicPlatform, s
             if (resp.ok) {
               const data = await resp.json().catch(() => null)
               const lrc = String(data?.lrc?.lyric || data?.lyric || '')
-              if (lrc.includes('[')) return parseLyric(lrc)
+              if (lrc.includes('[')) {
+                const lyrics = parseLyric(lrc)
+                const translations = parseLyric(String(data?.tlyric?.lyric || ''))
+                return mergeLyricsWithTranslationAndRoman(lyrics, translations)
+              }
             }
           }
         } catch { /* 匹配失败静默 */ }

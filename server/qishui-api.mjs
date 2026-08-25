@@ -20,6 +20,8 @@
  */
 
 import crypto from 'node:crypto'
+// 加密音频解密代理：把带 #auth= 凭证的 CDN 地址包装为本地 /api/soda/audio 解密流
+import { sodaWrapAudioUrl } from './qishui-audio-decryptor.mjs'
 
 // ─────────────────────────── 常量 ───────────────────────────
 
@@ -99,6 +101,8 @@ function createTtlCache(maxEntries, defaultTtlMs) {
 const sodaSearchCache = createTtlCache(80, 2 * 60 * 1000)
 const sodaLyricCache = createTtlCache(240, 30 * 60 * 1000)
 const sodaPublicDetailCache = createTtlCache(240, 30 * 60 * 1000)
+/** 歌词「确认无词」负缓存（纯音乐/翻唱常见）：三级兜底全空后短周期记忆，避免同一首反复打满三级拖慢切歌；键带登录指纹，登录态解锁 track_v2 新数据源时不互相污染 */
+const sodaLyricMissCache = createTtlCache(120, 10 * 60 * 1000)
 const sodaFeedCache = createTtlCache(16, 90 * 1000)
 const sodaWebLibraryCache = createTtlCache(24, 90 * 1000)
 const sodaWebPlaylistCache = createTtlCache(48, 90 * 1000)
@@ -1633,6 +1637,22 @@ async function handleSodaSearch(keywords, limit, cookieText, offset) {
   })
 }
 
+/**
+ * 公开目录 lyric_info 的翻译提取：translated_lyric/translation/tlyric 文本字段优先
+ * （经 sodaLyricTextFromNode 展开 lyric_entity 并拒收 URL 形态），其次 lang_translations[]/translations[]
+ * 数组形态（与搜索路径 mapSodaMedia 的提取规则一致）。
+ */
+function extractSodaDetailTranslation(lyricInfo) {
+  const direct = sodaLyricTextFromNode(lyricInfo.translated_lyric || lyricInfo.translation || lyricInfo.tlyric || '')
+  if (direct) return direct
+  for (const item of pickArray(lyricInfo.lang_translations, lyricInfo.translations)) {
+    const entity = pickObject(item && item.lyric_entity, item)
+    const text = normalizeLyricBody(entity.content || (item && (item.content || item.lyric || item.lyric_text)))
+    if (text) return text
+  }
+  return ''
+}
+
 /** 公开目录单曲详情（歌词兜底数据源之一，30 分钟缓存） */
 async function fetchSodaPublicDetail(id) {
   id = normalizeText(id)
@@ -1649,11 +1669,14 @@ async function fetchSodaPublicDetail(id) {
     const json = await requestJson(url, { timeoutMs: 8000, headers: QISHUI_PUBLIC_HEADERS })
     const item = json && json.data && Array.isArray(json.data.list) ? json.data.list[0] : null
     if (!item) return null
+    // lyric_info 兼容多形态：复用 sodaLyricTextFromNode（自动展开 lyric_entity，并拒收
+    // 「URL 形态歌词」——那种正文需二次拉取，直接入库会把 URL 当 LRC 污染 30 分钟缓存）；
+    // 纯文本字段作后备，末尾再拦一次 URL 兜底。
     const lyricInfo = pickObject(item.lyric_info, item.lyric)
-    const lyric = normalizeLyricBody(
-      lyricInfo.lyric_text || lyricInfo.content || lyricInfo.lyric || (lyricInfo.lyric_entity && lyricInfo.lyric_entity.content) || '',
-    )
-    const tlyric = normalizeLyricBody(lyricInfo.translated_lyric || lyricInfo.translation || lyricInfo.tlyric || '')
+    let lyric = sodaLyricTextFromNode(lyricInfo)
+      || normalizeLyricBody(lyricInfo.lyric_text || lyricInfo.content || lyricInfo.lyric || '')
+    if (/^https?:\/\//i.test(lyric)) lyric = ''
+    const tlyric = extractSodaDetailTranslation(lyricInfo)
     cacheSodaLyric(id, lyric, tlyric, 'soda-public-detail')
     return { item, lyric, tlyric }
   })
@@ -2511,7 +2534,8 @@ async function handleSodaSongUrl(opts, cookieText) {
       // 试听判定：流时长明显小于整曲时长
       const trial = !!(duration > 0 && fullDuration > 0 && duration + 5 < fullDuration)
       const result = {
-        url: sodaUrlWithAuth(stream.url, stream.auth),
+        // 带 #auth= 凭证的加密流改走本地解密代理，前端 <audio> 直接可播（VIP/高音质无声修复）
+        url: sodaWrapAudioUrl(sodaUrlWithAuth(stream.url, stream.auth), stream.auth),
         playable: true,
         trial,
         quality: normalizeText(stream.quality || stream.format || sodaPlaybackLevel(stream.quality, stream.format, stream.bitrate)),
@@ -2572,6 +2596,12 @@ async function handleSodaLyric(id, cookieText) {
   if (!id) return { lyric: '', tlyric: '', source: 'none', error: '缺少汽水音乐歌曲 id' }
   const cached = sodaLyricCache.get(id)
   if (cached) return { lyric: cached.lyric, tlyric: cached.tlyric, source: cached.source }
+  // 负缓存命中：近期已确认三级全空，直接短路返回，避免纯音乐/翻唱每次切歌都打满三级上游
+  const loggedIn = sodaCookieHasLogin(normalizeSodaCookieInput(cookieText))
+  const missKey = id + '|' + (loggedIn ? 'login' : 'guest')
+  if (sodaLyricMissCache.get(missKey)) {
+    return { lyric: '', tlyric: '', source: 'none', error: 'soda-lyric-known-missing' }
+  }
   const errors = []
   try {
     const seoPayload = await fetchSodaSeoTrack(id)
@@ -2581,7 +2611,7 @@ async function handleSodaLyric(id, cookieText) {
   } catch (err) {
     errors.push('seo:' + ((err && err.message) || String(err)))
   }
-  if (sodaCookieHasLogin(normalizeSodaCookieInput(cookieText))) {
+  if (loggedIn) {
     try {
       const trackPayload = await fetchSodaPcTrackV2Get(id, cookieText)
       const lyrics = extractSodaLyrics(trackPayload)
@@ -2598,7 +2628,9 @@ async function handleSodaLyric(id, cookieText) {
   } catch (err) {
     errors.push('public:' + ((err && err.message) || String(err)))
   }
-  return { lyric: '', tlyric: '', source: 'none', error: errors.join('; ') }
+  // 三级全空：写入负缓存（10 分钟），下轮同曲直接短路
+  sodaLyricMissCache.set(missKey, true)
+  return { lyric: '', tlyric: '', source: 'none', error: errors.join('; ') || 'all-sources-empty' }
 }
 
 // ─────────────────────────── 聚合能力：状态 / 榜单 / 日推 / 艺人 / 专辑 ───────────────────────────

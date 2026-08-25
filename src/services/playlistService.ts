@@ -389,8 +389,10 @@ export async function getUserPlaylists(
   username?: string,
   options: PlaylistOptions = {}
 ): Promise<any[]> {
-  // Spotify 用 token 拉歌单，不依赖 userId；其余平台需要 userId
-  if (platform !== 'spotify' && !userId.trim()) return []
+  // Spotify 用 token、汽水用本地 cookie（soda_token）拉歌单，均不依赖 userId；其余平台需要 userId。
+  // 注意：探索页汽水侧栏以空 userId 调用本函数（fetchUserPlaylists 的 soda 分支只认 cookie），
+  // 不能在这里被 userId 门禁短路，否则汽水歌单列表永远为空。
+  if (platform !== 'spotify' && platform !== 'soda' && !userId.trim()) return []
   const cacheKey = getUserPlaylistsCacheKey(platform, userId)
   const bypassCache = options.forceRefresh || options.skipCache
   const requestGeneration = cacheGeneration
