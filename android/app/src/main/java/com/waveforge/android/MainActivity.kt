@@ -47,7 +47,7 @@ class MainActivity : Activity() {
         private const val TAG = "WaveForgeMain"
         private const val NODE_ASSETS_DIR = "nodejs-project"
         private const val PREF_TAG_KEY = "node_assets_version"
-        private const val ASSETS_VERSION = 65
+        private const val ASSETS_VERSION = 79
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
         // Node 启动标记：必须进程级唯一（nodejs-mobile 不支持重启、每次进程只允许一个）。
@@ -230,6 +230,17 @@ class MainActivity : Activity() {
                             .put("cpuTempC", readCpuTemp())
                             .put("batteryPercent", bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY))
                             .put("batteryCharging", bm.isCharging)
+                            .put("refreshRate", run {
+                                try { String.format(java.util.Locale.US, "%.1f", windowManager.defaultDisplay.mode.refreshRate) + " Hz" }
+                                catch (_: Exception) { "" }
+                            })
+                            .put("hdr", run { try { windowManager.defaultDisplay.isHdr } catch (_: Exception) { false } })
+                            .put("displayMode", run {
+                                try {
+                                    val m = windowManager.defaultDisplay.mode
+                                    "${m.physicalWidth}x${m.physicalHeight} @ ${String.format(java.util.Locale.US, "%.1f", m.refreshRate)}Hz"
+                                } catch (_: Exception) { "" }
+                            })
                             .toString()
                     } catch (_: Exception) {
                         "{}"

@@ -1,6 +1,6 @@
 import { debugLog, isTransitionDebugEnabled } from './utils/debugLog'
 import { parseStoredBoolean } from './utils/storage'
-import { isTv, isTvModeActive } from './platform'
+import { isTv, isTvModeActive, isDesktop } from './platform'
 import { useTvBack } from './tv/tvCore'
 import { isPerfModeEfficiency } from './tv/perfMode'
 import { lazy, memo, Suspense, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps } from 'react'
@@ -1790,7 +1790,8 @@ function App() {
           || state.currentTime === 0
           || state.currentTime + 0.5 < lastCommit.playbackTime
           || playbackDelta >= (nearEvent ? 0.1 : 1)
-          || now - lastCommit.wallTime >= (nearEvent ? 100 : 900)
+          // 常态节流：PC 1s / TV 2s（进度条走 Live wrapper 4Hz 不受影响；过渡倒计时窗口保持 100ms）
+          || now - lastCommit.wallTime >= (nearEvent ? 100 : (isTvModeActive() ? 2000 : 900))
 
         if (shouldCommitToReact) {
           currentTimeCommitRef.current = { wallTime: now, playbackTime: state.currentTime }
@@ -4709,6 +4710,8 @@ function App() {
   // Windows 任务栏缩略图进度条：小窗/歌词窗口未启用时没有频谱推送路径，
   // 这里在播放中低频上报 progress+duration，让主进程能刷新任务栏进度（0-1）。
   useEffect(() => {
+    // 任务栏进度上报仅桌面有意义（TV 上 electron 桥是空函数，注册即每秒空转）
+    if (!isDesktop()) return
     const videoTimeline = watchTimelineActive
     if (!isPlaying && !videoTimeline) return
     const timer = window.setInterval(() => {
@@ -5594,6 +5597,26 @@ function App() {
     }
   }, [])
 
+  // 稳定回调：三视图的登录/资料入口（内联箭头函数会逐秒重建，击穿 memo(HomeView/ExploreView/
+  // TraditionalView)，TV 弱 CPU 上整棵视图树（含首页歌单列表）每秒全量重渲染）
+  const openAppleLogin = useCallback(() => setShowAppleLogin(true), [])
+  const handleMinimalLogin = useCallback((platform: MusicPlatform) => {
+    if (platform === 'apple') { setShowAppleLogin(true); return }
+    setLoginPlatform(platform)
+    setShowLogin(true)
+  }, [])
+  const handleTraditionalLogin = useCallback((platform: MusicPlatform) => {
+    if (platform === 'apple') { setShowAppleLogin(true); return }
+    setLoginPlatform(platform === 'qq' ? 'qq' : 'netease')
+    setShowLogin(true)
+  }, [])
+  const handleViewProfileClick = useCallback((platform: MusicPlatform) => {
+    if (platform === 'apple') { setShowAppleLogin(true); return }
+    setProfileInitialPlatform(platform)
+    setProfileInitialTab('created')
+    setShowProfile(true)
+  }, [])
+
   // 设置面板常驻挂载，关闭回调需稳定引用以配合 memo 跳过播放中的重渲染
   const closeSettings = useCallback(() => setShowSettings(false), [])
   // 稳定引用：内联箭头函数会击穿 memo(SettingsPanel)，导致常驻挂载的巨型面板跟着 App 重渲染
@@ -5838,7 +5861,7 @@ function App() {
               restorePlaybackOrigin={restorePlaybackOrigin}
               currentSong={currentSong}
               isPlaying={isPlaying}
-              currentTime={currentTime}
+              playbackTimeStore={audioPlayer.playbackTimeStore}
               duration={duration}
               volume={volume}
               currentLyric={currentMiniLyric}
@@ -5868,25 +5891,8 @@ function App() {
               sodaLoggedIn={sodaLoggedIn}
               sodaUsername={sodaUsername}
               sodaAvatar={sodaAvatar}
-              onLoginClick={(platform) => {
-                // Apple 走独立 token 登录面板；网易云/QQ 走原有扫码/密钥登录
-                if (platform === 'apple') {
-                  setShowAppleLogin(true)
-                  return
-                }
-                setLoginPlatform(platform)
-                setShowLogin(true)
-              }}
-              onProfileClick={(platform) => {
-                // Apple 账号入口在 Apple 登录面板内（含资料与退出登录）
-                if (platform === 'apple') {
-                  setShowAppleLogin(true)
-                  return
-                }
-                setProfileInitialPlatform(platform)
-                setProfileInitialTab('created')
-                setShowProfile(true)
-              }}
+              onLoginClick={handleMinimalLogin}
+              onProfileClick={handleViewProfileClick}
               onSearchClick={viewCallbacks.onSearchClick}
               onRemoteClick={viewCallbacks.onRemoteClick}
               onPlayPause={viewCallbacks.onPlayPause}
@@ -5943,7 +5949,7 @@ function App() {
               qqVip={qqVip}
               appleLoggedIn={appleLoggedIn}
               appleUsername={appleUsername}
-              onAppleLoginClick={() => setShowAppleLogin(true)}
+              onAppleLoginClick={openAppleLogin}
               onAppleLogout={handleAppleLogout}
               spotifyLoggedIn={spotifyLoggedIn}
               spotifyUserId={spotifyUserId}
@@ -5989,7 +5995,7 @@ function App() {
               queue={playlist}
               currentIndex={currentIndex}
               isPlaying={isPlaying}
-              currentTime={currentTime}
+              playbackTimeStore={audioPlayer.playbackTimeStore}
               dominantColor={dominantColor}
               duration={duration}
               lyrics={lyrics}
@@ -6018,17 +6024,8 @@ function App() {
               sodaLoggedIn={sodaLoggedIn}
               sodaUsername={sodaUsername}
               sodaAvatar={sodaAvatar}
-              onLoginClick={(platform) => {
-                if (platform === 'apple') { setShowAppleLogin(true); return }
-                setLoginPlatform(platform === 'qq' ? 'qq' : 'netease')
-                setShowLogin(true)
-              }}
-              onProfileClick={(platform) => {
-                if (platform === 'apple') { setShowAppleLogin(true); return }
-                setProfileInitialPlatform(platform)
-                setProfileInitialTab('created')
-                setShowProfile(true)
-              }}
+              onLoginClick={handleTraditionalLogin}
+              onProfileClick={handleViewProfileClick}
               onSearchClick={viewCallbacks.onSearchClick}
               onSettingsClick={viewCallbacks.onSettingsClick}
               onPlayPause={viewCallbacks.onPlayPause}
@@ -6348,7 +6345,7 @@ function App() {
               appleAvatar={appleAvatar}
               appleStorefront={appleStorefront}
               appleEmail={appleEmail}
-              onAppleLoginClick={() => setShowAppleLogin(true)}
+              onAppleLoginClick={openAppleLogin}
               onAppleLogout={handleAppleLogout}
               spotifyLoggedIn={spotifyLoggedIn}
               spotifyUsername={spotifyUsername}
@@ -6367,13 +6364,8 @@ function App() {
               onSpotifyLogout={viewCallbacks.onSpotifyLogout}
               onNeteaseLoginClick={viewCallbacks.onNeteaseLoginClick}
               onQQLoginClick={viewCallbacks.onQQLoginClick}
-              onAppleProfileClick={() => setShowAppleLogin(true)}
-              onLoginClick={(platform) => {
-                // 新平台（Spotify/酷狗/汽水）：走通用登录弹窗（LoginView 委托到对应面板）
-                if (platform === 'apple') { setShowAppleLogin(true); return }
-                setLoginPlatform(platform)
-                setShowLogin(true)
-              }}
+              onAppleProfileClick={openAppleLogin}
+              onLoginClick={handleMinimalLogin}
               onSearchClick={viewCallbacks.onSearchClick}
               onRemoteClick={viewCallbacks.onRemoteClick}
               onOpenDeviceControl={viewCallbacks.onOpenDeviceControl}

@@ -494,7 +494,23 @@ function HomeView({
   // 手机遥控器连上（光标模式）时恢复真实 hover，与 PC 一致。
   const tvMode = useTvMode()
   const remoteCursorMode = useRemoteCursorMode()
+  // TV 遥控器（无鼠标）：药丸变成单个可聚焦单元，左右键循环切换平台；PC/光标模式仍走拖拽
+  const pillTvAdjust = tvMode && !remoteCursorMode
+  const platformLabel = { netease: '网易云', qq: 'QQ音乐', apple: 'Apple', spotify: 'Spotify', kugou: '酷狗', soda: '汽水' } as Record<MusicPlatform, string>
+  const cyclePlatform = (dir: 1 | -1) => {
+    setPlatform(prev => {
+      const idx = Math.max(0, visiblePlatforms.indexOf(prev))
+      const next = (idx + dir + visiblePlatforms.length) % visiblePlatforms.length
+      return visiblePlatforms[next] ?? prev
+    })
+  }
+  const platformKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); cyclePlatform(-1) }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); cyclePlatform(1) }
+  }
   const perfMode = usePerfMode()
+  // 常驻小元素（模式下拉 chevron/上箭头提示）的无限浮动：TV 非增强档静态化（JS 动画，tv.css 杀不掉）
+  const tvChevronFloat = !isTvModeActive() || perfMode === 'enhanced'
   // 昂贵的动态背景（渐变 + 光晕）：性能模式仅约束 TV（效能/普通降为静态省 CPU/内存）；
   // PC 上始终全开（PC 的 perfMode 默认 normal，但不受 TV 性能档约束）。
   const showHeavyVisuals = !isTvModeActive() || perfMode === 'enhanced'
@@ -2239,11 +2255,11 @@ function HomeView({
             >
               <motion.div
                 animate={{ 
-                  y: [0, 2, 0],
+                  y: tvChevronFloat ? [0, 2, 0] : 0,
                   opacity: showUpArrowHint ? [1, 0.5, 1] : 1
                 }}
                 transition={{ 
-                  y: { duration: 1, repeat: Infinity },
+                  y: tvChevronFloat ? { duration: 1, repeat: Infinity } : { duration: 0 },
                   opacity: showUpArrowHint ? { duration: 0.5, repeat: Infinity } : { duration: 0 }
                 }}
               >
@@ -2789,6 +2805,15 @@ function HomeView({
                 background: playerTheme === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
                 border: `1px solid ${playerTheme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)'}`,
               }}
+              {...(pillTvAdjust
+                ? {
+                    'data-tv-focus': '',
+                    tabIndex: 0,
+                    'data-tv-arrows': 'horizontal',
+                    'aria-label': `平台切换，当前 ${platformLabel[platform]}，左右键切换`,
+                    onKeyDown: platformKeyDown,
+                  }
+                : {})}
             >
               {/* 液态玻璃高亮：固定视口中央（第二个槽位），平台滑过时被覆盖；backdrop-blur 液态质感 */}
               <motion.div
@@ -2817,6 +2842,7 @@ function HomeView({
                 onPointerMove={platformPointerMove}
                 onPointerUp={platformPointerUp}
                 onPointerCancel={platformPointerUp}
+                {...(pillTvAdjust ? { 'data-tv-skip': '' } : {})}
               >
                 {visiblePlatforms.map(key => {
                   const dotColor = key === 'netease' ? 'bg-red-500' : key === 'qq' ? 'bg-green-500' : key === 'apple' ? 'bg-pink-500' : key === 'spotify' ? 'bg-[#1DB954]' : key === 'kugou' ? 'bg-orange-500' : 'bg-sky-500'
@@ -2845,7 +2871,7 @@ function HomeView({
                 })}
               </motion.div>
             </div>
-            <div className={`mt-2 text-center text-[10px] tracking-wide transition-opacity duration-1000 ${switcherHintVisible ? 'opacity-100' : 'opacity-0'} ${playerTheme === 'dark' ? 'text-white/25' : 'text-black/25'}`}>左右拖动切换平台</div>
+            <div className={`mt-2 text-center text-[10px] tracking-wide transition-opacity duration-1000 ${switcherHintVisible ? 'opacity-100' : 'opacity-0'} ${playerTheme === 'dark' ? 'text-white/25' : 'text-black/25'}`}>{pillTvAdjust ? '左右键切换平台' : '左右拖动切换平台'}</div>
           </div>
 
           {isLoggedIn && (platform === 'netease' || platform === 'qq' || platform === 'apple') && (

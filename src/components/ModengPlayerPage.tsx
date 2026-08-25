@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import type { LyricLine } from '../services/musicApi'
 import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
+import { isTvModeActive } from '../platform'
 import AnimatedArtworkCover from './AnimatedArtworkCover'
 import { hasTrueWordTiming, prepareLyricWords } from '../utils/lyricWordTiming'
 import { getAgentTintColor, getAppleMusicSettings } from '../services/appleMusic'
@@ -242,8 +243,10 @@ export default function ModengPlayerPage({
     }
 
     const tick = (wall: number) => {
-      // 限 120fps（1000/120ms）：跳过的帧沿用原有停帧条件，避免隐藏后空转
-      if (lastPaint && wall - lastPaint < 1000 / 120) {
+      // 限 120fps（1000/120ms）：跳过的帧沿用原有停帧条件，避免隐藏后空转。
+      // TV 弱 CPU 上限降到 30fps（词色/进度条更新人眼无感，保留全部动画）。
+      const frameCapMs = isTvModeActive() ? 1000 / 30 : 1000 / 120
+      if (lastPaint && wall - lastPaint < frameCapMs) {
         raf = playing && document.visibilityState === 'visible' ? requestAnimationFrame(tick) : 0
         return
       }
