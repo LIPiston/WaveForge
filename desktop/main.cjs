@@ -6328,12 +6328,37 @@ let localPythonChild = null
 let localLoudnessChild = null
 let localCompensationChild = null
 
-function startLocalBackend() {
+async function startLocalBackend() {
   if (!app.isPackaged) return // 开发模式由 dev-electron.mjs 启动
   if (process.env.WAVEFORGE_DISABLE_LOCAL_BACKEND === '1') return
 
   // 1) Express API（3001）
   try {
+
+// ── 孤儿后端清扫：上次异常退出残留的子进程会占住 3001-3004，导致新实例误连旧后端 ──
+const BACKEND_PORTS = [3001, 3002, 3003, 3004]
+async function sweepBackendOrphans(reason) {
+  for (const port of BACKEND_PORTS) {
+    try {
+      const ps = [
+        '$c = Get-NetTCPConnection -LocalPort ' + port + ' -State Listen -ErrorAction SilentlyContinue',
+        'foreach ($x in $c) {',
+        '  $pp = Get-Process -Id $x.OwningProcess -ErrorAction SilentlyContinue',
+        '  if ($pp -and ($pp.Path -like "*win-unpacked*" -or $pp.Path -like "*resources\\python-embed*" -or $pp.ProcessName -like "WaveForge*")) { Write-Output $x.OwningProcess }',
+        '}',
+      ].join('; ')
+      const out = await execFileAsync('powershell', ['-NoProfile', '-Command', ps], { timeout: 12000 })
+      const pids = String(out.stdout || '').split(/[^0-9]+/).map(v => parseInt(v, 10)).filter(v => v > 0)
+      for (const pid of pids) {
+        try {
+          await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 8000 })
+          console.log('[LocalAPI] 清扫残留子进程 pid=' + pid + ' (port=' + port + ', reason=' + reason + ')')
+        } catch { /* 已退出则忽略 */ }
+      }
+    } catch { /* 清扫失败不阻塞启动 */ }
+  }
+}
+  await sweepBackendOrphans('startup')
     const serverEntry = path.join(process.resourcesPath, 'app.asar', 'local-server.mjs')
     localApiChild = utilityProcess.fork(serverEntry, [], {
       env: {
@@ -6475,9 +6500,10 @@ function startLocalBackend() {
 }
 
 // 应用退出时一并结束本地子进程
-app.on('will-quit', () => {
+app.on('will-quit', async () => {
   persistMainWindowState() // 关闭前做最终窗口状态保存（防抖定时器可能尚未触发）
   try { localApiChild?.kill() } catch {}
+  await sweepBackendOrphans('quit')
   try { localPythonChild?.kill() } catch {}
   try { localLoudnessChild?.kill() } catch {}
   try { localCompensationChild?.kill() } catch {}
@@ -6595,7 +6621,7 @@ app.whenReady().then(() => {
   }
   ipcMain.handle('audio-output:is-supported', () => process.platform === 'win32' || process.platform === 'darwin')
 
-  app.on('will-quit', () => {
+  app.on('will-quit', async () => {
     if (airplayControllerHandle) {
       try { airplayControllerHandle.dispose() } catch { /* 忽略 */ }
       airplayControllerHandle = null
