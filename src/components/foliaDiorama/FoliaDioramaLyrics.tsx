@@ -138,7 +138,6 @@ export default function FoliaDioramaLyrics({
     let anchorTime = 0
     let anchorWall = performance.now()
     let playing = false
-    let lastFrame = 0
     const syncClock = () => {
       const snapshot = playbackTimeStore.getSnapshot()
       anchorTime = snapshot.currentTime
@@ -147,16 +146,6 @@ export default function FoliaDioramaLyrics({
       currentTime.set(anchorTime + timeOffset)
     }
     const tick = (now: number) => {
-      // 限 120fps：MotionValue 外推写值开销不小，高刷屏减半空帧；跳过的帧沿用停帧条件
-      if (lastFrame && now - lastFrame < FRAME_MIN_INTERVAL_MS) {
-        if (playing && document.visibilityState === 'visible') {
-          raf = requestAnimationFrame(tick)
-        } else {
-          raf = 0
-        }
-        return
-      }
-      lastFrame = now
       const extrapolated = playing ? Math.min(0.5, (now - anchorWall) / 1000) : 0
       currentTime.set(anchorTime + extrapolated + timeOffset)
       // 未播放或窗口隐藏时停帧（Electron backgroundThrottling 关闭，隐藏后 rAF 仍全速）
