@@ -814,6 +814,8 @@ export interface DioramaSceneProps {
     linesEpoch?: number;
     /** 歌曲封面：高斯模糊后融入天球背景（只要一点封面的氛围，不是贴图）。 */
     coverUrl?: string;
+    /** MV 背景激活时：内置背景层（BackgroundGradient/StarShell/color/fog）退场，让下层 MV 视频透过 Canvas 可见。 */
+    mvBackgroundActive?: boolean;
 }
 
 const EMPTY_ANALYSIS: AudioAnalyzerData = Object.freeze({
@@ -839,6 +841,7 @@ export default function DioramaScene({
     analyzerStore = EMPTY_ANALYZER_STORE,
     linesEpoch = 0,
     coverUrl,
+    mvBackgroundActive = false,
 }: DioramaSceneProps) {
     const camera = useThree(state => state.camera);
     const aspect = useThree(state => state.viewport.aspect);
@@ -882,13 +885,17 @@ export default function DioramaScene({
 
     return (
         <>
-            {/* 背景深度渐变（skybox 大球，忽略雾）：封面色系 + 银河带 + 封面模糊融入 */}
-            <BackgroundGradient palette={bgPalette} coverUrl={coverUrl} />
-            {/* 3D 星壳：真实分布的远景星（大量暗星 + 少量亮星），替代贴图星 */}
-            <StarShell />
-            <color attach="background" args={[bgPalette.fog]} />
-            {/* 雾色与地平线一致：远处几何融入封面色调氛围 */}
-            <fog attach="fog" args={[bgPalette.fog, FOG_NEAR, FOG_FAR]} />
+            {/* 背景深度渐变（skybox 大球，忽略雾）：封面色系 + 银河带 + 封面模糊融入
+                MV 背景激活时退场，让下层 MV 视频透过 Canvas 可见 */}
+            {!mvBackgroundActive && <BackgroundGradient palette={bgPalette} coverUrl={coverUrl} />}
+            {/* 3D 星壳：真实分布的远景星（大量暗星 + 少量亮星），替代贴图星
+                MV 背景激活时退场，避免星壳遮挡视频 */}
+            {!mvBackgroundActive && <StarShell />}
+            {/* MV 背景激活时不设 scene background color，让 Canvas alpha 透明 */}
+            {!mvBackgroundActive && <color attach="background" args={[bgPalette.fog]} />}
+            {/* 雾色与地平线一致：远处几何融入封面色调氛围
+                MV 背景激活时关掉雾，否则 MV 视频被雾色染透且远处歌词被白雾化 */}
+            {!mvBackgroundActive && <fog attach="fog" args={[bgPalette.fog, FOG_NEAR, FOG_FAR]} />}
 
             {visibleEntries.map(entry => (
                 <LineGroup

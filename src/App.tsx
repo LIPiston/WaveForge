@@ -6892,6 +6892,7 @@ function App() {
                     romanEnabled={romanEnabled}
                     isTransitioning={isVisualTransitioning}
                     onSeek={audioPlayer.seek}
+                    mvBackgroundActive={mvBackgroundActive}
                   />
                 </motion.div>
               ) : lyricDisplayMode === 'folia' ? (

@@ -101,6 +101,8 @@ interface FoliaDioramaLyricsProps {
   analyzerStore?: AudioAnalyzerStore
   /** 歌曲封面：高斯模糊后融入天球背景。 */
   coverUrl?: string
+  /** MV 背景激活时：Canvas alpha 透明 + 3D 内置背景层退场，让下层 MV 视频可见。 */
+  mvBackgroundActive?: boolean
 }
 
 export default function FoliaDioramaLyrics({
@@ -117,6 +119,7 @@ export default function FoliaDioramaLyrics({
   pulseStore,
   analyzerStore,
   coverUrl,
+  mvBackgroundActive = false,
 }: FoliaDioramaLyricsProps) {
   const currentTime = useMotionValue(0)
   // sequencer 状态机（切歌铺段 / 歌词晚到原位重建 / 行推进与循环）抽到 hook：5 state + 4 ref + 4 effect
@@ -236,14 +239,16 @@ export default function FoliaDioramaLyrics({
   }, [canvasRecoveryKey])
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#05060c]">
+    <div className={`relative h-full w-full overflow-hidden ${mvBackgroundActive ? 'bg-transparent' : 'bg-[#05060c]'}`}>
       <div ref={canvasHostRef} className="absolute inset-0">
         <Canvas
           key={canvasRecoveryKey}
           dpr={[1, 2]}
           flat
           camera={{ fov: 55, near: 0.1, far: 140, position: [0, 0.6, 9] }}
-          gl={{ powerPreference: 'high-performance' }}
+          // MV 背景激活时启用 alpha 透明，让下层 MV 视频透过 Canvas 可见；
+          // 否则保持默认（不透明）以获得更好的深度清晰度与性能。
+          gl={{ powerPreference: 'high-performance', alpha: mvBackgroundActive }}
           className="h-full w-full"
         >
           <DioramaScene
@@ -260,6 +265,7 @@ export default function FoliaDioramaLyrics({
             analyzerStore={analyzerStore}
             linesEpoch={linesEpoch}
             coverUrl={coverUrl}
+            mvBackgroundActive={mvBackgroundActive}
           />
           <CameraRig
             currentTime={currentTime}
