@@ -253,7 +253,6 @@ export default function FoliaDioramaLyrics({
           key={canvasRecoveryKey}
           dpr={[1, 2]}
           flat
-          frameloop="demand"
           camera={{ fov: 55, near: 0.1, far: 140, position: [0, 0.6, 9] }}
           gl={{ powerPreference: 'high-performance' }}
           className="h-full w-full"
