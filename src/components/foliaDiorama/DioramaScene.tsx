@@ -37,6 +37,7 @@ import {
     rasterDioramaUnit,
 } from './dioramaTextRaster';
 import { makeAuraTexture, makeStarSpriteTexture } from './dioramaTextures';
+import { SpectrumFlanks, BeatRings } from './dioramaSpectrum';
 
 const LINES_AHEAD = 3;
 const LINES_BEHIND = 2;
@@ -239,10 +240,19 @@ const ActiveLineText: React.FC<{
     const sideMatRefs = useRef<Array<THREE.MeshBasicMaterial | null>>([]);
     const backMatRefs = useRef<Array<THREE.MeshBasicMaterial | null>>([]);
     const unitMeshRefs = useRef<Array<THREE.Group | null>>([]);
+    // 光晕 mesh 独立 ref + 基底尺寸：让光晕能脱离字基底独立"扩散"（scale 1→1.4），
+    // 而不是与字基底绑定同缩放——唱到瞬间光晕径向扩散 + opacity 高峰衰减，读作"光斑"
+    const glowMeshRefs = useRef<Array<THREE.Mesh | null>>([]);
+    const glowBaseScaleRef = useRef<Array<{ w: number; h: number } | null>>([]);
     const glowSmoothRefs = useRef<number[]>([]);
+    // 行入场动画：mount 时刻记一次歌曲时间，前 400ms 行从下方雾中浮入 + opacity 0→1
+    // （smoothstep 缓动）。seek 到行中段时跳过入场（elapsed > 0.4s 立即满进度）
+    const mountTimeRef = useRef<number | null>(null);
+    const entryOffsetYRef = useRef(0); // 当前入场 Y 偏移（世界单位，正值=低于正常位置）
     const white = useMemo(() => new THREE.Color('#ffffff'), []);
-    // 未唱中性灰（明显压暗）：与已唱白拉开亮度差，逐字点亮才看得清
-    const unsungColor = useMemo(() => new THREE.Color('#a8adc8'), []);
+    // 未唱压暗灰（明显退场）：原 #a8adc8 L=0.78 太亮，未唱字"抢戏"；
+    // 压到 #525666 L≈0.41，未唱字明显退到背景，"逐字点亮"的明暗对比才有冲击力
+    const unsungColor = useMemo(() => new THREE.Color('#525666'), []);
     // 更浓的光晕色：适度提高主题色饱和度（克制，避免过艳）
     const vividAccent = useMemo(() => {
         const color = new THREE.Color(accentColor);
@@ -251,6 +261,15 @@ const ActiveLineText: React.FC<{
         color.setHSL(hsl.h, Math.min(1, hsl.s * 1.2 + 0.08), Math.min(0.62, Math.max(0.46, hsl.l)));
         return color;
     }, [accentColor]);
+    // 副歌段光晕色（暖偏 +5°、饱和 +12%、亮度 +6%）：副歌段视觉强化，与主歌段拉开层次
+    const chorusAccent = useMemo(() => {
+        const color = vividAccent.clone();
+        const hsl = { h: 0, s: 0, l: 0 };
+        color.getHSL(hsl);
+        // 色相往暖方向偏移 5°（hue 0-1，5° ≈ 0.014）
+        color.setHSL((hsl.h + 0.014) % 1, Math.min(1, hsl.s + 0.12), Math.min(0.68, hsl.l + 0.06));
+        return color;
+    }, [vividAccent]);
     // 3D 厚切片配色随封面主色（压暗的主题色系）——比固定灰蓝更贴歌曲氛围
     const depthColors = useMemo(() => {
         const source = new THREE.Color(accentColor);
@@ -278,14 +297,37 @@ const ActiveLineText: React.FC<{
         const life = resolveTextLife(dist);
         const now = currentTime.get();
         const renderEnd = getLineRenderEndTime(line);
-        // 舞台光晕：整行级环境光（随唱 + 音律呼吸，无逐字跳变）—— 光晕只做氛围，宁弱勿强
+        const isChorus = line.isChorus === true;
+        // 副歌段光晕色（暖偏）：副歌行用 chorusAccent，主歌行用 vividAccent
+        const lineAccent = isChorus ? chorusAccent : vividAccent;
+        // 行入场动画（A）：mount 时刻首次记歌曲时间，前 400ms 浮入 + opacity 0→1
+        // smoothstep 缓动；seek 到行中段时 elapsed > 0.4s 跳过入场立即满进度
+        if (mountTimeRef.current === null) mountTimeRef.current = now;
+        const entryElapsed = Math.max(0, now - mountTimeRef.current);
+        const entryRaw = entryElapsed >= 0.4 ? 1 : entryElapsed / 0.4;
+        const entrySmooth = entryRaw * entryRaw * (3 - 2 * entryRaw);
+        // Y 偏移：从 +0.15 浮到 0（从下方雾中浮入），-12 exp 平滑避免硬切
+        const targetOffsetY = (1 - entrySmooth) * 0.15;
+        const curOffsetY = entryOffsetYRef.current;
+        const newOffsetY = curOffsetY + (targetOffsetY - curOffsetY) * (1 - Math.exp(-12 * Math.max(0.001, delta)));
+        entryOffsetYRef.current = newOffsetY;
+        group.position.y = entry.position[1] + newOffsetY;
+        // effectiveLife = 相机距离 life × 入场 progress（入场期间整行渐亮）
+        const effectiveLife = life * entrySmooth;
+        // 节拍同步（B）：pulse.scale 是节拍包络幅度 0-1，峰值时即为节拍瞬间
+        //   - 已唱字稳定辉光 +节拍呼吸（持续律动）
+        //   - 正在唱的字基底 scale +节拍弹动 3%
+        //   - 正在唱的字颜色 lerp accent +节拍加强 0.15（强拍时字色更饱，"咬字"感）
         const pulse = pulseStore.getSnapshot();
+        const beatIntensity = pulse.scale; // 0-1
+        // 舞台光晕：整行级环境光（随唱 + 音律呼吸，无逐字跳变）—— 光晕只做氛围，宁弱勿强
         const auraMat = auraRef.current;
         if (auraMat) {
             const sungPhase = now < line.startTime ? 0 : now >= renderEnd ? 1 : clamp01((now - line.startTime) / Math.max(0.001, renderEnd - line.startTime));
-            // 舞台光晕只做氛围，宁弱勿强（歌词亮度已多轮下调）
-            auraMat.opacity = life * (0.04 + 0.068 * sungPhase) * (1 + pulse.scale * 2);
-            auraMat.color.copy(vividAccent);
+            // 副歌段舞台光晕强化（+50% opacity）：副歌段背景光更浓，营造"高潮段"氛围
+            const chorusBoost = isChorus ? 0.5 : 0;
+            auraMat.opacity = effectiveLife * (0.04 + 0.068 * sungPhase) * (1 + pulse.scale * 2 + chorusBoost);
+            auraMat.color.copy(lineAccent);
         }
         // 逐字光晕：近零（仅保留极微弱暖光），杜绝"每字冒光"的突兀感；
         // 逐字效果由文字亮度点亮承担（见下方 base.opacity）
@@ -305,16 +347,18 @@ const ActiveLineText: React.FC<{
             const progress = rawProgress * rawProgress * (3 - 2 * rawProgress);
             const isSinging = rawProgress > 0 && rawProgress < 1;
             // 颜色：未唱暗灰 → 已唱纯白；正在演唱中的字主题色倾向加强（明确"唱到哪"）
+            // 副歌行用更暖的 chorusAccent，主歌用 vividAccent
+            // 节拍同步（B）：正在唱的字在节拍峰值时额外 lerp accent 0.15（"咬字"感）
             tmpColor.copy(unsungColor).lerp(white, progress);
             if (isSinging) {
-                tmpColor.lerp(vividAccent, 0.28);
+                tmpColor.lerp(lineAccent, 0.28 + beatIntensity * 0.15);
             }
-            // 已唱字不再过驱泛光（用户多轮反馈太亮）：颜色停在纹理白，亮度全部交给透明度，
-            // 峰值 0.84 低于 bloom 阈值——歌词退出辉光通道，"正在唱"的提示由主题色倾向承担
+            // 已唱字 base opacity 升到 0.92：恰进 Bloom 阈值（0.92），自然微辉光；
+            // "正在唱"的辉光交给下方 glow burst（光斑扩散）承担，base 不再过驱白
             base.color.copy(tmpColor);
-            // 亮度差：未唱 0.18 → 已唱 0.84；演唱窗口保留一线 sin 强调（幅度收敛）
+            // 亮度差：未唱 0.18 → 已唱 0.92；演唱窗口保留一线 sin 强调
             const activeBoost = isSinging ? 1 + 0.05 * Math.sin(Math.PI * rawProgress) : 1;
-            base.opacity = life * (0.18 + 0.66 * progress) * activeBoost;
+            base.opacity = effectiveLife * (0.18 + 0.74 * progress) * activeBoost;
             // 立体厚度层：暗色切片透明度随唱读"生长"——未唱时保持干净平面，
             // 唱到的字显出厚度（相机环绕/侧视时视差暴露字厚）
             const depthGain = 0.3 + 0.7 * progress;
@@ -322,17 +366,37 @@ const ActiveLineText: React.FC<{
             const backMat = backMatRefs.current[index];
             if (sideMat) sideMat.opacity = base.opacity * 0.85 * depthGain;
             if (backMat) backMat.opacity = base.opacity * 0.62 * depthGain;
-            // 逐字光晕：极弱余温提示唱读位置；仅"正在唱"的字叠加一丝柔光晕（其余保持近零，避免每字冒光）
-            const targetGlow = 0.004 + 0.018 * progress + (isSinging ? 0.02 * Math.sin(Math.PI * rawProgress) : 0);
+            // 逐字光晕升级：
+            // - 已唱稳定辉光：0.06（持续微辉光，进 bloom 阈值，已唱字不再"暗下去"）
+            // - 唱到瞬间 burst：0.10·(1-t)² 衰减（前 300ms 显著扩散光晕，从 0.30 经 0.18 下调避免刺眼）
+            // - 节拍呼吸（B）：已唱字稳定辉光 +节拍 0.04，让已唱字持续律动（不抢戏）
+            // - 平滑速率 -4 → -8：让 burst 起音更快，跟上"瞬间点亮"的节奏
+            const glowBurst = isSinging ? 0.10 * (1 - rawProgress) * (1 - rawProgress) : 0;
+            const beatGlow = progress > 0 ? beatIntensity * 0.04 : 0; // 已唱字节拍呼吸
+            const targetGlow = 0.015 + 0.06 * progress + glowBurst + beatGlow;
             const smoothed = glowSmoothRefs.current[index]
-                + (targetGlow - glowSmoothRefs.current[index]) * (1 - Math.exp(-4 * Math.max(0.001, delta)));
+                + (targetGlow - glowSmoothRefs.current[index]) * (1 - Math.exp(-8 * Math.max(0.001, delta)));
             glowSmoothRefs.current[index] = smoothed;
-            glow.color.copy(vividAccent);
-            glow.opacity = life * smoothed * (1 + pulse.scale * 3);
-            // 已唱字保持极轻微的呼吸；演唱窗口内的字附加微小"唱读"膨胀（3.5%，正弦包络）
+            glow.color.copy(lineAccent);
+            glow.opacity = effectiveLife * smoothed * (1 + pulse.scale * 3);
+            // 光晕 mesh 独立扩散：唱到瞬间光晕从 1 扩散到 1.08（脱离字基底独立 scale），
+            // (1-t)² 衰减——前 300ms 光斑径向扩散+变淡，读作"光从字里向外荡开"
+            const glowMesh = glowMeshRefs.current[index];
+            const glowBase = glowBaseScaleRef.current[index];
+            if (glowMesh && glowBase) {
+                const glowScale = isSinging ? 1 + 0.08 * (1 - rawProgress) * (1 - rawProgress) : 1;
+                glowMesh.scale.set(glowBase.w * glowScale, glowBase.h * glowScale, 1);
+            }
+            // 字基底弹性膨胀：唱到瞬间 1.0→1.15→1.0（300ms ease-out 衰减）
+            // (1-t)² 包络：t=0 时 +15%，t=0.5 时 +3.75%，t=1 时归零——比原 sin 包络更有"啵"的冲击感
+            // 副歌行 +2% 持续 scale boost：副歌段字稍大，强化"高潮段"视觉重量
+            // 节拍同步（B）：正在唱的字在节拍峰值时额外 +3% scale 弹动
             if (unitMesh && now >= unit.startTime) {
-                const singPop = isSinging ? 0.035 * Math.sin(Math.PI * rawProgress) : 0;
-                const scalePulse = 1 + Math.sin(now * 1.2 + index * 0.7) * 0.008 + singPop;
+                const chorusScaleBoost = isChorus ? 0.02 : 0;
+                const singBurst = isSinging ? 0.15 * (1 - rawProgress) * (1 - rawProgress) : 0;
+                const beatScaleBoost = isSinging ? beatIntensity * 0.03 : 0;
+                const breath = 1 + Math.sin(now * 1.2 + index * 0.7) * 0.008;
+                const scalePulse = breath + singBurst + chorusScaleBoost + beatScaleBoost;
                 unitMesh.scale.set(scalePulse, scalePulse, 1);
             }
         }
@@ -363,7 +427,16 @@ const ActiveLineText: React.FC<{
             >
                 {/* 光晕（最底层）：柔光在厚度切片之后，不遮住字厚。
                     光晕纹理与 base 共用同一画布几何，1:1 同尺寸映射才能精准套准笔画 */}
-                <mesh position={[0, 0, -TEXT_DEPTH_STEP * 3]} scale={planeScale} renderOrder={0} geometry={SHARED_UNIT_QUAD}>
+                <mesh
+                    ref={(m) => {
+                        glowMeshRefs.current[index] = m;
+                        glowBaseScaleRef.current[index] = { w: planeScale[0], h: planeScale[1] };
+                    }}
+                    position={[0, 0, -TEXT_DEPTH_STEP * 3]}
+                    scale={planeScale}
+                    renderOrder={0}
+                    geometry={SHARED_UNIT_QUAD}
+                >
                     <meshBasicMaterial
                         ref={(mat) => { glowMatRefs.current[index] = mat; }}
                         map={raster.glowTexture}
@@ -1165,213 +1238,8 @@ const FloorMist: React.FC<{ accentColor: string }> = ({ accentColor }) => {
     );
 };
 
-/** 频谱双翼：活动歌词左右两侧的密集 EQ 频谱分析器（用户要求"柱子完全改成频谱"）。
- *
- * 旧 WaveformRiver 是沿走廊每 8 单位一根的独立柱子——读作"柱子随频谱动"；
- * 现在换成两列紧密排列（无大间隙）的频谱柱阵，低→高频从内到外连续排布，
- * 观感就是标准的频谱分析器（EQ 显示器）：
- * - 每侧 32 根细柱，柱高来自真实 24 段对数频谱（线性插值上采样），快攻慢落；
- * - 颜色按封面主题色渐变：低频深主题色 → 高频亮主题色，能量推白；
- * - 柱阵锚在活动歌词行的两侧（文字平面之后），随行移动；
- * - 分析器未启用时退化为轻柔的闲置微光波。 */
-const SPECTRUM_FLANK_BARS = 32;
-const SPECTRUM_BAR_W = 0.105;
-const SPECTRUM_BAR_GAP = 0.014;
-/** 柱阵内侧边缘距歌词中线的横向距离（避开最长行的 72% 帧宽取景）。 */
-const SPECTRUM_FLANK_LATERAL = 4.7;
-/** 柱阵在文字平面之后的深度（沿路径 forward，相机一侧的反面）。 */
-const SPECTRUM_FLANK_DEPTH = 0.9;
-
-const SpectrumFlanks: React.FC<{
-    sequencer: SequencerState;
-    globalIndex: number;
-    motion: DioramaMotionParams;
-    analyzerStore: AudioAnalyzerStore;
-    accentColor: string;
-}> = ({ sequencer, globalIndex, motion, analyzerStore, accentColor }) => {
-    const resolved = useMemo(() => resolveGlobal(sequencer, globalIndex), [sequencer, globalIndex]);
-    const placement = useMemo(
-        () => getDioramaTextPlacement(resolved?.localIndex ?? 0, resolved?.segment.seed, motion.weaveScale),
-        [resolved, motion.weaveScale],
-    );
-    const white = useMemo(() => new THREE.Color('#ffffff'), []);
-    const tmpColor = useMemo(() => new THREE.Color(), []);
-    // 封面主题色 → 频谱两端：低频深主题色，高频亮主题色（同色系 +0.08 微移相）
-    const bandPalette = useMemo(() => {
-        const source = new THREE.Color(accentColor);
-        const hsl = { h: 0, s: 0, l: 0 };
-        source.getHSL(hsl);
-        const hue = Number.isFinite(hsl.h) ? hsl.h : 0.66;
-        const sat = Number.isFinite(hsl.s) && hsl.s > 0.04 ? hsl.s : 0.5;
-        return {
-            deep: new THREE.Color().setHSL(hue, Math.min(1, sat * 0.95 + 0.05), 0.5),
-            bright: new THREE.Color().setHSL((hue + 0.08) % 1, Math.min(1, sat * 1.1 + 0.08), 0.74),
-        };
-    }, [accentColor]);
-
-    // 布局 + 材质（随活动行/主题色重建；行变化时 mesh 随 key 重挂，材质由 effect 释放）
-    const bars = useMemo(() => {
-        if (!resolved || !resolved.line?.fullText) return [];
-        const step = SPECTRUM_BAR_W + SPECTRUM_BAR_GAP;
-        const list: Array<{ px: number; py: number; pz: number; bandFrac: number; mat: THREE.MeshBasicMaterial }> = [];
-        for (let side = -1; side <= 1; side += 2) {
-            for (let i = 0; i < SPECTRUM_FLANK_BARS; i += 1) {
-                // 从内到外排布：内侧低频 → 外侧高频（两侧对称镜像）
-                const lateral = SPECTRUM_FLANK_LATERAL + (i + 0.5) * step;
-                const bandFrac = i / (SPECTRUM_FLANK_BARS - 1);
-                const mat = new THREE.MeshBasicMaterial({
-                    color: bandPalette.deep.clone().lerp(bandPalette.bright, bandFrac),
-                    transparent: true,
-                    opacity: 0.14,
-                    blending: THREE.AdditiveBlending,
-                    depthWrite: false,
-                    toneMapped: false,
-                    fog: false,
-                });
-                const p = composeLocal(
-                    resolved.frame,
-                    side * lateral,
-                    (placement.offsetU ?? 0) - 0.55,
-                    SPECTRUM_FLANK_DEPTH,
-                );
-                list.push({ px: p.x, py: p.y, pz: p.z, bandFrac, mat });
-            }
-        }
-        return list;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [resolved, placement, bandPalette]);
-
-    const meshRefs = useRef<Array<THREE.Mesh | null>>([]);
-    const smoothRef = useRef<Float32Array>(new Float32Array(0));
-
-    // 行变化重建柱阵：平滑缓存清零、旧材质释放
-    useEffect(() => {
-        smoothRef.current = new Float32Array(bars.length);
-        return () => {
-            bars.forEach(bar => bar.mat.dispose());
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [bars]);
-
-    useFrame((state, delta) => {
-        const smooth = smoothRef.current;
-        if (smooth.length !== bars.length) return;
-        const analysis = analyzerStore.getSnapshot();
-        const spectrum = analysis.spectrum;
-        const beat = analysis.beat;
-        const dt = Math.max(0.001, delta);
-        const attack = 1 - Math.exp(-16 * dt); // 起音快
-        const release = 1 - Math.exp(-5 * dt); // 落音慢（余韵）
-        const time = state.clock.elapsedTime;
-        for (let index = 0; index < bars.length; index += 1) {
-            const mesh = meshRefs.current[index];
-            const bar = bars[index];
-            if (!mesh || !bar) continue;
-            // 24 段对数频谱 → 32 根柱：按 bandFrac 线性插值上采样
-            const pos = bar.bandFrac * (ANALYZER_SPECTRUM_BANDS - 1);
-            const i0 = Math.floor(pos);
-            const i1 = Math.min(ANALYZER_SPECTRUM_BANDS - 1, i0 + 1);
-            const frac = pos - i0;
-            const e0 = spectrum && spectrum.length > i0 ? spectrum[i0] : 0;
-            const e1 = spectrum && spectrum.length > i1 ? spectrum[i1] : 0;
-            const energy = e0 * (1 - frac) + e1 * frac;
-            // 分析器未启用（频谱全零）时保留轻柔闲置微光波，场景不死寂
-            const idle = 0.05 + 0.04 * Math.sin(time * (0.7 + bar.bandFrac * 0.9) + index * 0.31);
-            const target = Math.min(1, Math.max(energy, idle) * (1 + beat * 0.35));
-            const prev = smooth[index];
-            smooth[index] = prev + (target - prev) * (target > prev ? attack : release);
-            const level = smooth[index];
-            const height = 0.3 + level * 4.0;
-            mesh.scale.y = height;
-            mesh.position.y = bar.py + height * 0.5;
-            const mat = bar.mat;
-            tmpColor.copy(bandPalette.deep).lerp(bandPalette.bright, bar.bandFrac).lerp(white, level * 0.35);
-            mat.color.copy(tmpColor);
-            mat.opacity = 0.22 + level * 0.6;
-        }
-    });
-
-    if (bars.length === 0) return null;
-    return (
-        <group>
-            {bars.map((bar, index) => (
-                <mesh
-                    key={index}
-                    ref={(m) => { meshRefs.current[index] = m; }}
-                    position={[bar.px, bar.py, bar.pz]}
-                    renderOrder={0}
-                >
-                    <boxGeometry args={[SPECTRUM_BAR_W, 1, SPECTRUM_BAR_W]} />
-                    <primitive object={bar.mat} attach="material" />
-                </mesh>
-            ))}
-        </group>
-    );
-};
-
-/** 节拍脉冲环：重拍到来时，从当前歌词处扩散一圈光环。
- * 质感升级：环面始终朝向相机（billboard，原先平躺在世界 XY 面，多数角度只能看到一条线），
- * 更细的环体 + 更慢更大的扩散 + (1-t)^1.6 衰减，读作"空间里荡开的涟漪"而非弹出的圆环。 */
-const BeatRings: React.FC<{ sequencer: SequencerState; globalIndex: number; analyzerStore: AudioAnalyzerStore; accentColor: string }> = ({ sequencer, globalIndex, analyzerStore, accentColor }) => {
-    const POOL_SIZE = 6;
-    const camera = useThree(state => state.camera);
-    const slots = useRef<Array<{ mesh: THREE.Mesh | null; mat: THREE.MeshBasicMaterial | null; start: number }>>(
-        Array.from({ length: POOL_SIZE }, () => ({ mesh: null, mat: null, start: 0 })),
-    );
-    const prevBeatRef = useRef(0);
-    const cursorRef = useRef(0);
-
-    useFrame(() => {
-        const analysis = analyzerStore.getSnapshot();
-        const now = performance.now() / 1000;
-        const triggered = analysis.beat > 0.55 && prevBeatRef.current <= 0.55;
-        prevBeatRef.current = analysis.beat;
-        const resolved = resolveGlobal(sequencer, globalIndex);
-        if (triggered && resolved) {
-            const slot = slots.current[cursorRef.current % POOL_SIZE];
-            cursorRef.current += 1;
-            if (slot?.mesh && slot.mat) {
-                slot.mesh.position.set(resolved.frame.position.x, resolved.frame.position.y, resolved.frame.position.z);
-                slot.mesh.scale.setScalar(0.5);
-                slot.mat.opacity = 0.34;
-                slot.start = now;
-            }
-        }
-        for (const slot of slots.current) {
-            if (!slot?.mesh || !slot.mat || slot.start <= 0) continue;
-            const age = now - slot.start;
-            const t = age / 1.6;
-            if (t >= 1) {
-                slot.mat.opacity = 0;
-                slot.start = 0;
-                continue;
-            }
-            slot.mesh.lookAt(camera.position);
-            slot.mesh.scale.setScalar(0.5 + t * 4.6);
-            slot.mat.opacity = 0.34 * Math.pow(1 - t, 1.6);
-        }
-    });
-
-    return (
-        <group>
-            {slots.current.map((_, index) => (
-                <mesh key={index} ref={(mesh) => { slots.current[index].mesh = mesh; }}>
-                    <torusGeometry args={[1, 0.02, 8, 64]} />
-                    <meshBasicMaterial
-                        ref={(mat) => { slots.current[index].mat = mat; }}
-                        color={accentColor}
-                        transparent
-                        opacity={0}
-                        blending={THREE.AdditiveBlending}
-                        depthWrite={false}
-                        side={THREE.DoubleSide}
-                        toneMapped={false}
-                    />
-                </mesh>
-            ))}
-        </group>
-    );
-};
+/** SpectrumFlanks / BeatRings 已抽到 ./dioramaSpectrum.tsx（音律可视化层，
+ * 与歌词行渲染、氛围层解耦）。 */
 
 /** 音乐进度灯：沿走廊在唱词位置之间推进的柔光点（歌曲走位的 3D 指示）。
  * 质感升级：原先是一颗 0.14 半径的实心球 + 0.25 幅度"弹跳"缩放 —— 廉价的 CG 小球。

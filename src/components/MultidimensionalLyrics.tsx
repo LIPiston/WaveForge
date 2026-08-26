@@ -79,13 +79,9 @@ export default function MultidimensionalLyrics({
         style={{ background: 'radial-gradient(ellipse 92% 82% at 50% 44%, transparent 54%, rgba(3,4,9,0.52) 100%)' }}
       />
 
-      {/* 头部信息：克制的编辑式排版（移除水印式品牌角标与霓虹菱形） */}
+      {/* 头部信息：克制的编辑式排版（移除水印式品牌角标与霓虹菱形；无模式说明标签） */}
       <div className="pointer-events-none absolute left-9 top-9 z-20 sm:left-12 sm:top-11">
-        <div className="flex items-center gap-3 text-[10px] font-medium uppercase tracking-[0.42em] text-white/35">
-          <span className="h-px w-9 bg-white/25" />
-          多维 · Diorama
-        </div>
-        <h1 className="mt-3.5 max-w-[48vw] truncate text-2xl font-semibold tracking-[0.02em] text-white/90 sm:text-[27px]">{songTitle}</h1>
+        <h1 className="max-w-[48vw] truncate text-2xl font-semibold tracking-[0.02em] text-white/90 sm:text-[27px]">{songTitle}</h1>
         <p className="mt-2 max-w-[48vw] truncate text-[12.5px] tracking-[0.05em] text-white/45 sm:text-[13px]">
           {songArtist}{songAlbum ? ` · ${songAlbum}` : ''}
         </p>

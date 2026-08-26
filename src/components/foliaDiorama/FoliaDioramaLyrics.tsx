@@ -12,16 +12,7 @@ import type { LyricLine, LyricWord } from '../../services/musicApi'
 import type { PlaybackTimeStore } from '../../audio/playbackTimeStore'
 import { DEFAULT_DIORAMA_TUNING, type Line, type Word } from './types'
 import { resolveDioramaMotionParams } from './cameraPath'
-import {
-  appendSegment,
-  createSequencerState,
-  pruneSegments,
-  updateActiveSegmentLines,
-  type SequencerState,
-} from './dioramaSequencer'
-import { pickTransitionOffset, TRANSITION_DURATION } from './dioramaTransition'
-// 高刷屏限 120fps：MotionValue 外推 120fps 与 240fps 肉眼无差异
-const FRAME_MIN_INTERVAL_MS = 1000 / 120
+import { useDioramaSequencer } from './useDioramaSequencer'
 import CameraRig from './CameraRig'
 import DioramaScene from './DioramaScene'
 import DioramaPostFx from './dioramaPostFx'
@@ -48,18 +39,47 @@ export const convertLyricsToFoliaLines = (lyrics: LyricLine[]): Line[] => {
     const endTime = next ? Math.max(line.time + 0.4, next.time - 0.12) : line.time + 6
     return { line, endTime }
   })
-  return withEnd.map(({ line, endTime }, index) => ({
-    words: (line.words ?? []).filter(w => w.word?.trim()).map(word => convertWord(word, line.time)),
-    startTime: line.time,
-    endTime,
-    fullText: line.text?.trim() ?? '',
-    translation: line.translation || undefined,
-    romanization: line.roman || undefined,
-    id: `${index}`,
-    songPart: 'verse',
-    blockIndex: Math.floor(index / 4),
-    isChorus: false,
-  }))
+  // 简化副歌检测：trimmed 文本重复出现 ≥2 次的行判为副歌（副歌天然复现）。
+  // 空行/过短（<2 字）不参与，避免误判。真实副歌检测复杂，此处仅做视觉差异化标记。
+  const textCount = new Map<string, number>()
+  for (const { line } of withEnd) {
+    const text = (line.text ?? '').trim()
+    if (text.length < 2) continue
+    textCount.set(text, (textCount.get(text) ?? 0) + 1)
+  }
+  return withEnd.map(({ line, endTime }, index) => {
+    const text = (line.text ?? '').trim()
+    const isChorus = text.length >= 2 && (textCount.get(text) ?? 0) >= 2
+    // 修正 word.startTime 倒置：保证点亮顺序按词序（=视觉文字顺序）。
+    // 数据源有时前两个词的 startTime 倒置（第一词晚于第二词）→
+    // 视觉"先第二个点亮再第一个点亮"。强制本词 startTime ≥ 前一词 endTime
+    // 即可保证点亮顺序与词序一致。保留原 duration，时间向后平移而非压缩。
+    let prevEnd = line.time
+    const words = (line.words ?? [])
+      .filter(w => w.word?.trim())
+      .map(word => {
+        const w = convertWord(word, line.time)
+        if (w.startTime < prevEnd) {
+          const dur = Math.max(0.05, w.endTime - w.startTime)
+          w.startTime = prevEnd
+          w.endTime = prevEnd + dur
+        }
+        prevEnd = w.endTime
+        return w
+      })
+    return {
+      words,
+      startTime: line.time,
+      endTime,
+      fullText: text,
+      translation: line.translation || undefined,
+      romanization: line.roman || undefined,
+      id: `${index}`,
+      songPart: isChorus ? 'chorus' : 'verse',
+      blockIndex: Math.floor(index / 4),
+      isChorus,
+    }
+  })
 }
 
 interface FoliaDioramaLyricsProps {
@@ -99,41 +119,18 @@ export default function FoliaDioramaLyrics({
   coverUrl,
 }: FoliaDioramaLyricsProps) {
   const currentTime = useMotionValue(0)
-  const sequencerRef = useRef<SequencerState | null>(null)
-  if (!sequencerRef.current) sequencerRef.current = createSequencerState()
-  const epochRef = useRef(0)
-  const roundRef = useRef(0)
-  const lastIndexRef = useRef(-1)
-  const lastTrackKeyRef = useRef<string | null>(null)
-  const activeLineWidthRef = useRef(0)
-
-  const [globalIndex, setGlobalIndex] = useState(0)
-  const [transitionEpoch, setTransitionEpoch] = useState(0)
-  const [outgoingGlobalIndex, setOutgoingGlobalIndex] = useState<number | null>(null)
-  // 切歌/循环过渡飞行中：星河加速，强化"飞向下一首"的速度感
-  const [flightActive, setFlightActive] = useState(false)
+  // sequencer 状态机（切歌铺段 / 歌词晚到原位重建 / 行推进与循环）抽到 hook：5 state + 4 ref + 4 effect
+  // + setTimeout 跟踪全在 hook 内，主组件只保留 rAF 时间同步与 WebGL 恢复（与 sequencer 无关）。
+  const {
+    sequencer,
+    globalIndex,
+    transitionEpoch,
+    outgoingGlobalIndex,
+    flightActive,
+    linesEpoch,
+  } = useDioramaSequencer({ lines, currentIndex, trackKey })
   const effectivePulse = pulseStore ?? EMPTY_AUDIO_PULSE_STORE
-
-  // 跟踪所有挂起的 setTimeout，组件卸载时统一清理，避免在已卸载组件上触发 setState
-  // （React 18 已无"卸载后 setState"警告，但飞行/出栈计时器在切歌快进时仍会命中陈旧闭包）
-  const pendingTimersRef = useRef<Set<number>>(new Set())
-  const scheduleTimeout = (fn: () => void, delayMs: number) => {
-    const id = window.setTimeout(() => {
-      pendingTimersRef.current.delete(id)
-      fn()
-    }, delayMs)
-    pendingTimersRef.current.add(id)
-    return id
-  }
-  useEffect(() => () => {
-    pendingTimersRef.current.forEach(id => window.clearTimeout(id))
-    pendingTimersRef.current.clear()
-  }, [])
-
-  const beginFlight = () => {
-    setFlightActive(true)
-    scheduleTimeout(() => setFlightActive(false), (TRANSITION_DURATION + 0.4) * 1000)
-  }
+  const activeLineWidthRef = useRef(0)
 
   // ── 播放时间 → MotionValue（rAF 外推，保证逐帧平滑） ───────────────────────────────────
   useEffect(() => {
@@ -182,84 +179,6 @@ export default function FoliaDioramaLyrics({
       cancelAnimationFrame(raf)
     }
   }, [currentTime, playbackTimeStore, timeOffset])
-
-  // ── 切歌：铺新走廊段（首曲在原点，之后铺到远处并飞过去） ──────────────────────────────
-  useEffect(() => {
-    const sequencer = sequencerRef.current
-    if (!sequencer) return
-    const isFirst = sequencer.segments.length === 0
-    epochRef.current += 1
-    const epoch = epochRef.current
-    const origin = isFirst ? { x: 0, y: 0, z: 0 } : pickTransitionOffset(trackKey, epoch)
-    const segment = appendSegment(sequencer, {
-      seed: trackKey,
-      lines,
-      round: roundRef.current,
-      placementOrigin: origin,
-    })
-    lastTrackKeyRef.current = trackKey
-    lastIndexRef.current = currentIndex
-    const target = segment.globalStart + Math.max(0, currentIndex)
-    if (!isFirst) setOutgoingGlobalIndex(globalIndexRef.current)
-    setGlobalIndex(target)
-    setTransitionEpoch(epoch)
-    if (!isFirst) beginFlight()
-    scheduleTimeout(() => setOutgoingGlobalIndex(null), (TRANSITION_DURATION + 0.6) * 1000)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackKey])
-
-  // ── 歌词晚到：切歌后新歌歌词异步加载完成时，原位重建当前段（避免显示上一首歌的歌词） ──
-  const [linesEpoch, setLinesEpoch] = useState(0)
-  useEffect(() => {
-    const sequencer = sequencerRef.current
-    if (!sequencer || sequencer.segments.length === 0) return
-    const active = sequencer.segments[sequencer.segments.length - 1]
-    // 仅当当前段仍是同一首歌时才重建（seed 即 trackKey；切歌铺的新段若已含正确歌词则幂等）
-    if (active.seed === trackKey) {
-      updateActiveSegmentLines(sequencer, lines)
-      setLinesEpoch(epoch => epoch + 1)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lines])
-
-  // 记录 globalIndex 的即时值供切歌时读取（避免闭包过期）
-  const globalIndexRef = useRef(0)
-  useEffect(() => {
-    globalIndexRef.current = globalIndex
-  }, [globalIndex])
-
-  // ── 行推进 / 单曲循环 ──────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const sequencer = sequencerRef.current
-    if (!sequencer || sequencer.segments.length === 0) return
-    const segment = sequencer.segments[sequencer.segments.length - 1]
-    const previous = lastIndexRef.current
-    lastIndexRef.current = currentIndex
-
-    // 单曲循环 / 跳回开头：铺新一轮走廊段（无缝飞过去）
-    if (previous >= 0 && currentIndex < previous - 1) {
-      roundRef.current += 1
-      epochRef.current += 1
-      const epoch = epochRef.current
-      const origin = pickTransitionOffset(trackKey, epoch)
-      const next = appendSegment(sequencer, {
-        seed: trackKey,
-        lines,
-        round: roundRef.current,
-        placementOrigin: origin,
-      })
-      setOutgoingGlobalIndex(globalIndexRef.current)
-      setGlobalIndex(next.globalStart + Math.max(0, currentIndex))
-      setTransitionEpoch(epoch)
-      beginFlight()
-      scheduleTimeout(() => setOutgoingGlobalIndex(null), (TRANSITION_DURATION + 0.6) * 1000)
-      return
-    }
-
-    setGlobalIndex(segment.globalStart + Math.max(0, Math.min(currentIndex, lines.length - 1)))
-    pruneSegments(sequencer, globalIndexRef.current - 10)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentIndex])
 
   // ── 运动参数（默认 normal 强度） ───────────────────────────────────────────────────────
   const motion = useMemo(() => resolveDioramaMotionParams(DEFAULT_DIORAMA_TUNING, 'normal'), [])
@@ -341,7 +260,7 @@ export default function FoliaDioramaLyrics({
         >
           <DioramaScene
             currentTime={currentTime}
-            sequencer={sequencerRef.current}
+            sequencer={sequencer}
             globalIndex={globalIndex}
             motion={motion}
             fontStack={FONT_STACK}
@@ -356,7 +275,7 @@ export default function FoliaDioramaLyrics({
           />
           <CameraRig
             currentTime={currentTime}
-            sequencer={sequencerRef.current}
+            sequencer={sequencer}
             globalIndex={globalIndex}
             activeLineWidthRef={activeLineWidthRef}
             motion={motion}
