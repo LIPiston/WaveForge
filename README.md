@@ -23,6 +23,7 @@ npm run dev:electron           # 一键启动：Vite(3000) + API(3001) + Electro
 - **桌面模式**：桌面小组件、专注计时、生产力工具、自定义壁纸
 - **Wallpaper Engine 联动**：读取本地 WE 配置并同步音频可视化
 - **缓存系统**：IndexedDB（封面双缓冲、歌单缓存、免闪切换）
+- **插件系统**：App Store 式插件中心（横向圆角弹窗）、卡片/详情/导入/卸载、开关状态持久记忆、使用须知门控；内置 **DG_LAB 郊狼联动插件**（音乐波形→A/B 通道电流，V3/V4 双协议，波形导入与实时可视化）——第三方插件开发见 [docs/plugin-development.md](./docs/plugin-development.md)
 - **社交/个人中心**：QQ/网易云关注与粉丝、查看他人主页、QQ MV 浏览、私人 FM、智能播放
 
 ## 技术架构
@@ -146,6 +147,7 @@ gh release create v<version> release/WaveForge-<version>-Setup.exe --title "v<ve
 - [AFDIAN_SPONSORS.md](./AFDIAN_SPONSORS.md) — 爱发电赞助名单同步说明
 - [CODEX_RECENT_PLAYBACK_CHECKPOINT.md](./CODEX_RECENT_PLAYBACK_CHECKPOINT.md) — 最近播放功能检查点
 - [WALLPAPER_GUIDE.md](./WALLPAPER_GUIDE.md) / [DESKTOP_MODE.md](./DESKTOP_MODE.md) — 壁纸与桌面模式
+- [docs/plugin-development.md](./docs/plugin-development.md) — 插件开发文档（公开，供开发者与 AI 编写 WaveForge 插件，上传 GitHub 时随仓库发布）
 - [PYTHON_EMBEDDING_GUIDE.md](./PYTHON_EMBEDDING_GUIDE.md) — 嵌入式 Python 构建
 - [docs/歌词对比-LyricsBlossom.md](./docs/歌词对比-LyricsBlossom.md) — Apple Music 歌词逆向对比（Apple 逐字模式）
 

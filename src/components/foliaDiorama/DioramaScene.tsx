@@ -821,6 +821,8 @@ export interface DioramaSceneProps {
 const EMPTY_ANALYSIS: AudioAnalyzerData = Object.freeze({
     bass: 0, mid: 0, high: 0, overall: 0, beat: 0, accent: 0, flux: 0,
     spectrum: new Float32Array(ANALYZER_SPECTRUM_BANDS),
+    left: { bass: 0, mid: 0, high: 0, overall: 0 },
+    right: { bass: 0, mid: 0, high: 0, overall: 0 },
 });
 const EMPTY_ANALYZER_STORE: AudioAnalyzerStore = {
     getSnapshot: () => EMPTY_ANALYSIS,

@@ -3,6 +3,7 @@ import { useTvMode, useRemoteCursorMode, useTvBack } from '../tv/tvCore'
 import { lazy, Suspense, memo, useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Search, Settings, X, Play, Clock, Volume2, VolumeX, LogIn, Captions, Heart, MonitorSmartphone, Speaker } from 'lucide-react'
+import PluginShortcuts from './PluginShortcuts'
 import PlaylistCarousel3D from './PlaylistCarousel3D'
 import DesktopMiniPlayer from './DesktopMiniPlayer'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
@@ -2346,6 +2347,9 @@ function DesktopView({
               >
                 <Captions className="w-5 h-5 text-white" />
               </motion.button>
+
+              {/* 插件系统入口 */}
+              <PluginShortcuts variant="desktop" />
             </div>
           </motion.div>
         )}

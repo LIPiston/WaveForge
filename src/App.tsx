@@ -3,7 +3,7 @@ import { parseStoredBoolean } from './utils/storage'
 import { isTv, isTvModeActive, isDesktop } from './platform'
 import { useTvBack } from './tv/tvCore'
 import { isPerfModeEfficiency } from './tv/perfMode'
-import { lazy, memo, Suspense, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps } from 'react'
+import { lazy, memo, Suspense, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import AlbumCoverPlayer from './components/AlbumCoverPlayer'
 import LyricsDisplay from './components/LyricsDisplay'
@@ -125,6 +125,9 @@ const LazySongDetailModal = lazy(loadSongDetailModal)
 import RemoteCursor from './components/RemoteCursor'
 import PlatformLoginNotice from './components/PlatformLoginNotice'
 import SimilarSongsPanel from './components/SimilarSongsPanel'
+import PluginOverlay from './components/PluginOverlay'
+import { setGlobalAudioAnalyzerStore, setGlobalPlaybackActive, setGlobalAudioAnalysers } from './plugins/clients/DGLabClient'
+import { isPluginEnabled, PLUGIN_STATE_EVENT } from './services/pluginStore'
 import { detectQQMusicVip } from './utils/musicEntitlements'
 import { getQQUserDisplayName } from './utils/qqUser'
 import {
@@ -184,6 +187,18 @@ const LivePlayerControls = memo(function LivePlayerControls({
 
   return <PlayerControls {...props} currentTime={currentTime} />
 })
+
+/**
+ * 看歌兜底（搜索失败）时把全局控件挂到 body：看歌 surface(z-10, absolute inset-0) 会盖住
+ * minimal-playback-surface 的 transform 层叠上下文（willChange:transform 让其常驻合成层），
+ * 内联渲染的固定位控件会被看歌蒙层盖住 → "控件消失"。与顶部歌词模式切换同款逃逸手段。
+ * 包一层 fixed+w-0+h-0+z-60：不拦截事件（零尺寸），子元素固定定位仍相对视口且位于最上层。
+ */
+function MaybePortal({ active, children }: { active: boolean; children: ReactNode }) {
+  return active
+    ? createPortal(<div className="fixed top-0 left-0 z-[60] w-0 h-0">{children}</div>, document.body)
+    : <>{children}</>
+}
 
 type LiveMiniPlayerProps = Omit<ComponentProps<typeof MiniPlayer>, 'currentTime'> & {
   playbackTimeStore: PlaybackTimeStore
@@ -1211,21 +1226,40 @@ function App() {
     () => getDeterministicNextIndex(playlistKeys, currentIndex, playMode, queueRevision),
     [playlistKeys, currentIndex, playMode, queueRevision]
   )
+  // 看歌视频播放状态（迷你播放器/桌面小窗按视频进度显示；歌词时间源也依赖它）。
+  // 声明位置必须在歌词线性 memo 之前（currentMiniLyric 等引用）。
+  const [watchVideoActive, setWatchVideoActive] = useState(false)
+  const [watchVideoState, setWatchVideoState] = useState({ playing: false, time: 0, duration: 0, volume: 0.8, alignmentOffset: 0, alignmentVerified: false })
+  const watchVideoStateRef = useRef(watchVideoState)
+  watchVideoStateRef.current = watchVideoState
+  // 看歌模式下歌词时间源：引擎暂停 → currentTime 冻结，任务栏/桌面歌词会停住。
+  // 已确认对齐（视频与歌曲同源）时按「视频位 − 对齐偏移」推出歌曲位，歌词随 MV 继续滚动；
+  // 未确认（自由播放/货不对板）时歌词位置不可信 → 显示层回退「歌名-艺人」。
+  const lyricTimelineTime = lyricDisplayMode === 'video' && watchVideoActive && watchVideoState.alignmentVerified
+    ? watchVideoState.time - Math.max(0, watchVideoState.alignmentOffset)
+    : currentTime
+  const watchLyricUnverified = lyricDisplayMode === 'video' && watchVideoActive && !watchVideoState.alignmentVerified
   const currentMiniLyric = useMemo(() => {
-    const adjustedTime = currentTime + 0.5 + lyricOffset
+    const inWatchUnverified = watchLyricUnverified
+    if (inWatchUnverified) {
+      // 看歌但未确认对齐：歌词位不可信 → 显示「歌名 - 歌手」兜底
+      const artist = Array.isArray(currentSongArtists) ? currentSongArtists.map((a: any) => (a && a.name) || a || '').filter(Boolean).join(' / ') : ''
+      return `${currentSong?.name || ''}${artist ? ` - ${artist}` : ''}`
+    }
+    const adjustedTime = lyricTimelineTime + 0.5 + lyricOffset
     for (let index = lyrics.length - 1; index >= 0; index--) {
       if (lyrics[index].time <= adjustedTime) return lyrics[index].text
     }
     return ''
-  }, [currentTime, lyricOffset, lyrics])
+  }, [watchLyricUnverified, lyricTimelineTime, lyricOffset, lyrics, currentSong, currentSongArtists])
   const currentLyricIndex = useMemo(() => {
-    const adjustedTime = currentTime + 0.5 + lyricOffset
+    const adjustedTime = lyricTimelineTime + 0.5 + lyricOffset
     if (lyrics.length === 0 || adjustedTime < lyrics[0].time) return -1
     for (let index = lyrics.length - 1; index >= 0; index--) {
       if (lyrics[index].time <= adjustedTime) return index
     }
     return -1
-  }, [currentTime, lyricOffset, lyrics])
+  }, [lyricTimelineTime, lyricOffset, lyrics])
   const currentLyricLine = currentLyricIndex >= 0 ? lyrics[currentLyricIndex] : null
   const immersiveLyricLine = useMemo(() => {
     const hasVisibleContent = (line: LyricLine | null | undefined) =>
@@ -1243,18 +1277,23 @@ function App() {
   }, [currentLyricIndex, currentLyricLine, lyrics])
   const desktopLyrics = useMemo(() => buildDesktopLyricsWithInterludes(lyrics), [lyrics])
   const desktopLyricLine = useMemo(() => {
-    const adjustedTime = currentTime + 0.28 + lyricOffset
+    // 看歌未确认对齐（货不对板/自由播放）→ 桌面/任务栏歌词显示「歌名-艺人」兜底
+    if (watchLyricUnverified) {
+      const artist = Array.isArray(currentSongArtists) ? currentSongArtists.map((a: any) => (a && a.name) || a || '').filter(Boolean).join(' / ') : ''
+      return { time: 0, text: `${currentSong?.name || ''}${artist ? ` - ${artist}` : ''}`, translation: '', roman: '', words: [], romanWords: [], isGeneratedInterlude: false } as DesktopLyricLine
+    }
+    const adjustedTime = lyricTimelineTime + 0.28 + lyricOffset
     for (let index = desktopLyrics.length - 1; index >= 0; index--) {
       const line = desktopLyrics[index]
       if (line.time <= adjustedTime) {
-        if (line.isGeneratedInterlude && line.interludeEndTime !== undefined && currentTime + lyricOffset >= line.interludeEndTime) {
+        if (line.isGeneratedInterlude && line.interludeEndTime !== undefined && lyricTimelineTime + lyricOffset >= line.interludeEndTime) {
           return desktopLyrics[index + 1] || line
         }
         return line
       }
     }
     return null
-  }, [currentTime, lyricOffset, desktopLyrics])
+  }, [watchLyricUnverified, lyricTimelineTime, lyricOffset, desktopLyrics])
   const desktopLyricDuration = useMemo(() => {
     if (!desktopLyricLine) return 4.2
     const index = desktopLyrics.indexOf(desktopLyricLine)
@@ -1293,8 +1332,10 @@ function App() {
     const lyricsCacheGeneration = lyricsCacheGenerationRef.current
     let lyricsLoadedFromPersistentCache = false
     // 歌词缓存版本：评分/数据源/解析逻辑变更时递增，使旧缓存（旧解析选中的劣质/残缺源）失效。
-    // v2→v3：修复网易云"JSON 元数据+LRC 正文"混合格式解析后，旧缓存里的"作词/作曲"空壳必须作废。
-    const lyricsCacheKey = `v3:${cacheKey}`
+    // v3→v4：修复 QQ 歌词请求的 songID 形态后，**递增版本强制清除今天缓存下来的残缺结果**
+    //（上午 parseInt('004Iwx…')=4 的守卫 bug 让 musicu 返回空 qrc/trans/roma → 结果被
+    // IndexedDB 永久缓存，后端修好后缓存仍喂旧坏数据 → 重启也无效）
+    const lyricsCacheKey = `v4:${cacheKey}`
     const request = indexedDBCache.getCachedLyrics<LyricLine[]>(lyricsCacheKey, platform)
       .catch(() => null)
       .then(persistedLyrics => {
@@ -2113,13 +2154,38 @@ function App() {
     return saved === 'dynamic' || saved === 'restless' ? saved : 'soft'
   })
   
+  // DG_LAB 插件启用时保持音频分析流（即使封面律动关闭）
+  const [pluginDglabActive, setPluginDglabActive] = useState(() => isPluginEnabled('dglab'))
+  useEffect(() => {
+    const handler = () => setPluginDglabActive(isPluginEnabled('dglab'))
+    window.addEventListener(PLUGIN_STATE_EVENT, handler)
+    return () => window.removeEventListener(PLUGIN_STATE_EVENT, handler)
+  }, [])
+
   // 播放器状态监听
   const pulseActive = coverPulseEnabled && isPlaying
   const audioAnalyzer = useAudioAnalyzer(
     audioPlayer.analyserNode,
-    audioAnalyzerEnabled && pulseActive && !isPerfModeEfficiency() // 效能档关闭音频可视化省资源
+    audioAnalyzerEnabled && (pulseActive || pluginDglabActive) && !isPerfModeEfficiency(), // 效能档关闭音频可视化省资源；DG-LAB 插件启用时保持分析流
+    audioPlayer.leftAnalyserNode, // DG-LAB 立体声：左声道（音效后最终听感信号）
+    audioPlayer.rightAnalyserNode, // DG-LAB 立体声：右声道
   )
   const audioPulseStore = useAudioPulseStore(audioAnalyzer, pulseActive, coverPulseMode)
+
+  // 插件系统（DG_LAB 等）需要访问实时音频分析流
+  useEffect(() => {
+    setGlobalAudioAnalyzerStore(audioAnalyzer)
+  }, [audioAnalyzer])
+
+  // DG-LAB 实时波形（左右声道时域采样）用分析器
+  useEffect(() => {
+    setGlobalAudioAnalysers(audioPlayer.leftAnalyserNode, audioPlayer.rightAnalyserNode)
+  }, [audioPlayer.leftAnalyserNode, audioPlayer.rightAnalyserNode])
+
+  // 播放状态同步给 DG_LAB：暂停/停止时停止推送真实频谱（防暂停后仍持续输出）
+  useEffect(() => {
+    setGlobalPlaybackActive(isPlaying)
+  }, [isPlaying])
   
   // 监听封面律动设置变化
   useEffect(() => {
@@ -2640,7 +2706,16 @@ function App() {
 
     // 切出看歌：视频音频淡出 → 恢复引擎位置并淡入（无缝拼接：前段视频音频 → 后段音源音频）
     if (lyricDisplayModeRef.current === 'video') {
-      const resumeTime = watchPlayerRef.current?.getCurrentTime?.() ?? watchVideoStateRef.current.time
+      // 歌曲位 = 视频位 − 对齐偏移：看歌里视频播在「歌曲位+偏移」（Die For You +19.89s），
+      // 直接用视频位会让引擎/歌词整体前跳 1~2 句（用户实测）。
+      // **货不对板退化（机制保证不坏）**：
+      //  - 匹配失败/网格拒绝（自由播放）→ 对齐偏移 = 0 → 歌曲位 = 视频位 = 进入位置+已播时长，
+      //    歌曲自然续播，错误视频不会把歌曲位带偏；
+      //  - 偏移生效但视频有误 → Math.max(…, watchSyncSeek) 下限 + 歌末尾 dur-0.5 钳制兜底。
+      //  - 视频刚进看歌还在缓冲（getCurrentTime≈0~1s，远小于进入位置）→ 下限兜底为进入位置。
+      const vidTime = watchPlayerRef.current?.getCurrentTime?.() ?? 0
+      const alignOffset = watchPlayerRef.current?.getAlignmentOffset?.() ?? 0
+      const resumeTime = Math.max(vidTime - alignOffset, watchSyncSeek)
       void (async () => {
         try { await watchPlayerRef.current?.fadeOutAudio?.() } catch { /* 淡出失败不阻断 */ }
         const engineEl = audioPlayerRef.current?.getAudioElement?.()
@@ -4063,15 +4138,16 @@ function App() {
     seekTo: (seconds: number) => void
     setVolume: (value: number) => void
     getCurrentTime: () => number
+    /** 当前应用的对齐偏移（歌曲位 = 视频位 − 偏移；切回时还原歌曲位） */
+    getAlignmentOffset: () => number
     fadeOutAudio: () => Promise<void>
   } | null>(null)
-  const [watchVideoActive, setWatchVideoActive] = useState(false)
   /** 进入看歌时引擎音量（切回歌词模式时淡入到该值） */
   const watchEngineVolumeRef = useRef(1)
   const watchEngineMutedRef = useRef(false)
   /** MV 背景当前播放的视频状态（切到看歌时复用已加载的流，避免重新缓冲卡顿） */
-  const mvBackgroundStateRef = useRef<{ bvid: string; cid: number; videoUrl: string; cacheKey: string } | null>(null)
-  const [watchInitialVideo, setWatchInitialVideo] = useState<{ bvid: string; cid: number; videoUrl: string; cacheKey: string; currentTime: number } | null>(null)
+  const mvBackgroundStateRef = useRef<{ bvid: string; cid: number; videoUrl: string; cacheKey: string; type?: string } | null>(null)
+  const [watchInitialVideo, setWatchInitialVideo] = useState<{ bvid: string; cid: number; videoUrl: string; cacheKey: string; type?: string; currentTime: number } | null>(null)
   /** HTMLAudioElement 音量渐变（等功率线性，避免双声爆音） */
   const fadeElementVolume = (el: HTMLAudioElement | null | undefined, from: number, to: number, ms: number): Promise<void> =>
     new Promise((resolve) => {
@@ -4088,9 +4164,6 @@ function App() {
   /** 看歌搜索失败：进入兼容音频界面（全局底部控件 + 右上角按钮组，无翻译/罗马音） */
   const [watchSearchFailed, setWatchSearchFailed] = useState(false)
   /** 看歌视频的实时播放状态（迷你播放器/桌面小窗按视频进度显示） */
-  const [watchVideoState, setWatchVideoState] = useState({ playing: false, time: 0, duration: 0, volume: 0.8 })
-  const watchVideoStateRef = useRef(watchVideoState)
-  watchVideoStateRef.current = watchVideoState
   /** 看歌视频为当前时间线（视频模式且视频已接管播放）——迷你播放器/桌面小窗据此按视频显示与控制 */
   const watchTimelineActive = lyricDisplayMode === 'video' && watchVideoActive
   const watchTimelineActiveRef = useRef(watchTimelineActive)
@@ -4134,6 +4207,20 @@ function App() {
       watchPausedEngineRef.current = true
     }
   }, [lyricDisplayMode, watchVideoActive])
+
+  // 看歌期间引擎看门狗（双声防护）：视频接管时间线时，引擎**必须保持暂停**——任何路径
+  //（自动过渡计时、媒体键冲突、恢复逻辑误触发）把引擎重新拉起播放，都会与 DASH 音频轨
+  // 形成双重奏（用户实测 生活 切看歌必现、切回即好）。1s 周期把误播的引擎压回去。
+  useEffect(() => {
+    if (lyricDisplayMode !== 'video') return
+    const timer = window.setInterval(() => {
+      const el = audioPlayerRef.current?.getAudioElement?.()
+      if (el && !el.paused) {
+        el.pause()
+      }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [lyricDisplayMode])
 
   // ===== 桌面播放器：独立置顶小窗口的状态桥接 =====
   const isPlayingRef = useRef(isPlaying)
@@ -6121,21 +6208,24 @@ function App() {
           >
       {/* 更新中心：详情/下载进度/就绪/确认重启/更新日志弹窗 + 启动自动检测提示 */}
       <UpdateManager />
-      {/* Toast通知 - 支持显示多个Toast堆叠 */}
-      <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[100000] flex flex-col gap-3 pointer-events-none">
-        {toasts.map((toast, index) => (
-          <Toast 
-            key={toast.id}
-            show={true}
-            message={toast.message}
-            type={toast.type}
-            accentColor={toast.accentColor}
-            style={{ 
-              animationDelay: `${index * 50}ms` // 每个Toast延迟50ms出现，产生层叠效果
-            }}
-          />
-        ))}
-      </div>
+      {/* Toast通知 - 支持显示多个Toast堆叠；挂到 body 保证在所有弹窗（含插件控制台）之上 */}
+      {createPortal(
+        <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[100000] flex flex-col gap-3 pointer-events-none">
+          {toasts.map((toast, index) => (
+            <Toast
+              key={toast.id}
+              show={true}
+              message={toast.message}
+              type={toast.type}
+              accentColor={toast.accentColor}
+              style={{
+                animationDelay: `${index * 50}ms` // 每个Toast延迟50ms出现，产生层叠效果
+              }}
+            />
+          ))}
+        </div>,
+        document.body,
+      )}
 
       {/* 默认背景 - 始终存在 */}
       <div 
@@ -6182,9 +6272,9 @@ function App() {
             transitionProgress={overlayProgress}
             songTrackKey={currentSong ? getSongKey(currentSong) : ''}
             onFallbackChange={setMvBackgroundFallback}
-            onPlayStateChange={(s: { bvid: string; cid: number; videoUrl: string; cacheKey: string; currentTime: number } | null) => {
+            onPlayStateChange={(s: { bvid: string; cid: number; videoUrl: string; cacheKey: string; type?: string; currentTime: number } | null) => {
               // null = MV 背景已卸载/切歌/失败：清空复用缓存，避免切看歌时用上过期视频
-              mvBackgroundStateRef.current = s ? { bvid: s.bvid, cid: s.cid, videoUrl: s.videoUrl, cacheKey: s.cacheKey } : null
+              mvBackgroundStateRef.current = s ? { bvid: s.bvid, cid: s.cid, videoUrl: s.videoUrl, cacheKey: s.cacheKey, type: s.type } : null
             }}
           />
         )}
@@ -6344,29 +6434,32 @@ function App() {
                 onVideoActiveChange={setWatchVideoActive}
                 onSearchFailedChange={setWatchSearchFailed}
                 volume={volume}
-                onVideoStateChange={(state: { playing: boolean; time: number; duration: number; volume: number }) => {
-                  setWatchVideoState(state)
+                onVideoStateChange={(state: { playing: boolean; time: number; duration: number; volume: number; alignmentOffset?: number; alignmentVerified?: boolean }) => {
+                  setWatchVideoState({
+                    playing: state.playing,
+                    time: state.time,
+                    duration: state.duration,
+                    volume: state.volume,
+                    alignmentOffset: state.alignmentOffset ?? 0,
+                    alignmentVerified: state.alignmentVerified ?? false,
+                  })
                   // 看歌里调音量 → 同步全局音量（其它播放模式跟随）
                   if (typeof state.volume === 'number' && state.volume >= 0 && state.volume <= 1) {
                     setVolume(state.volume)
                   }
                 }}
                 onHomeClick={handlePlayerHome}
-                onOpenMixingStudio={(anchorRect: { x: number; y: number; width: number; height: number }) => {
-                  if (anchorRect) {
-                    mixingStudioAnchorRef.current = { x: anchorRect.x, y: anchorRect.y, width: anchorRect.width, height: anchorRect.height }
-                  }
-                  setShowMixingStudio(true)
-                }}
                 onOpenPlaylist={() => setShowPlaylist(true)}
                 onToggleFavorite={() => { void handlePlaybackToggleFavorite(currentSong, currentSongLiked) }}
                 liked={currentSongLiked}
                 upcomingSongs={watchUpcomingSongs}
                 initialSeekSeconds={watchSyncSeek}
+                songUrl={audioPlayerRef.current?.getAudioElement?.()?.src || ''}
                 initialVideoUrl={watchInitialVideo?.videoUrl}
                 initialCid={watchInitialVideo?.cid}
                 initialBvid={watchInitialVideo?.bvid}
                 initialCacheKey={watchInitialVideo?.cacheKey}
+                initialType={watchInitialVideo?.type}
                 getEnginePosition={() => audioPlayerRef.current?.getAudioElement?.()?.currentTime ?? 0}
                 surfaceVisible={!showHome}
               />
@@ -6479,8 +6572,10 @@ function App() {
                 onCopyInfo={handleCopyInfo}
                 onContextMenuOpen={handlePlaybackContextMenuOpen}
               />
-              {/* 沉浸模式控制按钮 - 右上角（看歌模式隐藏；看歌搜索失败时显示，隐藏翻译/罗马音） */}
+              {/* 沉浸模式控制按钮 - 右上角（看歌模式隐藏；看歌搜索失败时显示，隐藏翻译/罗马音）。
+                  看歌兜底时经 MaybePortal 挂到 body，逃出被看歌 surface 盖住的层叠上下文 */}
               {(lyricDisplayMode !== 'video' || watchSearchFailed) && (
+                <MaybePortal active={lyricDisplayMode === 'video'}>
                 <LazyImmersiveControls
                   onHomeClick={handlePlayerHome}
                 onOpenMixingStudio={(anchorRect) => {
@@ -6500,6 +6595,7 @@ function App() {
                 playerTheme={playerTheme}
                 isPureMusic={isPureMusic}
               />
+              </MaybePortal>
               )}
 
               {/* 顶部中央歌词模式切换：createPortal 挂到 body，逃出 minimal-playback-surface 的
@@ -7169,6 +7265,7 @@ function App() {
 
           {/* 全局播放器 - 固定在底部（摩登模式自带控制条；看歌正常播放时隐藏，搜索失败时显示兼容音频控件） */}
           {currentSong && !showHome && lyricDisplayMode !== 'modeng' && (lyricDisplayMode !== 'video' || watchSearchFailed) && (
+            <MaybePortal active={lyricDisplayMode === 'video'}>
             <LivePlayerControls
                       playbackTimeStore={audioPlayer.playbackTimeStore}
               isPlaying={isPlaying}
@@ -7200,6 +7297,7 @@ function App() {
               showImmersiveTranslation={lyricDisplayMode === 'immersive' && translationEnabled && Boolean(immersiveLyricLine?.translation?.trim())}
               showImmersiveRoman={lyricDisplayMode === 'immersive' && romanEnabled && Boolean(immersiveLyricLine?.roman?.trim())}
             />
+            </MaybePortal>
           )}
           </motion.div>
         )}
@@ -7445,6 +7543,8 @@ function App() {
           )}
       </Suspense>
     </Suspense>
+    {/* 插件系统（插件中心/详情/导入/使用须知/DG_LAB 控制台） */}
+    <PluginOverlay />
     </>
   )
 }

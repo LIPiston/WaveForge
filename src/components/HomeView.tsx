@@ -21,6 +21,7 @@ import PlaylistContextMenu from './PlaylistContextMenu'
 import CreatePlaylistModal from './CreatePlaylistModal'
 import EditPlaylistModal from './EditPlaylistModal'
 import DeletePlaylistModal from './DeletePlaylistModal'
+import PluginShortcuts from './PluginShortcuts'
 import type { PlaybackOrigin, SongSelectHandler } from '../types/playbackNavigation'
 import { fetchExploreChart, fetchExploreHome, fetchExplorePlaylist } from '../services/exploreApi'
 import {
@@ -3188,9 +3189,9 @@ function HomeView({
             // Expanded toolbar actions
             <motion.div
               key="pill"
-              initial={{ opacity: 0, y: 20, width: '24rem' }}
-              animate={{ opacity: 1, y: 0, width: '24rem' }}
-              exit={{ opacity: 0, y: 20, width: '24rem' }}
+              initial={{ opacity: 0, y: 20, width: '30rem' }}
+              animate={{ opacity: 1, y: 0, width: '30rem' }}
+              exit={{ opacity: 0, y: 20, width: '30rem' }}
               transition={{ type: "spring", stiffness: 300, damping: 25 }}
               className="home-bottom-pill relative overflow-hidden px-8 py-4 rounded-full"
               style={{
@@ -3249,6 +3250,9 @@ function HomeView({
                 >
                   <Settings className="w-5 h-5" />
                 </motion.button>
+
+                {/* 插件系统入口（含已启用插件快捷按钮） */}
+                <PluginShortcuts variant="home" />
               </div>
             </motion.div>
           )}

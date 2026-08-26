@@ -27,6 +27,7 @@ import {
   Waves,
   X,
 } from 'lucide-react'
+import PluginShortcuts from './PluginShortcuts'
 import type { Song } from '../services/musicApi'
 import { getNeteaseBanner, getQQBanner, neteaseRecommendDislike, neteaseFmTrash } from '../services/musicApi'
 import {
@@ -1458,6 +1459,8 @@ function ExploreView({
               >
                 <Settings className="h-[18px] w-[18px]" />
               </button>
+              {/* 插件系统入口 */}
+              <PluginShortcuts variant="explore" />
               <button
                 type="button"
                 onClick={() => {
