@@ -114,6 +114,18 @@ function isQQLikedPlaylist(item: any): boolean {
   return dirId === '201' || name === '我喜欢' || name === '我喜欢的音乐' || name.endsWith('喜欢的音乐')
 }
 
+/**
+ * 用户歌单结果是否值得缓存：
+ * - 空列表视为获取异常（QQ 接口吞错返回空、本地服务刚启动未就绪等），不缓存，
+ *   否则冷启动会一直吃到上一次失败留下的空缓存，直到用户手动刷新才恢复。
+ * - QQ 登录用户必有系统歌单「我喜欢」(isLike)，缺它的列表视为不完整
+ *   （disslist 偶发不含 dirid=201 且服务端 user/detail 兜底失败），同样不缓存。
+ */
+function isCacheableUserPlaylists(platform: MusicPlatform, playlists: any[] | undefined): boolean {
+  if (!Array.isArray(playlists) || playlists.length === 0) return false
+  return platform !== 'qq' || playlists.some(playlist => Boolean(playlist?.isLike))
+}
+
 function getUserPlaylistsCacheKey(platform: MusicPlatform, userId: string): string {
   const cookie = getPlatformCookie(platform)
   const devMode = platform === 'qq' ? localStorage.getItem('developerMode') === 'true' : false
@@ -126,7 +138,9 @@ export function getCachedUserPlaylists(
 ): any[] | undefined {
   if (!userId.trim()) return undefined
   const cached = userPlaylistsCache.get(getUserPlaylistsCacheKey(platform, userId))
-  return platform === 'qq' && cached ? normalizeCachedQQPlaylistNames(cached) : cached
+  // 空/不完整（QQ 缺「我喜欢」）的缓存视为无效，让调用方重新拉取
+  if (!cached || !isCacheableUserPlaylists(platform, cached)) return undefined
+  return platform === 'qq' ? normalizeCachedQQPlaylistNames(cached) : cached
 }
 
 export function invalidateUserPlaylistsCache(
@@ -400,7 +414,9 @@ export async function getUserPlaylists(
 
   if (!bypassCache) {
     const cached = userPlaylistsCache.get(cacheKey)
-    if (cached) return platform === 'qq' ? normalizeCachedQQPlaylistNames(cached, username) : cached
+    if (cached && isCacheableUserPlaylists(platform, cached)) {
+      return platform === 'qq' ? normalizeCachedQQPlaylistNames(cached, username) : cached
+    }
 
     const pending = userPlaylistsPending.get(cacheKey)
     if (pending) return pending
@@ -410,7 +426,7 @@ export async function getUserPlaylists(
     if (!bypassCache) {
       try {
         const persisted = await indexedDBCache.getCachedPlaylist<any[]>(cacheKey, platform)
-        if (Array.isArray(persisted)) {
+        if (persisted && isCacheableUserPlaylists(platform, persisted)) {
           const normalizedPersisted = platform === 'qq' ? normalizeCachedQQPlaylistNames(persisted, username) : persisted
           if (requestGeneration === cacheGeneration) cacheUserPlaylists(cacheKey, normalizedPersisted)
           return normalizedPersisted
@@ -420,9 +436,16 @@ export async function getUserPlaylists(
       }
     }
 
-    const playlists = await withPlaylistTimeout(fetchUserPlaylists(platform, userId, username))
+    let playlists = await withPlaylistTimeout(fetchUserPlaylists(platform, userId, username))
+    // QQ 偶发返回空或缺「我喜欢」（disslist 缺 dirid=201 + 服务端兜底失败）：
+    // 单次重试，避免启动时把异常结果直接缓存成常态
+    if (platform === 'qq' && !isCacheableUserPlaylists(platform, playlists)) {
+      await new Promise<void>(resolve => window.setTimeout(resolve, 600))
+      const retried = await withPlaylistTimeout(fetchUserPlaylists(platform, userId, username)).catch(() => undefined)
+      if (retried && isCacheableUserPlaylists(platform, retried)) playlists = retried
+    }
     const normalizedPlaylists = platform === 'qq' ? normalizeCachedQQPlaylistNames(playlists, username) : playlists
-    if (!options.skipCache && requestGeneration === cacheGeneration) {
+    if (!options.skipCache && requestGeneration === cacheGeneration && playlists && isCacheableUserPlaylists(platform, playlists)) {
       cacheUserPlaylists(cacheKey, normalizedPlaylists)
       try {
         await indexedDBCache.cachePlaylist(cacheKey, platform, normalizedPlaylists)

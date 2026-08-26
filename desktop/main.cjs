@@ -6717,6 +6717,15 @@ app.whenReady().then(() => {
     return result
   })
 
+  // 只读缓存命中检查（不触发下载）：看歌等场景优先用本地已缓存音轨（mv-align 已下载
+  // 同一 DASH 音频），命中即秒开；未命中返回 null，调用方照旧走流式 URL。
+  ipcMain.handle('audio-download:peekCached', (_event, trackKey) => {
+    if (!analysisRuntime || !analysisRuntime.audioDownload) {
+      return null
+    }
+    return analysisRuntime.audioDownload.peekCached(trackKey)
+  })
+
   // 把已下载的音频文件映射为渲染进程可 fetch 的 waveforge-media:// URL
   // （浏览器端 decodeAudioData 原生支持 m4a/aac——Python/librosa 侧 libsndfile 打不开）。
   // 仅允许下载缓存目录内的文件，与 render:getAudioUrl 同款路径校验。

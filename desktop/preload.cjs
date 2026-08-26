@@ -177,6 +177,8 @@ contextBridge.exposeInMainWorld('electron', {
   audioDownload: {
     prepare: (urlOrPath, trackKey) => 
       ipcRenderer.invoke('audio-download:prepare', urlOrPath, trackKey),
+    peekCached: (trackKey) =>
+      ipcRenderer.invoke('audio-download:peekCached', trackKey),
     getMediaUrl: (filePath) => ipcRenderer.invoke('audio-download:getMediaUrl', filePath),
     saveWav: (trackKey, wavArrayBuffer) => ipcRenderer.invoke('audio-download:saveWav', trackKey, wavArrayBuffer),
     cleanupOldFiles: () => ipcRenderer.invoke('audio-download:cleanup'),

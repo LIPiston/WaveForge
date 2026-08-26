@@ -28,6 +28,30 @@ except ImportError:
     print("WARNING: librosa not installed, feature extraction limited", file=sys.stderr)
 
 
+def probe_audio_format(file_path):
+    """读文件头魔数，判断 libsndfile/audioread 能否解码（mp3/flac/wav/ogg）。
+
+    B 站 DASH 音频轨是 AAC 封装在 MP4（fMP4），libsndfile 打不开；这类文件
+    直接走 metadata-only，避免 librosa 解码失败刷出大量 mpg123 stderr 噪音。
+    """
+    try:
+        with open(file_path, 'rb') as f:
+            head = f.read(16)
+    except OSError:
+        return False
+    if len(head) < 4:
+        return False
+    if head[:3] == b'ID3' or (head[0] == 0xFF and (head[1] & 0xE0) == 0xE0):
+        return True  # mp3
+    if head[:4] == b'fLaC':
+        return True
+    if head[:4] == b'OggS':
+        return True
+    if head[:4] == b'RIFF' and head[8:12] == b'WAVE':
+        return True
+    return False  # m4a/mp4/aac/opus/未知格式
+
+
 class AnalysisWorker:
     """Main worker class for audio analysis"""
     
@@ -84,6 +108,13 @@ class AnalysisWorker:
                 'analysisVersion': 'librosa-dsp-v2',
                 'duration': duration or 0
             }
+            
+            # 格式探测：libsndfile 打不开 m4a/aac/opus（B 站 DASH 音频轨是 AAC/MP4），
+            # 直接返回 metadata-only，避免 librosa 解码失败刷出 mpg123 的 stderr 噪音。
+            if not probe_audio_format(audio_path):
+                print(f"Skipping librosa for unsupported format: {audio_path}", file=sys.stderr)
+                result['provider'] = 'metadata-only'
+                return result
             
             # Try Beat This analysis
             if self.beat_tracker is not None:

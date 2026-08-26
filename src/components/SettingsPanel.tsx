@@ -26,7 +26,8 @@ import packageInfo from '../../package.json'
 import { getVersionDisplay } from '../services/versionInfo'
 import { VERSION_HISTORY } from '../services/versionHistory'
 import { getDebugPanelVisible, setDebugPanelVisible } from '../tv/debugStore'
-import { isTvModeActive } from '../platform'
+import { setTvFocus } from '../tv/tvCore'
+import { isTvModeActive, TV_SCALE_OPTIONS, getTvScale, setTvScale, applyTvScale } from '../platform'
 import {
   loadPlaybackShortcutSettings,
   savePlaybackShortcutSettings,
@@ -55,6 +56,7 @@ import {
   resolveBiliPic,
   getLocalMvMarks,
   removeLocalMvMark,
+  clearAllMvMatchCache,
 } from '../services/bilibiliApi'
 
 type UpdateCheckState = {
@@ -523,6 +525,62 @@ function SettingsPanel({
   const [legalLocale, setLegalLocale] = useState<LocaleCode>('zh-CN')
   const [showDeviceIdModal, setShowDeviceIdModal] = useState(false)
   const [showDeviceInfo, setShowDeviceInfo] = useState(false)
+  const [tvScale, setTvScaleState] = useState<number>(() => getTvScale())
+  const [tvInfo, setTvInfo] = useState<Record<string, string | number | boolean> | null>(null)
+  const [pendingTvScale, setPendingTvScale] = useState<number | null>(null)
+  const [tvScaleCountdown, setTvScaleCountdown] = useState(10)
+  const tvScaleCountdownRef = useRef(10)
+  const tvScaleCancelRef = useRef<HTMLButtonElement | null>(null)
+
+  // 点击缩放档位：先实时预览（改 viewport），弹确认框，10 秒不确认自动还原
+  const previewTvScale = useCallback((v: number) => {
+    if (v === tvScale) return
+    applyTvScale(v)
+    setPendingTvScale(v)
+    tvScaleCountdownRef.current = 10
+    setTvScaleCountdown(10)
+  }, [tvScale])
+
+  const confirmTvScale = useCallback(() => {
+    if (pendingTvScale != null) {
+      setTvScaleState(pendingTvScale)
+      setTvScale(pendingTvScale)
+    }
+    setPendingTvScale(null)
+  }, [pendingTvScale])
+
+  const cancelTvScale = useCallback(() => {
+    // 还原到上一次已应用的 DPI
+    applyTvScale(getTvScale())
+    setPendingTvScale(null)
+    setTvScaleState(getTvScale())
+  }, [])
+
+  // 倒计时：超时自动还原（等同取消）
+  useEffect(() => {
+    if (pendingTvScale == null) return
+    tvScaleCountdownRef.current = 10
+    setTvScaleCountdown(10)
+    // 弹窗打开时默认焦点放在「取消」上：按确认键直接还原
+    if (tvScaleCancelRef.current) setTvFocus(tvScaleCancelRef.current)
+    const timer = window.setInterval(() => {
+      tvScaleCountdownRef.current -= 1
+      if (tvScaleCountdownRef.current <= 0) {
+        window.clearInterval(timer)
+        cancelTvScale()
+      } else {
+        setTvScaleCountdown(tvScaleCountdownRef.current)
+      }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [pendingTvScale, cancelTvScale])
+  useEffect(() => {
+    if (!show || !isTvModeActive()) return
+    const native = (window as any).WaveForgeNative
+    if (native?.getDeviceInfo) {
+      try { setTvInfo(JSON.parse(String(native.getDeviceInfo()))) } catch { setTvInfo(null) }
+    }
+  }, [show])
   const [showRedeemModal, setShowRedeemModal] = useState(false)
   const [deviceIdForModal, setDeviceIdForModal] = useState('')
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckState>({ status: 'idle' })
@@ -959,7 +1017,7 @@ function SettingsPanel({
   const HIGH_REFRESH_OPTIONS = [30, 60, 120, 144, 200, 240, 300, 360]
 
   const refreshDisplayInfo = useCallback(() => {
-    void window.electron?.display.getInfo().then(info => {
+    void window.electron?.display?.getInfo().then(info => {
       if (!info) return
       setHighRefreshEnabled(Boolean(info.highRefreshEnabled))
       setHighRefreshHz(info.highRefreshHz ?? null)
@@ -1991,6 +2049,35 @@ function SettingsPanel({
                         >
                           配置检查
                         </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* DPI 适配（TV 端界面缩放 + 显示器信息） */}
+                  <div className="mt-6">
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>DPI 适配</h3>
+                    <div className={`${bgCard} rounded-2xl border ${borderColor} p-4`}>
+                      <div className={`${textPrimary} font-medium mb-1`}>界面缩放</div>
+                      <div className={`${textSecondary} text-sm mb-3`}>按电视尺寸调整 UI 大小，实时生效</div>
+                      <div className="flex flex-wrap gap-2">
+                        {TV_SCALE_OPTIONS.map(v => (
+                          <button
+                            key={v}
+                            onClick={() => previewTvScale(v)}
+                            className={`px-4 py-2 rounded-xl text-sm font-semibold transition-colors ${
+                              tvScale === v ? 'text-white' : `${hoverBg} ${textSecondary}`
+                            }`}
+                            style={tvScale === v ? { backgroundColor: accentColor } : undefined}
+                          >
+                            {v}%
+                          </button>
+                        ))}
+                      </div>
+                      <div className={`mt-4 pt-3 border-t ${borderColor} space-y-1.5`}>
+                        <div className={`${textSecondary} text-sm`}>分辨率：<span className={textPrimary}>{tvInfo?.screenPx || '—'}</span></div>
+                        <div className={`${textSecondary} text-sm`}>刷新率：<span className={textPrimary}>{tvInfo?.refreshRate || '—'}</span></div>
+                        <div className={`${textSecondary} text-sm`}>显示模式：<span className={textPrimary}>{tvInfo?.displayMode || '—'}</span></div>
+                        <div className={`${textSecondary} text-sm`}>HDR：<span className={textPrimary}>{tvInfo?.hdr ? '支持' : '不支持'}</span></div>
                       </div>
                     </div>
                   </div>
@@ -4170,6 +4257,30 @@ function SettingsPanel({
                       <ChevronRight className={`w-5 h-5 ${textSecondary}`} />
                     </div>
                   </button>
+
+                  {/* 清除 MV 匹配缓存 */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!window.confirm('清除所有 MV 匹配缓存（24h 内存结果 + 手动标记 + 黑名单）？将重新搜索当前歌曲的 MV。')) return
+                      clearAllMvMatchCache()
+                      window.location.reload()
+                    }}
+                    className={`w-full ${bgCard} rounded-xl p-4 border ${borderColor} ${hoverBg} transition-all text-left`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${accentColor}20` }}>
+                          <Trash2 className="w-5 h-5" style={{ color: accentColor }} />
+                        </div>
+                        <div>
+                          <div className={`${textPrimary} font-medium mb-1`}>清除 MV 匹配缓存</div>
+                          <div className={`${textSecondary} text-sm`}>MV 匹配结果不对/想换一个视频时使用（重搜当前歌曲）</div>
+                        </div>
+                      </div>
+                      <ChevronRight className={`w-5 h-5 ${textSecondary}`} />
+                    </div>
+                  </button>
                 </div>
               )}
 
@@ -4533,6 +4644,42 @@ function SettingsPanel({
       )}
 
       {/* 设备配置检查弹窗（TV 端性能模式选择） */}
+      {/* DPI 缩放确认弹窗（独立焦点域，保证弹窗内方向键导航可用） */}
+      {pendingTvScale != null && (
+        <div data-tv-scope className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 pointer-events-auto">
+          <div className={`rounded-2xl border p-6 w-[min(92vw,520px)] shadow-2xl ${
+            playerTheme === 'dark' ? 'bg-[#0b1220]/95 border-white/10' : 'bg-white/95 border-black/10'
+          }`}>
+            <div className={`text-base font-medium leading-relaxed ${playerTheme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+              DPI 缩放已切换为 {pendingTvScale}%，界面是否与预期相符？
+            </div>
+            <div className={`mt-1 text-sm ${playerTheme === 'dark' ? 'text-white/60' : 'text-gray-500'}`}>
+              若无法操作，将在 <span className="font-semibold">10</span> 秒后自动还原至上一次 DPI
+            </div>
+            <div className="mt-5 flex items-center justify-end gap-3">
+              <button
+                data-tv-focus
+                onClick={() => confirmTvScale()}
+                className={`rounded-xl px-6 py-2.5 text-sm font-semibold transition-colors ${
+                  playerTheme === 'dark' ? 'text-white/80 hover:text-white bg-white/10' : 'text-gray-700 hover:text-gray-900 bg-black/5'
+                }`}
+              >
+                应用
+              </button>
+              <button
+                ref={tvScaleCancelRef}
+                data-tv-focus
+                onClick={() => cancelTvScale()}
+                className="rounded-xl px-6 py-2.5 text-sm font-semibold text-white transition-colors"
+                style={{ backgroundColor: accentColor }}
+              >
+                取消（{tvScaleCountdown}）
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <DeviceInfoModal show={showDeviceInfo} onClose={() => setShowDeviceInfo(false)} playerTheme={playerTheme} />
 
       {/* 哔哩哔哩「看歌」扫码登录弹窗 */}

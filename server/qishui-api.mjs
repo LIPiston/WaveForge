@@ -1657,7 +1657,9 @@ function sodaSearchComparable(value) {
   return normalizeText(value)
     .normalize('NFKC')
     .toLowerCase()
-    .replace(/[\s\p{P}\p{S}]+/gu, '')
+    // 设备端 nodejs-mobile 的 V8 不支持字符类内 \p{...}（Invalid property name in character class），
+    // 改用纯 ASCII 区间等价写法：去掉空白与 ASCII 标点/符号
+    .replace(/[\s!-\/:-@\[-`{-~]+/g, '')
 }
 
 function sodaPublicSearchScore(song, keywords) {

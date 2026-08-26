@@ -342,6 +342,55 @@ def _validate_audio_path(audio_path: str):
     return True, None
 
 
+def _probe_audio_format(file_path: str) -> bool:
+    """读文件头魔数，判断 libsndfile/audioread 能否解码（mp3/flac/wav/ogg）。
+
+    B 站 DASH 音频轨是 AAC 封装在 MP4（fMP4），libsndfile 打不开；这类文件
+    返回 metadata-only（由调用方走浏览器解码回退），而不是 500 大堆栈。
+    """
+    try:
+        with open(file_path, 'rb') as f:
+            head = f.read(16)
+    except OSError:
+        return False
+    if len(head) < 4:
+        return False
+    if head[:3] == b'ID3' or (head[0] == 0xFF and (head[1] & 0xE0) == 0xE0):
+        return True  # mp3
+    if head[:4] == b'fLaC':
+        return True
+    if head[:4] == b'OggS':
+        return True
+    if head[:4] == b'RIFF' and head[8:12] == b'WAVE':
+        return True
+    return False  # m4a/mp4/aac/opus/未知格式
+
+
+def _metadata_only_result(track_key: str, duration) -> dict:
+    """无法解码的格式（m4a/aac 等）返回的空分析结果，语义与渲染端 metadata-only 一致。"""
+    now = int(time.time() * 1000)
+    return {
+        'schemaVersion': 1,
+        'trackKey': track_key,
+        'duration': float(duration or 0),
+        'provider': 'metadata-only',
+        'beats': [],
+        'downbeats': [],
+        'beatConfidence': [],
+        'downbeatConfidence': [],
+        'estimatedBpm': 120.0,
+        'meter': 4,
+        'confidence': 0.0,
+        'sections': [],
+        'beatFeatures': [],
+        'introSilence': 0.0,
+        'outroSilence': 0.0,
+        'analysisVersion': ANALYSIS_VERSION,
+        'createdAt': now,
+        'lastAccessAt': now,
+    }
+
+
 @app.route('/analyze', methods=['POST'])
 def analyze():
     """分析音频文件"""
@@ -381,6 +430,12 @@ def analyze():
             return jsonify({'error': f'File not found: {audio_path}'}), 404
         
         print(f"✅ 文件存在，开始分析...")
+        
+        # 内容探测：libsndfile 打不开 m4a/aac/opus（B 站 DASH 音频轨是 AAC/MP4）。
+        # 返回 metadata-only 让调用方走浏览器解码回退，而不是 500 大堆栈。
+        if not _probe_audio_format(audio_path):
+            print(f"⚠️ 格式不支持 librosa 解码（m4a/aac 等），返回 metadata-only: {audio_path}")
+            return jsonify(_metadata_only_result(track_key, duration))
         
         # 校验扩展名与文件大小，防止非音频文件或超大文件导致资源耗尽
         valid, validation_error = _validate_audio_path(audio_path)
