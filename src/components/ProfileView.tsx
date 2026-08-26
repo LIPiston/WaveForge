@@ -157,7 +157,7 @@ const sodaMediaToSong = (raw: any): Song | undefined => {
     id: Number(mid.slice(0, 15)) || 0,
     mid,
     name: String(raw?.name || '未知歌曲'),
-    artists: artistNames.map(name => ({ name })),
+    artists: artistNames.map((name: string) => ({ name })),
     album: { name: String(raw?.album || ''), picUrl: String(raw?.coverUrl || '') },
     duration: Number(raw?.durationMs || 0),
     platform: 'soda',

@@ -30,6 +30,8 @@ interface LyricLine {
   roman?: string
   romanWords?: LyricWord[]
   isGeneratedInterlude?: boolean
+  /** 前奏间奏（长前奏开头插入的）：用创新的波浪进度条；歌曲中间的正常间奏仍用三点 */
+  isIntroInterlude?: boolean
   interludeStartTime?: number
   interludeEndTime?: number
   /** Apple Music 对唱：ttm:agent id（如 v1/v2） */
@@ -313,8 +315,32 @@ const estimateLyricEndTime = (lyric: LyricLine, nextLyricTime: number) => {
 }
 
 const buildLyricsWithGeneratedInterludes = (lyrics: LyricLine[]) => {
-  const sourceLyrics = lyrics.filter(lyric => !isStandaloneInterludeMarker(lyric.text || ''))
+  // 过滤占位间奏行 + 元数据/标题行（词/曲/编曲署名、"歌名 - 歌手"标题）——这些行
+  // 不该出现在歌词区；长前奏时若保留它们，前奏期会显示"编曲：xxx"或空
+  const isMetadataLine = (text: string, time: number) => {
+    const t = String(text || '').trim()
+    if (/^(词|曲|编曲|作词|作曲|演唱|唱|歌手|专辑|制作|混音|母带|录音|作|编|监制|by|ti|ar|al|offset)\s*[:：]/i.test(t)) return true
+    if (time < 2 && /^.{1,40}[-—–]\s*.{1,40}$/.test(t)) return true
+    return false
+  }
+  const sourceLyrics = lyrics.filter(lyric => !isStandaloneInterludeMarker(lyric.text || '') && !isMetadataLine(lyric.text || '', lyric.time ?? 0))
   const result: LyricLine[] = []
+
+  // 长前奏（第一句歌词很晚才出现，如 宫 21s 前奏）：在开头生成一条间奏（波浪进度条），
+  // 前奏期显示波浪随进度填充；歌曲中间的间奏仍用三点（isIntroInterlude 区分）
+  if (sourceLyrics.length > 0) {
+    const introEnd = sourceLyrics[0].time - INTERLUDE_HIDE_BEFORE_NEXT_SECONDS
+    if (introEnd > INTERLUDE_MIN_GAP_SECONDS) {
+      result.push({
+        time: LYRIC_TIMING_LEAD_SECONDS,
+        text: '',
+        isGeneratedInterlude: true,
+        isIntroInterlude: true,
+        interludeStartTime: 0,
+        interludeEndTime: introEnd,
+      })
+    }
+  }
 
   sourceLyrics.forEach((lyric, index) => {
     result.push(lyric)
@@ -702,6 +728,20 @@ export default memo(function LyricsDisplay({
   }
   
   // 崭新模式：滚轮手动偏移（累积 px，2 秒无操作弹簧归位）
+  // 手动偏移必须钳在歌词内容范围内：上滚最多到首句中心到焦点线（上方不出现空白）、
+  // 下滚最多到末句中心到焦点线（下方不出现空白）——否则能一路滚出歌词到空白
+  const clampModernManualY = (y: number): number => {
+    const wrap = springWrapRef.current
+    if (!wrap || displayLyricsData.length === 0) return y
+    const cur = wrap.querySelector(`[data-index="${currentIndex}"]`) as HTMLElement | null
+    const first = wrap.querySelector('[data-index="0"]') as HTMLElement | null
+    const last = wrap.querySelector(`[data-index="${displayLyricsData.length - 1}"]`) as HTMLElement | null
+    if (!cur || !first || !last) return y
+    const curCenter = cur.offsetTop + cur.offsetHeight / 2
+    const minY = first.offsetTop + first.offsetHeight / 2 - curCenter
+    const maxY = last.offsetTop + last.offsetHeight / 2 - curCenter
+    return clamp(y, Math.min(minY, maxY), Math.max(minY, maxY))
+  }
   const handleModernWheel = (e: React.WheelEvent) => {
     if (isJumping) return
     isManualScrollingRef.current = true
@@ -709,7 +749,7 @@ export default memo(function LyricsDisplay({
     setModernManualY((prev) => {
       const next = prev + e.deltaY
       if (modernReturnTimerRef.current) { window.clearTimeout(modernReturnTimerRef.current); modernReturnTimerRef.current = null }
-      return next
+      return clampModernManualY(next)
     })
     scheduleReturnAfterPointerLeave()
   }
@@ -907,18 +947,28 @@ export default memo(function LyricsDisplay({
   // Keep the lyric cursor atomic with a song/lyric payload change. Resetting to
   // -1 for one painted frame made a naturally transitioned song briefly show
   // its not-yet-playing opening lines before the next timeupdate corrected it.
+  const prevTrackIdRef = useRef(trackId)
   useLayoutEffect(() => {
+    const trackChanged = prevTrackIdRef.current !== trackId
+    prevTrackIdRef.current = trackId
     const adjustedTime = currentTime + LYRIC_TIMING_LEAD_SECONDS + lyricOffset
     let nextIndex = -1
-    for (let index = displayLyricsData.length - 1; index >= 0; index -= 1) {
-      if (adjustedTime >= displayLyricsData[index].time) {
-        const line = displayLyricsData[index]
-        const shouldPreselectNextLine = line.isGeneratedInterlude
-          && line.interludeEndTime !== undefined
-          && currentTime + lyricOffset >= line.interludeEndTime
-          && index + 1 < displayLyricsData.length
-        nextIndex = shouldPreselectNextLine ? index + 1 : index
-        break
+    if (trackChanged && displayLyricsData.length > 0) {
+      // 切歌瞬间 currentTime 可能还是上一首的值（引擎位置一帧滞后），按它扫描会
+      // 把焦点锚到新歌词的中部（用户实测"焦点莫名其妙跑到歌词中部"）。
+      // 切歌一律先锚定第一句，等时间驱动 effect（currentTime 归位后）接管。
+      nextIndex = 0
+    } else {
+      for (let index = displayLyricsData.length - 1; index >= 0; index -= 1) {
+        if (adjustedTime >= displayLyricsData[index].time) {
+          const line = displayLyricsData[index]
+          const shouldPreselectNextLine = line.isGeneratedInterlude
+            && line.interludeEndTime !== undefined
+            && currentTime + lyricOffset >= line.interludeEndTime
+            && index + 1 < displayLyricsData.length
+          nextIndex = shouldPreselectNextLine ? index + 1 : index
+          break
+        }
       }
     }
 
@@ -949,12 +999,13 @@ export default memo(function LyricsDisplay({
     if (displayLyricsData.length === 0) return
     const adjustedTime = currentTime + LYRIC_TIMING_LEAD_SECONDS + lyricOffset
     
-    // Keep index at -1 before the first lyric begins
+    // 前奏期（第一句歌词还没到）：保持第一句显示而不是空白——
+    // 长前奏（宫 21s 前奏）时歌词区必须可见，否则前奏期间一片空白
     if (adjustedTime < displayLyricsData[0].time) {
-      if (currentIndex !== -1) {
-        setCurrentIndex(-1)
+      if (currentIndex !== 0) {
+        setCurrentIndex(0)
         if (onCurrentTranslationChange) {
-          onCurrentTranslationChange('')
+          onCurrentTranslationChange(displayLyricsData[0].translation ?? '')
         }
       }
       return
@@ -1635,11 +1686,50 @@ export default memo(function LyricsDisplay({
         (playbackTime + lyricOffset - startTime) / Math.max(0.1, endTime - startTime)
       )
 
+      // 前奏间奏（isIntroInterlude）：音澜工坊风格的波形进度条——一排随正弦包络起伏的
+      // 音柱（像音频可视化），进度从左到右点亮（主色+辉光），前沿一根音柱呼吸脉动。
+      if (lyric.isIntroInterlude) {
+        const WAVE_BARS = 26
+        return (
+          <span
+            className="inline-flex items-center justify-center py-[0.12em] leading-none"
+            style={{ gap: '0.22em', height: '1.05em', fontSize: '0.72em' }}
+            aria-label="间奏"
+          >
+            {Array.from({ length: WAVE_BARS }).map((_, index) => {
+              const t = index / (WAVE_BARS - 1)
+              // 正弦包络 + 轻微错相抖动 → 波浪形音柱（不是单调柱子）
+              const envelope = Math.abs(Math.sin(t * Math.PI * 2.4 + 0.35)) * 0.8 + 0.2
+              const jitter = 0.85 + 0.28 * Math.sin(index * 1.9 + 0.7)
+              const heightPct = Math.max(0.2, Math.min(1, envelope * jitter))
+              const filled = interludeProgress >= t
+              const isFrontier = interludeProgress > t - 0.07 && interludeProgress < t + 0.07
+              return (
+                <motion.span
+                  key={index}
+                  className="rounded-full"
+                  style={{
+                    width: '0.2em',
+                    height: `${(heightPct * 1.0).toFixed(3)}em`,
+                    backgroundColor: filled ? activeLyricColor : inactiveLyricColor,
+                    opacity: filled ? 1 : 0.5,
+                    boxShadow: filled ? `0 0 0.28em ${accentColor}88` : 'none',
+                  }}
+                  animate={isFrontier ? { scaleY: [1, 1.5, 1] } : { scaleY: 1 }}
+                  transition={isFrontier ? { duration: 0.55, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.2 }}
+                />
+              )
+            })}
+          </span>
+        )
+      }
+
+      // 歌曲中间的间奏：保持原来的三个点（随进度逐个点亮）
       return (
         <motion.span
           className="inline-flex items-center justify-center py-[0.12em] leading-none"
           style={{ gap: '0.34em', fontSize: '0.68em' }}
-          aria-label="闂村"
+          aria-label="间奏"
           animate={{ scale: [1, 1.045, 1] }}
           transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
         >
@@ -1653,14 +1743,15 @@ export default memo(function LyricsDisplay({
             return (
               <span
                 key={index}
-                className="relative inline-block rounded-full bg-white/25"
-                style={{ width: '0.84em', height: '0.84em' }}
+                className="relative inline-block rounded-full"
+                style={{ width: '0.84em', height: '0.84em', backgroundColor: inactiveLyricColor, opacity: 0.6 }}
               >
                 {dotProgress > 0 && (
                   <span
                     aria-hidden="true"
-                    className="absolute inset-0 rounded-full bg-white"
+                    className="absolute inset-0 rounded-full"
                     style={{
+                      backgroundColor: activeLyricColor,
                       WebkitMaskImage: dotProgress >= 1 ? 'none' : dotMask,
                       maskImage: dotProgress >= 1 ? 'none' : dotMask,
                       filter: `drop-shadow(0 0 0.22em ${accentColor}99) blur(0.015em)`,

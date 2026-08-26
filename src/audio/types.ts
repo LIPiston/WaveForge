@@ -151,6 +151,12 @@ export interface TrackAnalysis {
   integratedLufs?: number
   introSilence: number
   outroSilence: number
+  /** 逐帧 RMS 包络（浏览器回退分析计算；MV 对齐包络互相关用） */
+  rmsEnvelope?: number[]
+  /** 包络互相关峰值（≥0.6 表示 MV 与歌曲同录音；网格置信度失效时可兜底用包络偏移） */
+  envelopePeak?: number
+  /** 包络互相关偏移（秒；仅 envelopePeak ≥0.6 时可信） */
+  envelopeOffset?: number
   sourceSignature?: string
   analysisVersion: string
   createdAt: number

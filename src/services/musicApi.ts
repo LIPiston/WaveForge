@@ -1387,7 +1387,15 @@ export async function getLyrics(
         return score
       }
 
-      const baseResult = [...successfulResults].sort((a, b) => sourceScore(b) - sourceScore(a))[0]
+      // 骨架源选择策略（用户策略）：
+      // - **QQ 音乐**：QQ 官方歌词权威（逐字+翻译+罗马音一次请求全拿），其缺失部分第三方
+      //   通常也没有（实测 QQ 的 qrc/trans 覆盖极高）——**强制以 QQ 官方为骨架**，
+      //   第三方源只做翻译/罗马音空缺的兜底拼接，绝不让第三方逐字源顶掉 QQ 骨架。
+      // - **网易云**：官方逐字（yrc）覆盖少，保持评分制——第三方逐字源（WW+100）可竞争
+      //   骨架，官方+第三方并行拼接（网易云本身就是拼接生态）。
+      const baseResult = platformSourceName === 'QQ音乐'
+        ? [...successfulResults].sort((a, b) => (a.source === 'QQ音乐' ? -1 : 0) - (b.source === 'QQ音乐' ? -1 : 0))[0]
+        : [...successfulResults].sort((a, b) => sourceScore(b) - sourceScore(a))[0]
       currentLyrics = baseResult.lyrics
       hasWordByWord = baseResult.hasWW
       hasTranslation = baseResult.hasTrans
@@ -1540,7 +1548,11 @@ async function getPlatformLyrics(id: number | string, platform: MusicPlatform, s
     if (platform === 'qq') {
       const qqCookie = localStorage.getItem('qq_cookie') || ''
       const url = new URL(`${API_BASE}/qq/lyric`)
+      // 同一参数既可能是 songmid（字符串/数字）也可能是 songID（纯数字）：两种都传，
+      // 后端 musicu 按有效字段取——只传 mid 时，songID 型 id 会被当成 songMID 查询 → 空歌词
+      //（实测 rainy tone qq:233811640 只传 mid 返回空，带 songID 才有完整 LRC）
       url.searchParams.set('mid', String(id))
+      url.searchParams.set('id', String(id))
       if (qqCookie) {
         url.searchParams.set('cookie', qqCookie)
       }
