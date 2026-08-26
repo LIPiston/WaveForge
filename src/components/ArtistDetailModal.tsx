@@ -553,15 +553,20 @@ export default function ArtistDetailModal({
   }
 
   useEffect(() => {
-    // 汽水：歌单写接口未接入（userPlaylists=false），右键菜单歌单列表保持为空
-    if (platform === 'soda') {
-      setUserPlaylists([])
-      return
-    }
     // Apple：右键菜单歌单用资料库歌单（amp-api）
     if (platform === 'apple') {
       void getAppleLibraryPlaylists(100)
         .then(setUserPlaylists)
+        .catch(() => setUserPlaylists([]))
+      return
+    }
+    // Spotify / 汽水：歌单列表由平台自身登录态驱动（Spotify token / 汽水 soda_token cookie），
+    // 不依赖本地 userId；未登录或接口失败时 fetchUserPlaylists 返回空数组，
+    // 右键「添加到」自然保持为空。汽水已登录时 platforms.addTracksToPlaylist=true，
+    // 真实自建歌单可经 addSodaSongToPlaylist 加歌。
+    if (platform === 'spotify' || platform === 'soda') {
+      void getUserPlaylists(platform, '')
+        .then(list => setUserPlaylists(Array.isArray(list) ? list : []))
         .catch(() => setUserPlaylists([]))
       return
     }

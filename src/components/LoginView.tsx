@@ -296,7 +296,7 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
     }
     return (
       <Suspense fallback={null}>
-        <SodaLoginPanel onClose={onCancel} onLoginSuccess={(token: string) => onLoginSuccess(token)} />
+        <SodaLoginPanel onClose={onCancel} onLoginSuccess={(token: string, username?: string) => onLoginSuccess(token, username)} />
       </Suspense>
     )
   }

@@ -216,14 +216,23 @@ export default function SearchPanel({
         .catch(error => console.warn('Failed to load Apple search context playlists:', error))
       return
     }
-    const userId = songPlatform === 'qq'
-      ? localStorage.getItem('qq_user_id') || ''
-      : localStorage.getItem('netease_user_id') || ''
-    if (!userId) return
-    const username = songPlatform === 'qq'
-      ? localStorage.getItem('qq_username') || ''
-      : localStorage.getItem('netease_username') || ''
-    void getUserPlaylists(songPlatform, userId, username)
+    // 右键菜单歌单列表按歌曲自身平台解析归属键，禁止跨平台兜底：
+    // - spotify（token）/ 汽水（cookie）：数据源不依赖 userId，空值也照常拉取；
+    // - kugou：需 kugou_user_id（getUserPlaylists 对非 spotify/soda 平台按 userId 门禁）；
+    // - qq/netease：各自 user_id + username。
+    const playlistUserId = (() => {
+      switch (songPlatform) {
+        case 'qq': return localStorage.getItem('qq_user_id') || ''
+        case 'kugou': return localStorage.getItem('kugou_user_id') || ''
+        case 'spotify':
+        case 'soda':
+          return ''
+        default: return localStorage.getItem('netease_user_id') || ''
+      }
+    })()
+    if (songPlatform !== 'spotify' && songPlatform !== 'soda' && !playlistUserId) return
+    const username = songPlatform === 'qq' ? (localStorage.getItem('qq_username') || '') : ''
+    void getUserPlaylists(songPlatform, playlistUserId, username)
       .then(setContextUserPlaylists)
       .catch(error => console.warn('Failed to load search context playlists:', error))
   }

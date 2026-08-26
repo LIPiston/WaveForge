@@ -138,6 +138,36 @@ interface RecentPlaybackItem {
   albumId?: string
 }
 
+/**
+ * 汽水曲目（后端 mapSodaMedia 产出）→ WaveForge Song。
+ * 与 sodaService.mapSodaSongToSong 同口径：platform 固定 'soda'，mid 保留原始 id 字符串，
+ * Song.id 用 Number(mid.slice(0,15))||0 截断生成（汽水 id 超出 JS 安全整数精度）；
+ * 本组件直接消费 /api/soda/recent 的原始 JSON，避免为此改动 service 层公共映射。
+ */
+const sodaMediaToSong = (raw: any): Song | undefined => {
+  const mid = String(raw?.id ?? '')
+  if (!mid) return undefined
+  const tier = raw?.requiredTier
+  const vip = Boolean(raw?.vip || tier === 'vip' || tier === 'svip')
+  const rawArtists = Array.isArray(raw?.artists) ? raw.artists : []
+  const artistNames = rawArtists.length
+    ? rawArtists.map((item: any) => (typeof item === 'string' ? item : String(item?.name || ''))).filter(Boolean)
+    : raw?.artist ? [String(raw.artist)] : []
+  return {
+    id: Number(mid.slice(0, 15)) || 0,
+    mid,
+    name: String(raw?.name || '未知歌曲'),
+    artists: artistNames.map(name => ({ name })),
+    album: { name: String(raw?.album || ''), picUrl: String(raw?.coverUrl || '') },
+    duration: Number(raw?.durationMs || 0),
+    platform: 'soda',
+    vip,
+    fee: vip ? 1 : 0,
+    songType: 1,
+    fusedSources: [],
+  }
+}
+
 // ===== 列表行组件（模块级 memo）=====
 // 视图内部状态（滚动/关注/收藏/切 tab）变化时，行组件 props 引用不变则跳过重渲染，
 // 避免整表重建。回调均为 useCallback 稳定壳（内部经 ref 取最新 handler）。
@@ -1243,8 +1273,36 @@ function ProfileView({
         })))
         return
       }
-      // 酷狗/汽水：暂无最近播放接口，返回空（不报错）
-      if (currentPlatform === 'kugou' || currentPlatform === 'soda') {
+      // 汽水：只读聚合路由（后端复用账号库缓存的 recently-played-media，cookie 请求级透传）；
+      // 返回 mapSodaMedia 映射歌曲列表，未登录返回 loggedIn:false 空列表，不报错
+      if (currentPlatform === 'soda') {
+        const sdCookie = getPlatformCookie('soda')
+        if (!sdCookie) {
+          setRecentItems([])
+          return
+        }
+        const query = new URLSearchParams({ limit: '50', cookie: sdCookie })
+        const response = await fetch(`http://localhost:3001/api/soda/recent?${query.toString()}`, {
+          cache: 'no-store',
+          signal: controller.signal,
+        })
+        const payload = await response.json().catch(() => null)
+        if (recentRequestRef.current.revision !== revision) return
+        if (!response.ok || payload?.error) throw new Error(payload?.error || '最近播放加载失败')
+        const rows: any[] = Array.isArray(payload?.songs) ? payload.songs : []
+        setRecentItems(rows.map((raw, index) => ({
+          id: String(raw?.id ?? index),
+          type: 'song' as const,
+          name: String(raw?.name || '未知歌曲'),
+          subtitle: String(raw?.artist || ''),
+          coverUrl: String(raw?.coverUrl || ''),
+          playTime: 0,
+          song: sodaMediaToSong(raw),
+        })))
+        return
+      }
+      // 酷狗：暂无最近播放接口，返回空（不报错）
+      if (currentPlatform === 'kugou') {
         setRecentItems([])
         return
       }

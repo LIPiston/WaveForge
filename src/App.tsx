@@ -27,7 +27,7 @@ import { useAppleDynamicCover } from './hooks/useAppleDynamicCover'
 import { FOLIA_STYLES } from './vendor/folia/stylesMeta'
 import { useAudioPulseStore, type AudioPulseStore } from './hooks/useAudioPulse'
 import { useAutoHideCursor } from './hooks/useAutoHideCursor'
-import { Song, getSongUrl, invalidateSongUrl, getLyrics, getProxiedImageUrl, getLocalAlbumIdentifier, resolveSongAlbumIdentifier, LyricLine } from './services/musicApi'
+import { Song, getSongUrl, getSodaPlaybackInfo, invalidateSongUrl, getLyrics, getProxiedImageUrl, getLocalAlbumIdentifier, resolveSongAlbumIdentifier, LyricLine } from './services/musicApi'
 import type { MusicPlatform } from './services/platforms'
 import { isPlatformVisible, platformLabel } from './services/platforms'
 import { getAppleMusicSettings, resolveAppleTrack } from './services/appleMusic'
@@ -490,6 +490,43 @@ async function loadQQSongDetail(song: Song): Promise<Song> {
     console.warn('[QQ音乐详情] 请求失败:', error)
     return song
   }
+}
+
+// ─────────────── 汽水换源提示（可感知化：审计三「静默换源」修复）───────────────
+/** 汽水 /song/url 不可播原因 → 中文短语（reason 口径与后端 sodaUnavailableResult 一致） */
+const SODA_UNAVAILABLE_REASON_TEXT: Record<string, string> = {
+  svip_required: '需 SVIP 权益',
+  vip_required: '需 VIP 权益',
+  membership_unknown: '会员状态验证中',
+  login_required: '汽水未登录',
+  missing_id: '歌曲信息异常',
+}
+
+/**
+ * 汽水源不可播 → 换源提示文案。
+ * 统一以「汽水·」前缀标注来源平台，避免用户把切过来的网易云/QQ 版本误认为汽水原唱。
+ */
+const buildSodaSourceSwitchToast = (
+  song: Song,
+  info: { requiredTier?: 'free' | 'vip' | 'svip'; vipLabel?: string; reason?: string } | null,
+): string => {
+  const artistName = song.artists?.[0]?.name || ''
+  const heading = artistName ? `汽水·${artistName}《${song.name}》` : `汽水《${song.name}》`
+  const tier: 'SVIP' | 'VIP' | '' =
+    info?.requiredTier === 'svip'
+      ? 'SVIP'
+      : info?.requiredTier === 'vip'
+        ? 'VIP'
+        : /svip/i.test(String(info?.vipLabel || ''))
+          ? 'SVIP'
+          : /^vip/i.test(String(info?.vipLabel || ''))
+            ? 'VIP'
+            : ''
+  // 会员档位场景：「汽水·周杰伦《xxx》需 SVIP，已切换其他来源版本」
+  if (tier) return `${heading}需 ${tier}，已切换其他来源版本`
+  // 其余场景（音源解析失败/未登录等）：「汽水《xxx》暂不可播（音源暂时无法解析），已切换其他来源版本」
+  const why = SODA_UNAVAILABLE_REASON_TEXT[String(info?.reason || '')] || '音源暂时无法解析'
+  return `${heading}暂不可播（${why}），已切换其他来源版本`
 }
 
 function App() {
@@ -1635,7 +1672,7 @@ function App() {
       })
 
     return () => { cancelled = true }
-  }, [currentSong, neteaseUserId, qqUserId, appleLoggedIn])
+  }, [currentSong, neteaseUserId, qqUserId, appleLoggedIn, sodaUserId])
 
   useEffect(() => {
     const handleFavoriteChange = (event: Event) => {
@@ -2847,11 +2884,11 @@ function App() {
   }
 
   // 歌曲详情「也爱歌单」→ 应用内打开歌单详情
-  const handleOpenPlaylistFromDetail = async (playlistId: string, platform: 'netease' | 'qq') => {
+  const handleOpenPlaylistFromDetail = async (playlistId: string, platform: MusicPlatform) => {
     setDetailPlaylistLoading(true)
     try {
       const data = await getPlaylistDetail(playlistId, platform)
-      const songs = data?.songs || data?.songlist || data?.playlist?.tracks || []
+      const songs = data?.songs || data?.songlist || data?.playlist?.tracks || data?.tracks || []
       setDetailPlaylist({ playlist: data?.playlist || { id: playlistId, platform, name: '歌单' }, songs })
     } catch {
       setDetailPlaylist(null)
@@ -3699,13 +3736,29 @@ function App() {
       
       let url: string | null = null
       let songLyrics: LyricLine[] = cached?.lyrics || []
-      
+      // 汽水本次加载的结构化不可播信息（requiredTier/vipLabel/reason）：可播或其他平台时为 null
+      let sodaUnavailableInfo: { requiredTier?: 'free' | 'vip' | 'svip'; vipLabel?: string; reason?: string } | null = null
+
       // 音频 URL 与歌词分别判断时效，歌词请求不再等播放器完成加载后才开始。
       if (cached?.url && (now - (cached.urlTimestamp ?? cached.timestamp)) < 5 * 60 * 1000) {
         url = cached.url
         debugLog('🎵 歌词: 缓存命中 (' + songLyrics.length + '行)')
       } else {
-        url = await getSongUrl(songId, platform)
+        if (platform === 'soda') {
+          // 汽水：改调结构化播放详情（替代裸 getSongUrl 直取 URL），不可播时带上
+          // requiredTier/vipLabel/reason 供换源提示文案；请求口径与 getSongUrl 汽水分支一致
+          const playbackInfo = await getSodaPlaybackInfo(songId)
+          url = playbackInfo.url
+          if (!url) {
+            sodaUnavailableInfo = {
+              requiredTier: playbackInfo.requiredTier,
+              vipLabel: playbackInfo.vipLabel,
+              reason: playbackInfo.reason,
+            }
+          }
+        } else {
+          url = await getSongUrl(songId, platform)
+        }
         if (!isLatestLoad()) return
         if (url && url !== 'SONG_UNAVAILABLE') {
           const latest = preloadCacheRef.current.get(cacheKey)
@@ -3746,6 +3799,11 @@ function App() {
       if (!url) {
         // 酷狗/汽水：原生播放失败（付费/版权/未登录）→ 尝试网易云/QQ 同款匹配播放
         if (normalizedSong.platform === 'kugou' || normalizedSong.platform === 'soda') {
+          // 汽水源不可播：先弹一次性可感知提示（标注「汽水·」前缀，避免用户误以为播的是网易云版本），
+          // 再走既有同名匹配兜底；netease/qq 兜底流程本身不变
+          if (normalizedSong.platform === 'soda') {
+            addToast(buildSodaSourceSwitchToast(normalizedSong, sodaUnavailableInfo), 'error')
+          }
           const resolved = await resolvePlayableSong(normalizedSong)
           if (resolved && resolved.platform !== normalizedSong.platform) {
             const carrierUrl = await getSongUrl(resolved.platform === 'qq' ? (resolved.mid || resolved.id) : resolved.id, resolved.platform)
@@ -5224,6 +5282,10 @@ function App() {
     if (cookie) addToast('汽水音乐登录成功', 'success')
   }
   const handleSodaLogout = () => {
+    // 主进程侧同步清理：auth-v6 分区的 .qishui.com Cookie/本地存储 + soda-qr-login.json 会话字段，
+    // 否则换账号后旧凭据仍有效；TV/旧版无此桥（clearSodaLogin 不存在）时跳过，仅清渲染层四键
+    const bridge = (window as any).electron
+    if (bridge?.clearSodaLogin) void Promise.resolve(bridge.clearSodaLogin()).catch(() => { /* 忽略 */ })
     localStorage.removeItem('soda_token')
     localStorage.removeItem('soda_username')
     localStorage.removeItem('soda_avatar')
@@ -5262,7 +5324,7 @@ function App() {
       const userId = getPlatformUserId(platform)
 
       if (!userId) {
-        addToast(`请先登录${platform === 'netease' ? '网易云音乐' : 'QQ音乐'}`, 'error')
+        addToast(`请先登录${platformLabel(platform)}`, 'error')
         return false
       }
 
@@ -5319,9 +5381,11 @@ function App() {
   }
 
   const handlePlaybackViewArtist = (song: Song) => {
-    const platform = (song.platform || 'netease') as 'netease' | 'qq'
+    const platform = (song.platform || 'netease') as MusicPlatform
     const artist = song.artists?.[0]
-    const artistId = platform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
+    // 汽水无艺人 ID，约定传歌手名（伪艺人页按名字检索热门曲目，与 TV 遥控器/右键菜单一致）
+    const artistId = platform === 'soda' ? (artist?.name || artist?.id)
+      : platform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
     if (!artistId) {
       addToast('当前歌曲缺少歌手信息', 'error')
       return
@@ -5330,7 +5394,8 @@ function App() {
   }
 
   const handlePlaybackViewAlbum = (song: Song) => {
-    const platform = (song.platform || 'netease') as 'netease' | 'qq'
+    const platform = (song.platform || 'netease') as MusicPlatform
+    // 汽水：resolveSongAlbumIdentifier 返回专辑名作标识（AlbumDetailModal 纯数字按 id、否则按名查询）
     void resolveSongAlbumIdentifier(song, platform).then(albumId => {
       if (!albumId) {
         addToast('当前歌曲缺少专辑信息', 'error')
@@ -6222,6 +6287,7 @@ function App() {
                 availableEngines: getAvailableEngines(),
                 sourceUrl: audioPlayer.audioElement?.src || undefined,
                 sourceDuration: audioPlayer.audioElement?.duration || undefined,
+                exportFileName: currentSong?.name || undefined,
               })}
             </Suspense>
           )}
@@ -7251,7 +7317,7 @@ function App() {
             onViewComments={viewCallbacks.onViewComments}
             onOpenArtist={viewCallbacks.onOpenArtist}
             onOpenAlbum={viewCallbacks.onOpenAlbum}
-            onOpenPlaylist={(playlist) => { void handleOpenPlaylistFromDetail(playlist.id, playlist.platform as 'netease' | 'qq') }}
+            onOpenPlaylist={(playlist) => { void handleOpenPlaylistFromDetail(playlist.id, playlist.platform || 'netease') }}
             onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}

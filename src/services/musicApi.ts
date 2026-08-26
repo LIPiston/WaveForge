@@ -664,6 +664,42 @@ export async function getSongUrl(id: number | string, platform: MusicPlatform = 
     }
   }
 }
+
+/**
+ * 汽水播放地址详情（结构化不可播原因）：
+ * 与 getSongUrl 汽水分支同口径（音质偏好 + soda_token cookie 一致），替代裸调直取 URL，
+ * 不可播时带回顶层 requiredTier/vipLabel/reason（/api/soda/song/url playable:false 时的结构化原因），
+ * 供上层换源提示文案使用；请求失败统一降级为 { url: null }，不向调用方抛错。
+ */
+export async function getSodaPlaybackInfo(id: number | string): Promise<{
+  url: string | null
+  requiredTier?: 'free' | 'vip' | 'svip'
+  vipLabel?: string
+  reason?: string
+}> {
+  if (!String(id).trim()) return { url: null }
+  const { preference } = getAudioQualityRequest('soda')
+  const query = new URLSearchParams({ id: String(id), quality: preference })
+  const sdCookie = localStorage.getItem('soda_token') || ''
+  if (sdCookie) query.set('cookie', sdCookie)
+  try {
+    const response = await fetchSongUrlResponse(`${API_BASE}/soda/song/url?${query.toString()}`)
+    // 401 = 登录态缺失（sodaRequireLogin）：按后端约定的 login_required 原因口径回传；其余失败不带 reason
+    if (!response.ok) {
+      return { url: null, reason: response.status === 401 ? 'login_required' : undefined }
+    }
+    const data: any = await response.json().catch(() => ({}))
+    return {
+      url: data?.url ? String(data.url) : null,
+      requiredTier: data?.requiredTier,
+      vipLabel: data?.vipLabel ? String(data.vipLabel) : undefined,
+      reason: data?.reason ? String(data.reason) : undefined,
+    }
+  } catch {
+    return { url: null }
+  }
+}
+
 // Song details
 export async function getSongDetail(id: number): Promise<Song | null> {
   try {
