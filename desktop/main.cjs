@@ -3586,6 +3586,84 @@ ipcMain.handle('open-soda-login', async () => {
   }
 })
 
+// 汽水退出登录清理：关登录窗 → 清 persist:mineradio-qishui-auth-v6 分区的 .qishui.com
+// Cookie/localStorage（复用 qishui-auth-v6 的 clear）→ 清凭据文件 soda-qr-login.json 的会话字段。
+// 凭据文件保留 deviceId/installId 等设备指纹（稳定可降低风控概率），只清 cookie/msToken，
+// 与打开登录窗前的重置逻辑（writeCfg({ cookie: '' })）对齐。运行时未初始化时 clear()
+// 会直接按分区名清存储，覆盖「应用重启后 runtime 为空」的场景。
+ipcMain.handle('soda-clear-login', async () => {
+  try {
+    if (sodaLoginWindow && !sodaLoginWindow.isDestroyed()) {
+      try { sodaLoginWindow.destroy() } catch {}
+      sodaLoginWindow = null
+    }
+    const auth = require('./qishui-auth-v6.cjs')
+    await auth.clear()
+    const configFile = path.join(app.getPath('userData'), 'soda-qr-login.json')
+    try {
+      const cfg = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+      if (cfg && typeof cfg === 'object') {
+        delete cfg.cookie
+        delete cfg.msToken
+        fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2), 'utf8')
+      }
+    } catch { /* 文件不存在/损坏：无残留凭据可清，忽略 */ }
+    console.log('🧹 [汽水音乐] 已清除登录分区与凭据文件会话字段（退出登录）')
+    return { success: true }
+  } catch (err) {
+    console.error('❌[汽水音乐] 清除登录态失败:', err)
+    return { success: false, error: (err && err.message) || String(err) }
+  }
+})
+
+// HSE 开发者模式：把调音室导出的「发布种子」写回仓库源文件 builtinSceneSeed.ts。
+// 仅开发模式可用（打包版没有 src 源码树，app.isPackaged 直接拒绝），
+// 内容必须带种子赋值语句标记且限长，防止变成任意文件写入通道。
+ipcMain.handle('hse-write-scene-seed', async (_e, content) => {
+  try {
+    if (app.isPackaged) return { ok: false, error: '仅开发模式可写回仓库' }
+    if (typeof content !== 'string' || !content.includes('export const BUILTIN_SCENE_SEED') || content.length > 2 * 1024 * 1024) {
+      return { ok: false, error: '内容不符合种子文件格式' }
+    }
+    const target = path.join(app.getAppPath(), 'src', 'services', 'waveforge-engine-v3', 'src', 'engine', 'builtinSceneSeed.ts')
+    if (!fs.existsSync(target)) return { ok: false, error: '仓库中不存在 builtinSceneSeed.ts（仅开发环境可用）' }
+    const tmp = target + '.tmp'
+    fs.writeFileSync(tmp, content, 'utf8')
+    fs.renameSync(tmp, target)
+    console.log('✍️ [HSE] 发布种子已写回:', target)
+    return { ok: true, path: target }
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) }
+  }
+})
+
+// HSE 离线导出落盘：把调音室渲染好的 MP3 直写到用户桌面。
+// 文件名由渲染层给（<歌曲名>-Modified.mp3），这里再做一次非法字符兜底清洗与
+// 重名自动 (2) 序号，绝不覆盖用户已存在的文件。300MB 上限防误传巨型数据。
+ipcMain.handle('hse-save-rendered-audio', (_e, data, fileName) => {
+  try {
+    const buf = Buffer.from(data)
+    if (!buf.length) return { ok: false, error: '导出内容为空' }
+    if (buf.length > 300 * 1024 * 1024) return { ok: false, error: '导出内容超过 300MB，疑似异常' }
+    const safeName = String(fileName || '').replace(/[\\/:*?"<>|]/g, '_').trim()
+      .replace(/^\.{1,2}$/, '_') || 'WaveForge-HSE-Modified.mp3'
+    const dir = app.getPath('desktop')
+    const ext = path.extname(safeName) || '.mp3'
+    const stem = safeName.slice(0, safeName.length - ext.length)
+    let target = path.join(dir, safeName)
+    let n = 2
+    while (fs.existsSync(target)) {
+      target = path.join(dir, `${stem} (${n})${ext}`)
+      n += 1
+    }
+    fs.writeFileSync(target, buf)
+    console.log('🎵 [HSE] 渲染音频已保存:', target, `(${(buf.length / 1024 / 1024).toFixed(1)}MB)`)
+    return { ok: true, path: target }
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) }
+  }
+})
+
 
 // 监听打开 QQ 登录窗口的请求
 ipcMain.handle('open-qq-login-window', async () => {

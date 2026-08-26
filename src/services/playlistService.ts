@@ -1,4 +1,5 @@
 import type { MusicPlatform } from './platforms'
+import { platformLabel } from './platforms'
 /**
  * 歌单服务
  */
@@ -658,6 +659,68 @@ export async function getLikedSongs(
     }
     return { ids: [...ids] }
   }
+  // Spotify：官方 Saved Tracks（/v1/me/tracks，token 驱动与 userId 无关）；标识为 Spotify track id 字符串。
+  // 用导出的 spotifyFetch 复用其 token 刷新逻辑；官方单页上限 50、next 为空即到底，20 页封顶防异常循环
+  if (platform === 'spotify') {
+    const { spotifyFetch } = await import('./spotifyService')
+    const ids = new Set<string>()
+    for (let offset = 0; offset < 20 * 50; offset += 50) {
+      const page = await spotifyFetch(`/me/tracks?limit=50&offset=${offset}`)
+      const items = Array.isArray(page?.items) ? page.items : []
+      items.forEach((item: any) => {
+        const trackId = String(item?.track?.id || '').trim()
+        if (trackId) ids.add(trackId)
+      })
+      if (!page?.next || items.length < 50) break
+    }
+    return { ids: [...ids] }
+  }
+  // 酷狗：「喜欢」= 用户云歌单中的默认"我喜欢"列表。经本地代理的 H5 签名网关读取：
+  // /api/kugou/user/playlist 拿列表 → /api/kugou/user/playlist/tracks 按 listid 分页拉曲目 hash。
+  // 标识为 hash；搜索路径的 FileHash 常为大写而网关返回小写——两种大小写都入集合以便命中。
+  if (platform === 'kugou') {
+    const kgCookie = localStorage.getItem('kugou_cookie') || ''
+    if (!kgCookie) return { ids: [] }
+    const KG_API = 'http://localhost:3001/api/kugou'
+    let favListId = ''
+    try {
+      const listResp = await fetch(`${KG_API}/user/playlist?cookie=${encodeURIComponent(kgCookie)}`, { cache: 'no-store' })
+      if (listResp.ok) {
+        const playlists = await listResp.json()
+        if (Array.isArray(playlists)) {
+          // 与服务端 kugouLikeCheckHashes 同一匹配规则：按名字找"我喜欢"，找不到退第一个
+          const fav = playlists.find((p: any) => /我喜欢|默认歌单/.test(String(p?.name || ''))) || playlists[0]
+          favListId = String(fav?.specialid || '')
+        }
+      }
+    } catch (error) {
+      console.warn('[LikedSongs] 酷狗用户歌单获取失败:', error)
+    }
+    const ids = new Set<string>()
+    if (favListId) {
+      for (let page = 1; page <= 20; page += 1) {
+        try {
+          const resp = await fetch(
+            `${KG_API}/user/playlist/tracks?listid=${encodeURIComponent(favListId)}&page=${page}&pagesize=50&cookie=${encodeURIComponent(kgCookie)}`,
+            { cache: 'no-store' },
+          )
+          if (!resp.ok) break
+          const json = await resp.json()
+          const songs = Array.isArray(json?.songs) ? json.songs : []
+          songs.forEach((item: any) => {
+            const hash = String(item?.hash || '').trim()
+            if (!hash) return
+            ids.add(hash)
+            ids.add(hash.toLowerCase())
+          })
+          if (songs.length < 50) break
+        } catch {
+          break
+        }
+      }
+    }
+    return { ids: [...ids] }
+  }
   const cookie = getPlatformCookie(platform)
   const url = platform === 'netease'
     ? `${API_BASE}/netease/likelist?uid=${encodeURIComponent(userId)}&cookie=${encodeURIComponent(cookie)}`
@@ -838,7 +901,19 @@ export async function addSongToPlaylist(
 }
 
 /**
- * 从歌单删除歌曲
+ * 从歌单删除歌曲。
+ *
+ * 入参契约（owner 归属校验在视图层完成后传入，本服务不重复校验）：
+ * - platform 必须与 playlistId 同平台；userId 为该平台当前登录用户的归属 id，
+ *   仅用于写成功后失效用户歌单缓存（spotify/soda/kugou 分支不依赖），不参与上游鉴权。
+ * - options.songMid：spotify=Spotify track id；netease/qq 走 op:'del' 时可选。
+ *
+ * 平台能力现状（写通道按平台自查，禁止互相套用）：
+ * - netease/qq：本地代理 /playlist/tracks op:'del'；
+ * - spotify：官方 API DELETE /playlists/{id}/tracks；
+ * - 汽水：上游仅提供 me/playlist/media/append 加歌，不存在「从歌单移除单曲」的
+ *   media/delete 类端点 → 直接抛错（调用方 toast 明示是上游未提供能力）；
+ * - 酷狗：H5 网关只有 /v6/add_song 加歌，无删除端点 → 同样直接抛错。
  */
 export async function removeSongFromPlaylist(
   playlistId: string,
@@ -858,9 +933,14 @@ export async function removeSongFromPlaylist(
     invalidateUserPlaylistsCache(platform, userId)
     return { result: 200, platform: 'spotify' }
   }
-  // 汽水：暂无「从歌单移除歌曲」逆向接口，抛出明确错误由调用方 toast 提示（不 crash）
+  // 汽水：上游不存在移除歌曲端点（已核实 qishui-api.mjs 仅有 add-song 写通道），
+  // 抛出明确错误由调用方 toast 提示，不做静默伪装
   if (platform === 'soda') {
-    throw new Error('汽水音乐暂不支持从歌单移除歌曲')
+    throw new Error('汽水音乐暂不支持从歌单移除歌曲：上游未提供移除歌曲的接口')
+  }
+  // 酷狗：网关无删除歌曲端点（/api/kugou/playlist/tracks 非 add 直接 400），诚实报错而非误打 QQ 删除接口
+  if (platform === 'kugou') {
+    throw new Error('酷狗音乐暂不支持从歌单移除歌曲：上游未提供移除歌曲的接口')
   }
 
   const url = platform === 'netease'
@@ -931,9 +1011,14 @@ export async function createPlaylist(
     invalidateUserPlaylistsCache(platform, '')
     return { id, result: 200, platform: 'spotify' }
   }
-  // 汽水：暂不支持创建歌单，明确报错由调用方 toast 提示（不 crash）
+  // 汽水：上游不存在创建歌单端点（已核实），抛出明确错误由调用方 toast 提示（不 crash）
   if (platform === 'soda') {
-    throw new Error('汽水音乐暂不支持创建歌单')
+    throw new Error('汽水音乐暂不支持创建歌单：上游未提供创建歌单的接口')
+  }
+  // 酷狗：无创建歌单网关（platforms.ts 能力表即 false）；诚实拦截，
+  // 否则会按下方默认分支误打网易创建接口、在错误平台落地一个真歌单
+  if (platform === 'kugou') {
+    throw new Error('酷狗音乐暂不支持创建歌单：上游未提供创建歌单的接口')
   }
 
   const cookie = getPlatformCookie(platform, options.cookie)
@@ -968,9 +1053,14 @@ export async function deletePlaylist(
 ): Promise<any> {
   console.log(`🗑️ 删除歌单: ${playlistId}`)
 
-  // 汽水：暂不支持删除歌单，明确报错由调用方 toast 提示（不 crash）
+  // 汽水：上游不存在删除歌单端点（已核实），抛出明确错误由调用方 toast 提示（不 crash）
   if (platform === 'soda') {
-    throw new Error('汽水音乐暂不支持删除歌单')
+    throw new Error('汽水音乐暂不支持删除歌单：上游未提供删除歌单的接口')
+  }
+  // Spotify Web API 无删除歌单接口；酷狗无删除网关。均诚实拦截，
+  // 避免落入下方默认分支误打网易/QQ 删除接口
+  if (platform === 'spotify' || platform === 'kugou') {
+    throw new Error(`${platformLabel(platform)}暂不支持删除歌单：上游未提供删除歌单的接口`)
   }
 
   const cookie = getPlatformCookie(platform, options.cookie)
@@ -1086,6 +1176,12 @@ export async function subscribePlaylist(
     if (!ok) throw new Error(subscribe ? '汽水音乐收藏歌单失败' : '汽水音乐取消收藏失败')
     invalidateUserPlaylistsCache(platform, localStorage.getItem('soda_user_id') || '')
     return { result: 200, platform: 'soda' }
+  }
+
+  // 酷狗：无收藏他人歌单的网关（platforms.ts 能力表即 false）；诚实拦截，
+  // 否则会按下方默认分支误打网易收藏接口
+  if (platform === 'kugou') {
+    throw new Error('酷狗音乐暂不支持收藏歌单：上游未提供收藏歌单的接口')
   }
 
   const cookie = getPlatformCookie(platform, options.cookie)

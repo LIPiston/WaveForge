@@ -18,6 +18,9 @@
 import type { Song, LyricLine } from './musicApi'
 import { getPlatformCookie } from './platforms'
 import { debugLog } from '../utils/debugLog'
+// 汽水逐字（yrc）→ 前端契约归一化：独立实现，不借用网易云解析器
+import { asSodaWordRows, sodaWordRowsToLyricLines } from './sodaLyrics'
+import type { SodaWordRowWire } from './sodaLyrics'
 
 const SODA_API = 'http://localhost:3001/api/soda'
 /** 旧火山公开目录代理（兜底数据源） */
@@ -170,20 +173,20 @@ export function isSodaLoggedIn(): boolean {
 }
 
 /** 组装带 cookie 的查询串（cookie 经 query 参数传递；空值字段自动跳过） */
-function buildQuery(params: Record<string, string | number | undefined>): string {
+function buildQuery(params: Record<string, string | number | undefined>, explicitCookie?: string): string {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== '') search.set(key, String(value))
   }
-  const cookie = getSodaToken()
+  const cookie = explicitCookie || getSodaToken()
   if (cookie) search.set('cookie', cookie)
   return search.toString()
 }
 
 /** GET /api/soda/* 统一入口：超时/HTTP 错/网络错一律降级为 null，不向 UI 抛错 */
-async function sodaGet<T>(path: string, params: Record<string, string | number | undefined> = {}): Promise<T | null> {
+async function sodaGet<T>(path: string, params: Record<string, string | number | undefined> = {}, explicitCookie?: string): Promise<T | null> {
   try {
-    const query = buildQuery(params)
+    const query = buildQuery(params, explicitCookie)
     const resp = await fetch(`${SODA_API}${path}${query ? `?${query}` : ''}`, {
       cache: 'no-store',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -268,8 +271,11 @@ function mapSodaSongs(list: SodaSong[] | undefined): Song[] {
 
 // ────────────────────────────── 状态 / 搜索 ──────────────────────────────
 
-/** 登录状态与会员信息（未登录或请求失败时返回 loggedIn:false 空状态） */
-export async function getSodaStatus(): Promise<SodaStatus> {
+/**
+ * 登录状态与会员信息（未登录或请求失败时返回 loggedIn:false 空状态）。
+ * cookie 可选显式传入：手动粘贴 Cookie 登录时先用粘贴内容验证，不落 localStorage。
+ */
+export async function getSodaStatus(cookie?: string): Promise<SodaStatus> {
   const data = await sodaGet<{
     loggedIn?: boolean
     profile?: {
@@ -282,7 +288,7 @@ export async function getSodaStatus(): Promise<SodaStatus> {
       expiresAt?: number
     }
     membership?: SodaMembership
-  }>('/status')
+  }>('/status', {}, cookie)
   if (!data) return { loggedIn: false, membership: {} }
   const p = data.profile
   const profile: SodaProfile | undefined = p && (p.userId !== undefined || p.nickname)
@@ -546,11 +552,18 @@ function parseLrcLines(lrc: string): LyricLine[] {
   return lines.sort((a, b) => a.time - b.time)
 }
 
-/** 拉取原文/翻译 LRC 原文（先走后端 /lyric，失败回退旧火山详情接口仅取原文） */
-async function fetchSodaLyricText(id: string): Promise<{ lyric: string; tlyric: string }> {
-  const data = await sodaGet<{ lyric?: string; tlyric?: string }>('/lyric', { id })
-  if (data?.lyric) {
-    return { lyric: String(data.lyric || ''), tlyric: String(data.tlyric || '') }
+/** 拉取原文/翻译 LRC 原文（先走后端 /lyric，失败回退旧火山详情接口仅取原文）。
+ *  words：后端 yrc 命中时的结构化逐字时间轴（绝对毫秒，翻译已内联 translated）；平铺 LRC 兜底时为 undefined。 */
+async function fetchSodaLyricText(id: string): Promise<{ lyric: string; tlyric: string; words?: SodaWordRowWire[] }> {
+  const data = await sodaGet<{ lyric?: string; tlyric?: string; words?: unknown }>('/lyric', { id })
+  // 判空放宽到 words：yrc 命中但 lyric 为空的极端形态（仅译文）也保留逐字与翻译，
+  // 不再让旧火山兜底覆盖后端结果。
+  if (data?.lyric || data?.tlyric || data?.words) {
+    return {
+      lyric: String(data.lyric || ''),
+      tlyric: String(data.tlyric || ''),
+      words: asSodaWordRows(data.words) || undefined,
+    }
   }
   // 兜底：旧火山公开目录详情（仅原文）
   try {
@@ -570,12 +583,16 @@ async function fetchSodaLyricText(id: string): Promise<{ lyric: string; tlyric: 
 
 /**
  * 汽水音乐歌词（LRC 解析为 LyricLine[]；无歌词返回 []）。
- * 单次请求同时取原文+翻译（与网易云 /lyric 一次拿 lrc+tlyric 同构），
- * tlyric 按时间戳对齐后挂到对应主行的 translation（参考网易云翻译的挂载方式）。
+ * 单次请求同时取原文+翻译+可选逐字（words）：
+ * - yrc 命中 → sodaLyrics.ts 把汽水上游结构归一化成网易云 parseYrc 同构的 LyricLine 契约
+ *   （time 秒 / word.startTime 相对行首毫秒），翻译走后端内联的 translated；
+ * - 无 words（平铺 LRC/公开目录兜底）→ 维持既有 LRC 解析 + ≤500ms 贪心对齐挂 translation。
  */
 export async function getSodaLyrics(id: string): Promise<LyricLine[]> {
   if (!id) return []
-  const { lyric, tlyric } = await fetchSodaLyricText(String(id))
+  const { lyric, tlyric, words } = await fetchSodaLyricText(String(id))
+  const wordRows = asSodaWordRows(words)
+  if (wordRows) return sodaWordRowsToLyricLines(wordRows)
   const lines = parseLrcLines(lyric)
   const transLines = parseLrcLines(tlyric)
   if (!lines.length || !transLines.length) return lines

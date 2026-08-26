@@ -228,6 +228,12 @@ export interface ElectronAPI {
   onSpotifyAuthResult: (callback: (result: { success: boolean; accessToken?: string; refreshToken?: string; username?: string; avatar?: string; userId?: string; error?: string }) => void) => () => void
   /** 汽水音乐登录（Electron 弹窗扫码，抓 token） */
   openSodaLogin: () => Promise<{ success: boolean; token?: string; username?: string; error?: string }>
+  /** 汽水音乐登出清理（清 auth 分区 .qishui.com Cookie/本地存储 + 凭据文件会话字段；TV/旧版 preload 可能缺失） */
+  clearSodaLogin?: () => Promise<{ success: boolean; error?: string }>
+  /** HSE 开发者模式：把场景微调的「发布种子」写回仓库源文件（仅开发模式；TV/网页端缺失） */
+  writeHseSceneSeed?: (content: string) => Promise<{ ok: boolean; path?: string; error?: string }>
+  /** HSE 离线导出：渲染完成的 MP3 写到桌面（重名自动加序号；TV/网页端缺失走浏览器下载） */
+  saveHseRenderedAudio?: (data: Uint8Array, fileName: string) => Promise<{ ok: boolean; path?: string; error?: string }>
   /** 汽水音乐（抖音）数据桥：隐藏窗口抓取抖音音乐卡片 */
   sodaScrapeSearch: (keyword: string) => Promise<{ success: boolean; items?: Array<{ id: string; name: string; author?: string; cover?: string; text?: string }>; error?: string }>
   /** 酷狗数据桥：隐藏窗口页面内同源 fetch 用户歌单/用户信息（绕开服务端 WAF） */

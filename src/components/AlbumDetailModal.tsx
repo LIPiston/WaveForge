@@ -95,7 +95,8 @@ function AlbumDetailModal({
     if (subscribing || !album) return
     setSubscribing(true)
     try {
-      // 汽水：收藏状态无查询接口，初始视为未收藏；collectSodaAlbum 成功后仅本地翻转按钮状态。
+      // 汽水：上游无逐专辑收藏读接口，初始态走 /api/soda/album/collect/check 用账号库缓存判归
+      // （未命中证据不足时默认未收藏）；collectSodaAlbum 成功后仅本地翻转按钮状态。
       // 标识优先用接口解析出的真实专辑 id（album.mid），否则回退外部传入的「专辑名」原串
       if (platform === 'soda') {
         const ok = await collectSodaAlbum(String(album.mid || albumId), !subscribed)
@@ -114,12 +115,30 @@ function AlbumDetailModal({
   }
 
   // 打开专辑详情时按当前账号是否已收藏初始化按钮状态（QQ 传 mid，网易云传数字 id）；
-  // 汽水无查询接口，跳过初始化（保持默认未收藏，收藏成功后本地翻转）
+  // 汽水：上游无逐专辑收藏读接口——走本地只读路由 /api/soda/album/collect/check，
+  // 从后端账号库聚合缓存（fetchSodaWebLibrary，90s TTL/每 cookie 指纹）判归，
+  // 未登录/未命中证据不足时保持默认未收藏；收藏成功后的本地翻转行为不变
   useEffect(() => {
-    if (!album || platform === 'apple' || platform === 'soda') return
+    if (!album || platform === 'apple') return
     let cancelled = false
-    const id = platform === 'qq' ? String(album.mid || album.id) : String(album.id)
+    // 汽水标识优先用真实专辑 id（album.mid），否则回退外部传入的「专辑名」原串
+    const id = platform === 'soda'
+      ? String(album.mid || albumId)
+      : platform === 'qq' ? String(album.mid || album.id) : String(album.id)
     setSubscribed(false)
+    if (platform === 'soda') {
+      void (async () => {
+        try {
+          const query = new URLSearchParams({ id })
+          const sdCookie = localStorage.getItem('soda_token') || ''
+          if (sdCookie) query.set('cookie', sdCookie)
+          const response = await fetch(`http://localhost:3001/api/soda/album/collect/check?${query.toString()}`, { cache: 'no-store' })
+          const payload = await response.json().catch(() => null)
+          if (!cancelled && response.ok && payload?.loggedIn && payload?.collected) setSubscribed(true)
+        } catch { /* 静默：保持默认未收藏 */ }
+      })()
+      return () => { cancelled = true }
+    }
     void isAlbumSubscribed(id, platform).then((subscribedNow) => {
       if (!cancelled) setSubscribed(subscribedNow)
     })

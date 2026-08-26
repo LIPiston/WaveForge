@@ -227,6 +227,12 @@ contextBridge.exposeInMainWorld('electron', {
   openSpotifyLogin: (clientId) => ipcRenderer.invoke('open-spotify-login', clientId),
   // 汽水音乐登录（Electron 弹窗扫码，抓 token）
   openSodaLogin: () => ipcRenderer.invoke('open-soda-login'),
+  // 汽水音乐登出清理（清 auth 分区 .qishui.com Cookie/本地存储 + 凭据文件会话字段）
+  clearSodaLogin: () => ipcRenderer.invoke('soda-clear-login'),
+  // HSE 开发者模式：把场景微调的「发布种子」写回仓库源文件（仅开发模式生效）
+  writeHseSceneSeed: (content) => ipcRenderer.invoke('hse-write-scene-seed', content),
+  // HSE 离线导出：渲染完成的 MP3 直写用户桌面（<歌曲名>-Modified.mp3）
+  saveHseRenderedAudio: (data, fileName) => ipcRenderer.invoke('hse-save-rendered-audio', data, fileName),
   // 汽水音乐（抖音）数据桥：隐藏窗口导航抖音搜索页抓取音乐卡片
   sodaScrapeSearch: (keyword) => ipcRenderer.invoke('soda-scrape-search', keyword),
   // 酷狗数据桥：隐藏窗口页面内同源 fetch 用户歌单/用户信息（绕开服务端 WAF）

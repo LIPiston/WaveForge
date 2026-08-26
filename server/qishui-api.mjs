@@ -115,6 +115,11 @@ const SODA_MEMBERSHIP_POSITIVE_CACHE_MS = 10 * 1000
 const SODA_MEMBERSHIP_POSITIVE_GRACE_MS = 20 * 1000
 const sodaTrackMetadataCache = createTtlCache(120, 20 * 1000)
 const sodaPlaybackCache = createTtlCache(120, 4 * 60 * 1000)
+/** track_v2 失败负缓存：fp|id -> { at, message, code, postError }（短 TTL 记住「无效 JSON」等确定性失败，
+ * 避免同曲快速连续重打上游触发更严风控）；成功结果仍走 sodaTrackMetadataCache 正缓存，互不影响 */
+const sodaTrackV2ErrorCache = new Map()
+const SODA_TRACK_V2_ERROR_TTL_MS = 45 * 1000
+const SODA_TRACK_V2_ERROR_CACHE_LIMIT = 256
 const sodaChartCache = createTtlCache(16, 10 * 60 * 1000)
 
 /** 写操作成功后失效账号库相关缓存（喜欢/收藏/加歌/上报后立即生效） */
@@ -446,9 +451,113 @@ function sodaConvertLyric(value) {
   return { lyric: lrcLines.join('\n'), yrc: yrcLines.join('\n') }
 }
 
+/**
+ * 汽水上游 yrc 逐字文本 → 结构化时间轴（独立导出：/api/soda/lyric 的 words 字段与单测共用）。
+ * 注意：这是汽水自己的 wire 格式（与 sodaConvertLyric 同源），不是网易 yrc 语义：
+ *   行头 `[行起点ms,行长ms]`，其后每字为 `<相对偏移ms,时长ms,0>字文` 或 `(绝对起点ms,时长ms,0)字文`；
+ *   `<>` 为行内相对偏移，`()` 为绝对毫秒（兼容旧样例行内偏移写法：rawStart < lineStart-500 时按相对补正），
+ *   与 sodaConvertLyric 完全同一套判定规则，避免两套实现漂移。
+ * 输出行 [{ start,end,text,translated?,words:[{text,start,end}] }]，时间均为绝对毫秒；
+ * 非 yrc 形态（普通 LRC/纯文本）返回 []，调用方据此省略 words 字段。
+ */
+export function parseSodaYrcTimeline(value) {
+  const input = normalizeLyricBody(value)
+  if (!input) return []
+  const rows = []
+  input.split('\n').forEach((rawLine) => {
+    const line = String(rawLine || '').trim()
+    const timed = line.match(/^\[(\d+),(\d+)\](.*)$/)
+    if (!timed) return
+    const lineStart = Math.max(0, Number(timed[1]) || 0)
+    const lineDuration = Math.max(0, Number(timed[2]) || 0)
+    const body = timed[3] || ''
+    const wordPattern = /([<\(])(\d+),(\d+),(\d+)[>\)]([^<\(]*)/g
+    let wordMatch
+    let text = ''
+    let words = null
+    while ((wordMatch = wordPattern.exec(body))) {
+      const rawStart = Math.max(0, Number(wordMatch[2]) || 0)
+      const wordDuration = Math.max(0, Number(wordMatch[3]) || 0)
+      const wordText = String(wordMatch[5] || '')
+      if (!wordText) continue
+      // 判定规则与 sodaConvertLyric 保持一致：< 相对行内偏移；( 绝对毫秒（兼容两种上游写法）
+      const absoluteStart =
+        wordMatch[1] === '<'
+          ? lineStart + rawStart
+          : rawStart >= Math.max(0, lineStart - 500)
+            ? rawStart
+            : lineStart + rawStart
+      text += wordText
+      words = words || []
+      words.push({
+        text: wordText,
+        start: absoluteStart,
+        end: absoluteStart + wordDuration,
+      })
+    }
+    if (!text) text = body.replace(/[<\(]\d+,\d+,\d+[>\)]/g, '')
+    text = text.replace(/\s+/g, ' ').trim()
+    if (!text) return
+    rows.push(words ? { start: lineStart, end: lineStart + lineDuration, text, words } : { start: lineStart, end: lineStart + lineDuration, text })
+  })
+  return rows
+}
+
+/** 平铺 LRC（"[mm:ss.xx]文本"）→ [{start,text}] 毫秒入口；作为翻译内联的候选源 */
+function extractSodaFlatLrcEntries(value) {
+  const input = normalizeLyricBody(value)
+  if (!input) return []
+  const timeRe = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g
+  const entries = []
+  for (const raw of input.split('\n')) {
+    const matches = [...String(raw).matchAll(timeRe)]
+    const text = String(raw).replace(timeRe, '').trim()
+    if (!matches.length || !text) continue
+    for (const m of matches) {
+      const min = Number(m[1] || 0)
+      const sec = Number(m[2] || 0)
+      const frac = m[3] ? Number(m[3].padEnd(3, '0').slice(0, 3)) : 0
+      entries.push({ start: Math.round((min * 60 + sec + frac / 1000) * 1000), text })
+    }
+  }
+  return entries.sort((a, b) => a.start - b.start)
+}
+
+/**
+ * 组装 /api/soda/lyric 的 words 结构化字段：
+ * yrc 命中时输出逐字行并把翻译按 ≤500ms 就近内联到 translated（与前端 tlyric 对齐容差一致）；
+ * 非 yrc（公开目录平铺 LRC 等）返回 null，保持响应里无逐字数据。
+ */
+export function buildSodaWordTimeline(lyricRaw, tlyricRaw) {
+  const rows = parseSodaYrcTimeline(lyricRaw)
+  if (!rows.length) return null
+  // 翻译候选：track_v2 的翻译可能是逐字 yrc，也可能是平铺 LRC——两种形态都能内联
+  const yrcTrans = parseSodaYrcTimeline(tlyricRaw).map((row) => ({ start: row.start, text: row.text }))
+  const candidates = (yrcTrans.length ? yrcTrans : extractSodaFlatLrcEntries(tlyricRaw)).sort((a, b) => a.start - b.start)
+  if (candidates.length) {
+    // 贪心就近对齐：仅允许向后推进指针，|时间差|≤500ms 视为同一行（规则与前端 tlyric 对齐一致）
+    const TOLERANCE_MS = 500
+    let pointer = 0
+    for (const row of rows) {
+      while (pointer < candidates.length && candidates[pointer].start < row.start - TOLERANCE_MS) {
+        pointer += 1
+      }
+      const candidate = candidates[pointer]
+      if (candidate && Math.abs(candidate.start - row.start) <= TOLERANCE_MS && !row.translated) {
+        row.translated = candidate.text
+        pointer += 1
+      }
+    }
+  }
+  return rows
+}
+
 /** 规范化并写入歌词内存缓存（30 分钟） */
 function cacheSodaLyric(id, lyric, tlyric, source) {
   id = normalizeText(id)
+  // words 结构化逐字基于未转换的原始文本解析（yrc 形态才有结果；平铺 LRC → null）
+  const rawLyric = lyric
+  const rawTlyric = tlyric
   const primary = sodaConvertLyric(lyric)
   const translated = sodaConvertLyric(tlyric)
   lyric = primary.lyric
@@ -463,6 +572,8 @@ function cacheSodaLyric(id, lyric, tlyric, source) {
     source: source || 'soda-cache',
     cachedAt: Date.now(),
   }
+  const words = buildSodaWordTimeline(rawLyric, rawTlyric)
+  if (words) payload.words = words
   sodaLyricCache.set(id, payload)
   return payload
 }
@@ -1199,10 +1310,55 @@ function sodaWebCommonParams(extra, opts) {
   return Object.assign({}, QISHUI_WEB_DEFAULT_PARAMS, extra || {})
 }
 
-/** PC 客户端公共参数（aid=386088 等，来自逆向抓包） */
-function sodaPcAppParams(extra) {
-  const now = Date.now()
-  const deviceId = String(now)
+/**
+ * 设备指纹（每会话稳定）：audit 确认上游对「高频出现的全新设备」敏感，会回 HTML 质询页
+ * （= requestJson「无效 JSON」的头号嫌疑）。此前 device_id/fp/iid 每次用 Date.now() 现造、cdid 恒空。
+ * 现以 cookie 内容 sha1 前 16 位为键，模块级 Map 记忆同一登录态的身份组合，进程生命周期内不变；
+ * 格式仿登录侧 qishui-auth-v6 的持久化身份（device_id 16 位数字 / install_id 15 位数字）+ 字节系 cdid 惯例 UUID。
+ * 生成是同步的（randomInt/randomUUID 无 await 缝隙），Map 同步读写即并发安全；未带 cookie 时退回进程级默认身份。
+ */
+function sodaRandomNumericId(length, firstMax = 8) {
+  let value = String(crypto.randomInt(1, Math.max(2, firstMax + 1)))
+  while (value.length < length) value += String(crypto.randomInt(0, 10))
+  return value
+}
+
+function sodaCreateDeviceIdentity() {
+  const deviceId = sodaRandomNumericId(16)
+  return {
+    device_id: deviceId,
+    fp: deviceId,
+    iid: sodaRandomNumericId(15),
+    cdid: crypto.randomUUID(),
+  }
+}
+
+const sodaDeviceIdentityCache = new Map()
+const SODA_DEVICE_IDENTITY_CACHE_LIMIT = 128
+
+function sodaStableDeviceIdentity(cookieText) {
+  const key = cookieText ? sodaCookieFingerprint(cookieText) : ''
+  if (!key) {
+    if (!sodaDeviceIdentityCache.has('')) sodaDeviceIdentityCache.set('', sodaCreateDeviceIdentity())
+    return sodaDeviceIdentityCache.get('')
+  }
+  let identity = sodaDeviceIdentityCache.get(key)
+  if (!identity) {
+    identity = sodaCreateDeviceIdentity()
+    sodaDeviceIdentityCache.set(key, identity)
+    while (sodaDeviceIdentityCache.size > SODA_DEVICE_IDENTITY_CACHE_LIMIT) {
+      const oldestKey = sodaDeviceIdentityCache.keys().next().value
+      if (!oldestKey) break
+      // 默认身份（'' 键）被驱逐也没关系：下次未带 cookie 请求时会按需重建
+      sodaDeviceIdentityCache.delete(oldestKey)
+    }
+  }
+  return identity
+}
+
+/** PC 客户端公共参数（aid=386088 等，来自逆向抓包）；传 cookie 时复用该会话的稳定设备指纹 */
+function sodaPcAppParams(extra, cookieText) {
+  const identity = sodaStableDeviceIdentity(cookieText)
   return Object.assign(
     {
       aid: '386088',
@@ -1211,9 +1367,9 @@ function sodaPcAppParams(extra) {
       geo_region: 'cn',
       os_region: 'cn',
       sim_region: '',
-      device_id: deviceId,
-      cdid: '',
-      iid: String(now + 1),
+      device_id: identity.device_id,
+      cdid: identity.cdid,
+      iid: identity.iid,
       version_name: '3.3.0',
       version_code: '30030000',
       channel: 'official',
@@ -1225,7 +1381,7 @@ function sodaPcAppParams(extra) {
       device_platform: 'windows',
       device_type: 'Windows',
       os_version: 'Windows 11',
-      fp: deviceId,
+      fp: identity.fp,
     },
     extra || {},
   )
@@ -1294,7 +1450,7 @@ async function sodaPcPostJson(apiPath, payload, cookieText, opts = {}) {
     throw err
   }
   const body = JSON.stringify(payload || {})
-  const json = await requestJson(qishuiPcUrl(apiPath, sodaPcAppParams(opts.params)), {
+  const json = await requestJson(qishuiPcUrl(apiPath, sodaPcAppParams(opts.params, cookieText)), {
     method: 'POST',
     timeoutMs: opts.timeoutMs || 9000,
     headers: Object.assign(sodaWebHeaders(cookie, { sessionOnly: true, pcApp: true }), {
@@ -1568,7 +1724,7 @@ async function handleSodaPcSearch(keywords, limit, cookieText, offset) {
     cursor: String(offset),
     count: requestCount,
     search_method: 'input',
-  }), cookie, {
+  }, cookie), cookie, {
     bases: [QISHUI_WEB_PC_API_BASE],
     noDefaultParams: true,
     sessionOnly: true,
@@ -1608,7 +1764,9 @@ async function handleSodaPublicSearch(keywords, limit, cookieText, offset) {
     rawCount: list.length,
     offset,
     nextOffset: offset + songs.length,
-    hasMore: songs.length >= limit,
+    // 原版等价判断（移植时弱化为 songs.length>=limit，会在候选集末尾多发空页请求）：
+    // 本页已满 且 （本地排序集还有剩余 或 上游候选窗口还没拉到上限）
+    hasMore: songs.length >= limit && (offset + songs.length < rankedSongs.length || requestLimit < 100),
     message: songs.length ? '' : '汽水公开搜索暂时没有返回匹配结果。',
   }
 }
@@ -1897,17 +2055,17 @@ async function fetchSodaWebLibrary(cookieText) {
     }
 
     const pcRequestOpts = { pcApp: true }
-    const meJson = await tryRead('me', '/luna/pc/me', sodaPcAppParams(), pcRequestOpts)
+    const meJson = await tryRead('me', '/luna/pc/me', sodaPcAppParams({}, cookie), pcRequestOpts)
     const meData = (meJson && meJson.data) || meJson || {}
     const profile = sodaProfileFromMeData(meData)
     const userId = profile.userId
 
     await Promise.all([
       userId
-        ? tryRead('created', '/luna/pc/user/playlist', sodaPcAppParams({ user_id: userId, cursor: '', count: 50 }), pcRequestOpts)
+        ? tryRead('created', '/luna/pc/user/playlist', sodaPcAppParams({ user_id: userId, cursor: '', count: 50 }, cookie), pcRequestOpts)
         : Promise.resolve(null),
-      tryRead('collection', '/luna/pc/me/collection/mixed', sodaPcAppParams({ cursor: '', count: 50 }), Object.assign({ optional: true }, pcRequestOpts)),
-      tryRead('recent', '/luna/pc/me/recently-played-media', sodaPcAppParams({ cursor: '', count: 50 }), Object.assign({ optional: true }, pcRequestOpts)),
+      tryRead('collection', '/luna/pc/me/collection/mixed', sodaPcAppParams({ cursor: '', count: 50 }, cookie), Object.assign({ optional: true }, pcRequestOpts)),
+      tryRead('recent', '/luna/pc/me/recently-played-media', sodaPcAppParams({ cursor: '', count: 50 }, cookie), Object.assign({ optional: true }, pcRequestOpts)),
     ])
     if (!userId) errors.push('me:missing-user-id')
 
@@ -1994,7 +2152,7 @@ async function fetchSodaPlaybackMembership(cookieText) {
   const cacheKey = 'membership|' + sodaCookieFingerprint(cookie)
   return sodaMembershipCache.wrap(cacheKey, sodaMembershipCacheTtlMs, async () => {
     try {
-      const json = await sodaWebRequestJson('/luna/pc/me', sodaPcAppParams(), cookie, {
+      const json = await sodaWebRequestJson('/luna/pc/me', sodaPcAppParams({}, cookie), cookie, {
         bases: [QISHUI_WEB_PC_API_BASE],
         noDefaultParams: true,
         sessionOnly: true,
@@ -2046,7 +2204,7 @@ async function fetchSodaWebPlaylistTracks(playlistId, cookieText, opts = {}) {
           playlist_id: id,
           cursor: cursorState.cursor,
           count: Math.min(100, Math.max(1, targetCount - cursorState.rawItems.length)),
-        }), cookie, {
+        }, cookie), cookie, {
           bases: [QISHUI_WEB_PC_API_BASE],
           noDefaultParams: true,
           sessionOnly: true,
@@ -2136,10 +2294,22 @@ async function handleSodaCheckTracksLiked(trackIds, cookieText) {
   let knownTracks = dedupeSodaSongs(library.likedTracks || [])
   let complete = false
   if (library.likedCard && library.likedCard.id) {
-    const detail = await fetchSodaWebPlaylistTracks(library.likedCard.id, cookie, { limit: 50, offset: 0 }).catch(() => null)
-    if (detail && Array.isArray(detail.tracks)) {
+    // 审计确认：我喜欢歌单常超 50 首，此前只拉单页 → 超出的红心恒判未喜欢。
+    // 改为游标分页全量拉取（复用 fetchSodaWebPlaylistTracks 的游标增量翻页），
+    // complete 只在成功遍历完整个歌单时置 true；安全上限 40 页（2000 首），触顶如实上报不完整。
+    const MAX_LIKED_PAGES = 40
+    let fetched = 0
+    for (let page = 0; page < MAX_LIKED_PAGES; page += 1) {
+      const detail = await fetchSodaWebPlaylistTracks(library.likedCard.id, cookie, { limit: 50, offset: fetched }).catch(() => null)
+      if (!detail || !Array.isArray(detail.tracks)) break
       knownTracks = dedupeSodaSongs(knownTracks.concat(detail.tracks))
-      complete = !detail.hasMore
+      fetched += detail.tracks.length
+      // 空页即停止（若上游仍声称有更多，则无法确认完整，complete 维持 false）
+      if (!detail.tracks.length) break
+      if (!detail.hasMore) {
+        complete = true
+        break
+      }
     }
   }
   const knownLiked = new Set(knownTracks.map((song) => String(song.id || '')).filter(Boolean))
@@ -2282,7 +2452,7 @@ async function handleSodaComments(trackId, opts, cookieText) {
     cursor,
     count,
     group_type: 0,
-  }), cookie, {
+  }, cookie), cookie, {
     bases: [QISHUI_WEB_PC_API_BASE],
     noDefaultParams: true,
     sessionOnly: true,
@@ -2342,7 +2512,7 @@ async function fetchSodaPcTrackV2Post(trackId, cookieText) {
     queue_type: 'favorite_track_playlist',
     scene_name: 'library',
   })
-  const json = await requestJson(qishuiPcUrl('/luna/pc/track_v2', sodaPcAppParams()), {
+  const json = await requestJson(qishuiPcUrl('/luna/pc/track_v2', sodaPcAppParams({}, cookieText)), {
     method: 'POST',
     timeoutMs: 10000,
     headers: Object.assign(sodaWebHeaders(cookieText, { sessionOnly: true, pcApp: true }), {
@@ -2355,7 +2525,7 @@ async function fetchSodaPcTrackV2Post(trackId, cookieText) {
 }
 
 async function fetchSodaPcTrackV2Get(trackId, cookieText) {
-  const json = await requestJson(qishuiPcUrl('/luna/pc/track_v2', sodaPcAppParams({ track_id: trackId, media_type: 'track' })), {
+  const json = await requestJson(qishuiPcUrl('/luna/pc/track_v2', sodaPcAppParams({ track_id: trackId, media_type: 'track' }, cookieText)), {
     timeoutMs: 10000,
     headers: Object.assign(sodaWebHeaders(cookieText, { sessionOnly: true, pcApp: true }), {
       Referer: 'https://www.qishui.com/',
@@ -2366,22 +2536,47 @@ async function fetchSodaPcTrackV2Get(trackId, cookieText) {
   return json
 }
 
-/** track_v2 元数据（POST 优先，GET 兜底，20s 微缓存） */
+/** track_v2 元数据（POST 优先，GET 兜底，20s 微缓存 + 45s 失败负缓存） */
 async function fetchSodaPcTrackV2(trackId, cookieText) {
   const cookie = normalizeSodaCookieInput(cookieText)
   const cacheKey = 'track-v2-meta|' + sodaCookieFingerprint(cookie) + '|' + normalizeText(trackId)
-  return sodaTrackMetadataCache.wrap(cacheKey, 20 * 1000, async () => {
-    try {
-      return await fetchSodaPcTrackV2Post(trackId, cookie)
-    } catch (postError) {
+  const errorKey = 'track-v2-error|' + sodaCookieFingerprint(cookie) + '|' + normalizeText(trackId)
+  // 负缓存命中：短窗口内直接复述上次失败摘要（requestJson「无效 JSON」等），不再重复打上游；TTL 过后自动放行重试
+  const cachedError = sodaTrackV2ErrorCache.get(errorKey)
+  if (cachedError && Date.now() - cachedError.at < SODA_TRACK_V2_ERROR_TTL_MS) {
+    const err = new Error(cachedError.message || 'SODA_PC_TRACK_V2_FAILED')
+    if (cachedError.code) err.code = cachedError.code
+    if (cachedError.postError) err.postError = cachedError.postError
+    err.fromNegativeCache = true
+    throw err
+  }
+  try {
+    return await sodaTrackMetadataCache.wrap(cacheKey, 20 * 1000, async () => {
       try {
-        return await fetchSodaPcTrackV2Get(trackId, cookie)
-      } catch (getError) {
-        getError.postError = (postError && postError.message) || String(postError)
-        throw getError
+        return await fetchSodaPcTrackV2Post(trackId, cookie)
+      } catch (postError) {
+        try {
+          return await fetchSodaPcTrackV2Get(trackId, cookie)
+        } catch (getError) {
+          getError.postError = (postError && postError.message) || String(postError)
+          throw getError
+        }
       }
+    })
+  } catch (err) {
+    sodaTrackV2ErrorCache.set(errorKey, {
+      at: Date.now(),
+      message: (err && err.message) || String(err),
+      code: (err && err.code) || '',
+      postError: (err && err.postError) || '',
+    })
+    while (sodaTrackV2ErrorCache.size > SODA_TRACK_V2_ERROR_CACHE_LIMIT) {
+      const oldestKey = sodaTrackV2ErrorCache.keys().next().value
+      if (!oldestKey) break
+      sodaTrackV2ErrorCache.delete(oldestKey)
     }
-  })
+    throw err
+  }
 }
 
 /** 拉取 url_player_info（CDN 直签地址），同样做会员过滤；被挡的最优流内部保留用于精确报因 */
@@ -2474,6 +2669,18 @@ function sodaUnavailableResult(reason, message, extra) {
   )
 }
 
+/** 把会员视图展开为响应顶层字段（原版 song/url 有、移植时丢失；与嵌套 membership 双写兼容，审计四-3） */
+function sodaFlattenMembershipView(view) {
+  return {
+    membershipKnown: !!(view && view.membershipKnown),
+    vipType: Number(view && view.vipType) || 0,
+    vipLevel: (view && view.vipLevel) || 'unknown',
+    isVip: !!(view && view.isVip),
+    isSvip: !!(view && view.isSvip),
+    vipLabel: (view && view.vipLabel) || '未知会员状态',
+  }
+}
+
 /**
  * 播放地址主流程：
  *  无 cookie → login_required；track_v2 元数据 → 会员判定（曲目限制 ∪ 音质档位需求）→
@@ -2483,25 +2690,36 @@ async function handleSodaSongUrl(opts, cookieText) {
   opts = opts && typeof opts === 'object' ? opts : { id: opts }
   const id = normalizeText(opts.id || opts.trackId || opts.track_id || '')
   const cookie = normalizeSodaCookieInput(cookieText || opts.cookie || '')
-  const unknownMembershipView = { isVip: false, isSvip: false, vipLabel: '未知会员状态', membershipKnown: false }
-  if (!id) return sodaUnavailableResult('missing_id', '缺少汽水音乐歌曲 id', { membership: unknownMembershipView })
-  if (!sodaCookieHasLogin(cookie)) {
-    return sodaUnavailableResult('login_required', '汽水音乐播放需要登录态（cookie 参数）', { membership: unknownMembershipView })
-  }
   const requestedQuality = normalizeText(opts.quality || '')
+  const unknownMembershipView = { isVip: false, isSvip: false, vipType: 0, vipLevel: 'unknown', vipLabel: '未知会员状态', membershipKnown: false }
+  if (!id) {
+    return sodaUnavailableResult('missing_id', '缺少汽水音乐歌曲 id', Object.assign({
+      requiredTier: 'free',
+      requestedQuality,
+    }, sodaFlattenMembershipView(unknownMembershipView), { membership: unknownMembershipView }))
+  }
+  if (!sodaCookieHasLogin(cookie)) {
+    return sodaUnavailableResult('login_required', '汽水音乐播放需要登录态（cookie 参数）', Object.assign({
+      requiredTier: 'free',
+      requestedQuality,
+    }, sodaFlattenMembershipView(unknownMembershipView), { membership: unknownMembershipView }))
+  }
   let payload
   try {
     payload = await fetchSodaPcTrackV2(id, cookie)
   } catch (err) {
-    return sodaUnavailableResult('source_unavailable', '汽水音乐未返回播放元数据：' + ((err && err.message) || String(err)), {
-      membership: unknownMembershipView,
-    })
+    return sodaUnavailableResult('source_unavailable', '汽水音乐未返回播放元数据：' + ((err && err.message) || String(err)), Object.assign({
+      requiredTier: 'free',
+      requestedQuality,
+    }, sodaFlattenMembershipView(unknownMembershipView), { membership: unknownMembershipView }))
   }
   let membership = sodaPlaybackMembershipFromPayload(payload)
   if (!membership.membershipKnown) membership = await fetchSodaPlaybackMembership(cookie)
   const membershipView = {
     isVip: !!membership.isVip,
     isSvip: !!membership.isSvip,
+    vipType: Number(membership.vipType) || 0,
+    vipLevel: membership.vipLevel || (membership.membershipKnown ? 'none' : 'unknown'),
     vipLabel: membership.vipLabel || (membership.membershipKnown ? '无VIP' : '未知会员状态'),
     membershipKnown: !!membership.membershipKnown,
   }
@@ -2521,10 +2739,10 @@ async function handleSodaSongUrl(opts, cookieText) {
             : reason === 'svip_required'
               ? '该汽水音乐歌曲或音质需要可验证的 SVIP 权益。'
               : '该汽水音乐歌曲或音质需要可验证的 VIP 权益。'
-        return sodaUnavailableResult(reason, message, {
+        return sodaUnavailableResult(reason, message, Object.assign({
           requiredTier,
-          membership: membershipView,
-        })
+          requestedQuality,
+        }, sodaFlattenMembershipView(membershipView), { membership: membershipView }))
       }
       const resolved = await resolveSodaDownloadInfo(id, payload, cookie, membership)
       const track = resolved.track || {}
@@ -2545,6 +2763,16 @@ async function handleSodaSongUrl(opts, cookieText) {
         durationSec: duration,
         membership: membershipView,
         source: 'qishui-pc-track-v2',
+        // 恢复原版响应字段（移植丢失，审计四-3）：顶层会员视图 + 音质档位/下载体积/请求音质回显
+        level: sodaPlaybackLevel(stream.quality, stream.format, stream.bitrate),
+        size: Number(stream.size) || 0,
+        requestedQuality,
+        membershipKnown: membershipView.membershipKnown,
+        vipType: membershipView.vipType,
+        vipLevel: membershipView.vipLevel,
+        isVip: membershipView.isVip,
+        isSvip: membershipView.isSvip,
+        vipLabel: membershipView.vipLabel,
       }
       if (result.bitrateKbps == null) delete result.bitrateKbps
       if (result.format == null) delete result.format
@@ -2565,10 +2793,10 @@ async function handleSodaSongUrl(opts, cookieText) {
             vip_required: '汽水音乐仅返回了需要 VIP 权益的音质。',
           }[entitlementReason]
         : '汽水音乐没有返回可播放的音频源：' + ((err && err.message) || String(err))
-      return sodaUnavailableResult(entitlementReason || 'source_unavailable', message, {
+      return sodaUnavailableResult(entitlementReason || 'source_unavailable', message, Object.assign({
         requiredTier: (err && err.requiredTier) || 'free',
-        membership: membershipView,
-      })
+        requestedQuality,
+      }, sodaFlattenMembershipView(membershipView), { membership: membershipView }))
     }
   })
 }
@@ -2590,12 +2818,12 @@ async function fetchSodaSeoTrack(trackId) {
   })
 }
 
-/** 歌词主流程：SEO → （登录时）track_v2 → 公开目录；全程 LRC 化并缓存 */
+/** 歌词主流程：SEO → （登录时）track_v2 → 公开目录；全程 LRC 化并缓存，yrc 命中时附结构化 words */
 async function handleSodaLyric(id, cookieText) {
   id = normalizeText(id)
-  if (!id) return { lyric: '', tlyric: '', source: 'none', error: '缺少汽水音乐歌曲 id' }
+  if (!id) return { lyric: '', tlyric: '', source: 'none', error: '缺少汽水音乐歌曲 id', words: null }
   const cached = sodaLyricCache.get(id)
-  if (cached) return { lyric: cached.lyric, tlyric: cached.tlyric, source: cached.source }
+  if (cached) return { lyric: cached.lyric, tlyric: cached.tlyric, source: cached.source, words: cached.words || null }
   // 负缓存命中：近期已确认三级全空，直接短路返回，避免纯音乐/翻唱每次切歌都打满三级上游
   const loggedIn = sodaCookieHasLogin(normalizeSodaCookieInput(cookieText))
   const missKey = id + '|' + (loggedIn ? 'login' : 'guest')
@@ -2607,7 +2835,7 @@ async function handleSodaLyric(id, cookieText) {
     const seoPayload = await fetchSodaSeoTrack(id)
     const lyrics = extractSodaLyrics(seoPayload)
     const cachedSeo = cacheSodaLyric(id, lyrics.lyric, lyrics.tlyric, 'soda-seo-track')
-    if (cachedSeo) return { lyric: cachedSeo.lyric, tlyric: cachedSeo.tlyric, source: cachedSeo.source }
+    if (cachedSeo) return { lyric: cachedSeo.lyric, tlyric: cachedSeo.tlyric, source: cachedSeo.source, words: cachedSeo.words || null }
   } catch (err) {
     errors.push('seo:' + ((err && err.message) || String(err)))
   }
@@ -2616,7 +2844,7 @@ async function handleSodaLyric(id, cookieText) {
       const trackPayload = await fetchSodaPcTrackV2Get(id, cookieText)
       const lyrics = extractSodaLyrics(trackPayload)
       const cachedTrack = cacheSodaLyric(id, lyrics.lyric, lyrics.tlyric, 'soda-pc-track-v2')
-      if (cachedTrack) return { lyric: cachedTrack.lyric, tlyric: cachedTrack.tlyric, source: cachedTrack.source }
+      if (cachedTrack) return { lyric: cachedTrack.lyric, tlyric: cachedTrack.tlyric, source: cachedTrack.source, words: cachedTrack.words || null }
     } catch (err) {
       errors.push('track-v2:' + ((err && err.message) || String(err)))
     }
@@ -2624,13 +2852,13 @@ async function handleSodaLyric(id, cookieText) {
   try {
     await fetchSodaPublicDetail(id)
     const fresh = sodaLyricCache.get(id)
-    if (fresh) return { lyric: fresh.lyric, tlyric: fresh.tlyric, source: fresh.source }
+    if (fresh) return { lyric: fresh.lyric, tlyric: fresh.tlyric, source: fresh.source, words: fresh.words || null }
   } catch (err) {
     errors.push('public:' + ((err && err.message) || String(err)))
   }
   // 三级全空：写入负缓存（10 分钟），下轮同曲直接短路
   sodaLyricMissCache.set(missKey, true)
-  return { lyric: '', tlyric: '', source: 'none', error: errors.join('; ') || 'all-sources-empty' }
+  return { lyric: '', tlyric: '', source: 'none', error: errors.join('; ') || 'all-sources-empty', words: null }
 }
 
 // ─────────────────────────── 聚合能力：状态 / 榜单 / 日推 / 艺人 / 专辑 ───────────────────────────
@@ -2674,7 +2902,7 @@ async function handleSodaStatus(cookieText) {
         error: membership.error || 'QISHUI_SESSION_INVALID',
       })
     }
-    const profileSource = await sodaWebRequestJson('/luna/pc/me', sodaPcAppParams(), cookie, {
+    const profileSource = await sodaWebRequestJson('/luna/pc/me', sodaPcAppParams({}, cookie), cookie, {
       bases: [QISHUI_WEB_PC_API_BASE],
       noDefaultParams: true,
       sessionOnly: true,
@@ -2764,7 +2992,6 @@ async function handleSodaCharts(cookieText, chartLimit) {
               else clean.push(song)
             }
             const out = [...clean, ...tagged].slice(0, limit)
-            console.log('[Charts][keep] kw=', def.keyword, 'clean=', clean.length, 'tagged=', tagged.length, 'top3=', out.slice(0, 3).map(s => s && s.name).join('/'))
             return out
           }
           if (loggedIn) {
@@ -2814,6 +3041,52 @@ async function handleSodaDaily(cookieText, limit) {
   }
   const pub = await handleSodaPublicSearch('热歌', limit * 3, '', 0)
   return { songs: filterSodaChartNoise(pub.songs || [], '热歌').slice(0, limit), personalized: false }
+}
+
+/** 最近播放（只读）：复用账号库聚合缓存里 recentTracks（luna/pc/me/recently-played-media，
+ *  已按 cookie 指纹 90s TTL 缓存），取前 N 条 mapSodaMedia 映射歌曲，不发额外上游请求 */
+async function handleSodaRecentTracks(cookieText, limit) {
+  limit = Math.max(1, Math.min(50, Number(limit) || 10))
+  const cookie = normalizeSodaCookieInput(cookieText)
+  if (!sodaCookieHasLogin(cookie)) {
+    return { loggedIn: false, songs: [] }
+  }
+  const library = await fetchSodaWebLibrary(cookie)
+  return { loggedIn: true, songs: (library.recentTracks || []).slice(0, limit) }
+}
+
+/**
+ * 专辑收藏状态检查（只读，尽力而为）：
+ * 上游没有逐专辑的收藏状态读接口——只从账号库聚合缓存（fetchSodaWebLibrary，
+ * 90s TTL/每 cookie 指纹；库冷却时最多补一次常规聚合请求）判归：
+ * 收藏夹 shelf 卡片 id 命中、或「已收藏媒体」（likedTracks：collection/mixed 等显式收藏动作读取）
+ * 内映射出的专辑 id/同名命中即 collected:true；
+ * 未命中返回 known:false（证据不足 ≠ 确认未收藏），前端保持默认未收藏即可。
+ */
+async function handleSodaAlbumCollectCheck(albumKey, cookieText) {
+  const key = normalizeText(albumKey)
+  const cookie = normalizeSodaCookieInput(cookieText)
+  if (!key || !sodaCookieHasLogin(cookie)) {
+    return { id: key, loggedIn: false, collected: false, known: false }
+  }
+  const library = await fetchSodaWebLibrary(cookie)
+  // 外部约定汽水专辑标识可能传真实数字 id，也可能传「专辑名」原串（AlbumDetailModal 同口径），两种都认
+  const nameKey = /^\d+$/.test(key) ? '' : key.toLowerCase()
+  const matchSong = (song) =>
+    !!song && (
+      (song.albumId ? String(song.albumId) === key : false) ||
+      (!!nameKey && String(song.album || '').trim().toLowerCase() === nameKey)
+    )
+  let collected = false
+  let via = ''
+  if ((library.playlists || []).some((pl) => pl && String(pl.id) === key)) {
+    collected = true
+    via = 'shelf-card'
+  } else if ((library.likedTracks || []).some(matchSong)) {
+    collected = true
+    via = 'collected-media'
+  }
+  return { id: key, loggedIn: true, collected, known: true, via: via || undefined }
 }
 
 /** 艺人歌曲：公开搜索 + 按歌手名相关性排序（rankSodaPublicSongs 已内置歌手权重） */
@@ -2963,6 +3236,22 @@ export function registerSodaRoutes(app) {
   })
 
   // 5. 歌单详情/曲目（支持 qishui-feed / qishui-liked / qishui-recent 虚拟 id）
+  // [诊断] 仅在测试端口(3999)暴露：抓 track_v2 原始上游响应，定位『无效 JSON』
+  app.get('/api/soda/_debug/trackv2', async (req, res) => {
+    if (String(process.env.PORT || '3001') !== '3999') return res.status(404).json({ error: 'not available' })
+    try {
+      const cookie = sodaRequestCookie(req)
+      const id = normalizeText(String(req.query.id || ''))
+      const target = qishuiPcUrl('/luna/pc/track_v2', sodaPcAppParams({ track_id: id, media_type: 'track' }, cookie))
+      const resp = await fetch(target, { headers: sodaWebHeaders(cookie, { sessionOnly: true, pcApp: true }), signal: AbortSignal.timeout(15000) })
+      const ct = resp.headers.get('content-type') || ''
+      const text = await resp.text()
+      res.json({ status: resp.status, contentType: ct, bodyLen: text.length, bodyHead: text.slice(0, 500) })
+    } catch (e) {
+      res.status(502).json({ error: String((e && e.message) || e) })
+    }
+  })
+
   app.get('/api/soda/playlist/tracks', async (req, res) => {
     try {
       const cookie = sodaRequestCookie(req)
@@ -3183,7 +3472,8 @@ export function registerSodaRoutes(app) {
       const id = normalizeText(req.query.id || req.query.trackId)
       if (!id) return res.status(400).json({ error: '缺少歌曲 id' })
       const result = await handleSodaLyric(id, sodaRequestCookie(req))
-      res.json({ lyric: result.lyric || '', tlyric: result.tlyric || '', source: result.source || '', error: result.error || undefined })
+      // words：yrc 命中时的结构化逐字时间轴（绝对毫秒）；平铺 LRC/公开目录兜底时为 null
+      res.json({ lyric: result.lyric || '', tlyric: result.tlyric || '', source: result.source || '', words: result.words || null, error: result.error || undefined })
     } catch (err) {
       sodaSendError(res, 'Lyric', err, { lyric: '', tlyric: '' })
     }
@@ -3233,6 +3523,28 @@ export function registerSodaRoutes(app) {
       res.json(await handleSodaDaily(sodaRequestCookie(req), limit))
     } catch (err) {
       sodaSendError(res, 'Daily', err, { songs: [], personalized: false })
+    }
+  })
+
+  // 19. 最近播放（只读：复用账号库聚合缓存 recentTracks，前 N 条 mapSodaMedia 映射歌曲；
+  //     cookie 请求级透传、绝不落盘全局。未登录返回 loggedIn:false 空列表而非报错）
+  app.get('/api/soda/recent', async (req, res) => {
+    try {
+      const limit = sodaClampInt(req.query.limit, 10, 1, 50)
+      res.json(await handleSodaRecentTracks(sodaRequestCookie(req), limit))
+    } catch (err) {
+      sodaSendError(res, 'Recent', err, { songs: [], loggedIn: false })
+    }
+  })
+
+  // 20. 专辑收藏状态检查（只读尽力而为：从账号库聚合缓存判归，id= 专辑 id 或专辑名原串）
+  app.get('/api/soda/album/collect/check', async (req, res) => {
+    try {
+      const id = normalizeText(req.query.id || req.query.albumId)
+      if (!id) return res.status(400).json({ error: '缺少专辑 id 或专辑名 id' })
+      res.json(await handleSodaAlbumCollectCheck(id, sodaRequestCookie(req)))
+    } catch (err) {
+      sodaSendError(res, 'AlbumCollectCheck', err, { collected: false, known: false })
     }
   })
 }
