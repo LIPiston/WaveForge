@@ -2,9 +2,10 @@ import express from 'express'
 import { fileURLToPath } from 'url'
 import { dirname, join, extname, resolve, sep } from 'path'
 import { readdir, stat, readFile } from 'fs/promises'
-import { existsSync, createReadStream } from 'fs'
+import { existsSync, createReadStream, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { Readable } from 'stream'
 import dns from 'node:dns'
+import os from 'node:os'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { Agent as HttpAgent } from 'http'
@@ -26,6 +27,13 @@ import { getCommentMutationMessage, isCommentMutationSuccessful } from './server
 import { registerHazardRoutes } from './server/hazard-api.mjs'
 import { registerLocationRoutes } from './server/location-api.mjs'
 import { registerBilibiliRoutes } from './server/bilibili-api.mjs'
+// 汽水音乐（/api/soda/*）：登录态由前端每次请求的 cookie 参数传入，后端绝不持久化
+import { registerSodaRoutes } from './server/qishui-api.mjs'
+// 汽水加密音频解密代理（/api/soda/audio）：CENC 流服务端解密为可播 FLAC/m4a
+import { registerSodaAudioProxy } from './server/qishui-audio-decryptor.mjs'
+import { registerAppleArtworkRoutes } from './server/apple-artwork-api.mjs'
+import dglabRelayModule from './server/dglab-relay.cjs'
+const { createDGLabRelay } = dglabRelayModule
 
 const execFileAsync = promisify(execFile)
 
@@ -94,6 +102,41 @@ function setQQMusicCookie(cookie) {
   // 传入已解析对象也能保留值中可能出现的等号。
   qqMusicApi.setCookie(parsedCookie)
   return true
+}
+
+// QQ Cookie 落盘：登录后持久化，服务重启（冷启动）后恢复全局登录态。
+// 不恢复的话，每次启动 local-server 全局 cookie 都是空的：user/songlist 这类
+// 公开接口仍能返回自建歌单，但「我喜欢」的兜底（user/detail → mymusic）需要登录，
+// 会静默失败，导致启动时歌单列表缺「我喜欢」，手动刷新后才出现。
+const QQ_COOKIE_PERSIST_FILENAME = 'qq-cookie.txt'
+
+function getQQCookiePersistPath() {
+  const baseDir = process.env.WAVEFORGE_USERDATA || join(os.homedir(), '.waveforge')
+  return join(baseDir, QQ_COOKIE_PERSIST_FILENAME)
+}
+
+function persistQQMusicCookie(cookie) {
+  try {
+    const target = getQQCookiePersistPath()
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, String(cookie || '').trim(), 'utf8')
+  } catch (error) {
+    console.warn('[QQCookie] 持久化失败（不影响本次登录）:', error?.message || error)
+  }
+}
+
+function restoreQQMusicCookie() {
+  try {
+    const target = getQQCookiePersistPath()
+    if (!existsSync(target)) return
+    const saved = readFileSync(target, 'utf8').trim()
+    if (!saved) return
+    if (setQQMusicCookie(saved)) {
+      console.log(`[QQCookie] 已从本地恢复登录态（${saved.length} 字符）`)
+    }
+  } catch (error) {
+    console.warn('[QQCookie] 启动恢复失败:', error?.message || error)
+  }
 }
 
 // 解析“本次请求有效 Cookie”：请求自带 cookie 时仅本次使用，绝不回写全局。
@@ -957,6 +1000,14 @@ app.use(express.urlencoded({ extended: true, limit: '12mb' }))
 registerHazardRoutes(app)
 registerLocationRoutes(app)
 registerBilibiliRoutes(app)
+registerSodaRoutes(app)
+registerSodaAudioProxy(app)
+registerAppleArtworkRoutes(app)
+
+// DG_LAB 郊狼插件中继（默认 30082 端口，127.0.0.1 监听；「允许局域网连接」时绑 0.0.0.0 供手机扫码）
+const dglabRelay = createDGLabRelay()
+dglabRelay.registerHttp(app)
+dglabRelay.start()
 
 const fetchLocationProvider = async (url, normalize) => {
   const controller = new AbortController()
@@ -1073,6 +1124,7 @@ app.post('/api/qq/cookie', (req, res) => {
       return res.status(400).json({ error: 'Cookie不能为空' })
     }
     setQQMusicCookie(cookie)
+    persistQQMusicCookie(cookie)
     res.json({ success: true, message: 'Cookie已设置' })
   } catch (error) {
     console.error('[QQ音乐Cookie] 错误:', error)
@@ -5679,20 +5731,43 @@ app.get('/api/qq/lyric', async (req, res) => {
     try {
       const param = { lrc: 1, qrc: 1, qrc_t: 0, trans: 1, trans_t: 0, roma: 1, roma_t: 0, crypt: 1, ct: 19, cv: 2111, type: 0 }
       if (songMid) param.songMID = songMid
-      if (id) param.songID = parseInt(id)
-      
-      const json = await qqMusicRequest({
-        comm: { ct: 24, cv: 0 },
-        lyric: {
-          module: 'music.musichallSong.PlayLyricInfo',
-          method: 'GetPlayLyricInfo',
-          param,
+      // id 只有**整体是纯数字**才是 songID。QQ 的 songmid 是字母开头的字符串
+      //（如 "003Vz5hK1iS1ZY"），parseInt 会吃掉前导数字变成 3——把垃圾 songID=3 发给
+      // musicu 会返回别歌/空数据（方法1 的 lrc/trans/roma/qrc 全乱），只剩方法2 兜回
+      // 普通 LRC → 今天批量出现"没逐字/没翻译/没罗马音"的回归
+      const idStr = String(id ?? '').trim()
+      const idIsNumeric = /^\d+$/.test(idStr)
+      if (idIsNumeric) param.songID = Number(idStr)
+
+      const callMusicu = async (p) => {
+        const j = await qqMusicRequest({
+          comm: { ct: 24, cv: 0 },
+          lyric: { module: 'music.musichallSong.PlayLyricInfo', method: 'GetPlayLyricInfo', param: p },
+        })
+        return j?.lyric?.data || null
+      }
+
+      let data = await callMusicu(param)
+      // 自适应：主请求没取到任何歌词内容（歌曲 id 可能是 songID 纯数字，也可能是 songmid
+      // 字符串；形态混用/猜错会取空）→ 用**另一形态**重试一次，确保 lrc/qrc/trans/roma
+      // 都能拿到（实测 Done for Me 只传 songMID 全空、带 songID 才有完整逐字+翻译）
+      if (data && (data.lyric || data.qrc || data.trans)) {
+        /* 主请求已取到内容 */
+      } else if (songMid) {
+        const retryParam = { ...param }
+        if (idIsNumeric) {
+          // 数字 id：主请求（songMID+可能带 songID）取空 → 只按 songID 形态重试（去掉可能干扰的 songMID）
+          retryParam.songID = Number(idStr)
+          delete retryParam.songMID
         }
-      })
-      
-      const data = json?.lyric?.data
+        const retried = await callMusicu(retryParam)
+        if (retried && (retried.lyric || retried.qrc || retried.trans)) {
+          data = retried
+          console.log(`[QQ音乐歌词] 自适应重试成功（id=${idStr} 形态：${idIsNumeric ? 'songMID→songID' : 'songID→songMID'}）`)
+        }
+      }
       console.log(`[QQ音乐歌词] musicu返回字段:`, Object.keys(data || {}))
-      
+
       // 添加详细的原始数据日志
       if (data?.lyric && typeof data.lyric === 'string') {
         console.log(`[QQ音乐歌词] lyric长度: ${data.lyric.length}, 前50字符: ${data.lyric.substring(0, 50)}`)
@@ -7653,6 +7728,7 @@ app.post('/api/qq/user/setCookie', async (req, res) => {
 
     // 同时更新本地状态与 qq-music-api，确保 MV、评论和歌单共用登录态。
     setQQMusicCookie(data)
+    persistQQMusicCookie(data)
     const cookieObj = parseQQCookie(data)
 
     // 提取uin（用户ID）- 尝试多个可能的字段
@@ -7834,6 +7910,7 @@ app.get('/api/qq/playlist/detail', async (req, res) => {
 app.delete('/api/qq/cookie', (_req, res) => {
   qqMusicCookie = ''
   qqMusicApi.setCookie({})
+  persistQQMusicCookie('')
   res.json({ success: true })
 })
 
@@ -10615,6 +10692,9 @@ app.use((err, req, res, next) => {
   console.error('[错误中间件]', req.method, req.originalUrl, err?.stack || err)
   res.status(500).json({ error: err?.message || '服务器内部错误' })
 })
+
+// 冷启动恢复上次登录的 QQ cookie，保证「我喜欢」等需登录的读取接口直接可用。
+restoreQQMusicCookie()
 
 const server = app.listen(PORT, '127.0.0.1', () => {
 })

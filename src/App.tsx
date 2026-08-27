@@ -1,15 +1,16 @@
 import { debugLog, isTransitionDebugEnabled } from './utils/debugLog'
 import { parseStoredBoolean } from './utils/storage'
-import { isTv, isTvModeActive } from './platform'
+import { isTv, isTvModeActive, isDesktop } from './platform'
 import { useTvBack } from './tv/tvCore'
 import { isPerfModeEfficiency } from './tv/perfMode'
-import { lazy, memo, Suspense, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps } from 'react'
+import { lazy, memo, Suspense, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import AlbumCoverPlayer from './components/AlbumCoverPlayer'
 import LyricsDisplay from './components/LyricsDisplay'
 import PlayerControls from './components/PlayerControls'
 import TitleBar from './components/TitleBar'
 import FusionEnableConfirmModal from './components/FusionEnableConfirmModal'
+import UpdateManager from './components/UpdateManager'
 import UpdatePrompt from './components/UpdatePrompt'
 import CrossfadeBackground from './components/CrossfadeBackground'
 
@@ -22,10 +23,13 @@ import { extractDominantColor, useColorThief } from './hooks/useColorThief'
 import { useAudioPlayer, type AudioGraphHandle } from './hooks/useAudioPlayer'
 import { airplayController } from './services/airplayController'
 import { useAudioAnalyzer } from './hooks/useAudioAnalyzer'
+import { useAppleDynamicCover } from './hooks/useAppleDynamicCover'
+import { FOLIA_STYLES } from './vendor/folia/stylesMeta'
 import { useAudioPulseStore, type AudioPulseStore } from './hooks/useAudioPulse'
-import { Song, getSongUrl, invalidateSongUrl, getLyrics, getProxiedImageUrl, getLocalAlbumIdentifier, resolveSongAlbumIdentifier, LyricLine } from './services/musicApi'
+import { useAutoHideCursor } from './hooks/useAutoHideCursor'
+import { Song, getSongUrl, getSodaPlaybackInfo, invalidateSongUrl, getLyrics, getProxiedImageUrl, getLocalAlbumIdentifier, resolveSongAlbumIdentifier, LyricLine } from './services/musicApi'
 import type { MusicPlatform } from './services/platforms'
-import { isPlatformVisible } from './services/platforms'
+import { isPlatformVisible, platformLabel } from './services/platforms'
 import { getAppleMusicSettings, resolveAppleTrack } from './services/appleMusic'
 import { getAppleAuthState, clearAppleLogin, type AppleUserInfo } from './services/appleAuth'
 import { recordLogin, clearLoginExpiry, isLoginExpired } from './services/loginExpiry'
@@ -42,7 +46,7 @@ import { fetchExploreRecommendationBatch } from './services/exploreApi'
 import { scheduleBackgroundPrefetch } from './services/backgroundPrefetch'
 import { getDesktopSpectrumConsumerCount, subscribeDesktopSpectrumConsumers } from './services/desktopSpectrum'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Settings } from 'lucide-react'
+import { Settings, Sparkles, Image as ImageIcon } from 'lucide-react'
 import { getDeterministicNextIndex, getUpcomingIndices } from './audio/PlaybackQueue'
 import type { TrackAnalysis, TransitionCommit, TransitionDebugInfo, TransitionState, TransitionStrategy } from './audio/types'
 import type { PlaybackTimeStore } from './audio/playbackTimeStore'
@@ -97,6 +101,7 @@ const loadTranslationDisplay = () => import('./components/TranslationDisplay')
 const loadWallpaperLyrics = () => import('./components/WallpaperLyrics')
 const loadGloriousLyrics = () => import('./components/GloriousLyrics')
 const loadMultidimensionalLyrics = () => import('./components/MultidimensionalLyrics')
+const loadFoliaLyricsPage = () => import('./components/FoliaLyricsPage')
 const loadModengPlayer = () => import('./components/ModengPlayerPage')
 const loadBilibiliMvPlayer = () => import('./components/BilibiliMvPlayer')
 const loadBilibiliMvBackground = () => import('./components/BilibiliMvBackground')
@@ -107,6 +112,7 @@ const LazyTranslationDisplay = lazy(loadTranslationDisplay)
 const LazyWallpaperLyrics: any = lazy(loadWallpaperLyrics)
 const LazyGloriousLyrics: any = lazy(loadGloriousLyrics)
 const LazyMultidimensionalLyrics = lazy(loadMultidimensionalLyrics)
+const LazyFoliaLyricsPage: any = lazy(loadFoliaLyricsPage)
 const LazyModengPlayer: any = lazy(loadModengPlayer)
 const LazyBilibiliMvPlayer: any = lazy(loadBilibiliMvPlayer)
 const LazyBilibiliMvBackground: any = lazy(loadBilibiliMvBackground)
@@ -119,6 +125,9 @@ const LazySongDetailModal = lazy(loadSongDetailModal)
 import RemoteCursor from './components/RemoteCursor'
 import PlatformLoginNotice from './components/PlatformLoginNotice'
 import SimilarSongsPanel from './components/SimilarSongsPanel'
+import PluginOverlay from './components/PluginOverlay'
+import { setGlobalAudioAnalyzerStore, setGlobalPlaybackActive, setGlobalAudioAnalysers } from './plugins/clients/DGLabClient'
+import { isPluginEnabled, PLUGIN_STATE_EVENT } from './services/pluginStore'
 import { detectQQMusicVip } from './utils/musicEntitlements'
 import { getQQUserDisplayName } from './utils/qqUser'
 import {
@@ -178,6 +187,18 @@ const LivePlayerControls = memo(function LivePlayerControls({
 
   return <PlayerControls {...props} currentTime={currentTime} />
 })
+
+/**
+ * 看歌兜底（搜索失败）时把全局控件挂到 body：看歌 surface(z-10, absolute inset-0) 会盖住
+ * minimal-playback-surface 的 transform 层叠上下文（willChange:transform 让其常驻合成层），
+ * 内联渲染的固定位控件会被看歌蒙层盖住 → "控件消失"。与顶部歌词模式切换同款逃逸手段。
+ * 包一层 fixed+w-0+h-0+z-60：不拦截事件（零尺寸），子元素固定定位仍相对视口且位于最上层。
+ */
+function MaybePortal({ active, children }: { active: boolean; children: ReactNode }) {
+  return active
+    ? createPortal(<div className="fixed top-0 left-0 z-[60] w-0 h-0">{children}</div>, document.body)
+    : <>{children}</>
+}
 
 type LiveMiniPlayerProps = Omit<ComponentProps<typeof MiniPlayer>, 'currentTime'> & {
   playbackTimeStore: PlaybackTimeStore
@@ -247,12 +268,14 @@ const buildDesktopLyricsWithInterludes = (lyrics: LyricLine[]): DesktopLyricLine
 }
 
 type CoverPulseMode = 'dynamic' | 'soft' | 'restless'
-type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'multidimensional' | 'modeng' | 'video'
+type LyricDisplayMode = 'modern' | 'immersive' | 'wallpaper' | 'glorious' | 'multidimensional' | 'modeng' | 'video' | 'folia'
 
 const LYRIC_MODE_VISIBILITY_KEY = 'waveforge_visible_lyric_modes'
 const LYRIC_MODE_MODENG_MIGRATED_KEY = 'waveforge_modeng_mode_migrated'
 const LYRIC_MODE_VIDEO_MIGRATED_KEY = 'waveforge_video_mode_migrated'
-const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional', 'modeng', 'video']
+/** Folia 歌词样式（vendored Project Folia 可视化器）的持久化 key 与默认样式 */
+const FOLIA_STYLE_KEY = 'waveforge_folia_style'
+const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional', 'modeng', 'video', 'folia']
 const LYRIC_MODE_NAMES: Record<LyricDisplayMode, string> = {
   modern: '现代',
   immersive: '沉浸式',
@@ -261,6 +284,7 @@ const LYRIC_MODE_NAMES: Record<LyricDisplayMode, string> = {
   multidimensional: '多维',
   modeng: '摩登',
   video: '看歌',
+  folia: 'Folia',
 }
 
 function loadVisibleLyricModes(): LyricDisplayMode[] {
@@ -483,6 +507,43 @@ async function loadQQSongDetail(song: Song): Promise<Song> {
   }
 }
 
+// ─────────────── 汽水换源提示（可感知化：审计三「静默换源」修复）───────────────
+/** 汽水 /song/url 不可播原因 → 中文短语（reason 口径与后端 sodaUnavailableResult 一致） */
+const SODA_UNAVAILABLE_REASON_TEXT: Record<string, string> = {
+  svip_required: '需 SVIP 权益',
+  vip_required: '需 VIP 权益',
+  membership_unknown: '会员状态验证中',
+  login_required: '汽水未登录',
+  missing_id: '歌曲信息异常',
+}
+
+/**
+ * 汽水源不可播 → 换源提示文案。
+ * 统一以「汽水·」前缀标注来源平台，避免用户把切过来的网易云/QQ 版本误认为汽水原唱。
+ */
+const buildSodaSourceSwitchToast = (
+  song: Song,
+  info: { requiredTier?: 'free' | 'vip' | 'svip'; vipLabel?: string; reason?: string } | null,
+): string => {
+  const artistName = song.artists?.[0]?.name || ''
+  const heading = artistName ? `汽水·${artistName}《${song.name}》` : `汽水《${song.name}》`
+  const tier: 'SVIP' | 'VIP' | '' =
+    info?.requiredTier === 'svip'
+      ? 'SVIP'
+      : info?.requiredTier === 'vip'
+        ? 'VIP'
+        : /svip/i.test(String(info?.vipLabel || ''))
+          ? 'SVIP'
+          : /^vip/i.test(String(info?.vipLabel || ''))
+            ? 'VIP'
+            : ''
+  // 会员档位场景：「汽水·周杰伦《xxx》需 SVIP，已切换其他来源版本」
+  if (tier) return `${heading}需 ${tier}，已切换其他来源版本`
+  // 其余场景（音源解析失败/未登录等）：「汽水《xxx》暂不可播（音源暂时无法解析），已切换其他来源版本」
+  const why = SODA_UNAVAILABLE_REASON_TEXT[String(info?.reason || '')] || '音源暂时无法解析'
+  return `${heading}暂不可播（${why}），已切换其他来源版本`
+}
+
 function App() {
   // 视图模式状态（探索 / 简约 / 桌面）
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -611,6 +672,7 @@ function App() {
         loadWallpaperLyrics(),
         loadGloriousLyrics(),
         loadMultidimensionalLyrics(),
+        loadFoliaLyricsPage(),
       ])
     }, { timeout: 2000 })
     return () => window.cancelIdleCallback(idleId)
@@ -677,6 +739,10 @@ function App() {
   const [lyrics, setLyrics] = useState<LyricLine[]>([])
   const [appleCoverUrl, setAppleCoverUrl] = useState<string | null>(null)
   const [lyricOffset, setLyricOffset] = useState(() => Number(localStorage.getItem('lyricOffset')) || 0)
+  const [lyricScrollTransitionStyle, setLyricScrollTransitionStyle] = useState<'classic' | 'amodern'>(() => {
+    const saved = localStorage.getItem('lyricScrollTransitionStyle')
+    return saved === 'amodern' ? 'amodern' : 'classic'
+  })
   const [playlist, setPlaylist] = useState<Song[]>([])
   const playlistRef = useRef<Song[]>([])
   const [currentIndex, setCurrentIndex] = useState(-1)
@@ -816,12 +882,12 @@ function App() {
   const suppressUpNextUntilRef = useRef(0)
   
   // 添加Toast的辅助函数
-  const addToast = (message: string, type: 'success' | 'error' | 'info', accentColor?: string) => {
+  const addToast = (message: string, type: 'success' | 'error' | 'info', accentColor?: string, duration = 4000) => {
     const id = toastIdRef.current++
     setToasts(prev => [...prev, { id, message, type, accentColor }])
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id))
-    }, 4000)
+    }, duration)
   }
 
   useEffect(() => () => {
@@ -860,7 +926,7 @@ function App() {
   const [isPureMusic, setIsPureMusic] = useState(false)
   const [lyricDisplayMode, setLyricDisplayMode] = useState<LyricDisplayMode>(() => {
     const saved = localStorage.getItem('lyricDisplayMode')
-    return saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' || saved === 'multidimensional' ? saved : 'modern'
+    return saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' || saved === 'multidimensional' || saved === 'modeng' || saved === 'video' || saved === 'folia' ? saved : 'modern'
   })
   // 摩登模式状态 ref：resolveAppleCover 等回调读取最新值（AM 封面仅摩登使用）
   const lyricDisplayModeRef = useRef(lyricDisplayMode)
@@ -871,6 +937,29 @@ function App() {
   })
   const [showLyricModePanel, setShowLyricModePanel] = useState(false)
   const [showLyricModeCustomize, setShowLyricModeCustomize] = useState(false)
+  // 歌词面板第二页：Folia 歌词样式（vendored Project Folia 可视化器，12 种样式）
+  const [lyricPanelPage, setLyricPanelPage] = useState<'waveforge' | 'folia'>('waveforge')
+  const [foliaStyle, setFoliaStyle] = useState<string>(() => {
+    const saved = localStorage.getItem(FOLIA_STYLE_KEY)
+    return saved || 'classic'
+  })
+  // Folia 是否使用自己的背景（latent 封面取色 shader）：关闭后改用 WaveForge 封面背景
+  // （folia 层透明露出 App 的封面背景层）。默认开启，尊重喜欢 Folia 原生背景的用户。
+  const [foliaBackgroundEnabled, setFoliaBackgroundEnabled] = useState(() => {
+    const saved = localStorage.getItem('waveforge_folia_background')
+    return saved === null || saved !== 'false'
+  })
+  const handleFoliaBackgroundToggle = () => {
+    setFoliaBackgroundEnabled((prev) => {
+      const next = !prev
+      localStorage.setItem('waveforge_folia_background', JSON.stringify(next))
+      return next
+    })
+  }
+  // 打开歌词面板时按当前模式定位页：Folia 页模式直接落在第二页（样式页）
+  useEffect(() => {
+    if (showLyricModePanel) setLyricPanelPage(lyricDisplayModeRef.current === 'folia' ? 'folia' : 'waveforge')
+  }, [showLyricModePanel])
   const [visibleLyricModes, setVisibleLyricModes] = useState<LyricDisplayMode[]>(() => {
     const loaded = loadVisibleLyricModes()
     return loaded.includes(lyricDisplayMode) ? loaded : [...loaded, lyricDisplayMode]
@@ -1036,6 +1125,14 @@ function App() {
 
   // 当前背景是否为 MV 视频（供 QuickSettings 的模糊滑块切换两套值：MV 激活时调 MV 模糊，封面时调封面模糊）
   const mvBackgroundActive = Boolean(currentSong) && lyricDisplayMode !== 'video' && mvBackgroundEnabled && !mvBackgroundFallback
+  // Apple Music 动态封面（图层叠加式）：未开启/无动态封面/查询失败时为 null，封面永远回退平台静态图
+  const appleDynamicCover = useAppleDynamicCover({
+    title: currentSong?.name || '',
+    artist: (currentSong?.artists || []).map((artist: { name: string }) => artist.name).join(', '),
+    album: currentSong?.album?.name || '',
+    duration: currentSong?.duration,
+    trackKey: currentSong?.id || currentSong?.mid || '',
+  })
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('mvBackgroundActiveChanged', { detail: mvBackgroundActive }))
   }, [mvBackgroundActive])
@@ -1045,6 +1142,37 @@ function App() {
     window.addEventListener('mvBackgroundActiveQuery', onQuery as EventListener)
     return () => window.removeEventListener('mvBackgroundActiveQuery', onQuery as EventListener)
   }, [mvBackgroundActive])
+
+  // 代理自动配置通知：运行中代理断开 / 启动时未检测到代理端口 → 弹 toast
+  useEffect(() => {
+    // 派发前先等 showToast 监听器注册（挂载早期直接派发会被丢弃）。
+    // 启动类提示额外延后数秒——刚启动界面还没稳定，立即弹用户来不及看；
+    // 同时把展示时长拉长到 8s 保证可读。运行中断开提示保持即时。
+    const toast = (message: string, delay = 0, duration = 4000) => {
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('showToast', { detail: { message, type: 'info', duration } }))
+      }, delay)
+    }
+    const off = window.electron?.proxyManager?.onNotice?.((notice) => {
+      if (notice.kind === 'disconnected') toast('检测到代理断开，已为您关闭自动代理')
+    })
+    // 启动提示：主进程的端口检测可能在渲染进程挂载后才完成，轮询几次兜底
+    let attempts = 0
+    const tryConsume = () => {
+      void window.electron?.proxyManager?.consumeNotice?.().then((notice) => {
+        if (notice === 'startup-unavailable') {
+          toast('由于您上次关闭时为自动代理，本次启动检测到无代理端口，已为您关闭自动代理功能', 3500, 8000)
+        } else if (notice === 'startup-unusable') {
+          toast('上次使用的代理已失效（端口在但隧道不通），已为您关闭自动代理功能', 3500, 8000)
+        } else if (attempts < 8) {
+          attempts += 1
+          window.setTimeout(tryConsume, 800)
+        }
+      }).catch(() => {})
+    }
+    tryConsume()
+    return () => off?.()
+  }, [])
   // 切歌时重置 MV 背景回退标记：上一首未找到 MV 不影响下一首重新匹配（回退期间 MV 层已卸载，无法自行上报）
   useEffect(() => {
     setMvBackgroundFallback(false)
@@ -1054,6 +1182,8 @@ function App() {
     () => (currentSong?.artists || []).map((artist: any) => artist.name),
     [currentSong],
   )
+  // 稳定的歌手名拼接串（folia 等歌词组件按值比较避免每秒重渲染）
+  const currentSongArtistLabel = useMemo(() => currentSongArtists.join(', '), [currentSongArtists])
   const isPlaybackPage = viewMode === 'minimal' && Boolean(currentSong) && !showHome
   const canShowUpNextOnCurrentSurface = isPlaybackPage || showUpNextOutsidePlayer
 
@@ -1096,21 +1226,40 @@ function App() {
     () => getDeterministicNextIndex(playlistKeys, currentIndex, playMode, queueRevision),
     [playlistKeys, currentIndex, playMode, queueRevision]
   )
+  // 看歌视频播放状态（迷你播放器/桌面小窗按视频进度显示；歌词时间源也依赖它）。
+  // 声明位置必须在歌词线性 memo 之前（currentMiniLyric 等引用）。
+  const [watchVideoActive, setWatchVideoActive] = useState(false)
+  const [watchVideoState, setWatchVideoState] = useState({ playing: false, time: 0, duration: 0, volume: 0.8, alignmentOffset: 0, alignmentVerified: false })
+  const watchVideoStateRef = useRef(watchVideoState)
+  watchVideoStateRef.current = watchVideoState
+  // 看歌模式下歌词时间源：引擎暂停 → currentTime 冻结，任务栏/桌面歌词会停住。
+  // 已确认对齐（视频与歌曲同源）时按「视频位 − 对齐偏移」推出歌曲位，歌词随 MV 继续滚动；
+  // 未确认（自由播放/货不对板）时歌词位置不可信 → 显示层回退「歌名-艺人」。
+  const lyricTimelineTime = lyricDisplayMode === 'video' && watchVideoActive && watchVideoState.alignmentVerified
+    ? watchVideoState.time - Math.max(0, watchVideoState.alignmentOffset)
+    : currentTime
+  const watchLyricUnverified = lyricDisplayMode === 'video' && watchVideoActive && !watchVideoState.alignmentVerified
   const currentMiniLyric = useMemo(() => {
-    const adjustedTime = currentTime + 0.5 + lyricOffset
+    const inWatchUnverified = watchLyricUnverified
+    if (inWatchUnverified) {
+      // 看歌但未确认对齐：歌词位不可信 → 显示「歌名 - 歌手」兜底
+      const artist = Array.isArray(currentSongArtists) ? currentSongArtists.map((a: any) => (a && a.name) || a || '').filter(Boolean).join(' / ') : ''
+      return `${currentSong?.name || ''}${artist ? ` - ${artist}` : ''}`
+    }
+    const adjustedTime = lyricTimelineTime + 0.5 + lyricOffset
     for (let index = lyrics.length - 1; index >= 0; index--) {
       if (lyrics[index].time <= adjustedTime) return lyrics[index].text
     }
     return ''
-  }, [currentTime, lyricOffset, lyrics])
+  }, [watchLyricUnverified, lyricTimelineTime, lyricOffset, lyrics, currentSong, currentSongArtists])
   const currentLyricIndex = useMemo(() => {
-    const adjustedTime = currentTime + 0.5 + lyricOffset
+    const adjustedTime = lyricTimelineTime + 0.5 + lyricOffset
     if (lyrics.length === 0 || adjustedTime < lyrics[0].time) return -1
     for (let index = lyrics.length - 1; index >= 0; index--) {
       if (lyrics[index].time <= adjustedTime) return index
     }
     return -1
-  }, [currentTime, lyricOffset, lyrics])
+  }, [lyricTimelineTime, lyricOffset, lyrics])
   const currentLyricLine = currentLyricIndex >= 0 ? lyrics[currentLyricIndex] : null
   const immersiveLyricLine = useMemo(() => {
     const hasVisibleContent = (line: LyricLine | null | undefined) =>
@@ -1128,18 +1277,23 @@ function App() {
   }, [currentLyricIndex, currentLyricLine, lyrics])
   const desktopLyrics = useMemo(() => buildDesktopLyricsWithInterludes(lyrics), [lyrics])
   const desktopLyricLine = useMemo(() => {
-    const adjustedTime = currentTime + 0.28 + lyricOffset
+    // 看歌未确认对齐（货不对板/自由播放）→ 桌面/任务栏歌词显示「歌名-艺人」兜底
+    if (watchLyricUnverified) {
+      const artist = Array.isArray(currentSongArtists) ? currentSongArtists.map((a: any) => (a && a.name) || a || '').filter(Boolean).join(' / ') : ''
+      return { time: 0, text: `${currentSong?.name || ''}${artist ? ` - ${artist}` : ''}`, translation: '', roman: '', words: [], romanWords: [], isGeneratedInterlude: false } as DesktopLyricLine
+    }
+    const adjustedTime = lyricTimelineTime + 0.28 + lyricOffset
     for (let index = desktopLyrics.length - 1; index >= 0; index--) {
       const line = desktopLyrics[index]
       if (line.time <= adjustedTime) {
-        if (line.isGeneratedInterlude && line.interludeEndTime !== undefined && currentTime + lyricOffset >= line.interludeEndTime) {
+        if (line.isGeneratedInterlude && line.interludeEndTime !== undefined && lyricTimelineTime + lyricOffset >= line.interludeEndTime) {
           return desktopLyrics[index + 1] || line
         }
         return line
       }
     }
     return null
-  }, [currentTime, lyricOffset, desktopLyrics])
+  }, [watchLyricUnverified, lyricTimelineTime, lyricOffset, desktopLyrics])
   const desktopLyricDuration = useMemo(() => {
     if (!desktopLyricLine) return 4.2
     const index = desktopLyrics.indexOf(desktopLyricLine)
@@ -1173,12 +1327,15 @@ function App() {
     if (isFresh && cached.lyricsPromise) return cached.lyricsPromise
 
     const platform = song.platform || 'netease'
-    const songId = platform === 'qq' ? (song.mid || song.id) : song.id
+    // 汽水的 item_id 是超长数字串，Number 化会截断失配，必须用原始 mid
+    const songId = (platform === 'qq' || platform === 'soda') ? (song.mid || song.id) : song.id
     const lyricsCacheGeneration = lyricsCacheGenerationRef.current
     let lyricsLoadedFromPersistentCache = false
     // 歌词缓存版本：评分/数据源/解析逻辑变更时递增，使旧缓存（旧解析选中的劣质/残缺源）失效。
-    // v2→v3：修复网易云"JSON 元数据+LRC 正文"混合格式解析后，旧缓存里的"作词/作曲"空壳必须作废。
-    const lyricsCacheKey = `v3:${cacheKey}`
+    // v3→v4：修复 QQ 歌词请求的 songID 形态后，**递增版本强制清除今天缓存下来的残缺结果**
+    //（上午 parseInt('004Iwx…')=4 的守卫 bug 让 musicu 返回空 qrc/trans/roma → 结果被
+    // IndexedDB 永久缓存，后端修好后缓存仍喂旧坏数据 → 重启也无效）
+    const lyricsCacheKey = `v4:${cacheKey}`
     const request = indexedDBCache.getCachedLyrics<LyricLine[]>(lyricsCacheKey, platform)
       .catch(() => null)
       .then(persistedLyrics => {
@@ -1325,6 +1482,14 @@ function App() {
     }
     window.addEventListener('lyricOffsetChanged', handleLyricOffsetChange)
     return () => window.removeEventListener('lyricOffsetChanged', handleLyricOffsetChange)
+  }, [])
+
+  useEffect(() => {
+    const handleLyricScrollTransitionStyleChange = (event: Event) => {
+      setLyricScrollTransitionStyle((event as CustomEvent<'classic' | 'amodern'>).detail)
+    }
+    window.addEventListener('lyricScrollTransitionStyleChanged', handleLyricScrollTransitionStyleChange)
+    return () => window.removeEventListener('lyricScrollTransitionStyleChanged', handleLyricScrollTransitionStyleChange)
   }, [])
 
   useEffect(() => {
@@ -1548,7 +1713,7 @@ function App() {
       })
 
     return () => { cancelled = true }
-  }, [currentSong, neteaseUserId, qqUserId, appleLoggedIn])
+  }, [currentSong, neteaseUserId, qqUserId, appleLoggedIn, sodaUserId])
 
   useEffect(() => {
     const handleFavoriteChange = (event: Event) => {
@@ -1703,7 +1868,8 @@ function App() {
           || state.currentTime === 0
           || state.currentTime + 0.5 < lastCommit.playbackTime
           || playbackDelta >= (nearEvent ? 0.1 : 1)
-          || now - lastCommit.wallTime >= (nearEvent ? 100 : 900)
+          // 常态节流：PC 1s / TV 2s（进度条走 Live wrapper 4Hz 不受影响；过渡倒计时窗口保持 100ms）
+          || now - lastCommit.wallTime >= (nearEvent ? 100 : (isTvModeActive() ? 2000 : 900))
 
         if (shouldCommitToReact) {
           currentTimeCommitRef.current = { wallTime: now, playbackTime: state.currentTime }
@@ -1988,13 +2154,38 @@ function App() {
     return saved === 'dynamic' || saved === 'restless' ? saved : 'soft'
   })
   
+  // DG_LAB 插件启用时保持音频分析流（即使封面律动关闭）
+  const [pluginDglabActive, setPluginDglabActive] = useState(() => isPluginEnabled('dglab'))
+  useEffect(() => {
+    const handler = () => setPluginDglabActive(isPluginEnabled('dglab'))
+    window.addEventListener(PLUGIN_STATE_EVENT, handler)
+    return () => window.removeEventListener(PLUGIN_STATE_EVENT, handler)
+  }, [])
+
   // 播放器状态监听
   const pulseActive = coverPulseEnabled && isPlaying
   const audioAnalyzer = useAudioAnalyzer(
     audioPlayer.analyserNode,
-    audioAnalyzerEnabled && pulseActive && !isPerfModeEfficiency() // 效能档关闭音频可视化省资源
+    audioAnalyzerEnabled && (pulseActive || pluginDglabActive) && !isPerfModeEfficiency(), // 效能档关闭音频可视化省资源；DG-LAB 插件启用时保持分析流
+    audioPlayer.leftAnalyserNode, // DG-LAB 立体声：左声道（音效后最终听感信号）
+    audioPlayer.rightAnalyserNode, // DG-LAB 立体声：右声道
   )
   const audioPulseStore = useAudioPulseStore(audioAnalyzer, pulseActive, coverPulseMode)
+
+  // 插件系统（DG_LAB 等）需要访问实时音频分析流
+  useEffect(() => {
+    setGlobalAudioAnalyzerStore(audioAnalyzer)
+  }, [audioAnalyzer])
+
+  // DG-LAB 实时波形（左右声道时域采样）用分析器
+  useEffect(() => {
+    setGlobalAudioAnalysers(audioPlayer.leftAnalyserNode, audioPlayer.rightAnalyserNode)
+  }, [audioPlayer.leftAnalyserNode, audioPlayer.rightAnalyserNode])
+
+  // 播放状态同步给 DG_LAB：暂停/停止时停止推送真实频谱（防暂停后仍持续输出）
+  useEffect(() => {
+    setGlobalPlaybackActive(isPlaying)
+  }, [isPlaying])
   
   // 监听封面律动设置变化
   useEffect(() => {
@@ -2158,8 +2349,8 @@ function App() {
 
   useEffect(() => {
     const handleShowToast = (e: CustomEvent) => {
-      const { message, type } = e.detail
-      addToast(message, type as 'success' | 'error' | 'info', localStorage.getItem('accentColor') || '#3B82F6')
+      const { message, type, duration } = e.detail
+      addToast(message, type as 'success' | 'error' | 'info', localStorage.getItem('accentColor') || '#3B82F6', duration)
     }
     window.addEventListener('showToast', handleShowToast as EventListener)
     return () => {
@@ -2478,26 +2669,33 @@ function App() {
     setShowLyricModeCustomize(false)
     setShowLyricModeArrowHint(false)
 
-    // 切到看歌：记录音频位置 + 引擎淡出（无缝拼接：前段音源音频 → 后段视频音频）
+    // 切到看歌：记录音频位置 + 停引擎（视频接管音频输出）
     if (mode === 'video') {
       const engineEl = audioPlayerRef.current?.getAudioElement?.()
       const pos = Number(engineEl?.currentTime) || 0
       setWatchSyncSeek(pos > 0 ? pos : 0)
       watchEngineVolumeRef.current = engineEl?.volume ?? 1
-      // MV 背景正在播同一个视频 → 复用其已加载的视频流，看歌无需重新缓冲
+      watchEngineMutedRef.current = engineEl?.muted ?? false
       const mvState = mvBackgroundStateRef.current
       setWatchInitialVideo(mvState ? { ...mvState, currentTime: pos > 0 ? pos : 0 } : null)
-      if (engineEl && !engineEl.paused) {
-        // 淡出完成后立即暂停引擎：加载期间引擎不再走表，视频从"点击时刻"的位置续播，
-        // 两侧进度完全一致（此前引擎静音继续走表，视频起播点落后加载耗时 = 进度差/断开感）。
-        void fadeElementVolume(engineEl, engineEl.volume, 0, 200).then(() => {
-          const current = audioPlayerRef.current?.getAudioElement?.()
-          if (current && !current.paused) {
-            watchPausedEngineRef.current = true
-            audioPlayerRef.current?.togglePlay()
-          }
-        })
+      // 立即暂停引擎 + 直设音量为 0（用 pause() 而非 togglePlay()——toggle 是双向的，
+      // 引擎可能已被其他路径暂停，toggle 反而会恢复播放 → 双重奏）
+      watchPausedEngineRef.current = true
+      if (engineEl) {
+        engineEl.volume = 0
+        if (!engineEl.paused) engineEl.pause()
       }
+      // 看歌模式视频接管时间线：中止任何在途的音频过渡并清掉过渡视觉状态，
+      // 否则 transitionToTrack/预载会残留到切回歌词模式后，把下一首的 MV 叠到 MV 背景上
+      audioPlayerRef.current?.cancelTransition?.('enter watch mode', true)
+      clearTransitionResetTimer()
+      setIsTransitioning(false)
+      setTransitionProgress(0)
+      setTransitionFromTrack(null)
+      setTransitionToTrack(null)
+      setTransitionFromAccentColor(null)
+      setTransitionToAccentColor(null)
+      watchResumeHeldAtEndRef.current = false
       window.requestAnimationFrame(() => {
         setLyricDisplayMode(mode)
         localStorage.setItem('lyricDisplayMode', mode)
@@ -2508,31 +2706,35 @@ function App() {
 
     // 切出看歌：视频音频淡出 → 恢复引擎位置并淡入（无缝拼接：前段视频音频 → 后段音源音频）
     if (lyricDisplayModeRef.current === 'video') {
-      const resumeTime = watchPlayerRef.current?.getCurrentTime?.() ?? watchVideoStateRef.current.time
+      // 歌曲位 = 视频位 − 对齐偏移：看歌里视频播在「歌曲位+偏移」（Die For You +19.89s），
+      // 直接用视频位会让引擎/歌词整体前跳 1~2 句（用户实测）。
+      // **货不对板退化（机制保证不坏）**：
+      //  - 匹配失败/网格拒绝（自由播放）→ 对齐偏移 = 0 → 歌曲位 = 视频位 = 进入位置+已播时长，
+      //    歌曲自然续播，错误视频不会把歌曲位带偏；
+      //  - 偏移生效但视频有误 → Math.max(…, watchSyncSeek) 下限 + 歌末尾 dur-0.5 钳制兜底。
+      //  - 视频刚进看歌还在缓冲（getCurrentTime≈0~1s，远小于进入位置）→ 下限兜底为进入位置。
+      const vidTime = watchPlayerRef.current?.getCurrentTime?.() ?? 0
+      const alignOffset = watchPlayerRef.current?.getAlignmentOffset?.() ?? 0
+      const resumeTime = Math.max(vidTime - alignOffset, watchSyncSeek)
       void (async () => {
-        try {
-          await watchPlayerRef.current?.fadeOutAudio?.()
-        } catch {
-          // 淡出失败不阻断切换
-        }
+        try { await watchPlayerRef.current?.fadeOutAudio?.() } catch { /* 淡出失败不阻断 */ }
         const engineEl = audioPlayerRef.current?.getAudioElement?.()
         if (engineEl && resumeTime > 0) {
           const dur = Number(engineEl.duration) || 0
-          engineEl.currentTime = Math.max(0, Math.min(resumeTime, dur > 0 ? dur - 0.2 : resumeTime))
+          if (dur > 0 && resumeTime >= dur - 0.5) {
+            // 看歌视频已播过歌曲音频末尾（MV 常比歌长）：续播位不能钳到 dur-0.2——
+            // 那会让引擎起播 0.2s 就 ended → 自动切到下一首（用户切个模式歌就被顶掉）。
+            // 停在歌曲末尾保持暂停，等用户手动播放/切歌（watchResumeHeldAtEndRef 让恢复 effect 跳过自动 play）。
+            engineEl.currentTime = Math.max(0, dur - 0.5)
+            watchResumeHeldAtEndRef.current = true
+          } else {
+            engineEl.currentTime = Math.max(0, Math.min(resumeTime, dur > 0 ? dur - 0.2 : resumeTime))
+          }
         }
         window.requestAnimationFrame(() => {
           setLyricDisplayMode(mode)
           localStorage.setItem('lyricDisplayMode', mode)
           window.dispatchEvent(new CustomEvent('lyricDisplayModeChanged', { detail: mode }))
-          // 引擎被 watchPausedEngineRef effect 恢复后，从 0 淡入到进入看歌前的音量。
-          // 不去掉 !paused 守卫：恢复竞态下引擎可能仍未 resume，守卫会跳过淡入导致引擎永远 0 音量；
-          // 对暂停元素设置音量同样安全（恢复播放时音量生效）。
-          window.setTimeout(() => {
-            const el = audioPlayerRef.current?.getAudioElement?.()
-            if (el) {
-              void fadeElementVolume(el, 0, Math.max(0.01, watchEngineVolumeRef.current), 200)
-            }
-          }, 60)
         })
       })()
       return
@@ -2544,7 +2746,14 @@ function App() {
       window.dispatchEvent(new CustomEvent('lyricDisplayModeChanged', { detail: mode }))
     })
   }
-  
+
+  /** 选择 Folia 歌词样式（第二页样式卡）：保存样式；未在 Folia 页时同时切入 */
+  const handleFoliaStyleSelect = (style: string) => {
+    setFoliaStyle(style)
+    localStorage.setItem(FOLIA_STYLE_KEY, style)
+    if (lyricDisplayModeRef.current !== 'folia') handleLyricDisplayModeChange('folia')
+  }
+
   // 同步其他视图修改的歌词模式可见性设置
   useEffect(() => {
     const handleLyricModesVisibilityChanged = () => setVisibleLyricModes(loadVisibleLyricModes())
@@ -2751,11 +2960,11 @@ function App() {
   }
 
   // 歌曲详情「也爱歌单」→ 应用内打开歌单详情
-  const handleOpenPlaylistFromDetail = async (playlistId: string, platform: 'netease' | 'qq') => {
+  const handleOpenPlaylistFromDetail = async (playlistId: string, platform: MusicPlatform) => {
     setDetailPlaylistLoading(true)
     try {
       const data = await getPlaylistDetail(playlistId, platform)
-      const songs = data?.songs || data?.songlist || data?.playlist?.tracks || []
+      const songs = data?.songs || data?.songlist || data?.playlist?.tracks || data?.tracks || []
       setDetailPlaylist({ playlist: data?.playlist || { id: playlistId, platform, name: '歌单' }, songs })
     } catch {
       setDetailPlaylist(null)
@@ -2768,11 +2977,21 @@ function App() {
   const handleSongSelect = async (song: Song, playlistFromSource?: Song[], origin?: PlaybackOrigin) => {
     // 同步关闭所有覆盖层/详情弹窗（在任何 await 之前）：点歌即切播放页，防止
     // 艺人/专辑/歌单详情弹窗残留盖在播放页上面无法关闭
+    // （含整屏 backdrop-filter 的弹窗：退出节点在播放页挂载时会被卡住不卸载）
     setShowSearch(false)
+    setShowProfile(false)
     setShowArtistDetail(false)
     setShowAlbumDetail(false)
     setShowSongDetail(false)
     setShowPlaylist(false)
+    setShowLogin(false)
+    setShowCommentModal(false)
+    setShowRemote(false)
+    setShowSettings(false)
+    setShowMixingStudio(false)
+    setShowLyricModePanel(false)
+    setShowLyricModeCustomize(false)
+    setShowDeviceControl(false)
     setSelectedArtistId(null)
     setSelectedArtistAlbumId(undefined)
     setSelectedAlbumId(null)
@@ -2787,13 +3006,15 @@ function App() {
           ? loadWallpaperLyrics()
           : lyricDisplayMode === 'glorious'
             ? loadGloriousLyrics()
-            : lyricDisplayMode === 'multidimensional'
-              ? loadMultidimensionalLyrics()
-              : lyricDisplayMode === 'modeng'
-                ? loadModengPlayer()
-                : lyricDisplayMode === 'video'
-                  ? loadBilibiliMvPlayer()
-                  : Promise.resolve(),
+              : lyricDisplayMode === 'multidimensional'
+                ? loadMultidimensionalLyrics()
+                : lyricDisplayMode === 'folia'
+                  ? loadFoliaLyricsPage()
+                  : lyricDisplayMode === 'modeng'
+                    ? loadModengPlayer()
+                    : lyricDisplayMode === 'video'
+                      ? loadBilibiliMvPlayer()
+                      : Promise.resolve(),
     ])
     const inferredOrigin: PlaybackOrigin = origin
       ? { ...origin, mode: origin.mode || viewMode }
@@ -2973,7 +3194,7 @@ function App() {
       const userId = getPlatformUserId(platform)
       
       if (!userId) {
-        addToast(`请先登录${platform === 'netease' ? '网易云音乐' : 'QQ音乐'}`, 'error')
+        addToast(`请先登录${platformLabel(platform)}`, 'error')
         return
       }
       
@@ -3049,7 +3270,7 @@ function App() {
       const userId = getPlatformUserId(platform)
       
       if (!userId) {
-        addToast(`请先登录${platform === 'netease' ? '网易云音乐' : 'QQ音乐'}`, 'error')
+        addToast(`请先登录${platformLabel(platform)}`, 'error')
         return
       }
       
@@ -3163,7 +3384,7 @@ function App() {
         ? resolvePlayableSong(song).then(resolved => resolved
             ? { songId: resolved.platform === 'qq' ? resolved.mid || resolved.id : resolved.id, platform: resolved.platform || 'netease' }
             : null)
-        : Promise.resolve({ songId: platform === 'qq' ? (song.mid || song.id) : song.id, platform })
+        : Promise.resolve({ songId: (platform === 'qq' || platform === 'soda') ? (song.mid || song.id) : song.id, platform })
       
       // 检查缓存是否已存在且未过期（5分钟内有效）
       const cached = preloadCacheRef.current.get(cacheKey)
@@ -3346,7 +3567,7 @@ function App() {
         cached?.url
         && Date.now() - (cached.urlTimestamp ?? cached.timestamp) < 5 * 60 * 1000
       )
-      const songId = resolvedPlatform === 'qq' ? (playable.mid || playable.id) : playable.id
+      const songId = (resolvedPlatform === 'qq' || resolvedPlatform === 'soda') ? (playable.mid || playable.id) : playable.id
       const audioUrlGeneration = audioUrlCacheGenerationRef.current
       const url = cachedUrlIsFresh ? cached!.url : await getSongUrl(songId, resolvedPlatform)
       if (!url || url === 'SONG_UNAVAILABLE') return null
@@ -3541,11 +3762,11 @@ function App() {
       setIsPlaying(false)
       
       let normalizedSong = normalizeSongCover(song)
-      // 需要跨平台载体转换的平台：apple（始终）、spotify/soda（无自源音源，始终）。
-      // kugou 先试原生播放（m.kugou.com 免费歌可播），付费/失败时在 URL 为空分支匹配网易云/QQ。
+      // 需要跨平台载体转换的平台：apple（始终）、spotify（无自源音源，始终）。
+      // kugou/soda 先试原生播放（汽水走逆向 Web API，免费/试听流可播），
+      // 付费/失败时在 URL 为空分支再匹配网易云/QQ 同款。
       const needsCarrier = normalizedSong.platform === 'apple'
         || normalizedSong.platform === 'spotify'
-        || normalizedSong.platform === 'soda'
       let audioSong: Song = normalizedSong
       if (needsCarrier) {
         const resolved = await resolvePlayableSong(normalizedSong)
@@ -3569,7 +3790,7 @@ function App() {
       setCurrentTranslation('')
       
       const platform = audioSong.platform || 'netease'
-      const songId = platform === 'qq' ? (audioSong.mid || audioSong.id) : audioSong.id
+      const songId = (platform === 'qq' || platform === 'soda') ? (audioSong.mid || audioSong.id) : audioSong.id
       debugLog(`  歌手: ${normalizedSong.artists.map(a => a.name).join(', ')}`)
       if (platform === 'qq') {
         const cookie = localStorage.getItem('qq_cookie')
@@ -3591,13 +3812,29 @@ function App() {
       
       let url: string | null = null
       let songLyrics: LyricLine[] = cached?.lyrics || []
-      
+      // 汽水本次加载的结构化不可播信息（requiredTier/vipLabel/reason）：可播或其他平台时为 null
+      let sodaUnavailableInfo: { requiredTier?: 'free' | 'vip' | 'svip'; vipLabel?: string; reason?: string } | null = null
+
       // 音频 URL 与歌词分别判断时效，歌词请求不再等播放器完成加载后才开始。
       if (cached?.url && (now - (cached.urlTimestamp ?? cached.timestamp)) < 5 * 60 * 1000) {
         url = cached.url
         debugLog('🎵 歌词: 缓存命中 (' + songLyrics.length + '行)')
       } else {
-        url = await getSongUrl(songId, platform)
+        if (platform === 'soda') {
+          // 汽水：改调结构化播放详情（替代裸 getSongUrl 直取 URL），不可播时带上
+          // requiredTier/vipLabel/reason 供换源提示文案；请求口径与 getSongUrl 汽水分支一致
+          const playbackInfo = await getSodaPlaybackInfo(songId)
+          url = playbackInfo.url
+          if (!url) {
+            sodaUnavailableInfo = {
+              requiredTier: playbackInfo.requiredTier,
+              vipLabel: playbackInfo.vipLabel,
+              reason: playbackInfo.reason,
+            }
+          }
+        } else {
+          url = await getSongUrl(songId, platform)
+        }
         if (!isLatestLoad()) return
         if (url && url !== 'SONG_UNAVAILABLE') {
           const latest = preloadCacheRef.current.get(cacheKey)
@@ -3626,12 +3863,25 @@ function App() {
         }, 3000)
         return
       }
+
+      // 汽水：原生音源解析成功后上报播放（回传个性化推荐数据；失败静默）。
+      // 走缓存 URL 或降级到网易云/QQ 载体时不重复上报。
+      if (platform === 'soda' && url) {
+        void import('./services/sodaService')
+          .then(m => m.reportSodaPlay(String(normalizedSong.mid || normalizedSong.id)))
+          .catch(() => undefined)
+      }
       
       if (!url) {
-        // 酷狗：原生播放失败（付费/版权）→ 尝试网易云/QQ 同款匹配播放
-        if (normalizedSong.platform === 'kugou') {
+        // 酷狗/汽水：原生播放失败（付费/版权/未登录）→ 尝试网易云/QQ 同款匹配播放
+        if (normalizedSong.platform === 'kugou' || normalizedSong.platform === 'soda') {
+          // 汽水源不可播：先弹一次性可感知提示（标注「汽水·」前缀，避免用户误以为播的是网易云版本），
+          // 再走既有同名匹配兜底；netease/qq 兜底流程本身不变
+          if (normalizedSong.platform === 'soda') {
+            addToast(buildSodaSourceSwitchToast(normalizedSong, sodaUnavailableInfo), 'error')
+          }
           const resolved = await resolvePlayableSong(normalizedSong)
-          if (resolved && resolved.platform !== 'kugou') {
+          if (resolved && resolved.platform !== normalizedSong.platform) {
             const carrierUrl = await getSongUrl(resolved.platform === 'qq' ? (resolved.mid || resolved.id) : resolved.id, resolved.platform)
             if (carrierUrl && carrierUrl !== 'SONG_UNAVAILABLE') {
               normalizedSong = resolved
@@ -3639,7 +3889,9 @@ function App() {
             }
           }
           if (!url) {
-            addToast('该歌曲为酷狗付费/版权受限曲目，且未找到可播放版本', 'error')
+            addToast(normalizedSong.platform === 'kugou'
+              ? '该歌曲为酷狗付费/版权受限曲目，且未找到可播放版本'
+              : '该歌曲为汽水 VIP/版权受限曲目，且未找到可播放版本', 'error')
             return
           }
         } else {
@@ -3675,6 +3927,12 @@ function App() {
           albumId: getLocalAlbumIdentifier(normalizedSong, platform) || undefined,
           albumCover: normalizedSong.album?.picUrl || undefined,
         })
+        // 看歌模式下引擎静默：视频接管音频，加载后立即暂停避免双重奏
+        if (started && lyricDisplayModeRef.current === 'video') {
+          const engineEl = audioPlayerRef.current?.getAudioElement?.()
+          if (engineEl) { engineEl.volume = 0; engineEl.pause() }
+          watchPausedEngineRef.current = true
+        }
       } catch (firstPlaybackError) {
         if (!isLatestLoad()) return
         // Signed playback URLs can expire or be rejected by the CDN before the
@@ -3712,6 +3970,11 @@ function App() {
           albumId: getLocalAlbumIdentifier(normalizedSong, platform) || undefined,
           albumCover: normalizedSong.album?.picUrl || undefined,
         })
+        if (started && lyricDisplayModeRef.current === 'video') {
+          const engineEl = audioPlayerRef.current?.getAudioElement?.()
+          if (engineEl) { engineEl.volume = 0; engineEl.pause() }
+          watchPausedEngineRef.current = true
+        }
       }
       if (!started || !isLatestLoad()) return
       
@@ -3867,19 +4130,24 @@ function App() {
   }
 
   // 看歌模式协调：视频播放时暂停音频引擎（视频为唯一时间线），视频让位/切走时恢复
+  const playbackSurfaceRef = useRef<HTMLDivElement>(null)
+  // 播放页（各歌词界面）：鼠标本体无操作 8s 自动渐隐，一动立即显示
+  const playbackCursorHideRef = useAutoHideCursor(8000)
   const watchPlayerRef = useRef<{
     togglePlay: () => boolean
     seekTo: (seconds: number) => void
     setVolume: (value: number) => void
     getCurrentTime: () => number
+    /** 当前应用的对齐偏移（歌曲位 = 视频位 − 偏移；切回时还原歌曲位） */
+    getAlignmentOffset: () => number
     fadeOutAudio: () => Promise<void>
   } | null>(null)
-  const [watchVideoActive, setWatchVideoActive] = useState(false)
   /** 进入看歌时引擎音量（切回歌词模式时淡入到该值） */
   const watchEngineVolumeRef = useRef(1)
+  const watchEngineMutedRef = useRef(false)
   /** MV 背景当前播放的视频状态（切到看歌时复用已加载的流，避免重新缓冲卡顿） */
-  const mvBackgroundStateRef = useRef<{ bvid: string; cid: number; videoUrl: string; cacheKey: string } | null>(null)
-  const [watchInitialVideo, setWatchInitialVideo] = useState<{ bvid: string; cid: number; videoUrl: string; cacheKey: string; currentTime: number } | null>(null)
+  const mvBackgroundStateRef = useRef<{ bvid: string; cid: number; videoUrl: string; cacheKey: string; type?: string } | null>(null)
+  const [watchInitialVideo, setWatchInitialVideo] = useState<{ bvid: string; cid: number; videoUrl: string; cacheKey: string; type?: string; currentTime: number } | null>(null)
   /** HTMLAudioElement 音量渐变（等功率线性，避免双声爆音） */
   const fadeElementVolume = (el: HTMLAudioElement | null | undefined, from: number, to: number, ms: number): Promise<void> =>
     new Promise((resolve) => {
@@ -3896,9 +4164,6 @@ function App() {
   /** 看歌搜索失败：进入兼容音频界面（全局底部控件 + 右上角按钮组，无翻译/罗马音） */
   const [watchSearchFailed, setWatchSearchFailed] = useState(false)
   /** 看歌视频的实时播放状态（迷你播放器/桌面小窗按视频进度显示） */
-  const [watchVideoState, setWatchVideoState] = useState({ playing: false, time: 0, duration: 0, volume: 0.8 })
-  const watchVideoStateRef = useRef(watchVideoState)
-  watchVideoStateRef.current = watchVideoState
   /** 看歌视频为当前时间线（视频模式且视频已接管播放）——迷你播放器/桌面小窗据此按视频显示与控制 */
   const watchTimelineActive = lyricDisplayMode === 'video' && watchVideoActive
   const watchTimelineActiveRef = useRef(watchTimelineActive)
@@ -3906,6 +4171,11 @@ function App() {
   /** 切到看歌时的音频续播位置（秒） */
   const [watchSyncSeek, setWatchSyncSeek] = useState(0)
   const watchPausedEngineRef = useRef(false)
+  /**
+   * 切出看歌时视频进度已越过歌曲音频末尾（MV 往往比歌长）：引擎停在歌曲末尾保持暂停，
+   * 不再起播触发 ended → 自动切下一首（用户切个模式歌就被顶掉）。恢复 effect 据此跳过自动 play。
+   */
+  const watchResumeHeldAtEndRef = useRef(false)
 
   const handlePlayPause = useCallback(() => {
     // 看歌模式：有活动视频时由视频接管播放/暂停（引擎保持暂停，避免双声）
@@ -3918,24 +4188,39 @@ function App() {
 
   useEffect(() => {
     if (lyricDisplayMode !== 'video') {
-      // 切出看歌模式：若引擎是因视频而暂停，恢复出声
-      if (watchPausedEngineRef.current && !isPlaying) {
+      // 切出看歌：恢复引擎音量 + 播放（引擎在进入看歌时已被淡出回调暂停）
+      if (watchPausedEngineRef.current) {
         watchPausedEngineRef.current = false
-        audioPlayerRef.current.togglePlay()
+        const engineEl = audioPlayerRef.current?.getAudioElement?.()
+        if (engineEl) {
+          engineEl.volume = Math.max(0.01, watchEngineVolumeRef.current)
+          engineEl.muted = watchEngineMutedRef.current
+          // 视频进度越过歌曲末尾时停在末尾保持暂停（不自动切下一首），跳过自动起播
+          if (!watchResumeHeldAtEndRef.current && engineEl.paused) void engineEl.play().catch(() => {})
+        }
       }
       return
     }
+    // 进入看歌：只标记，不碰引擎（停顿由 handleLyricDisplayModeChange 的淡出异步完成；
+    // 此处若再调 togglePlay 会与淡出回调形成双次 toggle → 引擎反被恢复播放）
     if (watchVideoActive) {
-      if (isPlaying) {
-        watchPausedEngineRef.current = true
-        audioPlayerRef.current.togglePlay()
-      }
-    } else if (watchPausedEngineRef.current && !isPlaying) {
-      // 视频让位（搜索/兜底/切歌）→ 恢复音频引擎继续听
-      watchPausedEngineRef.current = false
-      audioPlayerRef.current.togglePlay()
+      watchPausedEngineRef.current = true
     }
-  }, [lyricDisplayMode, watchVideoActive, isPlaying])
+  }, [lyricDisplayMode, watchVideoActive])
+
+  // 看歌期间引擎看门狗（双声防护）：视频接管时间线时，引擎**必须保持暂停**——任何路径
+  //（自动过渡计时、媒体键冲突、恢复逻辑误触发）把引擎重新拉起播放，都会与 DASH 音频轨
+  // 形成双重奏（用户实测 生活 切看歌必现、切回即好）。1s 周期把误播的引擎压回去。
+  useEffect(() => {
+    if (lyricDisplayMode !== 'video') return
+    const timer = window.setInterval(() => {
+      const el = audioPlayerRef.current?.getAudioElement?.()
+      if (el && !el.paused) {
+        el.pause()
+      }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [lyricDisplayMode])
 
   // ===== 桌面播放器：独立置顶小窗口的状态桥接 =====
   const isPlayingRef = useRef(isPlaying)
@@ -4031,7 +4316,9 @@ function App() {
         handleViewComments(current)
       } else if (action === 'show-artist') {
         const artist = Array.isArray(current.artists) ? current.artists[0] : null
-        const artistId = platform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
+        // 汽水无艺人 ID，约定传歌手名
+        const artistId = platform === 'soda' ? (artist?.name || artist?.id)
+          : platform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
         if (!artistId) {
           addToast('当前歌曲缺少歌手信息', 'error')
           return
@@ -4568,6 +4855,8 @@ function App() {
   // Windows 任务栏缩略图进度条：小窗/歌词窗口未启用时没有频谱推送路径，
   // 这里在播放中低频上报 progress+duration，让主进程能刷新任务栏进度（0-1）。
   useEffect(() => {
+    // 任务栏进度上报仅桌面有意义（TV 上 electron 桥是空函数，注册即每秒空转）
+    if (!isDesktop()) return
     const videoTimeline = watchTimelineActive
     if (!isPlaying && !videoTimeline) return
     const timer = window.setInterval(() => {
@@ -4863,6 +5152,66 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // 汽水登录态自愈：
+  // ① token 存在但昵称/头像/ID 缺失（旧版登录流程只落盘了 token）时，经后端 luna/pc/me 补齐用户资料；
+  // ② 后端明确返回 loggedIn:false 且本地仍持有 cookie 时，判定 token 已失效——自动清除
+  //    soda_token/soda_username/soda_avatar/soda_user_id 四键并同步状态（等效退出登录），
+  //    让 UI 如实显示未登录，避免「假登录」壳（如汽水我的喜欢恒为空）一直误导。
+  useEffect(() => {
+    if (!sodaLoggedIn) return
+    let cancelled = false
+    void import('./services/sodaService').then(({ getSodaStatus }) =>
+      getSodaStatus().then(async st => {
+        if (cancelled) return
+        if (st?.loggedIn) {
+          // 登录有效：仅当本地资料缺失时补齐昵称/头像/ID（原有「补全资料」逻辑保留）
+          if (localStorage.getItem('soda_user_id') && localStorage.getItem('soda_username')) return
+          const p = st.profile
+          if (!p) return
+          if (p.nickname) {
+            setSodaUsername(p.nickname)
+            localStorage.setItem('soda_username', p.nickname)
+          }
+          if (p.avatarUrl) {
+            setSodaAvatar(p.avatarUrl)
+            localStorage.setItem('soda_avatar', p.avatarUrl)
+          }
+          if (p.userId) {
+            setSodaUserId(String(p.userId))
+            localStorage.setItem('soda_user_id', String(p.userId))
+          }
+          return
+        }
+        // loggedIn:false 且 cookie 非空 → 疑似已失效。再确认一次：只有后端明确应答
+        // loggedIn:false 才清理；网络失败/超时一律不动凭据，防止误清有效登录态。
+        const cookie = localStorage.getItem('soda_token') || ''
+        if (!cookie) return
+        try {
+          const resp = await fetch(`http://localhost:3001/api/soda/status?cookie=${encodeURIComponent(cookie)}`, {
+            cache: 'no-store',
+            signal: AbortSignal.timeout(5000),
+          })
+          if (!resp.ok) return
+          const again = await resp.json()
+          if (cancelled || again?.loggedIn !== false) return
+          localStorage.removeItem('soda_token')
+          localStorage.removeItem('soda_username')
+          localStorage.removeItem('soda_avatar')
+          localStorage.removeItem('soda_user_id')
+          setSodaLoggedIn(false)
+          setSodaUsername('')
+          setSodaAvatar('')
+          setSodaUserId('')
+          setAuthRevision(previous => previous + 1)
+          window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'soda' } }))
+          addToast('汽水音乐登录态已失效，请重新登录', 'info')
+        } catch { /* 后端未就绪/网络失败：保持现状，下次启动再检 */ }
+      }).catch(() => { /* 忽略 */ })
+    )
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sodaLoggedIn])
+
   // 酷狗会话自动恢复：应用启动时若 Electron 会话已带 KuGoo 登录态，直接恢复
   useEffect(() => {
     const bridge = (window as any).electron
@@ -4980,7 +5329,7 @@ function App() {
     window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'kugou' } }))
     addToast('酷狗音乐已退出登录', 'info')
   }
-  const handleSodaLogin = (cookie: string, username?: string) => {
+  const handleSodaLogin = (cookie: string, username?: string, extra?: { avatar?: string; userId?: string }) => {
     setSodaLoggedIn(Boolean(cookie))
     if (cookie) {
       localStorage.setItem('soda_token', cookie)
@@ -4988,12 +5337,45 @@ function App() {
         setSodaUsername(username)
         localStorage.setItem('soda_username', username)
       }
+      if (extra?.avatar) {
+        setSodaAvatar(extra.avatar)
+        localStorage.setItem('soda_avatar', extra.avatar)
+      }
+      if (extra?.userId) {
+        setSodaUserId(String(extra.userId))
+        localStorage.setItem('soda_user_id', String(extra.userId))
+      }
+      // 登录窗口未带回昵称/头像/ID 时：用后端 luna/pc/me 自愈（酷狗同款模式）
+      if (!username || !(extra && (extra.userId || extra.avatar))) {
+        void import('./services/sodaService').then(({ getSodaStatus }) =>
+          getSodaStatus().then(st => {
+            if (!st?.loggedIn || !st.profile) return
+            const p = st.profile
+            if (p.nickname) {
+              setSodaUsername(p.nickname)
+              localStorage.setItem('soda_username', p.nickname)
+            }
+            if (p.avatarUrl) {
+              setSodaAvatar(p.avatarUrl)
+              localStorage.setItem('soda_avatar', p.avatarUrl)
+            }
+            if (p.userId) {
+              setSodaUserId(String(p.userId))
+              localStorage.setItem('soda_user_id', String(p.userId))
+            }
+          }).catch(() => { /* 忽略 */ })
+        )
+      }
     }
     setAuthRevision(previous => previous + 1)
     window.dispatchEvent(new CustomEvent('waveforge-auth-changed', { detail: { platform: 'soda' } }))
     if (cookie) addToast('汽水音乐登录成功', 'success')
   }
   const handleSodaLogout = () => {
+    // 主进程侧同步清理：auth-v6 分区的 .qishui.com Cookie/本地存储 + soda-qr-login.json 会话字段，
+    // 否则换账号后旧凭据仍有效；TV/旧版无此桥（clearSodaLogin 不存在）时跳过，仅清渲染层四键
+    const bridge = (window as any).electron
+    if (bridge?.clearSodaLogin) void Promise.resolve(bridge.clearSodaLogin()).catch(() => { /* 忽略 */ })
     localStorage.removeItem('soda_token')
     localStorage.removeItem('soda_username')
     localStorage.removeItem('soda_avatar')
@@ -5032,7 +5414,7 @@ function App() {
       const userId = getPlatformUserId(platform)
 
       if (!userId) {
-        addToast(`请先登录${platform === 'netease' ? '网易云音乐' : 'QQ音乐'}`, 'error')
+        addToast(`请先登录${platformLabel(platform)}`, 'error')
         return false
       }
 
@@ -5089,9 +5471,11 @@ function App() {
   }
 
   const handlePlaybackViewArtist = (song: Song) => {
-    const platform = (song.platform || 'netease') as 'netease' | 'qq'
+    const platform = (song.platform || 'netease') as MusicPlatform
     const artist = song.artists?.[0]
-    const artistId = platform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
+    // 汽水无艺人 ID，约定传歌手名（伪艺人页按名字检索热门曲目，与 TV 遥控器/右键菜单一致）
+    const artistId = platform === 'soda' ? (artist?.name || artist?.id)
+      : platform === 'qq' ? (artist?.mid || artist?.id) : artist?.id
     if (!artistId) {
       addToast('当前歌曲缺少歌手信息', 'error')
       return
@@ -5100,7 +5484,8 @@ function App() {
   }
 
   const handlePlaybackViewAlbum = (song: Song) => {
-    const platform = (song.platform || 'netease') as 'netease' | 'qq'
+    const platform = (song.platform || 'netease') as MusicPlatform
+    // 汽水：resolveSongAlbumIdentifier 返回专辑名作标识（AlbumDetailModal 纯数字按 id、否则按名查询）
     void resolveSongAlbumIdentifier(song, platform).then(albumId => {
       if (!albumId) {
         addToast('当前歌曲缺少专辑信息', 'error')
@@ -5347,7 +5732,7 @@ function App() {
       onSpotifyLogout: () => latest.current.onSpotifyLogout(),
       onKugouLogin: (cookie, username) => latest.current.onKugouLogin(cookie, username),
       onKugouLogout: () => latest.current.onKugouLogout(),
-      onSodaLogin: (cookie, username) => latest.current.onSodaLogin(cookie, username),
+      onSodaLogin: (cookie, username, extra) => latest.current.onSodaLogin(cookie, username, extra),
       onSodaLogout: () => latest.current.onSodaLogout(),
       onRemoveQueueItem: (index) => latest.current.onRemoveQueueItem(index),
       onMoveQueueItem: (from, to) => latest.current.onMoveQueueItem(from, to),
@@ -5364,8 +5749,30 @@ function App() {
     }
   }, [])
 
+  // 稳定回调：三视图的登录/资料入口（内联箭头函数会逐秒重建，击穿 memo(HomeView/ExploreView/
+  // TraditionalView)，TV 弱 CPU 上整棵视图树（含首页歌单列表）每秒全量重渲染）
+  const openAppleLogin = useCallback(() => setShowAppleLogin(true), [])
+  const handleMinimalLogin = useCallback((platform: MusicPlatform) => {
+    if (platform === 'apple') { setShowAppleLogin(true); return }
+    setLoginPlatform(platform)
+    setShowLogin(true)
+  }, [])
+  const handleTraditionalLogin = useCallback((platform: MusicPlatform) => {
+    if (platform === 'apple') { setShowAppleLogin(true); return }
+    setLoginPlatform(platform === 'qq' ? 'qq' : 'netease')
+    setShowLogin(true)
+  }, [])
+  const handleViewProfileClick = useCallback((platform: MusicPlatform) => {
+    if (platform === 'apple') { setShowAppleLogin(true); return }
+    setProfileInitialPlatform(platform)
+    setProfileInitialTab('created')
+    setShowProfile(true)
+  }, [])
+
   // 设置面板常驻挂载，关闭回调需稳定引用以配合 memo 跳过播放中的重渲染
   const closeSettings = useCallback(() => setShowSettings(false), [])
+  // 稳定引用：内联箭头函数会击穿 memo(SettingsPanel)，导致常驻挂载的巨型面板跟着 App 重渲染
+  const openRemote = useCallback(() => setShowRemote(true), [])
 
   // 歌曲详情 / 相似歌曲弹窗关闭回调需稳定引用以配合 memo 跳过播放中的重渲染
   const closeSongDetail = useCallback(() => setShowSongDetail(false), [])
@@ -5606,7 +6013,7 @@ function App() {
               restorePlaybackOrigin={restorePlaybackOrigin}
               currentSong={currentSong}
               isPlaying={isPlaying}
-              currentTime={currentTime}
+              playbackTimeStore={audioPlayer.playbackTimeStore}
               duration={duration}
               volume={volume}
               currentLyric={currentMiniLyric}
@@ -5636,25 +6043,8 @@ function App() {
               sodaLoggedIn={sodaLoggedIn}
               sodaUsername={sodaUsername}
               sodaAvatar={sodaAvatar}
-              onLoginClick={(platform) => {
-                // Apple 走独立 token 登录面板；网易云/QQ 走原有扫码/密钥登录
-                if (platform === 'apple') {
-                  setShowAppleLogin(true)
-                  return
-                }
-                setLoginPlatform(platform)
-                setShowLogin(true)
-              }}
-              onProfileClick={(platform) => {
-                // Apple 账号入口在 Apple 登录面板内（含资料与退出登录）
-                if (platform === 'apple') {
-                  setShowAppleLogin(true)
-                  return
-                }
-                setProfileInitialPlatform(platform)
-                setProfileInitialTab('created')
-                setShowProfile(true)
-              }}
+              onLoginClick={handleMinimalLogin}
+              onProfileClick={handleViewProfileClick}
               onSearchClick={viewCallbacks.onSearchClick}
               onRemoteClick={viewCallbacks.onRemoteClick}
               onPlayPause={viewCallbacks.onPlayPause}
@@ -5711,7 +6101,7 @@ function App() {
               qqVip={qqVip}
               appleLoggedIn={appleLoggedIn}
               appleUsername={appleUsername}
-              onAppleLoginClick={() => setShowAppleLogin(true)}
+              onAppleLoginClick={openAppleLogin}
               onAppleLogout={handleAppleLogout}
               spotifyLoggedIn={spotifyLoggedIn}
               spotifyUserId={spotifyUserId}
@@ -5757,7 +6147,7 @@ function App() {
               queue={playlist}
               currentIndex={currentIndex}
               isPlaying={isPlaying}
-              currentTime={currentTime}
+              playbackTimeStore={audioPlayer.playbackTimeStore}
               dominantColor={dominantColor}
               duration={duration}
               lyrics={lyrics}
@@ -5786,17 +6176,8 @@ function App() {
               sodaLoggedIn={sodaLoggedIn}
               sodaUsername={sodaUsername}
               sodaAvatar={sodaAvatar}
-              onLoginClick={(platform) => {
-                if (platform === 'apple') { setShowAppleLogin(true); return }
-                setLoginPlatform(platform === 'qq' ? 'qq' : 'netease')
-                setShowLogin(true)
-              }}
-              onProfileClick={(platform) => {
-                if (platform === 'apple') { setShowAppleLogin(true); return }
-                setProfileInitialPlatform(platform)
-                setProfileInitialTab('created')
-                setShowProfile(true)
-              }}
+              onLoginClick={handleTraditionalLogin}
+              onProfileClick={handleViewProfileClick}
               onSearchClick={viewCallbacks.onSearchClick}
               onSettingsClick={viewCallbacks.onSettingsClick}
               onPlayPause={viewCallbacks.onPlayPause}
@@ -5825,21 +6206,26 @@ function App() {
             className="absolute inset-0 h-screen w-full flex items-center justify-center overflow-hidden"
             style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: 2 }}
           >
-      {/* Toast通知 - 支持显示多个Toast堆叠 */}
-      <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[100000] flex flex-col gap-3 pointer-events-none">
-        {toasts.map((toast, index) => (
-          <Toast 
-            key={toast.id}
-            show={true}
-            message={toast.message}
-            type={toast.type}
-            accentColor={toast.accentColor}
-            style={{ 
-              animationDelay: `${index * 50}ms` // 每个Toast延迟50ms出现，产生层叠效果
-            }}
-          />
-        ))}
-      </div>
+      {/* 更新中心：详情/下载进度/就绪/确认重启/更新日志弹窗 + 启动自动检测提示 */}
+      <UpdateManager />
+      {/* Toast通知 - 支持显示多个Toast堆叠；挂到 body 保证在所有弹窗（含插件控制台）之上 */}
+      {createPortal(
+        <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[100000] flex flex-col gap-3 pointer-events-none">
+          {toasts.map((toast, index) => (
+            <Toast
+              key={toast.id}
+              show={true}
+              message={toast.message}
+              type={toast.type}
+              accentColor={toast.accentColor}
+              style={{
+                animationDelay: `${index * 50}ms` // 每个Toast延迟50ms出现，产生层叠效果
+              }}
+            />
+          ))}
+        </div>,
+        document.body,
+      )}
 
       {/* 默认背景 - 始终存在 */}
       <div 
@@ -5863,7 +6249,7 @@ function App() {
             backgroundBlur={backgroundBlur}
           />
         )}
-        {currentSong && lyricDisplayMode !== 'video' && (
+        {currentSong && (
           <LazyBilibiliMvBackground
             songTitle={currentSong.name}
             songArtists={currentSongArtists}
@@ -5875,6 +6261,10 @@ function App() {
             playerTheme={playerTheme}
             upcomingSongs={watchUpcomingSongs}
             enabled={mvBackgroundEnabled && !mvBackgroundFallback}
+            // 看歌模式：常驻挂载但隐藏（display:none + 暂停），保留已缓冲的视频——
+            // 切回歌词模式直接续播同一视频，不再重新搜索/拉流（与看歌复用同一数据源）
+            hidden={lyricDisplayMode === 'video'}
+            lyrics={lyrics}
             blur={mvBackgroundBlur}
             transitionToTrack={transitionToTrack}
             // 封面过渡只在过渡动画窗口内叠加（用户要求：从过渡动画开始，不是 automix 介入），
@@ -5882,9 +6272,9 @@ function App() {
             transitionProgress={overlayProgress}
             songTrackKey={currentSong ? getSongKey(currentSong) : ''}
             onFallbackChange={setMvBackgroundFallback}
-            onPlayStateChange={(s: { bvid: string; cid: number; videoUrl: string; cacheKey: string; currentTime: number } | null) => {
+            onPlayStateChange={(s: { bvid: string; cid: number; videoUrl: string; cacheKey: string; type?: string; currentTime: number } | null) => {
               // null = MV 背景已卸载/切歌/失败：清空复用缓存，避免切看歌时用上过期视频
-              mvBackgroundStateRef.current = s ? { bvid: s.bvid, cid: s.cid, videoUrl: s.videoUrl, cacheKey: s.cacheKey } : null
+              mvBackgroundStateRef.current = s ? { bvid: s.bvid, cid: s.cid, videoUrl: s.videoUrl, cacheKey: s.cacheKey, type: s.type } : null
             }}
           />
         )}
@@ -5940,7 +6330,7 @@ function App() {
           <LazySettingsPanel {...({
           show: showSettings,
           onClose: closeSettings,
-          onOpenRemote: () => setShowRemote(true),
+          onOpenRemote: openRemote,
           neteaseLoggedIn,
           neteaseUsername,
           onNeteaseLogin: viewCallbacks.onNeteaseLogin,
@@ -5984,6 +6374,7 @@ function App() {
                 availableEngines: getAvailableEngines(),
                 sourceUrl: audioPlayer.audioElement?.src || undefined,
                 sourceDuration: audioPlayer.audioElement?.duration || undefined,
+                exportFileName: currentSong?.name || undefined,
               })}
             </Suspense>
           )}
@@ -6043,29 +6434,32 @@ function App() {
                 onVideoActiveChange={setWatchVideoActive}
                 onSearchFailedChange={setWatchSearchFailed}
                 volume={volume}
-                onVideoStateChange={(state: { playing: boolean; time: number; duration: number; volume: number }) => {
-                  setWatchVideoState(state)
+                onVideoStateChange={(state: { playing: boolean; time: number; duration: number; volume: number; alignmentOffset?: number; alignmentVerified?: boolean }) => {
+                  setWatchVideoState({
+                    playing: state.playing,
+                    time: state.time,
+                    duration: state.duration,
+                    volume: state.volume,
+                    alignmentOffset: state.alignmentOffset ?? 0,
+                    alignmentVerified: state.alignmentVerified ?? false,
+                  })
                   // 看歌里调音量 → 同步全局音量（其它播放模式跟随）
                   if (typeof state.volume === 'number' && state.volume >= 0 && state.volume <= 1) {
                     setVolume(state.volume)
                   }
                 }}
                 onHomeClick={handlePlayerHome}
-                onOpenMixingStudio={(anchorRect: { x: number; y: number; width: number; height: number }) => {
-                  if (anchorRect) {
-                    mixingStudioAnchorRef.current = { x: anchorRect.x, y: anchorRect.y, width: anchorRect.width, height: anchorRect.height }
-                  }
-                  setShowMixingStudio(true)
-                }}
                 onOpenPlaylist={() => setShowPlaylist(true)}
                 onToggleFavorite={() => { void handlePlaybackToggleFavorite(currentSong, currentSongLiked) }}
                 liked={currentSongLiked}
                 upcomingSongs={watchUpcomingSongs}
                 initialSeekSeconds={watchSyncSeek}
+                songUrl={audioPlayerRef.current?.getAudioElement?.()?.src || ''}
                 initialVideoUrl={watchInitialVideo?.videoUrl}
                 initialCid={watchInitialVideo?.cid}
                 initialBvid={watchInitialVideo?.bvid}
                 initialCacheKey={watchInitialVideo?.cacheKey}
+                initialType={watchInitialVideo?.type}
                 getEnginePosition={() => audioPlayerRef.current?.getAudioElement?.()?.currentTime ?? 0}
                 surfaceVisible={!showHome}
               />
@@ -6110,7 +6504,7 @@ function App() {
               appleAvatar={appleAvatar}
               appleStorefront={appleStorefront}
               appleEmail={appleEmail}
-              onAppleLoginClick={() => setShowAppleLogin(true)}
+              onAppleLoginClick={openAppleLogin}
               onAppleLogout={handleAppleLogout}
               spotifyLoggedIn={spotifyLoggedIn}
               spotifyUsername={spotifyUsername}
@@ -6129,13 +6523,8 @@ function App() {
               onSpotifyLogout={viewCallbacks.onSpotifyLogout}
               onNeteaseLoginClick={viewCallbacks.onNeteaseLoginClick}
               onQQLoginClick={viewCallbacks.onQQLoginClick}
-              onAppleProfileClick={() => setShowAppleLogin(true)}
-              onLoginClick={(platform) => {
-                // 新平台（Spotify/酷狗/汽水）：走通用登录弹窗（LoginView 委托到对应面板）
-                if (platform === 'apple') { setShowAppleLogin(true); return }
-                setLoginPlatform(platform)
-                setShowLogin(true)
-              }}
+              onAppleProfileClick={openAppleLogin}
+              onLoginClick={handleMinimalLogin}
               onSearchClick={viewCallbacks.onSearchClick}
               onRemoteClick={viewCallbacks.onRemoteClick}
               onOpenDeviceControl={viewCallbacks.onOpenDeviceControl}
@@ -6162,6 +6551,7 @@ function App() {
               transition={{ duration: 0.46, ease: [0.22, 1, 0.36, 1] }}
               className="absolute inset-0 w-full h-full flex flex-col"
               style={{ willChange: 'transform, opacity, filter' }}
+              ref={(el) => { playbackSurfaceRef.current = el; playbackCursorHideRef(el) }}
               data-waveforge-playback-page="true"
             >
               <LazyPlaybackRadialMenu
@@ -6182,8 +6572,10 @@ function App() {
                 onCopyInfo={handleCopyInfo}
                 onContextMenuOpen={handlePlaybackContextMenuOpen}
               />
-              {/* 沉浸模式控制按钮 - 右上角（看歌模式隐藏；看歌搜索失败时显示，隐藏翻译/罗马音） */}
+              {/* 沉浸模式控制按钮 - 右上角（看歌模式隐藏；看歌搜索失败时显示，隐藏翻译/罗马音）。
+                  看歌兜底时经 MaybePortal 挂到 body，逃出被看歌 surface 盖住的层叠上下文 */}
               {(lyricDisplayMode !== 'video' || watchSearchFailed) && (
+                <MaybePortal active={lyricDisplayMode === 'video'}>
                 <LazyImmersiveControls
                   onHomeClick={handlePlayerHome}
                 onOpenMixingStudio={(anchorRect) => {
@@ -6203,6 +6595,7 @@ function App() {
                 playerTheme={playerTheme}
                 isPureMusic={isPureMusic}
               />
+              </MaybePortal>
               )}
 
               {/* 顶部中央歌词模式切换：createPortal 挂到 body，逃出 minimal-playback-surface 的
@@ -6274,48 +6667,136 @@ function App() {
                         <div className={`relative h-[22vh] backdrop-blur-xl overflow-hidden ${playerTheme === 'dark' ? 'bg-black/40' : 'bg-white/55'}`}>
                           <div className="h-full flex flex-col items-center justify-center px-8 py-6">
                             <div className="w-full max-w-5xl flex flex-col items-center h-full">
-                              <h2 className={`text-xl font-bold mb-4 text-center ${playerTheme === 'dark' ? 'text-white' : 'text-black/90'}`}>歌词显示</h2>
-                              <div
-                                className="grid w-full gap-3"
-                                style={{ gridTemplateColumns: `repeat(${effectiveVisibleLyricModes.length}, minmax(0, 1fr))` }}
-                              >
-                                {([
-                                  ['modern', '现代', 'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)'],
-                                  ['immersive', '沉浸式', 'linear-gradient(135deg, #1e3a5f 0%, #0f1c2e 50%, #0a0a0a 100%)'],
-                                  ['wallpaper', '墙纸', `repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 18px), linear-gradient(135deg, ${dominantColor || '#6c5cff'} 0%, #18171c 58%, #09090b 100%)`],
-                                  ['glorious', '辉煌', `linear-gradient(118deg, #080713 0%, ${dominantColor || '#6f5cff'} 50%, #090911 78%, #101522 100%)`],
-                                  ['multidimensional', '多维', `linear-gradient(145deg, #05060c 0%, ${dominantColor || '#6657ff'} 48%, #0b1b2a 72%, #030409 100%)`],
-                                  ['modeng', '摩登', `linear-gradient(120deg, #3a3a3c 0%, #232325 45%, #101012 100%)`],
-                                  ['video', '看歌', `linear-gradient(120deg, #f8a5c2 0%, #fb7299 45%, #2d1b3d 100%)`],
-                                ] as const)
-                                  .filter(([mode]) => effectiveVisibleLyricModes.includes(mode))
-                                  .map(([mode, label, background]) => (
-                                    <motion.button
-                                      type="button"
-                                      key={mode}
-                                      whileHover={{ scale: 1.05 }}
-                                      whileTap={{ scale: 0.95 }}
-                                      onClick={() => handleLyricDisplayModeChange(mode)}
-                                      className="relative h-24 min-w-0 rounded-xl overflow-hidden cursor-pointer border-2 transition-all"
-                                      style={{
-                                        background,
-                                        borderColor: lyricDisplayMode === mode ? '#fff' : 'rgba(255,255,255,0.2)',
-                                        boxShadow: lyricDisplayMode === mode ? `0 0 18px ${(dominantColor || '#ffffff')}35` : 'none',
-                                      }}
-                                    >
-                                      <div className="absolute inset-0 flex items-center justify-center">
-                                        <span className="text-white font-medium text-base">{label}</span>
-                                      </div>
-                                      {lyricDisplayMode === mode && (
-                                        <div className="absolute top-2 right-2 bg-white/20 backdrop-blur-sm px-2 py-1 rounded-full text-xs text-white">
-                                          当前
-                                        </div>
-                                      )}
-                                    </motion.button>
-                                  ))}
-                              </div>
+                              {lyricPanelPage === 'waveforge' ? (
+                                <>
+                                  <h2 className={`text-xl font-bold mb-4 text-center ${playerTheme === 'dark' ? 'text-white' : 'text-black/90'}`}>歌词显示</h2>
+                                  <div
+                                    className="grid w-full gap-3"
+                                    style={{ gridTemplateColumns: `repeat(${effectiveVisibleLyricModes.length}, minmax(0, 1fr))` }}
+                                  >
+                                    {([
+                                      ['modern', '现代', 'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)'],
+                                      ['immersive', '沉浸式', 'linear-gradient(135deg, #1e3a5f 0%, #0f1c2e 50%, #0a0a0a 100%)'],
+                                      ['wallpaper', '墙纸', `repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 18px), linear-gradient(135deg, ${dominantColor || '#6c5cff'} 0%, #18171c 58%, #09090b 100%)`],
+                                      ['glorious', '辉煌', `linear-gradient(118deg, #080713 0%, ${dominantColor || '#6f5cff'} 50%, #090911 78%, #101522 100%)`],
+                                      ['multidimensional', '多维', `linear-gradient(145deg, #05060c 0%, ${dominantColor || '#6657ff'} 48%, #0b1b2a 72%, #030409 100%)`],
+                                      ['modeng', '摩登', `linear-gradient(120deg, #3a3a3c 0%, #232325 45%, #101012 100%)`],
+                                      ['video', '看歌', `linear-gradient(120deg, #f8a5c2 0%, #fb7299 45%, #2d1b3d 100%)`],
+                                    ] as const)
+                                      .filter(([mode]) => effectiveVisibleLyricModes.includes(mode))
+                                      .map(([mode, label, background]) => (
+                                        <motion.button
+                                          type="button"
+                                          key={mode}
+                                          whileHover={{ scale: 1.05 }}
+                                          whileTap={{ scale: 0.95 }}
+                                          onClick={() => handleLyricDisplayModeChange(mode)}
+                                          className="relative h-24 min-w-0 rounded-xl overflow-hidden cursor-pointer border-2 transition-all"
+                                          style={{
+                                            background,
+                                            borderColor: lyricDisplayMode === mode ? '#fff' : 'rgba(255,255,255,0.2)',
+                                            boxShadow: lyricDisplayMode === mode ? `0 0 18px ${(dominantColor || '#ffffff')}35` : 'none',
+                                          }}
+                                        >
+                                          <div className="absolute inset-0 flex items-center justify-center">
+                                            <span className="text-white font-medium text-base">{label}</span>
+                                          </div>
+                                          {lyricDisplayMode === mode && (
+                                            <div className="absolute top-2 right-2 bg-white/20 backdrop-blur-sm px-2 py-1 rounded-full text-xs text-white">
+                                              当前
+                                            </div>
+                                          )}
+                                        </motion.button>
+                                      ))}
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <h2 className={`text-xl font-bold mb-1 text-center ${playerTheme === 'dark' ? 'text-white' : 'text-black/90'}`}>Folia 歌词</h2>
+                                  <p className={`mb-3 text-center text-[11px] ${playerTheme === 'dark' ? 'text-white/45' : 'text-black/40'}`}>
+                                    12 种歌词视觉 · 设计来源 Project Folia
+                                  </p>
+                                  <div
+                                    className="grid w-full gap-2"
+                                    style={{ gridTemplateColumns: `repeat(${FOLIA_STYLES.length}, minmax(0, 1fr))` }}
+                                  >
+                                    {FOLIA_STYLES.map((style) => {
+                                      const active = lyricDisplayMode === 'folia' && foliaStyle === style.id
+                                      return (
+                                        <motion.button
+                                          type="button"
+                                          key={style.id}
+                                          whileHover={{ scale: 1.06 }}
+                                          whileTap={{ scale: 0.94 }}
+                                          onClick={() => handleFoliaStyleSelect(style.id)}
+                                          className="relative h-20 min-w-0 rounded-xl overflow-hidden cursor-pointer border-2 transition-all"
+                                          style={{
+                                            background: style.gradient,
+                                            borderColor: active ? '#fff' : 'rgba(255,255,255,0.2)',
+                                            boxShadow: active ? `0 0 16px ${(dominantColor || '#ffffff')}40` : 'none',
+                                          }}
+                                        >
+                                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
+                                            <span className="text-white font-medium text-sm leading-none">{style.zhName}</span>
+                                            <span className="text-white/50 text-[9px] leading-none">{style.id}</span>
+                                          </div>
+                                          {active && (
+                                            <div className="absolute top-1.5 right-1.5 bg-white/20 backdrop-blur-sm px-1.5 py-0.5 rounded-full text-[10px] text-white">
+                                              当前
+                                            </div>
+                                          )}
+                                        </motion.button>
+                                      )
+                                    })}
+                                  </div>
+                                </>
+                              )}
                             </div>
                           </div>
+                          {/* Folia 歌词样式页切换：自定义按钮左侧，一键切到第二页（12 种 Folia 样式） */}
+                          <button
+                            type="button"
+                            aria-label="Folia 歌词样式"
+                            title="Folia 歌词样式（设计来源 Project Folia）"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setLyricPanelPage((page) => (page === 'waveforge' ? 'folia' : 'waveforge'))
+                            }}
+                            className={`absolute bottom-4 z-30 flex h-9 w-9 items-center justify-center rounded-full border transition-[background-color,color] ${
+                              lyricPanelPage === 'folia' ? 'right-32' : 'right-20'
+                            } ${
+                              lyricPanelPage === 'folia'
+                                ? 'border-transparent text-white'
+                                : playerTheme === 'dark'
+                                  ? 'border-white/15 bg-white/[0.08] text-white/85 hover:bg-white/[0.16] hover:text-white'
+                                  : 'border-black/10 bg-black/[0.06] text-black/70 hover:bg-black/[0.12] hover:text-black'
+                            }`}
+                            style={lyricPanelPage === 'folia' ? { backgroundColor: dominantColor || '#7c6cff', boxShadow: `0 0 12px ${(dominantColor || '#7c6cff')}55` } : undefined}
+                          >
+                            <Sparkles className="h-[18px] w-[18px]" />
+                          </button>
+                          {/* Folia 背景按钮：仅 Folia 样式页显示；开 = Folia 原生背景（封面取色），关 = WaveForge 封面背景 */}
+                          {lyricPanelPage === 'folia' && (
+                            <button
+                              type="button"
+                              aria-label="使用 Folia 背景"
+                              title={foliaBackgroundEnabled ? '使用 Folia 背景（点击改用封面背景）' : '使用 WaveForge 封面背景（点击改用 Folia 背景）'}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                handleFoliaBackgroundToggle()
+                              }}
+                              className={`absolute bottom-4 right-20 z-30 flex h-9 w-9 items-center justify-center rounded-full border transition-[background-color,color] ${
+                                foliaBackgroundEnabled
+                                  ? 'border-transparent text-white'
+                                  : playerTheme === 'dark'
+                                    ? 'border-white/15 bg-white/[0.08] text-white/85 hover:bg-white/[0.16] hover:text-white'
+                                    : 'border-black/10 bg-black/[0.06] text-black/70 hover:bg-black/[0.12] hover:text-black'
+                              }`}
+                              style={foliaBackgroundEnabled ? { backgroundColor: dominantColor || '#7c6cff', boxShadow: `0 0 12px ${(dominantColor || '#7c6cff')}55` } : undefined}
+                            >
+                              <ImageIcon className="h-[18px] w-[18px]" />
+                            </button>
+                          )}
                           <button
                             type="button"
                             aria-label="自定义歌词模式显示"
@@ -6430,8 +6911,10 @@ function App() {
                       transitionFromTrack={transitionFromTrack}
                       transitionToTrack={transitionToTrack}
                       pulseStore={audioPulseStore}
+                      animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
+                      animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
                     />
-                    
+
                     {/* 歌曲信息 - 过渡时双层淡入淡出 */}
                     <div className="relative w-full max-w-4xl space-y-3 text-center">
                       {isVisualTransitioning && overlayProgress > 0 && transitionFromTrack && transitionToTrack ? (
@@ -6563,6 +7046,38 @@ function App() {
                     romanEnabled={romanEnabled}
                     isTransitioning={isVisualTransitioning}
                     onSeek={audioPlayer.seek}
+                    mvBackgroundActive={mvBackgroundActive}
+                  />
+                </motion.div>
+              ) : lyricDisplayMode === 'folia' ? (
+                <motion.div
+                  key="folia-lyrics-player"
+                  initial={{ opacity: 0, scale: 1.02 }}
+                  animate={{ opacity: isLyricsTransitioning ? 0 : 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.99 }}
+                  transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                  className="flex-1 w-full min-h-0"
+                >
+                  <LazyFoliaLyricsPage
+                    lyrics={lyrics}
+                    currentIndex={currentLyricIndex}
+                    playbackTimeStore={audioPlayer.playbackTimeStore}
+                    timeOffset={lyricOffset - 0.2}
+                    isPlaying={isPlaying}
+                    playerTheme={playerTheme}
+                    accentColor={dominantColor || '#fff'}
+                    songTitle={currentSong.name}
+                    songArtist={currentSongArtistLabel}
+                    songAlbum={currentSong.album?.name}
+                    coverUrl={displayCoverUrl}
+                    trackId={currentSong.id || currentSong.mid}
+                    translationEnabled={translationEnabled}
+                    romanEnabled={romanEnabled}
+                    onSeek={audioPlayer.seek}
+                    analyzerStore={audioAnalyzer}
+                    foliaStyle={foliaStyle}
+                    foliaBackgroundEnabled={foliaBackgroundEnabled}
+                    mvBackgroundActive={mvBackgroundActive}
                   />
                 </motion.div>
               ) : lyricDisplayMode === 'glorious' ? (
@@ -6614,6 +7129,8 @@ function App() {
                     songAlbum={currentSong.album?.name}
                     coverUrl={displayCoverUrl}
                     appleCoverUrl={appleCoverUrl || undefined}
+                    animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
+                    animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
                     trackId={currentSong.id || currentSong.mid}
                     translationEnabled={translationEnabled}
                     romanEnabled={romanEnabled}
@@ -6652,8 +7169,10 @@ function App() {
                       transitionFromTrack={transitionFromTrack}
                       transitionToTrack={transitionToTrack}
                       pulseStore={audioPulseStore}
+                      animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
+                      animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
                     />
-                    
+
                     {/* 歌曲信息 - 过渡时双层淡入淡出 */}
                     <div className="relative min-h-[5.25rem] w-full max-w-xl space-y-2 px-4 text-center">
                       {isVisualTransitioning && transitionProgress > 0 && transitionFromTrack && transitionToTrack ? (
@@ -6713,6 +7232,7 @@ function App() {
                           trackId={currentSong?.id || currentSong?.mid}
                           pulseStore={audioPulseStore}
                           playerTheme={playerTheme}
+                          scrollTransitionStyle={lyricScrollTransitionStyle}
                         />
                       </div>
                     </div>
@@ -6745,6 +7265,7 @@ function App() {
 
           {/* 全局播放器 - 固定在底部（摩登模式自带控制条；看歌正常播放时隐藏，搜索失败时显示兼容音频控件） */}
           {currentSong && !showHome && lyricDisplayMode !== 'modeng' && (lyricDisplayMode !== 'video' || watchSearchFailed) && (
+            <MaybePortal active={lyricDisplayMode === 'video'}>
             <LivePlayerControls
                       playbackTimeStore={audioPlayer.playbackTimeStore}
               isPlaying={isPlaying}
@@ -6776,6 +7297,7 @@ function App() {
               showImmersiveTranslation={lyricDisplayMode === 'immersive' && translationEnabled && Boolean(immersiveLyricLine?.translation?.trim())}
               showImmersiveRoman={lyricDisplayMode === 'immersive' && romanEnabled && Boolean(immersiveLyricLine?.roman?.trim())}
             />
+            </MaybePortal>
           )}
           </motion.div>
         )}
@@ -6885,7 +7407,7 @@ function App() {
             onViewComments={viewCallbacks.onViewComments}
             onOpenArtist={viewCallbacks.onOpenArtist}
             onOpenAlbum={viewCallbacks.onOpenAlbum}
-            onOpenPlaylist={(playlist) => { void handleOpenPlaylistFromDetail(playlist.id, playlist.platform as 'netease' | 'qq') }}
+            onOpenPlaylist={(playlist) => { void handleOpenPlaylistFromDetail(playlist.id, playlist.platform || 'netease') }}
             onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
@@ -6991,9 +7513,11 @@ function App() {
         </AnimatePresence>
       </Suspense>
 
-      {/* Global singleton prevents duplicate overlays during view-mode changes. */}
+      {/* Global singleton prevents duplicate overlays during view-mode changes.
+          不用 AnimatePresence 包裹（与搜索面板同款故障）：ProfileView 的玻璃遮罩带整屏
+          backdrop-filter，退出节点在播放页挂载时会被 Chromium/framer-motion 卡住不卸载
+          → 最近播放等弹窗选歌后残留盖在播放页上；普通条件渲染关闭即当帧卸载。 */}
       <Suspense fallback={null}>
-        <AnimatePresence>
           {showProfile && (neteaseLoggedIn || qqLoggedIn || appleLoggedIn) && (
             <LazyProfileView
             initialPlatform={profileInitialPlatform}
@@ -7017,9 +7541,10 @@ function App() {
             onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
-        </AnimatePresence>
       </Suspense>
     </Suspense>
+    {/* 插件系统（插件中心/详情/导入/使用须知/DG_LAB 控制台） */}
+    <PluginOverlay />
     </>
   )
 }

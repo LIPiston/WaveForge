@@ -52,6 +52,9 @@ export interface AudioGraphHandle {
   /** 最终输出增益节点（analyser 之后、destination 之前）：AirPlay 投送时置 0 静音本机，
    *  不影响 masterGain（采集点在其后，采集到完整声音投送给音箱） */
   outputGain?: GainNode
+  /** DG-LAB 立体声采集（analyser 输出之后、音效后信号）：左/右声道分析器（仅采集，不接 destination） */
+  leftAnalyserNode?: AnalyserNode
+  rightAnalyserNode?: AnalyserNode
 }
 
 interface DeckMetadata extends PreloadTrack {
@@ -239,6 +242,10 @@ export function useAudioPlayer(
   const masterGainRef = useRef<GainNode | null>(null)
   const analyserNodeRef = useRef<AnalyserNode | null>(null)
   const [analyserNode, setAnalyserNode] = useState<AnalyserNode | null>(null)
+  const leftAnalyserNodeRef = useRef<AnalyserNode | null>(null)
+  const rightAnalyserNodeRef = useRef<AnalyserNode | null>(null)
+  const [leftAnalyserNode, setLeftAnalyserNode] = useState<AnalyserNode | null>(null)
+  const [rightAnalyserNode, setRightAnalyserNode] = useState<AnalyserNode | null>(null)
   const transitionRendererRef = useRef<TransitionRenderer | null>(null)
   const gaplessIntegrationRef = useRef<GaplessIntegration | null>(null)
   // Gapless 首选无缝拼接控制器（独立模块，逻辑见 src/services/gapless/）
@@ -319,6 +326,27 @@ export function useAudioPlayer(
       context.createMediaElementSource(first).connect(firstGain).connect(master)
       context.createMediaElementSource(second).connect(secondGain).connect(master)
       master.connect(analyser).connect(outputGain).connect(context.destination)
+      // DG-LAB 立体声采集：analyser 输出（音效链之后、最终听感信号）挂 ChannelSplitter →
+      // 左/右声道分析器（仅采集不接 destination）。架构契约：分析点 = 最终听感点，
+      // 音效/无缝/AutoMix 对未来算法的优化都自动反映到体感。
+      const splitter = context.createChannelSplitter(2)
+      const leftAnalyser = context.createAnalyser()
+      const rightAnalyser = context.createAnalyser()
+      leftAnalyser.fftSize = 1024
+      leftAnalyser.smoothingTimeConstant = 0.72
+      rightAnalyser.fftSize = 1024
+      rightAnalyser.smoothingTimeConstant = 0.72
+      analyser.connect(splitter)
+      splitter.connect(leftAnalyser, 0)
+      splitter.connect(rightAnalyser, 1)
+      // 关键：分析器若是「悬空尾巴」（无通往 destination 的路径）会被 Web Audio 判定不参与渲染，
+      // getByte*Data 恒为 0 → 左右声道采集失效。挂零增益旁路到 destination 强制参与处理（不改声音）。
+      const silentL = context.createGain()
+      const silentR = context.createGain()
+      silentL.gain.value = 0
+      silentR.gain.value = 0
+      leftAnalyser.connect(silentL).connect(context.destination)
+      rightAnalyser.connect(silentR).connect(context.destination)
       master.gain.value = volumeRef.current
       firstGain.gain.value = activePrimaryRef.current ? 1 : 0
       secondGain.gain.value = activePrimaryRef.current ? 0 : 1
@@ -329,6 +357,10 @@ export function useAudioPlayer(
       masterGainRef.current = master
       analyserNodeRef.current = analyser
       setAnalyserNode(analyser)
+      leftAnalyserNodeRef.current = leftAnalyser
+      rightAnalyserNodeRef.current = rightAnalyser
+      setLeftAnalyserNode(leftAnalyser)
+      setRightAnalyserNode(rightAnalyser)
       // 应用用户选择的音频输出设备（AudioContext.setSinkId，整体切换输出）
       void import('../services/audioOutput').then(({ applyStoredOutputDevice, registerActiveAudioContext }) => {
         registerActiveAudioContext(context)
@@ -342,7 +374,7 @@ export function useAudioPlayer(
       }
       
       // 通知外部音效引擎：音频图已就绪（在 masterGain 与 analyser 之间插入效果链）
-      onAudioGraphReadyRef.current?.({ audioContext: context, masterGain: master, analyser, outputGain })
+      onAudioGraphReadyRef.current?.({ audioContext: context, masterGain: master, analyser, outputGain, leftAnalyserNode: leftAnalyser, rightAnalyserNode: rightAnalyser })
       
       if (context.state === 'suspended') await context.resume().catch(() => undefined)
     } catch (error) {
@@ -352,7 +384,11 @@ export function useAudioPlayer(
       gainNodesRef.current = [null, null]
       masterGainRef.current = null
       analyserNodeRef.current = null
+      leftAnalyserNodeRef.current = null
+      rightAnalyserNodeRef.current = null
       setAnalyserNode(null)
+      setLeftAnalyserNode(null)
+      setRightAnalyserNode(null)
     }
   }, [])
 
@@ -1675,6 +1711,8 @@ export function useAudioPlayer(
       void audioContextRef.current?.close()
       audioContextRef.current = null
       analyserNodeRef.current = null
+      leftAnalyserNodeRef.current = null
+      rightAnalyserNodeRef.current = null
       gainNodesRef.current = [null, null]
       masterGainRef.current = null
     }
@@ -2194,6 +2232,8 @@ export function useAudioPlayer(
     audioElement,
     playbackTimeStore,
     analyserNode,
+    leftAnalyserNode,
+    rightAnalyserNode,
     nextAudioElement: getStandbyAudio(),
     setPlayAtCallback,
     resetGaplessIntegration,

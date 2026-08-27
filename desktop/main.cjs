@@ -1297,7 +1297,7 @@ function updateTaskbar() {
 // 与 Echo 的「迷你底栏」对齐：窗口高度精确等于任务栏带高度，贴任务栏右侧（或居中），
 // 播放时显示封面/歌词行/进度并提供控制；默认鼠标穿透，悬停进入交互态不挡任务栏。
 // 设置（userData/taskbar-widget-settings.json）由「设置-个性化」控制开关/位置/宽度/模式。
-const TASKBAR_WIDGET_DEFAULTS = { enabled: false, position: 'right', width: 340, mode: 'normal', darken: false, blur: false }
+const TASKBAR_WIDGET_DEFAULTS = { enabled: false, position: 'right', width: 340, mode: 'normal', darken: false, darkenLevel: 0.5, hideControls: false }
 let taskbarWidgetSettings = { ...TASKBAR_WIDGET_DEFAULTS }
 let taskbarWidgetWindow = null
 let taskbarWidgetClosedByUser = false
@@ -1318,9 +1318,9 @@ function sanitizeTaskbarWidgetSettings(input = {}, base = TASKBAR_WIDGET_DEFAULT
     position: input.position === 'right' || input.position === 'center' ? input.position : (base.position === 'center' ? 'center' : 'right'),
     width: Math.round(Math.min(420, Math.max(260, Number(input.width) || base.width))),
     mode: input.mode === 'pure' || input.mode === 'normal' ? input.mode : (base.mode === 'pure' ? 'pure' : 'normal'),
-    // 背景效果（用户自定义）：暗化遮罩 / 高斯模糊
     darken: input.darken === undefined ? base.darken === true : input.darken === true,
-    blur: input.blur === undefined ? base.blur === true : input.blur === true,
+    darkenLevel: Math.min(0.95, Math.max(0.05, Number(input.darkenLevel) || base.darkenLevel)),
+    hideControls: input.hideControls === undefined ? base.hideControls === true : input.hideControls === true,
   }
 }
 
@@ -1362,8 +1362,8 @@ let taskbarTrayCache = null // { left, right } 物理像素
 let taskbarTrayCacheAt = 0
 let taskbarTrayRequest = null
 const TASKBAR_TRAY_CACHE_MS = 30000
-// 托盘不可测时的保守预留：约 30% 屏宽，保证不叠进托盘（托盘实测后会自动贴齐）
-const TASKBAR_TRAY_FALLBACK_RATIO = 0.3
+// 托盘不可测时靠右贴齐：留 12px 边距
+const TASKBAR_TRAY_FALLBACK_RATIO = 0.04
 
 function fetchTaskbarTrayRectPhysical() {
   if (taskbarTrayRequest) return taskbarTrayRequest
@@ -1550,7 +1550,8 @@ function updateTaskbarWidget() {
   bindTaskbarDisplayMetrics()
   bindTaskbarThemeSync()
   const hasSong = Boolean(desktopPlayerState.song?.name)
-  if (!taskbarWidgetSettings.enabled || !hasSong || taskbarWidgetClosedByUser) {
+  // 开启时始终显示（冷启动无歌时显示品牌名），关闭/用户手动关闭才隐藏
+  if (!taskbarWidgetSettings.enabled || taskbarWidgetClosedByUser) {
     if (taskbarWidgetWindow && !taskbarWidgetWindow.isDestroyed() && taskbarWidgetWindow.isVisible()) {
       taskbarWidgetWindow.hide()
     }
@@ -3369,11 +3370,37 @@ ipcMain.handle('open-spotify-login', async (_event, clientId) => {
   }
 })
 
-// ── 汽水音乐登录（Electron 弹窗扫码，抓 token）──────────────────────────
+// ── 汽水音乐登录：汽水自有 Passport 二维码流程（移植自 Mineradio qishui-auth-v6，GPL-3.0-only）──
+// 生成二维码 → 轮询 check_qrconnect → 确认后捕获 .qishui.com 会话 Cookie + 用户资料。
+// 旧方案（sso.douyin.com 抖音 SSO）抓到的是 .douyin.com Cookie，luna Web API 一律 403，已废弃。
 let sodaLoginWindow = null
+
+function sodaLoginPageHtml(qrDataUrl) {
+  return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>汽水音乐扫码登录</title>' +
+    '<style>' +
+    'body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#111318;font-family:"Microsoft YaHei",system-ui,sans-serif;color:#fff}' +
+    '.card{width:340px;text-align:center;padding:32px 28px;border-radius:20px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}' +
+    'h2{margin:0 0 6px;font-size:20px}' +
+    '.sub{margin:0 0 18px;font-size:12px;color:rgba(255,255,255,.45)}' +
+    '.qrbox{position:relative;width:280px;height:280px;margin:0 auto 18px;background:#fff;border-radius:14px;padding:10px;box-sizing:border-box}' +
+    'img{width:100%;height:100%;display:block}' +
+    '#status{font-size:14px;color:rgba(255,255,255,.75);min-height:20px;margin:0 0 14px}' +
+    '.tip{font-size:11px;color:rgba(255,255,255,.3);line-height:1.7}' +
+    '</style></head><body><div class="card">' +
+    '<h2>汽水音乐扫码登录</h2><p class="sub">WaveForge · 澜音工坊</p>' +
+    '<div class="qrbox"><img id="waveforge-qr" src="' + qrDataUrl + '" alt="二维码"></div>' +
+    '<p id="status">请打开「汽水音乐」App 扫描二维码</p>' +
+    '<p class="tip">扫码登录即代表同意汽水音乐用户协议<br>本窗口由 WaveForge 本地渲染，凭据仅保存在本机</p>' +
+    '</div>' +
+    '<script>(function(){var b=document.createElement("div");b.innerHTML="✕";b.style.cssText="position:fixed;top:12px;right:14px;width:30px;height:30px;line-height:30px;text-align:center;background:rgba(255,255,255,.1);border-radius:50%;cursor:pointer;z-index:2147483647;color:#fff;font-size:14px";b.addEventListener("click",function(){window.close()});document.body.appendChild(b)})();' +
+    'window.__wfSetStatus=function(s){var e=document.getElementById("status");if(e)e.textContent=s};' +
+    'window.__wfSetQr=function(src){var e=document.getElementById("waveforge-qr");if(e)e.src=src};' +
+    '</script></body></html>'
+}
+
 async function createSodaLoginWindow() {
   return new Promise((resolve) => {
-    if (sodaLoginWindow) {
+    if (sodaLoginWindow && !sodaLoginWindow.isDestroyed()) {
       sodaLoginWindow.focus()
       resolve({ success: false, error: '汽水音乐登录窗口已打开' })
       return
@@ -3382,160 +3409,169 @@ async function createSodaLoginWindow() {
     const finish = (result) => {
       if (settled) return
       settled = true
+      if (sodaLoginWindow && !sodaLoginWindow.isDestroyed()) sodaLoginWindow.close()
       resolve(result)
     }
     void (async () => {
       try {
-        const iconPath = path.join(__dirname, '..', 'build', 'icon.ico')
-        sodaLoginWindow = new BrowserWindow({
-          width: 1000,
-          height: 700,
+        const auth = require('./qishui-auth-v6.cjs')
+        // 凭据/设备指纹持久化到 userData（deviceId 稳定可降低风控概率；cookie 登录后写入）
+        const configFile = path.join(app.getPath('userData'), 'soda-qr-login.json')
+        const readCfg = () => { try { return JSON.parse(fs.readFileSync(configFile, 'utf8')) } catch { return {} } }
+        const writeCfg = (patch) => {
+          try { fs.writeFileSync(configFile, JSON.stringify({ ...readCfg(), ...(patch || {}) }, null, 2), 'utf8') } catch {}
+        }
+        auth.configure({
+          getConfig: () => ({
+            deviceId: '', installId: '', verifyPortraitId: '',
+            computerName: os.hostname() || 'Windows-PC', cookie: '', msToken: '',
+            ...readCfg(),
+          }),
+          updateConfig: (patch) => writeCfg(patch),
+        })
+        // 每次打开登录窗都重置凭据文件中的会话字段（保留 deviceId/msToken 设备指纹）：
+        // 1) 防止历史/测试残留会话被成功判定误读为"秒登录"；2) 换账号从干净会话开始
+        writeCfg({ cookie: '' })
+
+        let qrWindow = new BrowserWindow({
+          width: 420,
+          height: 600,
           parent: mainWindow,
           modal: true,
           frame: false,
+          resizable: false,
           backgroundColor: '#111318',
           title: 'WaveForge 澜音工坊 - 汽水音乐登录',
-          icon: fs.existsSync(iconPath) ? iconPath : undefined,
+          icon: path.join(__dirname, '..', 'build', 'icon.ico'),
           webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
-            session: mainWindow.webContents.session,
           },
         })
-        // 抖音风控对 Electron UA 直接拦截（验证码「系统繁忙」/扫码「访问太频繁」）：
-        // 伪装为普通 Chrome，并从干净会话开始登录。
-        const sodaSession = sodaLoginWindow.webContents.session
-        sodaLoginWindow.webContents.setUserAgent(REAL_CHROME_UA)
-        // 每次打开清空 .douyin.com 域 Cookie（含上次登录留下的会话与风控标记）：
-        // 从干净会话开始，便于登录其他账号；localStorage 的 soda_token 在成功前保持不变。
-        try {
-          const existing = await sodaSession.cookies.get({ domain: '.douyin.com' })
-          if (existing.length) {
-            await Promise.all(existing.map(c => removeSessionCookie(sodaSession, c)))
-            console.log('🧹 [汽水音乐] 已清理抖音域 Cookie，从干净会话开始登录')
-          }
-        } catch { /* 清理失败不阻塞登录 */ }
-        // 导航守卫：只放行抖音系域（登录/认证跳转），外链交系统浏览器
-        const isSodaDomain = (url) => {
-          try {
-            const hostname = new URL(String(url || '')).hostname.toLowerCase()
-            return hostname === 'douyin.com' || hostname.endsWith('.douyin.com')
-              || hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')
-              || hostname.endsWith('.byteimg.com') || hostname.endsWith('.ibytedapm.com')
-              || hostname.endsWith('.snssdk.com') || hostname.endsWith('.zijieapi.com')
-          } catch { return false }
+        qrWindow.setMenuBarVisibility(false)
+        sodaLoginWindow = qrWindow
+
+        const setStatus = (text) => {
+          try { if (qrWindow && !qrWindow.isDestroyed()) void qrWindow.webContents.executeJavaScript('window.__wfSetStatus && window.__wfSetStatus(' + JSON.stringify(text) + ')') } catch {}
         }
-        sodaLoginWindow.webContents.on('will-navigate', (event, url) => {
-          if (!isSodaDomain(url)) {
-            event.preventDefault()
-            if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(String(url)).catch(() => {})
+
+        // 生成并刷新二维码（过期自动重取，最多 4 次）
+        let qrToken = ''
+        let expiredCount = 0
+        const buildQr = async () => {
+          const qr = await auth.getQrCode()
+          const data = qr.data || {}
+          qrToken = String(data.token || '')
+          if (!qrToken || !data.qrcode) throw new Error('二维码生成数据不完整')
+          if (qrWindow && !qrWindow.isDestroyed()) {
+            await qrWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(sodaLoginPageHtml(String(data.qrcode))))
           }
-        })
-        sodaLoginWindow.webContents.setWindowOpenHandler(({ url }) => {
-          if (/^https?:\/\//i.test(String(url || ''))) shell.openExternal(String(url)).catch(() => {})
-          return { action: 'deny' }
-        })
-        // 加载抖音登录页（sso.douyin.com 展示抖音扫码二维码；汽水音乐使用抖音账号体系）
-        // 注意：sodamusic.com 域名已停用（仅剩占位页），不能作为登录入口。
-        sodaLoginWindow.loadURL('https://sso.douyin.com/?service=https%3A%2F%2Fwww.douyin.com%2F&type=login')
-        // 注入关闭按钮
-        sodaLoginWindow.webContents.on('did-finish-load', () => {
-          sodaLoginWindow.webContents.executeJavaScript(`
-            (function() {
-              if (document.getElementById('waveforge-close-btn')) return;
-              const b = document.createElement('div');
-              b.id = 'waveforge-close-btn';
-              b.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
-              b.style.cssText = 'position:fixed;top:12px;right:12px;width:32px;height:32px;background:rgba(0,0,0,0.55);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:2147483647;color:#fff;';
-              b.addEventListener('click', () => window.close());
-              document.body.appendChild(b);
-            })();
-          `).catch(() => {})
-        })
-        // 每 2 秒检查登录态（抖音扫码成功后 .douyin.com 域出现 sessionid 等会话 Cookie）
-        const checkInterval = setInterval(async () => {
-          if (!sodaLoginWindow || sodaLoginWindow.isDestroyed()) {
-            clearInterval(checkInterval)
-            return
-          }
+        }
+
+        await buildQr()
+
+        // 轮询扫码状态；check_qrconnect 可能因二次验证(MFA)长时间阻塞——用 inFlight 防止调用堆积。
+        // 成功判定以「凭据文件里的 .qishui 会话 Cookie」为准：无论返回包形状如何、
+        // 甚至轮询中途抛错（MFA 完成后偶发响应异常），只要会话已落盘即视为登录成功。
+        let pollTimer = null
+        let inFlight = false
+        let consecutiveErrors = 0
+        const hasRealSession = (cfg) => {
+          // 不用正则避免转义歧义：按分号拆 Cookie，看是否存在任一会话键
+          const names = String((cfg && cfg.cookie) || '').split(';').map(part => part.trim().split('=')[0].toLowerCase())
+          return names.includes('sessionid') || names.includes('sessionid_ss') || names.includes('sid_guard') || names.includes('sid_tt')
+        }
+        // 登录闭环立即完成，不做任何网络等待：昵称/头像/ID 由渲染层自愈逻辑
+        // （handleSodaLogin 缺字段时经 /api/soda/status 补齐）异步获取。
+        // 此前在这里同步等资料接口，接口一旦迟滞会把整个登录流程卡死在窗口不关。
+        const completeLogin = (cookie) => {
+          if (settled) return
+          if (pollTimer) clearInterval(pollTimer)
+          console.log('[SodaLogin] 会话已建立，完成登录闭环')
+          // 注意：settled 由 finish 内部置位；这里若提前置位会让 finish 的防重护栏短路
+          finish({ success: true, cookie, username: '', avatar: '', userId: '' })
+        }
+        pollTimer = setInterval(async () => {
+          if (!qrWindow || qrWindow.isDestroyed() || settled) { clearInterval(pollTimer); return }
+          if (inFlight) { console.log('[SodaLogin][tick] 跳过：上一次检查仍在进行'); return }
+          inFlight = true
           try {
-            const cookies = await sodaLoginWindow.webContents.session.cookies.get({ domain: '.douyin.com' })
-            const session = cookies.find(c => c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'sid_guard')
-            if (session && session.value) {
-              // 捕获完整抖音会话 Cookie（供后续抖音系接口使用）
-              const cookieString = cookies
-                .filter(c => /sessionid|sid_guard|uid_tt|passport|ttwid|odin_tt/i.test(c.name) && c.value)
-                .map(c => `${c.name}=${c.value}`)
-                .join('; ')
-              console.log('✓ [汽水音乐] 登录成功，捕获抖音会话')
-              clearInterval(checkInterval)
-              // 抓取昵称/头像/ID（登录后跳转 www.douyin.com 从页面/接口提取）
-              let username = ''
-              let avatar = ''
-              let userId = ''
-              try {
-                await sodaLoginWindow.loadURL('https://www.douyin.com/').catch(() => {})
-                await new Promise(r => setTimeout(r, 4500))
-                const userInfo = await sodaLoginWindow.webContents.executeJavaScript(`(async () => {
-                  const tryFetch = async (url) => {
-                    try {
-                      const r = await fetch(url, { credentials: 'include' });
-                      if (!r.ok) return null;
-                      const t = await r.text();
-                      try { return JSON.parse(t); } catch { return t; }
-                    } catch { return null; }
-                  };
-                  // 1. 抖音 passport 用户信息接口（带会话 Cookie；兼容 acc.data 与 acc.data.data 双层结构）
-                  const acc = await tryFetch('https://passport.douyin.com/web/account/info/v2/');
-                  const user = (acc && acc.data && acc.data.data && typeof acc.data.data === 'object') ? acc.data.data : (acc && acc.data) || {};
-                  if (user && (user.nickname || user.name)) {
-                    return JSON.stringify({
-                      name: user.nickname || user.name || '',
-                      avatar: user.avatar_url || user.avatar || '',
-                      id: String(user.uid || user.user_id || user.id || '')
-                    });
-                  }
-                  // 2. 页面 DOM：头像/昵称（选择器覆盖新旧版抖音首页）
-                  const avEl = document.querySelector('img[src*="douyinpic.com/aweme-avatar"], img[data-e2e="nav-avatar"], [data-e2e="nav-avatar"] img, img[data-e2e="user-avatar"], [data-e2e="user-avatar"] img');
-                  const nameEl = document.querySelector('[data-e2e="user-info-name"], .user-nickname, [class*="nickname"], [data-e2e="user-name"]');
-                  // 3. 头像/昵称 img alt 兜底（新版首页头像 img 的 alt 常为昵称）
-                  const altName = avEl ? (avEl.getAttribute('alt') || '').trim() : '';
-                  return JSON.stringify({
-                    name: nameEl ? (nameEl.textContent || '').trim() : (altName || ''),
-                    avatar: avEl ? (avEl.src || '') : '',
-                    id: ''
-                  });
-                })()`)
-                const parsed = JSON.parse(userInfo || '{}')
-                username = parsed.name || ''
-                avatar = parsed.avatar || ''
-                userId = parsed.id || ''
-                console.log(`✓ [汽水音乐] 用户: name=${username} id=${userId || '(未取到)'}`)
-              } catch (e) {
-                console.error('❌ [汽水音乐] 获取用户信息失败:', e)
-              }
-              finish({ success: true, cookie: cookieString, username, avatar, userId })
-              sodaLoginWindow.close()
+            // 先看凭据文件：MFA/二次验证流程可能在任意时刻把会话写进来
+            const cfgSnapshot = readCfg()
+            console.log('[SodaLogin][tick] cookie字段=', String(cfgSnapshot.cookie || '').slice(0, 60))
+            if (hasRealSession(cfgSnapshot)) { console.log('[SodaLogin][tick] 检测到有效会话 → 完成登录'); completeLogin(String(cfgSnapshot.cookie || '')); return }
+            const envelope = await auth.checkQrConnect(qrToken)
+            consecutiveErrors = 0
+            const d = envelope.data || {}
+            const errorCode = Number(d.error_code)
+            // 返回包确认 → 再核对一次落盘 Cookie（persistSessionCookies 在 check 内部已完成）
+            const cfgAfter = readCfg()
+            if ((errorCode === 0 && (String(d.status) === '3' || d.session_cookie)) || hasRealSession(cfgAfter)) {
+              completeLogin(String(cfgAfter.cookie || ''))
+              return
             }
+            if (errorCode === 2) {
+              // 二维码已过期：自动刷新
+              expiredCount += 1
+              if (expiredCount > 4) {
+                clearInterval(pollTimer)
+                finish({ success: false, error: '二维码已多次过期，请重新打开登录' })
+                return
+              }
+              setStatus('二维码已过期，正在刷新…')
+              await buildQr()
+              setStatus('请使用「汽水音乐」App 扫描新二维码')
+              return
+            }
+            if (errorCode === 7) {
+              clearInterval(pollTimer)
+              finish({ success: false, error: '请求过于频繁，请一分钟后再试' })
+              return
+            }
+            if (String(d.status) === '2') setStatus('已扫码 ✓ 请在手机上确认登录')
           } catch (err) {
-            console.error('❌ [汽水音乐] 检查登录状态失败:', err)
+            console.error('[SodaLogin][tick] check异常:', err && err.message)
+            // 异常路径同样先查落盘 Cookie：MFA 通过后的收尾请求偶发失败不影响会话有效性
+            const cfgErr = readCfg()
+            if (hasRealSession(cfgErr)) { completeLogin(String(cfgErr.cookie || '')); return }
+            if (err && err.code === 'QISHUI_MFA_CANCELLED') {
+              clearInterval(pollTimer)
+              finish({ success: false, error: err.message || '安全验证已取消' })
+              return
+            }
+            consecutiveErrors += 1
+            if (consecutiveErrors >= 8) {
+              clearInterval(pollTimer)
+              finish({ success: false, error: (err && err.message) || '登录状态检查连续失败' })
+            } else {
+              setStatus(consecutiveErrors >= 2 ? '安全验证处理中/网络波动，正在重试… (' + consecutiveErrors + '/8)' : '正在检查扫码状态…')
+            }
+          } finally {
+            inFlight = false
           }
         }, 2000)
-        sodaLoginWindow.on('closed', () => {
-          clearInterval(checkInterval)
+
+        qrWindow.on('closed', () => {
+          if (pollTimer) clearInterval(pollTimer)
           sodaLoginWindow = null
+          // 手动关闭窗口 ≠ 一定失败：若扫码+验证码已完成、会话已落盘，按登录成功收尾
+          const cfgOnClose = readCfg()
+          if (hasRealSession(cfgOnClose)) {
+            console.log('[SodaLogin] 窗口关闭时会话有效，按成功收尾')
+            finish({ success: true, cookie: String(cfgOnClose.cookie || ''), username: '', avatar: '', userId: '' })
+            return
+          }
           finish({ success: false, error: '用户取消登录' })
         })
       } catch (error) {
         console.error('[汽水音乐] 初始化登录窗口失败:', error)
         if (sodaLoginWindow && !sodaLoginWindow.isDestroyed()) sodaLoginWindow.destroy()
         sodaLoginWindow = null
-        finish({ success: false, error: error?.message || '汽水音乐登录窗口初始化失败' })
+        finish({ success: false, error: (error && error.message) || '汽水音乐登录初始化失败' })
       }
     })()
   })
 }
-
 ipcMain.handle('open-soda-login', async () => {
   try {
     const result = await createSodaLoginWindow()
@@ -3547,6 +3583,84 @@ ipcMain.handle('open-soda-login', async () => {
   } catch (err) {
     console.error('❌[汽水音乐] 打开登录窗口失败:', err)
     return { success: false, error: err.message }
+  }
+})
+
+// 汽水退出登录清理：关登录窗 → 清 persist:mineradio-qishui-auth-v6 分区的 .qishui.com
+// Cookie/localStorage（复用 qishui-auth-v6 的 clear）→ 清凭据文件 soda-qr-login.json 的会话字段。
+// 凭据文件保留 deviceId/installId 等设备指纹（稳定可降低风控概率），只清 cookie/msToken，
+// 与打开登录窗前的重置逻辑（writeCfg({ cookie: '' })）对齐。运行时未初始化时 clear()
+// 会直接按分区名清存储，覆盖「应用重启后 runtime 为空」的场景。
+ipcMain.handle('soda-clear-login', async () => {
+  try {
+    if (sodaLoginWindow && !sodaLoginWindow.isDestroyed()) {
+      try { sodaLoginWindow.destroy() } catch {}
+      sodaLoginWindow = null
+    }
+    const auth = require('./qishui-auth-v6.cjs')
+    await auth.clear()
+    const configFile = path.join(app.getPath('userData'), 'soda-qr-login.json')
+    try {
+      const cfg = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+      if (cfg && typeof cfg === 'object') {
+        delete cfg.cookie
+        delete cfg.msToken
+        fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2), 'utf8')
+      }
+    } catch { /* 文件不存在/损坏：无残留凭据可清，忽略 */ }
+    console.log('🧹 [汽水音乐] 已清除登录分区与凭据文件会话字段（退出登录）')
+    return { success: true }
+  } catch (err) {
+    console.error('❌[汽水音乐] 清除登录态失败:', err)
+    return { success: false, error: (err && err.message) || String(err) }
+  }
+})
+
+// HSE 开发者模式：把调音室导出的「发布种子」写回仓库源文件 builtinSceneSeed.ts。
+// 仅开发模式可用（打包版没有 src 源码树，app.isPackaged 直接拒绝），
+// 内容必须带种子赋值语句标记且限长，防止变成任意文件写入通道。
+ipcMain.handle('hse-write-scene-seed', async (_e, content) => {
+  try {
+    if (app.isPackaged) return { ok: false, error: '仅开发模式可写回仓库' }
+    if (typeof content !== 'string' || !content.includes('export const BUILTIN_SCENE_SEED') || content.length > 2 * 1024 * 1024) {
+      return { ok: false, error: '内容不符合种子文件格式' }
+    }
+    const target = path.join(app.getAppPath(), 'src', 'services', 'waveforge-engine-v3', 'src', 'engine', 'builtinSceneSeed.ts')
+    if (!fs.existsSync(target)) return { ok: false, error: '仓库中不存在 builtinSceneSeed.ts（仅开发环境可用）' }
+    const tmp = target + '.tmp'
+    fs.writeFileSync(tmp, content, 'utf8')
+    fs.renameSync(tmp, target)
+    console.log('✍️ [HSE] 发布种子已写回:', target)
+    return { ok: true, path: target }
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) }
+  }
+})
+
+// HSE 离线导出落盘：把调音室渲染好的 MP3 直写到用户桌面。
+// 文件名由渲染层给（<歌曲名>-Modified.mp3），这里再做一次非法字符兜底清洗与
+// 重名自动 (2) 序号，绝不覆盖用户已存在的文件。300MB 上限防误传巨型数据。
+ipcMain.handle('hse-save-rendered-audio', (_e, data, fileName) => {
+  try {
+    const buf = Buffer.from(data)
+    if (!buf.length) return { ok: false, error: '导出内容为空' }
+    if (buf.length > 300 * 1024 * 1024) return { ok: false, error: '导出内容超过 300MB，疑似异常' }
+    const safeName = String(fileName || '').replace(/[\\/:*?"<>|]/g, '_').trim()
+      .replace(/^\.{1,2}$/, '_') || 'WaveForge-HSE-Modified.mp3'
+    const dir = app.getPath('desktop')
+    const ext = path.extname(safeName) || '.mp3'
+    const stem = safeName.slice(0, safeName.length - ext.length)
+    let target = path.join(dir, safeName)
+    let n = 2
+    while (fs.existsSync(target)) {
+      target = path.join(dir, `${stem} (${n})${ext}`)
+      n += 1
+    }
+    fs.writeFileSync(target, buf)
+    console.log('🎵 [HSE] 渲染音频已保存:', target, `(${(buf.length / 1024 / 1024).toFixed(1)}MB)`)
+    return { ok: true, path: target }
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) }
   }
 })
 
@@ -6292,12 +6406,37 @@ let localPythonChild = null
 let localLoudnessChild = null
 let localCompensationChild = null
 
-function startLocalBackend() {
+async function startLocalBackend() {
   if (!app.isPackaged) return // 开发模式由 dev-electron.mjs 启动
   if (process.env.WAVEFORGE_DISABLE_LOCAL_BACKEND === '1') return
 
   // 1) Express API（3001）
   try {
+
+// ── 孤儿后端清扫：上次异常退出残留的子进程会占住 3001-3004，导致新实例误连旧后端 ──
+const BACKEND_PORTS = [3001, 3002, 3003, 3004]
+async function sweepBackendOrphans(reason) {
+  for (const port of BACKEND_PORTS) {
+    try {
+      const ps = [
+        '$c = Get-NetTCPConnection -LocalPort ' + port + ' -State Listen -ErrorAction SilentlyContinue',
+        'foreach ($x in $c) {',
+        '  $pp = Get-Process -Id $x.OwningProcess -ErrorAction SilentlyContinue',
+        '  if ($pp -and ($pp.Path -like "*win-unpacked*" -or $pp.Path -like "*resources\\python-embed*" -or $pp.ProcessName -like "WaveForge*")) { Write-Output $x.OwningProcess }',
+        '}',
+      ].join('; ')
+      const out = await execFileAsync('powershell', ['-NoProfile', '-Command', ps], { timeout: 12000 })
+      const pids = String(out.stdout || '').split(/[^0-9]+/).map(v => parseInt(v, 10)).filter(v => v > 0)
+      for (const pid of pids) {
+        try {
+          await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 8000 })
+          console.log('[LocalAPI] 清扫残留子进程 pid=' + pid + ' (port=' + port + ', reason=' + reason + ')')
+        } catch { /* 已退出则忽略 */ }
+      }
+    } catch { /* 清扫失败不阻塞启动 */ }
+  }
+}
+  await sweepBackendOrphans('startup')
     const serverEntry = path.join(process.resourcesPath, 'app.asar', 'local-server.mjs')
     localApiChild = utilityProcess.fork(serverEntry, [], {
       env: {
@@ -6439,9 +6578,10 @@ function startLocalBackend() {
 }
 
 // 应用退出时一并结束本地子进程
-app.on('will-quit', () => {
+app.on('will-quit', async () => {
   persistMainWindowState() // 关闭前做最终窗口状态保存（防抖定时器可能尚未触发）
   try { localApiChild?.kill() } catch {}
+  await sweepBackendOrphans('quit')
   try { localPythonChild?.kill() } catch {}
   try { localLoudnessChild?.kill() } catch {}
   try { localCompensationChild?.kill() } catch {}
@@ -6449,6 +6589,14 @@ app.on('will-quit', () => {
 
 app.whenReady().then(() => {
   logStartupTiming('Electron app ready')
+  // 启动时应用上次「稍后」的待更新：拉起 updater 后立即退出，换完文件自动重启到新版本。
+  // 返回 true 表示正在重启应用，跳过本窗口创建流程。
+  try {
+    const { applyPendingAtStartup } = require('./update-manager.cjs')
+    if (applyPendingAtStartup()) return
+  } catch (error) {
+    console.error('⚠️ [更新] 启动应用待更新失败:', error instanceof Error ? error.message : error)
+  }
   // GPU 状态诊断：区分"splash 未渲染出来"（GPU 合成器异常）与"未加载出来"（资源失败）。
   // 每次启动写入日志，便于排查 splash 黑/白屏问题。
   try {
@@ -6527,6 +6675,20 @@ app.whenReady().then(() => {
   setupRenderIPC(ipcMain, configManager.getCachePath(), toMediaUrl)
   // AI 混音（DJTransGAN）运行时：可选引擎，未安装时 render:transitionAiMix 抛错、前端回退 DSP
   setupAiMixIPC(ipcMain, configManager.getCachePath())
+  // AI 混音模型（DJTransGAN 仓库 + 预训练权重）下载/删除管理：设置面板「下载模型」用
+  try {
+    const { setupAiModelIPC } = require('./ai-model-manager.cjs')
+    setupAiModelIPC(ipcMain, (scope, message) => automixLog.log(scope, message))
+  } catch (error) {
+    console.error('⚠️ [AI Model] 模型下载管理器初始化失败:', error instanceof Error ? error.message : error)
+  }
+  // 代理自动配置：模型下载/应用更新走用户本地代理（设置 → 高级 → 代理自动配置）
+  try {
+    const { setupProxyIPC } = require('./proxy-manager.cjs')
+    setupProxyIPC(ipcMain, (scope, message) => automixLog.log(scope, message))
+  } catch (error) {
+    console.error('⚠️ [Proxy] 代理管理器初始化失败:', error instanceof Error ? error.message : error)
+  }
 
   // AirPlay 投送端：mDNS 设备发现 + RAOP/AirPlay2 会话管理（纯 JS，无原生依赖）
   try {
@@ -6537,7 +6699,7 @@ app.whenReady().then(() => {
   }
   ipcMain.handle('audio-output:is-supported', () => process.platform === 'win32' || process.platform === 'darwin')
 
-  app.on('will-quit', () => {
+  app.on('will-quit', async () => {
     if (airplayControllerHandle) {
       try { airplayControllerHandle.dispose() } catch { /* 忽略 */ }
       airplayControllerHandle = null
@@ -6553,6 +6715,15 @@ app.whenReady().then(() => {
     const ext = String(result || '').split('.').pop()?.toLowerCase() || '?'
     automixLog.log('download', `trackKey=${trackKey} url=${String(urlOrPath).slice(0, 120)} -> ${result} (ext=${ext})`)
     return result
+  })
+
+  // 只读缓存命中检查（不触发下载）：看歌等场景优先用本地已缓存音轨（mv-align 已下载
+  // 同一 DASH 音频），命中即秒开；未命中返回 null，调用方照旧走流式 URL。
+  ipcMain.handle('audio-download:peekCached', (_event, trackKey) => {
+    if (!analysisRuntime || !analysisRuntime.audioDownload) {
+      return null
+    }
+    return analysisRuntime.audioDownload.peekCached(trackKey)
   })
 
   // 把已下载的音频文件映射为渲染进程可 fetch 的 waveforge-media:// URL
@@ -6625,71 +6796,14 @@ app.whenReady().then(() => {
     return { success: false }
   })
 
-  // 应用更新：多源下载安装包 → sha256 校验 → 打开安装向导
-  ipcMain.handle('update:download-and-install', async (_event, urls, expectedSha) => {
-    const downloadDir = path.join(app.getPath('userData'), 'update')
-    try {
-      fs.mkdirSync(downloadDir, { recursive: true })
-    } catch (mkdirError) {
-      return { success: false, error: `无法创建下载目录：${mkdirError?.message || mkdirError}` }
-    }
-    for (const url of Array.isArray(urls) ? urls : [urls]) {
-      const destPath = path.join(downloadDir, `WaveForge-Setup-${Date.now()}.exe`)
-      try {
-        let digest = ''
-        await new Promise((resolve, reject) => {
-          const request = net.request(String(url))
-          request.setRedirectMode('follow')
-          const hash = crypto.createHash('sha256')
-          const writeStream = fs.createWriteStream(destPath)
-          let settled = false
-          let finished = false
-          const fail = (err) => {
-            // 磁盘写失败 / HTTP 失败时关闭写流，避免文件句柄泄漏与无监听 stream error 崩溃主进程
-            if (!finished) {
-              finished = true
-              writeStream.destroy()
-            }
-            if (!settled) { settled = true; reject(err) }
-          }
-          writeStream.on('error', fail)
-          request.on('response', (response) => {
-            if (response.statusCode < 200 || response.statusCode >= 300) {
-              fail(new Error(`HTTP ${response.statusCode}`))
-              return
-            }
-            response.on('data', (chunk) => {
-              hash.update(chunk)
-              if (!writeStream.write(chunk)) {
-                response.pause()
-                writeStream.once('drain', () => response.resume())
-              }
-            })
-            response.on('end', () => {
-              writeStream.end(() => {
-                finished = true
-                digest = hash.digest('hex')
-                if (!settled) { settled = true; resolve() }
-              })
-            })
-            response.on('error', fail)
-          })
-          request.on('error', fail)
-          request.end()
-        })
-        if (expectedSha && digest.toLowerCase() !== String(expectedSha).toLowerCase()) {
-          throw new Error('安装包校验失败（sha256 不匹配）')
-        }
-        const opened = await shell.openPath(destPath)
-        if (opened) throw new Error(`无法打开安装向导：${opened}`)
-        return { success: true, path: destPath }
-      } catch (err) {
-        console.error('❌ [更新] 下载失败:', url, err?.message || err)
-        try { fs.unlinkSync(destPath) } catch { /* ignore */ }
-      }
-    }
-    return { success: false, error: '所有下载源均失败' }
-  })
+  // 应用更新管理：后台静默下载 + 退出即应用 + 更新日志/版本历史。
+  // 处理器集中在 update-manager.cjs（下载进度经 update:download-status 事件广播）。
+  try {
+    const { setupUpdateIPC } = require('./update-manager.cjs')
+    setupUpdateIPC(ipcMain)
+  } catch (error) {
+    console.error('⚠️ [更新] 更新管理器初始化失败:', error instanceof Error ? error.message : error)
+  }
   
   // 配置管理 IPC 处理器
   ipcMain.handle('config:get-cache-path', () => {

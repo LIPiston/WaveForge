@@ -115,6 +115,17 @@ export interface HardwareAccelerationStatus {
   }>
 }
 
+/** 单目标联通状态结果（最多 8 次，整体超 1 分钟标记 timeout） */
+export interface HostLatencyResult {
+  timeout: boolean
+  total: number
+  loss: number
+  lossRate: number
+  avgLatency: number
+  minLatency: number
+  maxLatency: number
+}
+
 export interface ElectronAPI {
   analysis: AnalysisAPI
   system: {
@@ -217,6 +228,12 @@ export interface ElectronAPI {
   onSpotifyAuthResult: (callback: (result: { success: boolean; accessToken?: string; refreshToken?: string; username?: string; avatar?: string; userId?: string; error?: string }) => void) => () => void
   /** 汽水音乐登录（Electron 弹窗扫码，抓 token） */
   openSodaLogin: () => Promise<{ success: boolean; token?: string; username?: string; error?: string }>
+  /** 汽水音乐登出清理（清 auth 分区 .qishui.com Cookie/本地存储 + 凭据文件会话字段；TV/旧版 preload 可能缺失） */
+  clearSodaLogin?: () => Promise<{ success: boolean; error?: string }>
+  /** HSE 开发者模式：把场景微调的「发布种子」写回仓库源文件（仅开发模式；TV/网页端缺失） */
+  writeHseSceneSeed?: (content: string) => Promise<{ ok: boolean; path?: string; error?: string }>
+  /** HSE 离线导出：渲染完成的 MP3 写到桌面（重名自动加序号；TV/网页端缺失走浏览器下载） */
+  saveHseRenderedAudio?: (data: Uint8Array, fileName: string) => Promise<{ ok: boolean; path?: string; error?: string }>
   /** 汽水音乐（抖音）数据桥：隐藏窗口抓取抖音音乐卡片 */
   sodaScrapeSearch: (keyword: string) => Promise<{ success: boolean; items?: Array<{ id: string; name: string; author?: string; cover?: string; text?: string }>; error?: string }>
   /** 酷狗数据桥：隐藏窗口页面内同源 fetch 用户歌单/用户信息（绕开服务端 WAF） */
@@ -293,10 +310,73 @@ export interface ElectronAPI {
       error?: string
     }>
   }
+  /** AI 混音模型（DJTransGAN 仓库 + 预训练权重 + 运行环境）下载/删除管理 */
+  aiModel?: {
+    getStatus: () => Promise<{
+      installed: boolean
+      repoReady: boolean
+      weightsReady: boolean
+      pythonFound: boolean
+      depsReady: boolean
+      engineAvailable: boolean
+      repoDir: string
+    }>
+    download: () => Promise<{ ok: boolean; already?: boolean }>
+    pause: () => Promise<{ ok: boolean }>
+    cancel: () => Promise<{ ok: boolean }>
+    delete: () => Promise<{ ok: boolean; error?: string }>
+    onProgress: (callback: (progress: {
+      status: 'idle' | 'downloading' | 'paused' | 'done' | 'error' | 'cancelled' | 'deleting'
+      phase: 'python' | 'pip' | 'deps' | 'repo' | 'weights' | 'delete' | null
+      phaseLabel: string | null
+      phasePercent: number
+      overallPercent: number
+      error: string | null
+      done: boolean
+      downloadSpeed: number
+      downloadEta: number | null
+    }) => void) => () => void
+  }
+  /** 单目标联通状态结果（最多 8 次，整体超 1 分钟标记 timeout） */
+  proxyManager?: {
+    scan: () => Promise<Array<{ host: string; port: number; type: string; latency: number }>>
+    enable: (port: number) => Promise<{ enabled: boolean; proxy: { host: string; port: number; type: string } | null }>
+    disable: () => Promise<{ enabled: boolean; proxy: null }>
+    getState: () => Promise<{ enabled: boolean; proxy: { host: string; port: number; type: string } | null }>
+    setEnabled: (v: boolean) => Promise<{ enabled: boolean; proxy: { host: string; port: number; type: string } | null }>
+    consumeNotice: () => Promise<'startup-unavailable' | 'startup-unusable' | null>
+    getLatency: () => Promise<{
+      status: 'testing' | 'done'
+      result: {
+        baidu: HostLatencyResult
+        github: HostLatencyResult
+        google: HostLatencyResult
+      } | null
+    } | null>
+    probe: () => Promise<{
+      status: 'testing' | 'done'
+      result: {
+        baidu: HostLatencyResult
+        github: HostLatencyResult
+        google: HostLatencyResult
+      } | null
+    }>
+    onLatency: (callback: (latency: {
+      status: 'testing' | 'done'
+      result: {
+        baidu: HostLatencyResult
+        github: HostLatencyResult
+        google: HostLatencyResult
+      } | null
+    }) => void) => () => void
+    onNotice: (callback: (notice: { kind: 'disconnected' | 'startup-unavailable' }) => void) => () => void
+  }
   /** AutoMix 渲染进程诊断日志：写入后端 automix-backend.log（便于前后端合并定位） */
   automixLog?: (scope: string, message: string) => Promise<boolean>
   audioDownload: {
     prepare: (urlOrPath: string, trackKey: string) => Promise<string>
+    /** 只读缓存命中检查：已缓存返回本地路径，未缓存返回 null（不触发下载） */
+    peekCached?: (trackKey: string) => Promise<string | null>
     /** 把已下载的音频文件映射为渲染进程可 fetch 的 waveforge-media:// URL（浏览器分析 m4a/aac 用） */
     getMediaUrl?: (filePath: string) => Promise<string>
     /** 保存渲染进程转码的 WAV（Chromium 解码 m4a/aac → 16bit PCM），返回路径；同 key 复用 */
@@ -308,6 +388,12 @@ export interface ElectronAPI {
   /** 应用更新：下载安装包（多源逐个尝试）→ sha256 校验 → 打开安装向导 */
   update: {
     downloadAndInstall: (urls: string[], sha256: string) => Promise<{ success: boolean; error?: string; path?: string }>
+    downloadBackground: (payload: { version: string; notes: string; urls: string[]; sha256: string }) => Promise<{ success: boolean; error?: string }>
+    applyPending: () => Promise<{ success: boolean }>
+    restartForUpdate: () => Promise<{ success: boolean }>
+    getPending: () => Promise<{ version: string; notes: string; stagedAt: number } | null>
+    consumeLastApplied: () => Promise<{ version: string; notes: string; appliedAt: number } | null>
+    onDownloadStatus: (callback: (status: { state: 'progress' | 'done' | 'failed'; percent?: number; version?: string; notes?: string; error?: string }) => void) => () => void
   }
   config: {
     getCachePath: () => Promise<string>
@@ -381,12 +467,10 @@ export interface TaskbarWidgetSettings {
   enabled: boolean
   position: 'right' | 'center'
   width: number
-  /** 常规（封面+歌词+进度+上一曲/暂停/下一曲）/ 纯享（只显示当前歌词） */
   mode: 'normal' | 'pure'
-  /** 背景暗化遮罩（用户自定义背景效果） */
   darken: boolean
-  /** 背景高斯模糊（用户自定义背景效果） */
-  blur: boolean
+  darkenLevel: number
+  hideControls: boolean
 }
 
 export interface AirplayDeviceInfo {

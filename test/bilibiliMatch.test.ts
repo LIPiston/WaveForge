@@ -460,3 +460,78 @@ describe('songKeyOf（歌曲缓存键）', () => {
     expect(key).toBe('t:稻香:周杰伦')
   })
 })
+
+describe('货不对板识别（同名不同歌手，如日语曲撞中文同名曲）', () => {
+  // 真实案例：NIKIE(ニキー) 的日语曲「春夏秋冬 (Seasons)」曾被匹配到
+  // 张国荣的高播放现场版（37.9万播放），而正确的是 sumika 的 MAD 版（2.4万播放）
+  const jCtx: MatchContext = {
+    songTitle: '春夏秋冬 (Seasons)',
+    artists: ['NIKIE (ニキー)'],
+    songDuration: 280,
+    platform: 'netease',
+    id: 999,
+  }
+
+  it('「他人《歌名》」+ 现场标记的高播放视频应排到正确候选之下', () => {
+    const leslieLive = scoreCandidate(
+      video({
+        title: '【4K60FPS】张国荣Leslie《春夏秋冬》2000年热情演出现场',
+        author: '荣迷俱乐部',
+        duration: 285,
+        play: 379000,
+      }),
+      jCtx,
+      { rank: 0 },
+    )
+    const sumikaEd = scoreCandidate(
+      video({
+        title: '【4KMAD|HIRES96kHz/24Bit】春夏秋冬-sumika我想吃掉你的胰脏ED',
+        author: 'MAD制作者',
+        duration: 285,
+        play: 24000,
+      }),
+      jCtx,
+      { rank: 1 },
+    )
+    expect(leslieLive.score).toBeLessThan(sumikaEd.score)
+  })
+
+  it('书名号前缀是他人名时显著降分（同条件下与无前缀标题对比）', () => {
+    const withPrefix = scoreCandidate(
+      video({ title: '张国荣《春夏秋冬》', author: 'up主', duration: 280, play: 379000 }),
+      jCtx,
+      {},
+    )
+    const noPrefix = scoreCandidate(
+      video({ title: '春夏秋冬', author: 'up主', duration: 280, play: 24000 }),
+      jCtx,
+      {},
+    )
+    expect(withPrefix.score).toBeLessThan(noPrefix.score)
+  })
+
+  it('书名号前缀含本曲歌手时不罚（周杰伦《稻香》对周杰伦歌曲）', () => {
+    const s = scoreCandidate(
+      video({ title: '【官方】周杰伦《稻香》MV', author: '杰威尔音乐', duration: 223, play: 1000000 }),
+      ctx,
+      {},
+    )
+    expect(s.signals.hasArtist).toBe(true)
+    // 无歌手惩罚链不应触发：分数应明显高于无歌手命中基线（100-35-15+正分）
+    expect(s.score).toBeGreaterThan(120)
+  })
+
+  it('无歌手命中的现场版比同条件普通标题分低（别人的 live）', () => {
+    const live = scoreCandidate(
+      video({ title: '春夏秋冬 现场版', author: 'up主', duration: 280, play: 300000 }),
+      jCtx,
+      {},
+    )
+    const normal = scoreCandidate(
+      video({ title: '春夏秋冬', author: 'up主', duration: 280, play: 300000 }),
+      jCtx,
+      {},
+    )
+    expect(live.score).toBeLessThan(normal.score)
+  })
+})

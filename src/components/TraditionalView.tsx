@@ -2,7 +2,7 @@
 // - 所有内容（搜索/音乐库/歌单/歌手/专辑/评论/个人中心）都在中间栏直接展示，不用弹窗；
 // - 平台切换为可拖拽药丸（与简约模式一致）；模式切换走全局顶部下拉条；
 // - 右栏：资料卡 + 正在播放（真实频谱）+ 歌词 + 播放列表（覆盖到底部，可滚动）。
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from 'react'
 import { AnimatePresence, animate, motion, useMotionValue } from 'framer-motion'
 import {
   ChevronLeft, ChevronRight, Heart, Home, Library, ListMusic, LogIn, Music2,
@@ -16,6 +16,8 @@ import { getVisiblePlatforms, getPlatformCapabilities, platformLabel } from '../
 import { fetchExploreHome, fetchExplorePlaylist, type ExplorePayload, type ExplorePlaylist } from '../services/exploreApi'
 import { createPlaylist, getUserPlaylists, invalidateUserPlaylistsCache, subscribePlaylist } from '../services/playlistService'
 import { registerDesktopSpectrumConsumer } from '../services/desktopSpectrum'
+import { useTvMode, useRemoteCursorMode } from '../tv/tvCore'
+import { isPerfModeEnhanced } from '../tv/perfMode'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS } from './ModeSelectionPanel'
 import TraditionalPlaylistDetail from './TraditionalPlaylistDetail'
 import TraditionalSearch from './TraditionalSearch'
@@ -26,6 +28,7 @@ import TraditionalAlbumDetail from './TraditionalAlbumDetail'
 import SongContextMenu from './SongContextMenu'
 import PlaylistContextMenu from './PlaylistContextMenu'
 import LyricsDisplay from './LyricsDisplay'
+import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
 import type { PlaybackOrigin, SongSelectHandler, ViewMode } from '../types/playbackNavigation'
 
 type TraditionalPreferences = {
@@ -54,7 +57,8 @@ interface TraditionalViewProps {
   queue: Song[]
   currentIndex: number
   isPlaying: boolean
-  currentTime: number
+  /** 播放时间不再经 App 每秒下传（会击穿 memo 整树重渲染）：改由内部叶子组件订阅 */
+  playbackTimeStore: PlaybackTimeStore
   duration: number
   /** 当前播放歌曲的主题色（跟随歌曲变化，未播放时回退平台色） */
   dominantColor?: string
@@ -115,6 +119,50 @@ const formatTime = (value: number) => {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
+// 进度条行包装：内部订阅播放时间（4Hz），传统视图本体不再因 currentTime 每秒重渲染
+const TraditionalProgressRow = memo(function TraditionalProgressRow({
+  playbackTimeStore,
+  duration,
+  onSeek,
+  songTheme,
+  mutedText,
+}: {
+  playbackTimeStore: PlaybackTimeStore
+  duration: number
+  onSeek: (time: number) => void
+  songTheme: string
+  mutedText: string
+}) {
+  const currentTime = useSyncExternalStore(
+    playbackTimeStore.subscribe,
+    playbackTimeStore.getSnapshot,
+    playbackTimeStore.getSnapshot,
+  ).currentTime
+  const t = Math.min(duration || 1, currentTime)
+  return (
+    <div className="mt-3">
+      <input aria-label="播放进度" type="range" min={0} max={duration || 1} value={t} onChange={(event) => onSeek(Number(event.target.value))} className="w-full" style={{ accentColor: songTheme }} />
+      <div className={`mt-1 flex justify-between text-[10px] ${mutedText}`}>
+        <span>{formatTime(currentTime)}</span>
+        <span>{formatTime(duration)}</span>
+      </div>
+    </div>
+  )
+})
+
+// 内嵌歌词包装：内部订阅播放时间（4Hz），与 App 播放页 LiveLyricsDisplay 同款
+const TraditionalLiveLyrics = memo(function TraditionalLiveLyrics({
+  playbackTimeStore,
+  ...props
+}: { playbackTimeStore: PlaybackTimeStore } & Omit<ComponentProps<typeof LyricsDisplay>, 'currentTime'>) {
+  const currentTime = useSyncExternalStore(
+    playbackTimeStore.subscribe,
+    playbackTimeStore.getSnapshot,
+    playbackTimeStore.getSnapshot,
+  ).currentTime
+  return <LyricsDisplay {...props} currentTime={currentTime} />
+})
+
 // 传统模式中间栏页面：一切内容都在中间栏展示，不复用全局弹窗
 type TraditionalPage =
   | { name: 'home' }
@@ -127,7 +175,7 @@ type TraditionalPage =
   | { name: 'album'; id: string; platform: MusicPlatform }
 
 function TraditionalView({
-  onSongSelect, currentSong, queue, isPlaying, currentTime, duration, lyrics, volume, playerTheme, dominantColor,
+  onSongSelect, currentSong, queue, isPlaying, playbackTimeStore, duration, lyrics, volume, playerTheme, dominantColor,
   neteaseLoggedIn, neteaseUsername, neteaseAvatar, neteaseUserId,
   qqLoggedIn, qqUsername, qqAvatar, qqUserId,
   appleLoggedIn, appleUsername, appleAvatar, spotifyUsername, spotifyAvatar,
@@ -152,6 +200,25 @@ function TraditionalView({
   const [newPlaylistName, setNewPlaylistName] = useState('')
   const [creatingPlaylistBusy, setCreatingPlaylistBusy] = useState(false)
   const [topBarActive, setTopBarActive] = useState(false)
+  // TV 遥控器模式（无鼠标）：顶部模式下拉条常驻显示；平台药丸变成单个可聚焦单元，左右键切换。
+  // 手机遥控器连上（光标模式）后恢复 PC 式 hover/拖拽交互。
+  const tvMode = useTvMode()
+  const remoteCursorMode = useRemoteCursorMode()
+  const topBarTvActive = tvMode && !remoteCursorMode
+  const pillTvAdjust = tvMode && !remoteCursorMode
+  // 常驻小元素（模式下拉 chevron）的无限浮动：TV 非增强档静态化（JS 动画，tv.css 杀不掉）
+  const tvChevronFloat = !tvMode || isPerfModeEnhanced()
+  const cyclePlatform = (dir: 1 | -1) => {
+    setPlatform(prev => {
+      const idx = Math.max(0, visiblePlatforms.indexOf(prev))
+      const next = (idx + dir + visiblePlatforms.length) % visiblePlatforms.length
+      return visiblePlatforms[next] ?? prev
+    })
+  }
+  const platformKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); cyclePlatform(-1) }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); cyclePlatform(1) }
+  }
   const [spectrum, setSpectrum] = useState<number[]>(Array(18).fill(0))
   // 右栏：播放列表 / 同步歌词 共用一张卡片，点击切换；未播放时无歌词，只显示播放列表
   const [rightTab, setRightTab] = useState<'playlist' | 'lyrics'>('playlist')
@@ -241,6 +308,8 @@ function TraditionalView({
 
   // 真实频谱：注册为桌面频谱消费者，接收 App 主进程算好的 48 段频谱，取 18 段渲染
   useEffect(() => {
+    // 桌面频谱消费者仅桌面有意义：TV（Android）无 Electron 频谱源，注册只会让 10Hz 空转
+    if (tvMode) return
     const unregister = registerDesktopSpectrumConsumer()
     let frame: number | null = null
     let pending: number[] | null = null
@@ -266,7 +335,7 @@ function TraditionalView({
       window.removeEventListener('desktopSpectrumChanged', update)
       if (frame !== null) window.cancelAnimationFrame(frame)
     }
-  }, [])
+  }, [tvMode])
 
   const openPlaylist = useCallback(async (playlist: ExplorePlaylist | any) => {
     setPlaylistLoading(true)
@@ -396,14 +465,16 @@ function TraditionalView({
     : preferences.background === 'cover' && currentSong
       ? `linear-gradient(135deg, rgba(8,12,22,.96), rgba(8,12,22,.78)), url(${coverOf(currentSong)}) center/cover`
       : (isDark ? 'radial-gradient(circle at 88% 0%, rgba(236,72,153,.22), transparent 34%), radial-gradient(circle at 32% 24%, rgba(59,130,246,.16), transparent 36%), #090d16' : 'radial-gradient(circle at 88% 0%, rgba(236,72,153,.16), transparent 34%), #f2f4f8')
-  const bgStyle = preferences.backgroundBlur > 0
-    ? { background: bgBase, filter: `blur(${preferences.backgroundBlur}px)`, transform: 'scale(1.06)' }
+  // TV 弱 GPU：全屏 filter blur 是栅格化大头，TV 上把背景模糊钳到 4px（桌面保持用户设置）
+  const bgBlur = tvMode ? Math.min(preferences.backgroundBlur, 4) : preferences.backgroundBlur
+  const bgStyle = bgBlur > 0
+    ? { background: bgBase, filter: `blur(${bgBlur}px)`, transform: 'scale(1.06)' }
     : { background: bgBase }
 
   return (
     <div className={`relative h-full overflow-hidden ${text}`}>
       {/* 背景层：可独立模糊/暗化，不影响前景内容 */}
-      <div className="pointer-events-none absolute inset-0 transition-[filter] duration-300" style={bgStyle} />
+      <div className={`pointer-events-none absolute inset-0 transition-[filter] ${tvMode ? 'duration-100' : 'duration-300'}`} style={bgStyle} />
       {preferences.backgroundDim && <div className="pointer-events-none absolute inset-0 bg-black/25" />}
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-black/15" />
 
@@ -414,9 +485,19 @@ function TraditionalView({
           <span className="hidden text-sm font-semibold sm:inline">WaveForge</span>
         </div>
         {/* 平台药丸（名字右边，拖拽切换） */}
-        <div className="relative h-9 w-[240px] shrink-0 overflow-hidden rounded-2xl border" style={{ borderColor: isDark ? 'rgba(255,255,255,.12)' : 'rgba(15,23,42,.12)' }}>
+        <div className="relative h-9 w-[240px] shrink-0 overflow-hidden rounded-2xl border" style={{ borderColor: isDark ? 'rgba(255,255,255,.12)' : 'rgba(15,23,42,.12)' }}
+          {...(pillTvAdjust
+            ? {
+                'data-tv-focus': '',
+                tabIndex: 0,
+                'data-tv-arrows': 'horizontal',
+                'aria-label': `平台切换，当前 ${platformShortName(platform)}，左右键切换`,
+                onKeyDown: platformKeyDown,
+              }
+            : {})}
+        >
           <div className="pointer-events-none absolute left-1/2 top-1/2 h-7 w-[76px] -translate-x-1/2 -translate-y-1/2 rounded-xl transition-colors" style={{ background: `${accent}1f`, border: `1px solid ${accent}55` }} />
-          <motion.div className="relative flex touch-none select-none" style={{ x: platformStripX, cursor: 'grab' }} onPointerDown={platformPointerDown} onPointerMove={platformPointerMove} onPointerUp={platformPointerUp} onPointerCancel={platformPointerUp}>
+          <motion.div className="relative flex touch-none select-none" style={{ x: platformStripX, cursor: 'grab' }} onPointerDown={platformPointerDown} onPointerMove={platformPointerMove} onPointerUp={platformPointerUp} onPointerCancel={platformPointerUp} {...(pillTvAdjust ? { 'data-tv-skip': '' } : {})}>
             {visiblePlatforms.map(key => {
               const active = platform === key
               return (
@@ -457,7 +538,7 @@ function TraditionalView({
         onClick={() => { if (!showModePanel) setShowModePanel(true) }}
       >
         <AnimatePresence>
-          {topBarActive && !showModePanel && (
+          {(topBarTvActive || topBarActive) && !showModePanel && (
             <motion.button
               aria-label="打开模式选择"
               initial={{ opacity: 0, y: -10 }}
@@ -467,7 +548,7 @@ function TraditionalView({
               className={`absolute left-1/2 top-0 -translate-x-1/2 rounded-b-2xl border border-t-0 backdrop-blur-md transition-colors ${isDark ? 'border-white/20 bg-white/10 hover:bg-white/20' : 'border-black/15 bg-black/5 hover:bg-black/10'}`}
               style={{ width: '200px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
             >
-              <motion.div animate={{ y: [0, 2, 0] }} transition={{ y: { duration: 1, repeat: Infinity } }}>
+              <motion.div animate={tvChevronFloat ? { y: [0, 2, 0] } : { y: 0 }} transition={tvChevronFloat ? { y: { duration: 1, repeat: Infinity } } : { duration: 0 }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={`h-6 w-6 ${isDark ? 'text-white' : 'text-black/70'}`}><path d="M6 9l6 6 6-6" /></svg>
               </motion.div>
             </motion.button>
@@ -579,7 +660,7 @@ function TraditionalView({
                       })}
                     </div>
                   )}
-                  <div className="mt-3"><input aria-label="播放进度" type="range" min={0} max={duration || 1} value={Math.min(duration || 1, currentTime)} onChange={event => onSeek(Number(event.target.value))} className="w-full" style={{ accentColor: songTheme }} /><div className={`mt-1 flex justify-between text-[10px] ${muted}`}><span>{formatTime(currentTime)}</span><span>{formatTime(duration)}</span></div></div>
+                  <TraditionalProgressRow playbackTimeStore={playbackTimeStore} duration={duration} onSeek={onSeek} songTheme={songTheme} mutedText={muted} />
                   <div className="mt-3 flex items-center justify-center gap-5">
                     <button type="button" onClick={onPrevious} aria-label="上一首"><SkipBack className="h-4 w-4" /></button>
                     <button type="button" onClick={onPlayPause} className="flex h-11 w-11 items-center justify-center rounded-full text-white" style={{ background: songTheme }}>{isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}</button>
@@ -613,7 +694,7 @@ function TraditionalView({
               {rightTab === 'lyrics' && currentSong ? (
                 <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-2">
                   {/* 与共享播放页一致的单行模式：避免 scroll 模式手动滚动/自动回位的抽风 */}
-                  <LyricsDisplay currentTime={currentTime} isPlaying={isPlaying} accentColor={songTheme} lyrics={lyrics} displayMode="single" translationEnabled={false} romanEnabled={false} layoutContext="player" lyricSizeOverride={1.15} wordByWordEnabledOverride playerTheme={playerTheme} onSeek={onSeek} />
+                  <TraditionalLiveLyrics playbackTimeStore={playbackTimeStore} isPlaying={isPlaying} accentColor={songTheme} lyrics={lyrics} displayMode="single" translationEnabled={false} romanEnabled={false} layoutContext="player" lyricSizeOverride={1.15} wordByWordEnabledOverride playerTheme={playerTheme} onSeek={onSeek} />
                 </div>
               ) : (
                 <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">

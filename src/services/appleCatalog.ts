@@ -745,8 +745,8 @@ export function appleLibraryTrackToSong(track: AppleLibraryTrack): Song {
 /**
  * 统一播放转换：非网易云/QQ 平台的曲目 → 网易云/QQ 同款可播放歌曲。
  * - apple：始终匹配（Apple 曲目无法直接播放）
- * - spotify / soda：无自源音源，始终匹配
- * - kugou：由调用方决定（已登录酷狗时可原生播放，不进来）
+ * - spotify：无自源音源，始终匹配
+ * - kugou / soda：由调用方决定（原生音源可播时不进来；汽水走逆向 Web API，免费/试听流可播）
  * - 网易云/QQ 曲目原样返回
  * 所有界面（搜索/歌单/探索/个人中心）点播放时都走这里，避免各处重复匹配。
  */

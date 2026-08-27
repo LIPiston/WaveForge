@@ -1,6 +1,7 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type CSSProperties, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useTvMode, useRemoteCursorMode } from '../tv/tvCore'
+import { isPerfModeEnhanced } from '../tv/perfMode'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
 import {
   AlertCircle,
@@ -26,6 +27,7 @@ import {
   Waves,
   X,
 } from 'lucide-react'
+import PluginShortcuts from './PluginShortcuts'
 import type { Song } from '../services/musicApi'
 import { getNeteaseBanner, getQQBanner, neteaseRecommendDislike, neteaseFmTrash } from '../services/musicApi'
 import {
@@ -41,6 +43,7 @@ import {
   type ExplorePlatform,
   type ExplorePlaylist,
 } from '../services/exploreApi'
+import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
 import MiniPlayer from './MiniPlayer'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
 import QQMusicJourney from './QQMusicJourney'
@@ -87,7 +90,8 @@ interface ExploreViewProps {
   restorePlaybackOrigin?: (PlaybackOrigin & { revision: number }) | null
   currentSong?: Song | null
   isPlaying: boolean
-  currentTime: number
+  /** 播放时间不再经 App 每秒下传（会击穿 memo 整树重渲染）：改由内部叶子组件订阅 */
+  playbackTimeStore: PlaybackTimeStore
   duration: number
   volume: number
   currentLyric?: string
@@ -225,6 +229,10 @@ function CoverWallBackground({
   blurPx: number
   accentRgb: string
 }) {
+  const tvMode = useTvMode()
+  // TV 上封面墙漂移 = 全屏 backdrop-filter 每帧对移动封面重模糊（弱 GPU 帧率杀手）；
+  // 非增强档停掉漂移、保留静态封面墙；桌面/增强档行为不变。
+  const driftAnimated = animated && (!tvMode || isPerfModeEnhanced())
   const urls = useMemo(() => {
     const unique = Array.from(new Set(covers.filter(Boolean)))
     // 扩充到足够铺满背景的封面数
@@ -248,7 +256,7 @@ function CoverWallBackground({
       <div
         className="absolute inset-[-20%]"
         style={{
-          animation: animated ? 'coverWallDrift 90s linear infinite' : undefined,
+          animation: driftAnimated ? 'coverWallDrift 90s linear infinite' : undefined,
           display: 'grid',
           gridTemplateColumns: 'repeat(7, 1fr)',
           gridAutoRows: 'minmax(0, 1fr)',
@@ -465,12 +473,25 @@ const writeExploreCache = (platform: ExplorePlatform, payload: ExplorePayload) =
   localStorage.setItem(EXPLORE_CACHE_KEY, JSON.stringify(next))
 }
 
+// 迷你播放器包装：内部订阅播放时间（4Hz），ExploreView 本体不再因 currentTime prop 每秒重渲染
+const LiveExploreMiniPlayer = memo(function LiveExploreMiniPlayer({
+  playbackTimeStore,
+  ...props
+}: { playbackTimeStore: PlaybackTimeStore } & Omit<ComponentProps<typeof MiniPlayer>, 'currentTime'>) {
+  const currentTime = useSyncExternalStore(
+    playbackTimeStore.subscribe,
+    playbackTimeStore.getSnapshot,
+    playbackTimeStore.getSnapshot,
+  ).currentTime
+  return <MiniPlayer {...props} currentTime={currentTime} />
+})
+
 function ExploreView({
   onSongSelect,
   restorePlaybackOrigin,
   currentSong = null,
   isPlaying,
-  currentTime,
+  playbackTimeStore,
   duration,
   volume,
   currentLyric = '',
@@ -700,6 +721,8 @@ function ExploreView({
   const tvMode = useTvMode()
   const remoteCursorMode = useRemoteCursorMode()
   const topBarActive = (tvMode && !remoteCursorMode) || modeTriggerHovered
+  // 常驻小元素（模式下拉 chevron）的无限浮动：TV 非增强档静态化（JS 动画，tv.css 杀不掉）
+  const tvChevronFloat = !tvMode || isPerfModeEnhanced()
 
   useEffect(() => {
     const closeForModeSwitch = () => {
@@ -848,10 +871,19 @@ function ExploreView({
         })
       return () => { active = false }
     }
-    // 汽水：暂无用户歌单接口，不发起请求
+    // 汽水：侧栏直接拉取真实用户歌单（含"我喜欢"虚拟歌单；未登录自然返回空数组）
     if (platform === 'soda') {
-      setUserPlaylists([])
-      return
+      let active = true
+      const shouldForceRefresh = authRevision !== playlistAuthRevisionRef.current
+      playlistAuthRevisionRef.current = authRevision
+      void getUserPlaylists('soda', '', sodaUsername, { forceRefresh: shouldForceRefresh })
+        .then(playlists => {
+          if (active) setUserPlaylists(playlists || [])
+        })
+        .catch(() => {
+          if (active) setUserPlaylists([])
+        })
+      return () => { active = false }
     }
     const isLoggedIn = platform === 'qq' ? qqLoggedIn : neteaseLoggedIn
     const userId = platform === 'qq' ? qqUserId || '' : neteaseUserId || ''
@@ -1280,8 +1312,8 @@ function ExploreView({
               whileTap={{ scale: 0.98 }}
             >
               <motion.svg
-                animate={{ y: [0, 2, 0] }}
-                transition={{ duration: 1, repeat: Infinity }}
+                animate={tvChevronFloat ? { y: [0, 2, 0] } : { y: 0 }}
+                transition={tvChevronFloat ? { duration: 1, repeat: Infinity } : { duration: 0 }}
                 className="h-6 w-6"
                 fill="none"
                 stroke="currentColor"
@@ -1427,6 +1459,8 @@ function ExploreView({
               >
                 <Settings className="h-[18px] w-[18px]" />
               </button>
+              {/* 插件系统入口 */}
+              <PluginShortcuts variant="explore" />
               <button
                 type="button"
                 onClick={() => {
@@ -1622,9 +1656,17 @@ function ExploreView({
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                   {[
                     {
-                      label: payload.dailySongs.length ? '每日推荐' : '今日热选',
-                      title: payload.dailySongs.length ? '只属于你的每日歌单' : '今天大家都在听',
-                      copy: payload.dailySongs.length ? '根据近期口味持续更新' : '无需登录，也能发现好音乐',
+                      // 汽水登录态下后端返回个性化日推（payload.personalized），
+                      // 标题体现「汽水·每日推荐」；未登录为公开热歌回退，文案如实标注
+                      label: payload.dailySongs.length
+                        ? (platform === 'soda' && payload.personalized ? '汽水·每日推荐' : '每日推荐')
+                        : '今日热选',
+                      title: payload.dailySongs.length
+                        ? (platform === 'soda' && !payload.personalized ? '汽水实时热门歌曲' : '只属于你的每日歌单')
+                        : '今天大家都在听',
+                      copy: payload.dailySongs.length
+                        ? (platform === 'soda' && !payload.personalized ? '登录汽水音乐后升级为个性化日推' : '根据近期口味持续更新')
+                        : '无需登录，也能发现好音乐',
                       icon: Sparkles,
                       cover: payload.dailySongs[1]?.album.picUrl || payload.newSongs[0]?.album.picUrl,
                       songs: payload.dailySongs.length ? payload.dailySongs : payload.newSongs,
@@ -2097,11 +2139,11 @@ function ExploreView({
         )}
       </AnimatePresence>
 
-      <MiniPlayer
+      <LiveExploreMiniPlayer
+        playbackTimeStore={playbackTimeStore}
         show={Boolean(currentSong) && !detailOpen}
         coverUrl={currentSong?.album.picUrl || ''}
         isPlaying={isPlaying}
-        currentTime={currentTime}
         duration={duration}
         volume={volume}
         title={currentSong?.name || ''}

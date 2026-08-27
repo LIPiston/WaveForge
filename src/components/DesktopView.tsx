@@ -3,6 +3,7 @@ import { useTvMode, useRemoteCursorMode, useTvBack } from '../tv/tvCore'
 import { lazy, Suspense, memo, useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronDown, Search, Settings, X, Play, Clock, Volume2, VolumeX, LogIn, Captions, Heart, MonitorSmartphone, Speaker } from 'lucide-react'
+import PluginShortcuts from './PluginShortcuts'
 import PlaylistCarousel3D from './PlaylistCarousel3D'
 import DesktopMiniPlayer from './DesktopMiniPlayer'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
@@ -15,7 +16,7 @@ import type { MusicPlatform } from '../services/platforms'
 import { getVisiblePlatforms } from '../services/platforms'
 import { getAppleLibraryPlaylists, getAppleRecentPlayed, appleLibraryTrackToSong, getApplePlaylistTracks, getAppleCatalogPlaylistTracks, appleSongToSong, removeAppleTracksFromPlaylist } from '../services/appleCatalog'
 import { desktopWallpaperManager, DesktopLiveWallpaperSource, toWallpaperUrl } from '../services/desktopWallpaperManager'
-import { getUserPlaylists, removeSongFromPlaylist, streamNeteasePlaylistTracks } from '../services/playlistService'
+import { getPlaylistDetail, getUserPlaylists, removeSongFromPlaylist, streamNeteasePlaylistTracks } from '../services/playlistService'
 import { useColorThief } from '../hooks/useColorThief'
 import {
   DESKTOP_CUSTOMIZATION_EVENT,
@@ -1515,6 +1516,13 @@ function DesktopView({
         console.log(`✅ [DesktopView] 设置了 ${songs.length} 首歌曲到 playlistSongs`)
         setPlaylistSongs(songs)
         }
+      } else if (currentPlatform === 'soda') {
+        // 汽水：经 playlistService 统一详情（分页合并全量曲目，支持 qishui-liked 等虚拟歌单 id）
+        const data = await getPlaylistDetail(String(playlist.id || ''), 'soda')
+        if (playlistLoadController.signal.aborted || playlistLoadControllerRef.current !== playlistLoadController) return
+        const detailed = { ...playlist, ...data?.playlist, isCollected: playlist.isCollected }
+        setSelectedPlaylist(previous => previous ? { ...previous, ...detailed } : detailed)
+        setPlaylistSongs(Array.isArray(data?.tracks) ? data.tracks : [])
       }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') console.error('加载歌单详情失败:', error)
@@ -2339,6 +2347,9 @@ function DesktopView({
               >
                 <Captions className="w-5 h-5 text-white" />
               </motion.button>
+
+              {/* 插件系统入口 */}
+              <PluginShortcuts variant="desktop" />
             </div>
           </motion.div>
         )}
