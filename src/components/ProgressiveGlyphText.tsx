@@ -12,7 +12,9 @@ interface ProgressiveGlyphTextProps {
   timeOffset: number
   filledColor: string
   inactiveColor: string
-  glowColor: string
+  /** 填充层发光色。**不传 = 完全不加发光**（墙纸模式要"无光幕"的干净底）；
+   *  传色值才启用 16px 逐字光晕与"填充中"的 drop-shadow（辉煌模式仍在用）。 */
+  glowColor?: string
   fallbackDuration?: number
   className?: string
   style?: CSSProperties
@@ -65,6 +67,8 @@ export default function ProgressiveGlyphText({
   )
   const groups = useMemo(() => groupGlyphs(glyphs), [glyphs])
   const fillRefs = useRef<Array<HTMLSpanElement | null>>([])
+  // 空串 = 不加发光（墙纸模式），非空 = 该色作为光晕色（辉煌模式）
+  const glow = glowColor?.trim() || ''
 
   useEffect(() => {
     let animationFrame: number | null = null
@@ -96,10 +100,10 @@ export default function ProgressiveGlyphText({
         // clip-path inset 只影响绘制，不触发布局，视觉完全一致。
         element.style.clipPath = `inset(0 ${(100 - progress * 100).toFixed(2)}% 0 0)`
         element.style.opacity = progress <= 0.001 ? '0' : '1'
-        const glowOn = progress > 0.002 && progress < 0.998
+        const glowOn = glow !== '' && progress > 0.002 && progress < 0.998
         if (glowOn !== Boolean(lastGlow[index])) {
           lastGlow[index] = glowOn ? 1 : 0
-          element.style.filter = glowOn ? `drop-shadow(0 0 8px ${glowColor})` : 'none'
+          element.style.filter = glowOn ? `drop-shadow(0 0 8px ${glow})` : 'none'
         }
       })
     }
@@ -144,7 +148,7 @@ export default function ProgressiveGlyphText({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       if (animationFrame !== null) cancelAnimationFrame(animationFrame)
     }
-  }, [glowColor, glyphs, playbackTimeStore, timeOffset])
+  }, [glow, glyphs, playbackTimeStore, timeOffset])
 
   let glyphCursor = 0
   return (
@@ -176,13 +180,25 @@ export default function ProgressiveGlyphText({
                   <span
                     ref={element => { fillRefs.current[refIndex] = element }}
                     aria-hidden="true"
-                    className="pointer-events-none absolute inset-y-0 left-0 overflow-hidden"
+                    className="pointer-events-none absolute left-0 overflow-hidden"
                     style={{
+                      // 填充层只做「横向」裁剪，竖向必须留够空间：
+                      // 行高往往小于字体自身的 ascent+descent（此处实测约 1.32em），
+                      // 若把裁剪盒钉在字形行框上（原先的 inset-y-0，高度 = 行高），
+                      // y/g/p/q/j 的降部、带音符或上下伸笔画的字就会被平切出缺角。
+                      // 这里把裁剪盒上下各撑开 0.5em，再用等量 paddingTop 把文字推回原位，
+                      // 基线因此与底色层逐像素重合——只扩大裁剪范围，不改变排印与行距。
+                      // 横向揭示改走 clip-path（远程改法，同 rAF）：只影响绘制不触发重排，
+                      // 与上面的裁剪盒修复正交，两者可并存。
+                      top: '-0.5em',
+                      height: 'calc(100% + 1em)',
+                      paddingTop: '0.5em',
                       width: '100%',
                       clipPath: 'inset(0 100% 0 0)',
                       color: filledColor,
                       whiteSpace: 'nowrap',
-                      textShadow: `0 0 1px rgba(255,255,255,.72), 0 0 16px ${glowColor}`,
+                      // 不传 glowColor 时完全不写 text-shadow —— 否则 16px 光晕会在歌词背景下糊出一片"光幕"
+                      textShadow: glow ? `0 0 1px rgba(255,255,255,.72), 0 0 16px ${glow}` : undefined,
                     }}
                   >
                     {glyph.text}

@@ -21,6 +21,10 @@ import {
   type PeripheralChromaStyle,
 } from '../src/plugins/clients/chroma/chromaTypes'
 
+/** 渲染类用例的耗时随机器负载波动很大：单跑约 1~3s，并行跑全量时会被拉长 3 倍以上而打满 5s 默认超时。
+ *  这里给重计算用例显式放宽，而不是削掉"每个样式/每一帧都渲染一遍"的覆盖。 */
+const RENDER_TIMEOUT = 20_000
+
 const audio: ChromaAudioData = {
   spectrum: Float32Array.from({ length: 24 }, (_, index) => (index % 7) / 6),
   bass: 0.72,
@@ -124,7 +128,7 @@ describe('Chroma frames', () => {
     })
     expect(new Set(signatures).size).toBe(styles.length - 1)
     expect(signatures[styles.indexOf('bars')]).toBe(signatures[styles.indexOf('spectrum-gradient')])
-  })
+  }, RENDER_TIMEOUT)
 
   it('keeps starlight deterministic for the same engine state and time', () => {
     const config = settings({ smoothing: 0, keyboard: { ...DEFAULT_CHROMA_SETTINGS.keyboard, style: 'starlight' } })
@@ -251,7 +255,7 @@ describe('Chroma frames', () => {
       expect(Array.from(result.visualizerField!.colors).every(color => color === 0)).toBe(true)
       expect(CHROMA_DEVICE_TYPES.every(device => Array.from(result.frames[device]!).every(color => color === 0))).toBe(true)
     }
-  })
+  }, RENDER_TIMEOUT)
 
   it('matches neutral hardware projection to the canonical composite', () => {
     const config = settings({
@@ -477,7 +481,7 @@ describe('Chroma frames', () => {
     const light15 = frameLight(frame15.frames.keyboard)
     const light30 = frameLight(frame30.frames.keyboard)
     expect(Math.abs(light15 - light30)).toBeLessThan(Math.max(20, Math.max(light15, light30) * 0.12))
-  })
+  }, RENDER_TIMEOUT)
 
   it('keeps the canonical preview independent from hardware mapping size', () => {
     const base = settings({
@@ -526,7 +530,7 @@ describe('Chroma frames', () => {
     const top = fire.slice(0, 22).reduce((sum, value) => sum + value, 0)
     const bottom = fire.slice(110).reduce((sum, value) => sum + value, 0)
     expect(bottom).toBeGreaterThan(top)
-  })
+  }, RENDER_TIMEOUT)
 
   it('keeps hardware frames identical when previewEnabled changes', () => {
     const enabled = keyboardFor(settings({ previewEnabled: true, smoothing: 0 }), audio, 500)

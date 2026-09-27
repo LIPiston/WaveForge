@@ -128,6 +128,7 @@ const LazyCommentModal = lazy(loadCommentModal)
 const loadModernAudioVisualizer = () => import('./components/ModernAudioVisualizer')
 const loadPlaybackRadialMenu = () => import('./components/PlaybackRadialMenu')
 const loadImmersiveControls = () => import('./components/ImmersiveControls')
+const loadQuickSettingsHost = () => import('./components/QuickSettingsHost')
 const loadTranslationDisplay = () => import('./components/TranslationDisplay')
 const loadWallpaperLyrics = () => import('./components/WallpaperLyrics')
 const loadGloriousLyrics = () => import('./components/GloriousLyrics')
@@ -144,6 +145,7 @@ const loadBilibiliMvBackground = () => import('./components/BilibiliMvBackground
 const LazyModernAudioVisualizer = lazy(loadModernAudioVisualizer)
 const LazyPlaybackRadialMenu = lazy(loadPlaybackRadialMenu)
 const LazyImmersiveControls = lazy(loadImmersiveControls)
+const LazyQuickSettingsHost = lazy(loadQuickSettingsHost)
 const LazyTranslationDisplay = lazy(loadTranslationDisplay)
 const LazyWallpaperLyrics: any = lazy(loadWallpaperLyrics)
 const LazyGloriousLyrics: any = lazy(loadGloriousLyrics)
@@ -424,6 +426,21 @@ interface PulsingCrossfadeBackgroundProps {
   playerTheme: 'light' | 'dark'
 }
 
+/**
+ * 律动包络对背景缩放「额外贡献」的系数（0~1，越小越含蓄）。
+ *
+ * `--cover-pulse-scale` 的包络峰值约 0.2（`useAudioPulse` 里对 inputs 全部做了
+ * `Math.min` 钳制），原样叠加到 `baseScale`(1.1) 上会让整屏背景在 **1.10 ~ 1.31**
+ * 之间起伏 —— 尤其「躁动」档的 punch 是每拍一次 32ms 起跳的脉冲，
+ * 观感是背景跟着鼓点一撑一撑地跳，幅度明显压过其余所有律动
+ * （歌词当前句 / 封面卡 / 频谱条都只有 2~3%）。这里压到 40%
+ * （上限 ≈ +0.08 → 1.18），保留呼吸感但不再「跳」。
+ *
+ * ⚠️ 只调这一个系数，**不要**去改 `useAudioPulse` 的钳制值 —— 那个包络还被
+ * folia 运镜 / 歌词 / 封面卡 / 频谱条共用，动它会连带改掉那一串效果。
+ */
+const PULSE_SCALE_GAIN = 0.4
+
 const PulsingCrossfadeBackground = memo(function PulsingCrossfadeBackground({
   pulseStore,
   backgroundEffect,
@@ -443,28 +460,68 @@ const PulsingCrossfadeBackground = memo(function PulsingCrossfadeBackground({
     //   实测进入播放页 8 秒内 RecalcStyle 达 1325 次/816ms，是"进入播放页卡一下"的主因）。
     // 脉冲本身是缓慢的呼吸效果，30fps 视觉上无差别。
     const PULSE_MIN_INTERVAL_MS = 32
+    // 白闪层的两级柔化（用户反馈了两次的「频闪」= 每拍整屏闪一下）：
+    //
+    // ① 拆基线：pulse.scale = 慢呼吸 + punch（punch 是 `useAudioPulse` 里
+    //    每拍一次、32ms 起跳的冲击）。用一条 τ≈620ms 的慢线把两者分开，
+    //    白闪层只取「呼吸的全部 + 冲击的 30%」—— 呼吸感保留，每拍闪白基本消失。
+    //    冲击仍**完整**地驱动 `--cover-pulse-scale` 做背景缩放，那里的 0.055s
+    //    transition 会把它化成柔和的一"撑"，本来就是「跳一下」而不是「闪」。
+    // ② 再低通：残下的 30% 冲击还要过一遍 τ=120ms 的一阶低通，抹掉上升沿。
+    //
+    // ⚠️ 不要退回「只调 CSS transition」：原实现的 `transition: opacity 0.12s` 在
+    //    32ms 的写入节奏下等效于 τ≈103ms 的低通，即"本来就平滑过"—— 真正刺眼的是
+    //    每拍 0.17 的整屏提亮幅度本身，所以这里才必须去削 punch，而不是去调 transition。
+    //    现在 transition 已彻底去掉（`transition: 'none'`），平滑完全由这里负责。
+    const HIGHLIGHT_SMOOTH_MS = 120
+    const BREATH_BASELINE_MS = 620
+    const PUNCH_LEAK = 0.3
     let lastAppliedAt = 0
-    const applyPulse = () => {
+    let breathBaseline: number | null = null
+    let smoothedHighlight: number | null = null
+    const applyPulse = (now: number) => {
       const root = pulseRootRef.current
       const highlight = pulseHighlightRef.current
       if (!root || !highlight) return
 
       const pulse = pulseStore.getSnapshot()
       root.style.setProperty('--cover-pulse-scale', String(pulse.scale))
+
+      const delta = lastAppliedAt === 0
+        ? PULSE_MIN_INTERVAL_MS
+        : Math.max(1, Math.min(160, now - lastAppliedAt))
+      lastAppliedAt = now
+
+      if (breathBaseline === null) {
+        breathBaseline = pulse.scale
+      } else {
+        breathBaseline += (pulse.scale - breathBaseline) * (1 - Math.exp(-delta / BREATH_BASELINE_MS))
+      }
+      const flashScale = breathBaseline + (pulse.scale - breathBaseline) * PUNCH_LEAK
+      // brightness/saturation 都正比于 scale，这里等价于"只把 scale 换成 flashScale"，
+      // 不用去猜当前是 soft / dynamic / restless 哪一档的倍数。
+      const ratio = pulse.scale > 1e-6 ? Math.min(1, flashScale / pulse.scale) : 0
+
       // Brightness/saturation used to rebuild the blurred full-screen filter every
       // frame. A composited soft-light layer produces the same visible flash while
-      // keeping the expensive blur raster stable.
-      highlight.style.opacity = String(Math.min(0.22, pulse.brightness * 0.72 + pulse.saturation * 0.055))
+      // keeping the expensive blur raster stable. The layer is now also de-punched
+      // and low-pass filtered so a beat reads as a swell instead of a flicker.
+      const target = Math.min(0.22, (pulse.brightness * 0.62 + pulse.saturation * 0.045) * ratio)
+      if (smoothedHighlight === null) {
+        smoothedHighlight = target
+      } else {
+        smoothedHighlight += (target - smoothedHighlight) * (1 - Math.exp(-delta / HIGHLIGHT_SMOOTH_MS))
+      }
+      highlight.style.opacity = String(smoothedHighlight)
     }
 
     const applyPulseThrottled = () => {
       const now = performance.now()
       if (now - lastAppliedAt < PULSE_MIN_INTERVAL_MS) return
-      lastAppliedAt = now
-      applyPulse()
+      applyPulse(now)
     }
 
-    applyPulse()
+    applyPulse(performance.now())
     return pulseStore.subscribe(applyPulseThrottled)
   }, [pulseStore])
 
@@ -475,7 +532,7 @@ const PulsingCrossfadeBackground = memo(function PulsingCrossfadeBackground({
       : `blur(${backgroundBlur}px) saturate(1.3)`
   const crossfadeImageStyle = useMemo(() => ({
     filter: staticFilter,
-    transform: `translate3d(0, 0, 0) scale(calc(${baseScale} + var(--cover-pulse-scale, 0)))`,
+    transform: `translate3d(0, 0, 0) scale(calc(${baseScale} + var(--cover-pulse-scale, 0) * ${PULSE_SCALE_GAIN}))`,
     transition: 'transform 0.055s linear, opacity 0.5s',
     willChange: 'transform' as const,
     // 摩登背景：封面图让位给流体层（保留挂载以便切回其它模式时无闪回）
@@ -503,7 +560,10 @@ const PulsingCrossfadeBackground = memo(function PulsingCrossfadeBackground({
           opacity: 0,
           background: 'rgba(255, 255, 255, 0.34)',
           mixBlendMode: 'soft-light',
-          transition: 'opacity 0.12s ease-out',
+          // 刻意不加 transition：opacity 已经由上面的 applyPulse 做一阶低通，
+          // 再叠一层 CSS transition 会在每 32ms 的写入节奏下反复重启，产生锯齿抖动
+          // （正是「频闪」的另一半原因）。
+          transition: 'none',
           willChange: 'opacity',
         }}
       />
@@ -3529,6 +3589,21 @@ function App() {
   // 显示封面：始终用平台封面（AM 封面只用于摩登模式的动态粒子效果，不替换显示封面）
   const displayCoverUrl = currentTrack.coverUrl
 
+  /**
+   * 「播放设置」弹窗左侧预览用的播放上下文。
+   *
+   * 弹窗宿主挂在 App 根节点、portal 到 body，拿不到播放页的上下文，只能在这里组装后透传。
+   * 刻意**不下发时间快照**：App 的 currentTime 被 commit gate 门控（只在暂停/跳转/换曲时提交），
+   * 当 prop 传下去会一直停在旧值。预览自己订阅 audioPlayer.playbackTimeStore 取连续时间，
+   * 与 LiveLyricsDisplay / LivePlayerControls 同一套写法。
+   */
+  const quickSettingsPlayback = useMemo(() => ({
+    track: { title: currentTrack.title, artist: currentTrack.artist, coverUrl: displayCoverUrl },
+    lyrics,
+    lyricOffset,
+    playbackTimeStore: audioPlayer.playbackTimeStore,
+  }), [currentTrack.title, currentTrack.artist, displayCoverUrl, lyrics, lyricOffset, audioPlayer.playbackTimeStore])
+
   // 提取封面主色调
   const { dominantColor: extractedColor, palette: coverPalette, status: coverColorStatus } = useColorThief(displayCoverUrl)
   const playbackCoverColor = coverColorStatus === 'ready'
@@ -3790,6 +3865,7 @@ function App() {
       : Promise.allSettled([
       loadPlaybackRadialMenu(),
       loadImmersiveControls(),
+      loadQuickSettingsHost(),
       loadTranslationDisplay(),
       loadModernAudioVisualizer(),
       loadBilibiliMvBackground(),
@@ -5546,13 +5622,26 @@ function App() {
     transitionDuration,
   })
 
-  const handlePlayModeChange = () => {
+  const handlePlayModeChange = (mode?: 'sequential' | 'shuffle' | 'repeat') => {
     const now = Date.now()
     if (now - lastPlayModeChangeRef.current < 300) return
     lastPlayModeChangeRef.current = now
 
-    const modes: Array<'sequential' | 'shuffle' | 'repeat'> = ['sequential', 'shuffle', 'repeat']
-    const newMode = modes[(modes.indexOf(playMode) + 1) % modes.length]
+    // 支持两种调用形态（参数互斥）：
+    //   1) mode 已传入 → 双按钮 UI（摩登 / 实时控件 / 任何 onPlayModeChange 形如 (m)=>void 的地方）
+    //      直接落到指定模式，跳过循环；
+    //   2) mode 未传入 → 单按钮 UI（TraditionalView / 旧的 PlayerControls.onPlayModeChange: () => void）
+    //      按 sequential → shuffle → repeat 循环到下一个模式。
+    //   之前双按钮调进来 mode 被忽略，导致点"单曲循环"按钮实际落到"随机播放"，
+    //   再按一次才到"单曲循环"——典型循环错位 bug。2026-09-12 修。
+    let newMode: 'sequential' | 'shuffle' | 'repeat'
+    if (mode) {
+      if (playMode === mode) return // 已处于该模式：不触发 toast/重置 queue，避免误连点
+      newMode = mode
+    } else {
+      const modes: Array<'sequential' | 'shuffle' | 'repeat'> = ['sequential', 'shuffle', 'repeat']
+      newMode = modes[(modes.indexOf(playMode) + 1) % modes.length]
+    }
     audioPlayer.cancelTransition('play mode changed', false)
     const nextRevision = bumpQueueRevision()
     setPlayMode(newMode)
@@ -8911,9 +9000,14 @@ function App() {
                 onCopyInfo={handleCopyInfo}
                 onContextMenuOpen={handlePlaybackContextMenuOpen}
               />
-              {/* 沉浸模式控制按钮 - 右上角（看歌正常播放时由播放器内部控件接管；
-                  真正无视频/失败时经 MaybePortal 恢复全局入口；
-                  摩登模式改用自身左下角页脚控件，全局入口不渲染）。
+              {/* 全局控制按钮 - 各歌词模式按自己的版式取变体：
+                  沉浸 = left（右上角整组控件：顶部收起箭头 + 按钮列，弹框出现时整组避让）；
+                  现代 = slab（与沉浸同一套"整列收进一块玻璃板"的形态，但保留自己原来的位置：
+                  无收起箭头、无弹框避让、容器 right-0 而行 right-6）；
+                  墙纸 = compact（相纸下方小横向条）；辉煌 = glorious（竖版封面卡片下方小横向条，锚点由 GloriousLyrics 提供）；
+                  其余（folia / pv / 多维）= default（右上角各自独立的玻璃圆钮，**不要动**）。
+                  看歌正常播放时由播放器内部控件接管；真正无视频/失败时经 MaybePortal 恢复全局入口；
+                  摩登模式改用自身左下角页脚控件，全局入口不渲染。
                   电台/播客各自的播放页是独立设计（自带返回、播放、音量、设置），
                   这里不再叠加歌词页的悬浮控件——否则会出现「右上角主页/设置/音效」
                   这类与电台页重复且语义不符的入口。 */}
@@ -8922,7 +9016,17 @@ function App() {
               <MaybePortal active={lyricDisplayMode === 'video'}>
                 <LazyImmersiveControls
                   coverColor={playbackCoverColor}
-                  variant={lyricDisplayMode === 'immersive' ? 'left' : 'default'}
+                  variant={
+                    lyricDisplayMode === 'immersive'
+                      ? 'left'
+                      : lyricDisplayMode === 'modern'
+                        ? 'slab'
+                        : lyricDisplayMode === 'wallpaper'
+                          ? 'compact'
+                          : lyricDisplayMode === 'glorious'
+                            ? 'glorious'
+                            : 'default'
+                  }
                   onHomeClick={handlePlayerHome}
                   hideHome={lyricDisplayMode === 'modeng'}
                 onOpenMixingStudio={(anchorRect) => {
@@ -9881,6 +9985,13 @@ function App() {
           </Suspense>
         )}
       </AnimatePresence>
+
+      {/* 播放设置弹窗（原 QuickSettings 下拉面板）：全局唯一宿主，与调音室同为全模式共享弹层。
+          弹窗内部由 QuickSettingsHost 自己 portal 到 body —— 挂在这里而不是各播放页里，
+          既避免被四个模式容器的层叠上下文困住，也让弹窗不再受播放页 overflow-hidden 裁切。 */}
+      <Suspense fallback={null}>
+        <LazyQuickSettingsHost playback={quickSettingsPlayback} />
+      </Suspense>
 
       {/* 播放提示是全局覆盖层：播放页始终允许显示；探索、简约首页和桌面模式
           只有在“在播放页外显示播放提示”开启时才显示，且三个模式位置一致。 */}

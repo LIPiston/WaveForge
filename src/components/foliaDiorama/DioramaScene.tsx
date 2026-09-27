@@ -821,6 +821,8 @@ export interface DioramaSceneProps {
     coverUrl?: string;
     /** MV 背景激活时：内置背景层（BackgroundGradient/StarShell/color/fog）退场，让下层 MV 视频透过 Canvas 可见。 */
     mvBackgroundActive?: boolean;
+    /** 轻量场景（MV 视频共存 / 软件合成降级）：削减大面积 overdraw 的氛围层，给双层合成让出帧预算。 */
+    lightweightScene?: boolean;
 }
 
 const EMPTY_ANALYSIS: AudioAnalyzerData = Object.freeze({
@@ -851,6 +853,7 @@ export default function DioramaScene({
     linesEpoch = 0,
     coverUrl,
     mvBackgroundActive = false,
+    lightweightScene = false,
 }: DioramaSceneProps) {
     const camera = useThree(state => state.camera);
     const aspect = useThree(state => state.viewport.aspect);
@@ -927,11 +930,14 @@ export default function DioramaScene({
                 />
             ))}
 
-            {/* 星河粒子：沿走廊方向缓缓流动 + 逐粒闪烁 + 随音乐律动（替代静态尘埃） */}
-            <StarRiver count={560} pulseStore={pulseStore ?? EMPTY_AUDIO_PULSE_STORE} flightActive={flightActive} />
+            {/* 星河粒子：沿走廊方向缓缓流动 + 逐粒闪烁 + 随音乐律动（替代静态尘埃）
+                轻量场景减半粒子数（单 draw call 着色器粒子，减半主要为 GPU 顶点/overdraw 让路） */}
+            <StarRiver count={lightweightScene ? 280 : 560} pulseStore={pulseStore ?? EMPTY_AUDIO_PULSE_STORE} flightActive={flightActive} />
 
-            {/* 填空元素：星云薄雾 / 走廊光轨 / 地面雾光 */}
-            <NebulaField accentColor={accentColor} />
+            {/* 填空元素：星云薄雾 / 走廊光轨 / 地面雾光。
+                轻量场景（MV 视频共存 / 软件合成）跳过星云——多张大尺寸加法混合面片是全场景
+                最大的 overdraw 来源，且"云雾背景"语义与下层 MV 视频重叠最强；光轨与地面雾保留 */}
+            {!lightweightScene && <NebulaField accentColor={accentColor} />}
             <PathRail sequencer={sequencer} accentColor={accentColor} />
             <FloorMist accentColor={accentColor} />
 

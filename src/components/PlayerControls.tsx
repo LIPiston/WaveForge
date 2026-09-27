@@ -262,6 +262,7 @@ export default function PlayerControls({
       const detail = (event as CustomEvent<PlaybackShortcutSettings>).detail
       setShortcutSettings(detail || loadPlaybackShortcutSettings())
     }
+    // 播放面配色只认传入的封面主色（App 由 useColorThief 下发），不再自己读设置里的主题色
     window.addEventListener(PLAYBACK_SHORTCUT_SETTINGS_EVENT, handleSettingsChange)
     return () => {
       window.removeEventListener(PLAYBACK_SHORTCUT_SETTINGS_EVENT, handleSettingsChange)
@@ -524,7 +525,8 @@ export default function PlayerControls({
             boxShadow: playerTheme === 'dark' ? '0 12px 34px rgba(0,0,0,0.32)' : '0 12px 34px rgba(0,0,0,0.14)',
           }}
         >
-          <div className="flex items-center justify-center gap-2 text-sm font-bold tracking-wide" style={{ color: accentColor }}>
+          {/* 配色用封面主色的自适应版本（progressFillColor 已按明暗主题钳制亮度，保证在这层遮罩上可读） */}
+          <div className="flex items-center justify-center gap-2 text-sm font-bold tracking-wide" style={{ color: progressFillColor }}>
             <span>{seekFeedback.direction === 'forward' ? '▶▶' : '◀◀'}</span>
             <span>{seekFeedback.direction === 'forward' ? '+' : '-'}{seekFeedback.seconds}s</span>
           </div>

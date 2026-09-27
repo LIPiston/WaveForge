@@ -275,21 +275,27 @@ describe('⑤ 尾块/自激检查（输入停止后有界、衰减、非自激�
     const l = sine(B, 220, 0.5, FS)
     const r = zeros(B)
     const out = new Float32Array(B)
+    // 逐样本 expect 本身就要几秒（600×128 = 76800 次断言，实测占本用例 2.9s 中的绝大部分，
+    // 并行跑全量时直接把 5s 默认超时吃满）→ 改为循环内只计数、循环外一次性断言，覆盖不变。
     let peak = 0
+    let nonFinite = 0
     for (let b = 0; b < 600; b++) {
       e.process([l, r], [out, out])
       for (let i = 0; i < B; i++) {
-        expect(Number.isFinite(out[i])).toBe(true)
-        peak = Math.max(peak, Math.abs(out[i]))
+        const sample = out[i]
+        if (!Number.isFinite(sample)) { nonFinite += 1; continue }
+        peak = Math.max(peak, Math.abs(sample))
       }
     }
+    expect(nonFinite).toBe(0)
     expect(peak).toBeLessThan(3)
   })
 })
 
 describe('⑥ 场景与组合链路', () => {
   it('全部 11 个场景：128 样本块长跑 2s 无 NaN、输出有界（≤3）', () => {
-    // WaveForge 侧 vitest 4 对同步长测试也强制默认 5s 超时（本机实测 ~8s），显式放宽
+    // 逐样本 expect 曾让本用例达到 24s（11×750×128 ≈ 105.6 万次断言）；
+    // 改为按场景计数 + 一次性断言后约 1~2s，同步长测试的默认 5s 超时也不会再被吃满。
     const B = 128
     const l = sine(B, 330, 0.5, FS)
     const r = zeros(B)
@@ -298,13 +304,16 @@ describe('⑥ 场景与组合链路', () => {
       e.setParams(sc.params)
       const out = new Float32Array(B)
       let peak = 0
+      let nonFinite = 0
       for (let b = 0; b < 750; b++) {
         e.process([l, r], [out, out])
         for (let i = 0; i < B; i++) {
-          expect(Number.isFinite(out[i]), sc.id).toBe(true)
-          peak = Math.max(peak, Math.abs(out[i]))
+          const sample = out[i]
+          if (!Number.isFinite(sample)) { nonFinite += 1; continue }
+          peak = Math.max(peak, Math.abs(sample))
         }
       }
+      expect(nonFinite, `${sc.id} 出现非有限样本`).toBe(0)
       expect(peak, sc.id).toBeLessThan(3)
     }
   }, 30_000)
@@ -317,17 +326,20 @@ describe('⑥ 场景与组合链路', () => {
     const out = new Float32Array(B)
     let prev = 0
     let maxJump = 0
+    let nonFinite = 0
     for (let round = 0; round < 3; round++) {
       for (const sc of SCENE_PRESETS) {
         e.setParams(sc.params)
         e.process([l, r], [out, out])
         for (let i = 0; i < B; i++) {
-          expect(Number.isFinite(out[i])).toBe(true)
-          maxJump = Math.max(maxJump, Math.abs(out[i] - prev))
-          prev = out[i]
+          const sample = out[i]
+          if (!Number.isFinite(sample)) { nonFinite += 1; continue }
+          maxJump = Math.max(maxJump, Math.abs(sample - prev))
+          prev = sample
         }
       }
     }
+    expect(nonFinite).toBe(0)
     expect(maxJump).toBeLessThan(1.0)
   })
 })

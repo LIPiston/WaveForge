@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   AudioLines,
   Captions,
@@ -25,6 +25,11 @@ import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
 import { hasTrueWordTiming, prepareLyricWords } from '../utils/lyricWordTiming'
 import { getAgentTintColor, getAppleMusicSettings } from '../services/appleMusic'
 import QuickSettings from './QuickSettings'
+import {
+  evalCurve,
+  LB_EASING,
+  LB_THRESHOLD,
+} from './modengLyricMotion'
 
 /**
  * 摩登模式音量条显隐持久化 key（仅本模式使用，与其他歌词模式完全隔离）。
@@ -140,9 +145,15 @@ const formatTime = (seconds: number) => {
 //   原版 fade 0.40/0.32/… 太暗，±1 行与当前句之间层次感过强，把 distance=1 调回 ~0.60 后向远端阶梯性衰减，
 //   使滚动视图里"近三行可读、远行逐渐淡化消失"更像 Skia 渲染的灰度渐变。
 //   ▼ 2026-09-02 "过曝"修复：整体压暗一档，避免大量白字叠加成发白画面，同时保留近三行可读阶梯。）
-const LINE_FADE = [0.52, 0.40, 0.30, 0.22, 0.15, 0.10, 0.06]
-// 非当前行 blur（单位 px × s）：近两行轻度柔化 2.0/3.0、三行外开始明显虚化，对齐 Skia sigma≈行高×系数的观感
-const LINE_BLUR = [2.0, 3.0, 4.2, 5.6, 7.0, 8.4, 9.6]
+// ⚠ 2026-09-12 实机比对校准（LyricsBlossom 窗口 1024×768 @DPI120，1:1 截图逐行实测）：
+//   非当前行**不是**"越远越透明"，而是基本恒定在副文字色 0xa0ebebf5 = rgba(235,235,245,0.63)。
+//   实测 distance 1..5 的文字 alpha = 0.578 / 0.578 / 0.534 / 0.508 / 0.326：前四行几乎一样亮，
+//   层次感主要由**模糊**提供。原实现 0.52→0.40→0.30… 的陡降会让远处行过早暗掉/消失。
+const LINE_FADE = [0.63, 0.58, 0.50, 0.42, 0.34, 0.26, 0.18]
+// 非当前行 blur（单位 px × s）。
+//   实机比对：非当前行的横向梯度只有当前行的 ~0.4 倍（当前行 grad 20-27 / 非当前行 grad 4-10），
+//   视觉模糊明显强于原 2.0px 起点；远端行糊到几乎读不出，与原版观感一致。
+const LINE_BLUR = [3.6, 4.8, 6.2, 7.8, 9.6, 11.4, 13.2]
 
 const FONT_STACK =
   "-apple-system, 'SF Pro Display', 'PingFang SC', 'PingFang TC', 'Hiragino Sans GB', 'Noto Sans CJK SC', 'Helvetica Neue', 'Segoe UI', Roboto, Arial, sans-serif"
@@ -152,66 +163,22 @@ const FONT_STACK =
 //   给"字从暗到亮"一种缓慢蓄力→快速点亮→柔和到位的 Apple Music 逐词点亮手感。
 const easeOut = (t: number) => 1 - Math.pow(1 - t, 4)
 
-// ▼ AMLL 物理弹簧求解器（移植自 github.com/amll-dev/applemusic-like-lyrics-proto packages/core/src/utils/spring.ts）
-//   比 cubic-bezier 更自然：弹簧的减速是渐进的（指数衰减），不是预设时长的——
-//   动画结束时间是从物理参数涌现出来的，而非硬编码 0.32s。
-//   初速度=0，from→to 的位置函数 position(t)。
-//   参数选择：
-//   - 阻尼比 ζ = damping / (2√(stiffness·mass))
-//   - ζ < 1：欠阻尼，有微弹（适合字弹出）
-//   - ζ ≥ 1：临界/过阻尼，无弹（适合行淡入/位移）
-const springPos = (
-  from: number,
-  to: number,
-  tSec: number,
-  stiffness = 100,
-  damping = 10,
-  mass = 1,
-): number => {
-  if (tSec <= 0) return from
-  const delta = to - from
-  const zeta = damping / (2 * Math.sqrt(stiffness * mass))
-  if (zeta >= 1) {
-    // 临界/过阻尼：纯指数衰减，无振荡
-    const af = -Math.sqrt(stiffness / mass)
-    const leftover = -af * delta
-    const pos = to - (delta + tSec * leftover) * Math.exp(tSec * af)
-    return Math.abs(pos - to) < 0.001 ? to : pos
-  }
-  // 欠阻尼：阻尼正弦振荡
-  const df = Math.sqrt(4 * mass * stiffness - damping * damping)
-  const leftover = (damping * delta) / df
-  const dfm = (0.5 * df) / mass
-  const dm = -(0.5 * damping) / mass
-  const pos = to - (Math.cos(tSec * dfm) * delta + Math.sin(tSec * dfm) * leftover) * Math.exp(tSec * dm)
-  return Math.abs(pos - to) < 0.001 ? to : pos
-}
+// ▼ 动画体系：**LyricsBlossom 的 CSSCubicBezierTiming**（见 ./modengLyricMotion.ts）
+//   逆向结论：LyricsBlossom **没有 spring 物理**，全部过渡都是三次贝塞尔 + 逐帧 tick。
+//   之前本文件移植了 AMLL 的 spring 求解器（stiffness/damping/mass），动画时长由物理参数
+//   涌现；与逆向规格不符 —— 现已整体替换为逆向的固定时长曲线：
+//     行切换 / 相邻行位移 → back 型 (0.4, 0, 0.2, 1) @0.32s（0x2FA0C0）
+//     当前行展开放大     → ease-in-out (0.42, 0, 0.58, 1) @0.3s（0x2B8620）
+//     放大行淡入         → (0.4, 0, 0.2, 1) @0.45s（0x2FDC60 等三处）
+//     行 alpha 淡入淡出  → 线性 dt/0.32 推进后再按 0.5 复位（0x2F6110）
 
-// 弹簧参数预设（对齐 AMLL 观感）：
-//   行进入（scale/alpha）：临界阻尼，平滑无弹，settling ~0.40s
-const SPRING_LINE = { stiffness: 200, damping: 28, mass: 1 }
-//   逐字弹出（scale/Y）：欠阻尼 ζ≈0.45，微弹 2-3%，settling ~0.30s
-const SPRING_WORD = { stiffness: 400, damping: 18, mass: 1 }
-//   行间 split Y 位移：接近临界，无弹，settling ~0.35s
-const SPRING_SPLIT = { stiffness: 180, damping: 24, mass: 1 }
-//   展开放大（0.35→1.0）：欠阻尼 ζ≈0.53，轻微自然回弹
-const SPRING_EXPAND = { stiffness: 140, damping: 12, mass: 1 }
-// 整列滚动 scrollSpring（AMLL）：跟随式过阻尼弹簧，切行时匀速逼近目标、不弹跳；
-//   到列表首尾端点时配合橡皮筋压缩，松手回弹。rate 足够快让滚动立即追上当前行，不超调。
-//   原 0.24 太慢（settling ~0.35s）跟不上进度 → 0.36 让 settling ~0.25s（更快逼近）。
-const SPRING_SCROLL = { followRate: 0.36 } // 每帧逼近比例：1 - exp(-0.36*16.6ms) ≈ 0.059/帧 → settling ~0.25s
-
-// —— 逐字 prosody（咬字速度曲线）——
-//   AMLL 不做逐字固定时长，而是让"正在唱字"的放大/回弹幅度随该字被演唱的速度（时长越短→
-//   语速越快→回弹更弹、弹得更到位）自适应，形成"快字灵巧、慢字沉稳"的 Apple 咬字手感。
-//   REF_SPAN_S = 0.5s 作为"中速"基准，越短 prosodyK 越接近 1（更脆更快），越长越接近 0（更缓）。
-const WORD_REF_SPAN_S = 0.5
-// 正在唱字放大范围：baseK(慢) 1.0→1.05，+prosodyBoost(快) 最多再 +0.05 → 1.10。
-//   回弹 stiffness 用 400-160*prosodyK：快字更"脆"（spring 更高频更利落），慢字更"柔"。
-const WORD_SING_BOOST_BASE = 0.05
-const WORD_SING_BOOST_FAST = 0.05
-const WORD_BLOOM_NEAR = 0.16
-const WORD_BLOOM_FAR = 0.34
+// 整列滚动跟随速率（指数逼近，非弹簧）。
+//   ⚠ 2026-09-12 实机比对校准：原值 0.36（且被 blend 侧 Math.min(0.95) 卡住）过慢 ——
+//   指数逼近的**稳态滞后 = 目标移动速度 / rate**：目标以约 19px/s 推进时滞后 ≈ 53px（比一行还高），
+//   播放中歌词会永远落后半行；暂停时切行更是几乎不收敛（实机截图 5 秒后当前行仍停在 285 而非锚点 315）。
+//   而 LyricsBlossom 实测当前行**精确停在锚点**（8 张连拍 ctr 恒定 317/768 = 41.3%，无可见滞后）。
+//   取 8 → 稳态滞后 ≈ 2.4px（可忽略），95% 收敛约 0.37s，与行切换曲线同量级。
+const SCROLL_FOLLOW_RATE = 8
 
 // —— Apple Gaussian 光粒子（背景律动第 2 层）——
 //   分置于节拍光晕容器内（相对坐标 0..1），rAF 按 beat 双频段包络驱动"缓慢飘移 + 节拍脉动"，
@@ -241,14 +208,11 @@ const REDUCED_MOTION =
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-// LyricsBlossom 展开放大曲线（保留兼容，expandK 仍用 ease-in-out）
-const easeInOut = (t: number) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2)
-
 // 逐字/逐行辅助混色常量（按 LyricsBlossom renderLine 反汇编）
 //   已唱词 saveLayerAlpha：fadeOut = clamp01(1 - wordAnim)，
 //   仅当 (1 - wordAnim) < 0.985 时才通过颜色回退让"刚唱完的字"快速从高亮色
 //   回退到中性灰——对应 0x2F7C3E "0.985" 阈值指令。
-const SUNG_FADE_THRESH = 0.985
+const SUNG_FADE_THRESH = LB_THRESHOLD.sungFade
 
 interface SizedWord {
   text: string
@@ -297,8 +261,8 @@ export default function ModengPlayerPage({
   // 翻译/罗马音：优先使用摩登模式本地存储；缺失时回退 props 默认（上层全局设置）
   translationEnabled: translationEnabledProp,
   romanEnabled: romanEnabledProp,
-  hasTranslation,
-  hasRoman,
+  hasTranslation: hasTranslationProp,
+  hasRoman: hasRomanProp,
   onTranslationToggle,
   onRomanToggle,
   onOpenComments,
@@ -364,6 +328,11 @@ export default function ModengPlayerPage({
       return next
     })
   }
+
+  // "是否有翻译/罗马音"：上层传了就用传入值（App 用全局判定），没传则按歌词推导。
+  // 推导是必要的兜底——缺了它按钮会被误判成"没有内容"而禁用/置灰，用户点不动。
+  const hasTranslation = hasTranslationProp ?? lyrics.some(line => Boolean(line.translation?.trim()))
+  const hasRoman = hasRomanProp ?? lyrics.some(line => Boolean(line.roman?.trim() || line.romanWords?.length))
 
   // 摩登模式翻译开关：与全局 translationEnabled 隔离（仅 waveforge_modeng_*）
   const [translationEnabled, setTranslationEnabled] = useState<boolean>(() => {
@@ -440,11 +409,19 @@ export default function ModengPlayerPage({
   const s = size.height / 951
   const dark = playerTheme !== 'light'
 
-  const lineH = 108 * s
-  const currentY = size.height * 0.383
+  // 行高 / 当前行锚点 —— 2026-09-12 实机比对校准：
+  //   实测 LyricsBlossom（1024×768 窗口）行间距 75~76px = 窗口高的 9.90%（原实现 11.36%，偏大 15%）；
+  //   当前行中心稳定落在窗口高的 41.3%（实测 8 张连拍 ctr=317/768；受滚动边界影响会在 38~42% 间浮动）。
+  const lineH = 94 * s
+  const currentY = size.height * 0.41
   const leftPad = 52 * s
   const coverSize = 476 * s
-  const rightX = Math.max(size.width * 0.49, leftPad + coverSize + 60 * s)
+  // 右侧歌词列位置：gap 120s ≈ 97px @768 窗口，匹配 LyricsBlossom 截图比例。
+  //   - 第七轮：去掉原 Math.max(size.width*0.49, ...) 的"宽屏安全垫"（在 1900×973 上会把歌词推到 49% = 931px，
+  //     离封面右边 391px，整屏空荡）。改为单一固定 gap。
+  //   - 用户 2026-09-12 提供的 LyricsBlossom 截图显示封面与歌词列之间留白明显，
+  //     当前行右侧仍有大量空间；60*s 太贴封面，120*s 更接近截图的呼吸感。
+  const rightX = leftPad + coverSize + 120 * s
 
   const lineWords = useMemo(() => lyrics.map(buildLineWords), [lyrics])
 
@@ -549,16 +526,18 @@ export default function ModengPlayerPage({
       a: match[4] === undefined ? 1 : Number(match[4]),
     }
   }
-  // 未唱色 / 已唱色端点对齐 LyricsBlossom：暗色未唱 0xa0ebebf5=rgba(235,235,245,0.629) → 已唱 #ffffff；
+  // 未唱色 / 已唱色端点对齐 LyricsBlossom：暗色未唱 0xa0ebebf5=rgba(235,235,245,0.627) → 已唱 #ffffff；
   // 亮色未唱 0x963c3c43=rgba(60,60,67,0.588) → 已唱 #1c1c1e=rgb(28,28,30)
-  // ▼ 2026-09-02 "过曝"修复：未唱色压暗（0.50 / 0.46），拉大与已唱的对比 → 正在唱的字更明显、整屏不发白
-  const unsungColor = dark ? 'rgba(235,235,245,0.50)' : 'rgba(60,60,67,0.46)'
+  // ▼ 2026-09-12 实机回归：此前"过曝修复"把未唱色压到 0.50/0.46，但 1:1 实测 LyricsBlossom 当前行内
+  //   **未唱部分就是副文字色原值 0.627**（文字 alpha 实测 0.63），亮暗对比来自 mixColor 向纯白插值，
+  //   而非压低底色。压低反而让"正在唱的字"与"未唱字"差异变小、整行发灰。
+  const unsungColor = dark ? 'rgba(235,235,245,0.627)' : 'rgba(60,60,67,0.588)'
   const sungColorParsed = dark
     ? { r: 255, g: 255, b: 255, a: 1 }
     : { r: 28, g: 28, b: 30, a: 0.92 }
   const unsungColorParsed = dark
-    ? { r: 235, g: 235, b: 245, a: 0.50 }
-    : { r: 60, g: 60, b: 67, a: 0.46 }
+    ? { r: 235, g: 235, b: 245, a: 0.627 }
+    : { r: 60, g: 60, b: 67, a: 0.588 }
   const mixWordColor = (tRaw: number, agent?: string) => {
     const tClamped = clamp01(tRaw)
     // —— saveLayerAlpha 已唱淡出（逆向 §2.2 0x2F7C7E "0.985" 阈值）：
@@ -579,13 +558,16 @@ export default function ModengPlayerPage({
       const a = sungBase.a + (fromBase.a - sungBase.a) * retreat
       return `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`
     }
-    // 逐字 ease-out：开头慢、结尾快速逼近 sung 色（LyricsBlossom 的字级高亮渐进）
-    const t = easeOut(tClamped)
+    // 逐词线性混色：逆向确认 renderLine 不做缓动 —— mixColor(from, to, t)（0x15CAF0）
+    //   直接以该词的演唱进度 t 做 ARGB 逐通道线性插值，故这里不加 easeOut 变形。
+    const t = tClamped
     const tint = duetUnsungColor(agent)
     if (!tint) {
-      return dark
-        ? `rgba(255,255,255,${(0.50 + 0.50 * t).toFixed(3)})`
-        : `rgba(28,28,30,${(0.46 + 0.46 * t).toFixed(3)})`
+      // 未唱 alpha（暗 0.627 / 亮 0.588）→ 已唱 alpha，线性插值
+      const a0 = unsungColorParsed.a
+      const a1 = sungColorParsed.a
+      const a = a0 + (a1 - a0) * t
+      return dark ? `rgba(255,255,255,${a.toFixed(3)})` : `rgba(28,28,30,${a.toFixed(3)})`
     }
     const from = parseRgba(tint)
     const to = sungColorParsed
@@ -619,13 +601,13 @@ export default function ModengPlayerPage({
   //   moved 用于区分"点击 seek"与"拖拽滑动"，避免拖拽触发行 onClick 误 seek。
   const scrubRef = useRef({ active: false, startY: 0, moved: false, offset: 0 })
   durationRef.current = duration
-  // 当前正在唱的字 index（用于逐字放大/回弹）
-  const activeWordIdxRef = useRef(-1)
   // 间奏三点：{ visible, countdown(到下一句秒数) }，间奏判定用 gap>4s。
   //   - 入场：第 1 点→第 2 点→第 3 点逐个点亮（各间隔 0.24s，共 ~0.48s 三点全部亮起）。
   //   - 主段：三点"一起呼吸"（完全同相位，零错峰）。
   //   - 退场：临近下一句错峰消点（3→2→1→开唱）；若间奏太短来不及点满三点则按时间显示到哪算哪。
   const interludeRef = useRef({ visible: false, remain: 0, gap: 0, fadeIn: 0, startedAt: 0 })
+  // 当前正在唱的字 index（远程 rAF 用它做"切字时重置前一字"的簿记；-1 = 无）
+  const activeWordIdxRef = useRef(-1)
 
   useEffect(() => {
     let raf = 0
@@ -639,32 +621,32 @@ export default function ModengPlayerPage({
 
     const paint = (now: number, wall: number, dtMs: number) => {
       const t = now + timeOffset
-      // —— C. 暂停弹簧冻结（delta 门控）——
-      //   AMLL 的 playing → spring.update(delta)：暂停时 delta=0，所有 spring 位置速度保持不动。
-      //   实现思路：若 playing=false，则"所有基于 switchSec 的 springPos 调用"传入的时间值不再推进；
-      //   switchSec 是 wall - switchAt（真实墙钟），无法冻结 → 改为引入 frozenWall 锚点：
-      //     playing 时 frozenWall = wall（持续跟随）；
-      //     暂停时 frozenWall 保持上一刻值（锚点不前进 → springPos 计算出的 k/alpha 全部冻结）。
-      //   同时 beatPhase/extrapolation 仍保持 playing 时推进的逻辑（已在 tick 中）。
+      // 每帧先复位"滚动是否仍在收敛"标志（滚动块内按实际误差重新置位）
+      ;(paint as any)._scrollSettling = false
+      // —— C. 暂停冻结（时间锚点门控）——
+      //   所有歌词动画统一由 wallForSpring 这一个时间锚点驱动：播放时锚点持续跟随墙钟；
+      //   暂停时锚点停住 → 传入 evalCurve 的 elapsed 不再增长 → 曲线冻结在当前值。
+      //   （逐词的演唱进度由播放时间 t 驱动，暂停时 t 本身不推进，天然冻结。）
       if (playing) {
-        // 播放时推进 frozenWall；dtSpring 供局部弹性参数使用（当前实现用 wall 时间锚定）。
         ;(paint as any)._frozenWall = wall
       }
       const wallForSpring = (paint as any)._frozenWall ?? wall
       const dt = dtMs > 0 ? dtMs : 16.6
-      // —— 0. 行切换共用时间基准
-      //    错峰 0.04s/字（0x2F76F7 循环步长系数）；动画时长 0.32s（与行切换同长）。
+      // —— 0. 行切换共用时间基准 ——
       //    ▼ ci = springCurrIdxRef.current（非闭包 currentIndex）：
       //    保证逐词循环与行级 forEach 用同一个 idx，消除 React commit DOM 后、
       //    useEffect 重建 rAF 闭包前的 1 帧不同步（白屏根因）。
       const ci = springCurrIdxRef.current
-      // C. 用 wallForSpring 计算 spring 时间轴：暂停时锚点停住，spring 不再推进 → 冻结动画。
-      const switchSec = Math.max(0, (wallForSpring - switchAtRef.current) / 1000)
-      const WORD_STAGGER_S = 0.04
-      // —— 1. 逐字混色 + 当前字放大 + 行切换错峰淡入 ——
+      // —— 1. 逐词高亮（回归 LyricsBlossom 实机：每词整字 ARGB 线性插值）——
+      //   rAF 每帧直接写 el.style.color = mixWordColor(prog)，整字变色。
+      //   用户 2026-09-12 提供的 LyricsBlossom 截图显示：当前行由整字明亮与整字暗淡交替组成，
+      //   没有 background-clip:text 那种把单字竖着切开的渐变；中文单字被竖切尤其违和。
+      //   保留 sung→unsung 35% 回退（saveLayerAlpha 语义，LyricsBlossom 实机行为），
+      //   刚唱完的字会轻微回退到 unsung，让下一词的高亮更突出。
       const line = lyrics[ci]
       if (line) {
         const words = lineWords[ci] || []
+        // 正在唱的字下标（prog∈(0,1)）：下面"切字时重置前一字"要用（与远程实现同一判定）
         let newActiveWord = -1
         if (words.length > 0) {
           words.forEach((word, wordIndex) => {
@@ -673,109 +655,15 @@ export default function ModengPlayerPage({
             if (!el) return
             const span = Math.max(0.001, word.endTime - word.startTime)
             const prog = clamp01((t - word.startTime) / span)
-            // —— 渐变点亮（Apple Music 逐字填充）：正在唱的字从左往右逐渐点亮 ——
-            //   安全机制：base 层 color 永远是实色（unsung/sung），字绝不会因透明填充而消失（无白闪）；
-            //   仅对"正在唱"的字叠加 background-clip:text 双色渐变，边界随 prog 推进，渐边 5px 柔化。
-            //   全部在 rAF 同帧内同步写 inline style（无 class 切换、无 React 异步），规避历史上
-            //   "background-clip:text 类切换白闪"问题的时序根因。
-            const sungSolid = dark ? 'rgba(255,255,255,1)' : 'rgba(28,28,30,0.95)'
-            const fillUnfilled = duetUnsungColor(line.agent) ?? unsungColor
-            const clearWordFill = () => {
-              el.style.backgroundImage = 'none'
-              el.style.backgroundClip = 'border-box'
-              el.style.webkitBackgroundClip = 'border-box'
-              el.style.webkitTextFillColor = ''
-            }
-            if (prog > 0 && prog < 1) {
-              const revealP = easeOut(prog) * 100
-              el.style.color = fillUnfilled // 实色兜底，字始终可见
-              el.style.backgroundImage =
-                `linear-gradient(90deg, ${sungSolid} 0px, ${sungSolid} calc(${revealP.toFixed(2)}% - 5px), ${fillUnfilled} calc(${revealP.toFixed(2)}% + 5px), ${fillUnfilled} 100%)`
-              el.style.backgroundClip = 'text'
-              el.style.webkitBackgroundClip = 'text'
-              el.style.webkitTextFillColor = 'transparent'
-            } else if (prog >= 1) {
-              el.style.color = sungSolid
-              clearWordFill()
-            } else {
-              el.style.color = fillUnfilled
-              clearWordFill()
-            }
-            // —— 1a. 字级错峰弹出（AMLL spring 物理）：
-            //   每词延迟 0.04s 出现，spring 物理驱动 scale/Y（非固定时长 cubic-bezier）。
-            //   SPRING_WORD 欠阻尼 ζ≈0.45，微弹 2-3% → "字从基线自然弹出"的有机手感。
-            //     a) scale: 0.94→1.0（spring，微弹，比原 0.96→1.0 略大 2% 以体现弹性感）
-            //     b) translateY: -2.5→0 px（spring 同步，配合 scale 浮入）
-            //   纯 transform 链路，不碰 background / -webkit-text-fill-color。
-            const enterDelay = wordIndex * WORD_STAGGER_S
-            const enterElapsed = Math.max(0, switchSec - enterDelay)
-            const enterScaleSpring = springPos(0.94, 1.0, enterElapsed, SPRING_WORD.stiffness, SPRING_WORD.damping)
-            const enterYSpring = springPos(-2.5, 0, enterElapsed, SPRING_WORD.stiffness, SPRING_WORD.damping)
-            // (无障碍) 减弱动态：去掉字级错峰弹簧缩放/位移
-            const enterScale = REDUCED_MOTION ? 1 : enterScaleSpring
-            const enterY = REDUCED_MOTION ? 0 : enterYSpring
-            // —— 1b. 正在唱字：scale 放大 + font-weight 加粗（B 项，prosody 自适应）。
-            //   LyricsBlossom："正在唱"字 400→700 加粗 + 1.05x scale（快字更大更脆）。
-            //   嘴唇咬字速度（prosody）：语速越快（字时长短）→ 放大更满、回弹刚度更高（spring 更脆）；
-            //   慢字放大克制、回弹更柔 → "快字灵巧、慢字沉稳"的 Apple 咬字手感。
-            let singScale = 1
-            let singWeight = 400
-            let singY = 0
-            let singTransition = 'none'
-            if (prog > 0 && prog < 1) {
-              newActiveWord = wordIndex
-              // prosody：把咬字速度（时长越短→越快）映射到 0..1，作用于放大/回弹刚度
-              const prosodyK = clamp01((WORD_REF_SPAN_S - span) / WORD_REF_SPAN_S)
-              const singP = clamp01(prog / 0.4)
-              const singK = easeOut(singP)
-              // (无障碍) 减弱动态：去掉正在唱字缩放/上浮，只保留字重(信息)变化
-              const singBoost = REDUCED_MOTION
-                ? 0
-                : (WORD_SING_BOOST_BASE + WORD_SING_BOOST_FAST * prosodyK) * singK
-              singScale = 1 + singBoost // 慢字 1.0→1.05；快字最高 1.0→1.10
-              singWeight = Math.round(400 + 300 * singK) // 400 → 700 平滑加粗
-              const singYSpan = REDUCED_MOTION ? 0 : 1.2 + 0.8 * prosodyK
-              singY = -singYSpan * singK
-            } else if (prog >= 1) {
-              singScale = 1
-              singWeight = 600 // 已唱字：比未唱字(400)略重，避免整行颜色回退后显得发虚
-              singTransition =
-                'transform 160ms cubic-bezier(0.4,0,0.2,1), font-variation-settings 160ms cubic-bezier(0.4,0,0.2,1), font-weight 160ms cubic-bezier(0.4,0,0.2,1)'
-            }
-            const finalScale = enterScale * singScale
-            // enterAlpha：spring 0→1，与 enterScale 同步但更快（stiffness 更高），字先"现身"再弹出
-            //   (无障碍) 减弱动态：字级淡入立即到位
-            const enterAlpha = REDUCED_MOTION ? 1 : springPos(0, 1, enterElapsed, 350, 22)
-            // translate3d(Y 轴) → 与 scale 合成；X/Z=0 不影响换行。
-            el.style.transform = `translate3d(0, ${(enterY + singY).toFixed(2)}px, 0) scale(${finalScale.toFixed(4)})`
-            el.style.transformOrigin = 'center bottom'
-            el.style.transition = singTransition
-            // B. 字级 fontWeight 平滑过渡：优先写 font-variation-settings（variable font 无阶梯感），
-            //   回退写 font-weight（系统固定字重时以固定值过渡）。这样中英文粗细过渡都不会"跳字"。
-            if (singWeight !== 400) {
-              el.style.setProperty('font-variation-settings', `'wght' ${singWeight}`)
-              el.style.fontWeight = String(singWeight)
-            } else {
-              el.style.removeProperty('font-variation-settings')
-              el.style.fontWeight = ''
-            }
-            if (enterAlpha < 0.999) {
-              el.style.opacity = enterAlpha.toFixed(3)
-            } else if (el.style.opacity && el.style.opacity !== '1') {
-              el.style.opacity = '1'
-            }
+            if (prog > 0 && prog < 1) newActiveWord = wordIndex
+            el.style.color = mixWordColor(prog, line.agent)
           })
         } else {
+          // no_syllable 退化（无逐词数据）：整行按线性混色推进。
           const el = wordColorRefs.current.get(`l${ci}`)
           if (el) {
-            // 无逐词：纯 color 驱动，与有逐词行完全同链路。
             const progRaw = clamp01((t - line.time) / Math.max(0.3, Math.min(2, (lyrics[ci + 1]?.time ?? line.time + 2) - line.time)))
             el.style.color = mixWordColor(progRaw, line.agent)
-            // 无逐词：整行 spring 弹出（与逐字行 SPRING_WORD 同参数，保持一致性）
-            const enterScale = springPos(0.94, 1.0, switchSec, SPRING_WORD.stiffness, SPRING_WORD.damping)
-            const enterY = springPos(-2.5, 0, switchSec, SPRING_WORD.stiffness, SPRING_WORD.damping)
-            el.style.transform = `translate3d(0, ${enterY.toFixed(2)}px, 0) scale(${enterScale.toFixed(4)})`
-            el.style.transformOrigin = 'center bottom'
           }
         }
         if (newActiveWord !== activeWordIdxRef.current) {
@@ -826,44 +714,40 @@ export default function ModengPlayerPage({
         })
       }
 
-      // —— 2. 行切换动画（AMLL spring 物理）——
-      //   当前行：scale/alpha 由 spring 驱动（SPRING_LINE 临界阻尼，平滑无弹）
-      //   展开放大（0.35→1.0）：SPRING_EXPAND 欠阻尼，轻微自然回弹
-      //   行间 split：SPRING_SPLIT 接近临界，无弹
-      //   spring 时长从物理参数涌现，不再硬编码 0.32s/0.45s
-      // C. 行切换/展开/split 弹簧同样使用 wallForSpring，暂停时整段动画冻结
-      const switchSecFull = (wallForSpring - switchAtRef.current) / 1000
-      // 当前行进入：spring 0→1（临界阻尼，无弹）
-      const switchK = springPos(0, 1, switchSecFull, SPRING_LINE.stiffness, SPRING_LINE.damping)
-      // 放大行：spring 0→1（欠阻尼，微弹），scale 0.35→1.0
-      const expandK = springPos(0, 1, switchSecFull, SPRING_EXPAND.stiffness, SPRING_EXPAND.damping)
-      const springScale = 0.92 + 0.08 * switchK // 行本体 0.92→1.0
+      // —— 2. 行切换动画（LyricsBlossom CSSCubicBezierTiming，无弹簧）——
+      //   行位移      0x2FA0C0  back (0.4, 0, 0.2, 1) @0.32s
+      //   展开放大    0x2B8620  ease-in-out (0.42, 0, 0.58, 1) @0.3s
+      //   放大行淡入  0x2FDC60  (0.4, 0, 0.2, 1) @0.45s
+      //   （二进制里 scale 目标 3.0f / rect 外扩 10px 属内部渲染值，视觉语义是"当前行相对
+      //     其余行展开放大"，此处换算为 0.88→1.0 的 scale + 8px 上浮。）
+      //   ⚠ 行切换动画走**真实墙钟 wall**（而非 wallForSpring）：它是纯 UI 过渡，不是与
+      //     播放联动的动画。若用被冻结的锚点，暂停状态下拖动进度条/点击某行 seek 时
+      //     switchAt 会被刷新到当前墙钟、而锚点仍停在过去 → elapsed 变负 → 行 alpha 归零、
+      //     整行不可见。逐词进度仍由播放时间 t 驱动，暂停时天然冻结，不受此影响。
+      const switchSecFull = Math.max(0, (wall - switchAtRef.current) / 1000)
+      const expandK = evalCurve(LB_EASING.easeInOut, switchSecFull)              // 0.3s 展开放大
+      const expandFadeK = clamp01(switchSecFull / LB_EASING.expandFade.duration)  // 0.45s 放大行淡入
       const idx = springCurrIdxRef.current
-      // 给当前行打 .modeng-current，CSS 选择器用它启用 background-clip:text + -webkit-text-fill-color:transparent 链路。
-      // 非当前行：1) remove('modeng-current') 断开 CSS 透明链路 → 恢复父 color 继承；
-      //          2) 强制清空该行所有 .modeng-word 子 span 的 gradient/color/transform 内联残留。
-      //          否则 rAF 写入的 backgroundColor=sung（纯白/纯黑）会因 background-clip:text 已失效
-      //          直接画在整个 inline-block 盒子上 → "歌词过完后一片白/灰方块"（用户报告根因）。
+      // 给当前行打 .modeng-current；降级行必须清空 rAF 写过的内联残留（词色 /
+      //   行级 CSS 变量），否则"已经唱过去的行"会一直挂着高亮色。
       lineDomRefs.current.forEach((el, k) => {
         if (k === idx) {
           el.classList.add('modeng-current')
         } else if (el.classList.contains('modeng-current')) {
-          // ▼ 从 current 降级为非 current：清 color/transform/opacity/渐变填充 内联残留。
-          //   ⚠ 必须同时去掉 backgroundImage + text-fill:transparent，否则该行文字以
-          //   透明填充渲染（无底色叠加）→ 行过去后一片不可见/闪烁。清空后可走父继承色。
+          // ▼ 从 current 降级为非 current：清 color / transform / opacity 内联残留。
+          //   同时清掉逐字渐变用的三个 CSS 变量（sung/unsung/prog）和兜底 color，
+          //   让该行立刻退回父级 lineColor 继承，否则会继续以 unsung 高 alpha 显字。
           const words = el.querySelectorAll<HTMLElement>('.modeng-word')
           for (let i = 0; i < words.length; i++) {
             const w = words[i]
             w.style.color = ''
-            w.style.backgroundImage = 'none'
-            w.style.backgroundClip = 'border-box'
-            w.style.webkitBackgroundClip = 'border-box'
-            w.style.webkitTextFillColor = ''
             w.style.transform = ''
             w.style.opacity = ''
             w.style.transition = ''
-            // B. 降级清理字级加粗内联（已唱字回退到父层 lineColor 的 line 级 fontWeight）
             w.style.removeProperty('font-variation-settings')
+            w.style.removeProperty('--modeng-word-prog')
+            w.style.removeProperty('--modeng-word-sung')
+            w.style.removeProperty('--modeng-word-unsung')
             w.style.fontWeight = ''
           }
           // 行级 CSS 变量清理
@@ -881,52 +765,40 @@ export default function ModengPlayerPage({
       })
       const currentLineEl = lineDomRefs.current.get(idx)
       if (currentLineEl) {
-        // 当前行：双层 scale 叠加 + 0.32s 淡入 + 从下轻微上扬
-        //   - expandScale：放大钩子（0x2B8410），0.35→1.0，0.45s ease-in-out
-        //   - springScale：行本体进入，0.92→1.0，0.32s easeOut
-        //   - enterRiseK：当前行从上微浮下沉到基线（-7s→0），随进入弹簧自然收敛，
-        //     "新行从下浮起就位"的 Apple 行切换手感（与 split 波浪方向一致，更统一）。
-        const expandScale = REDUCED_MOTION ? 1 : 0.35 + 0.65 * expandK // 0.35 → 1.0（起始 0x2B8620(73)）
-        const composedScale = expandScale * (REDUCED_MOTION ? 1 : springScale)
-        const enterAlpha = REDUCED_MOTION ? 1 : clamp01(switchK * 1.6) // 0.32s 淡入（与 switchK 同步）
-        const enterRiseK = springPos(0, 1, switchSecFull, SPRING_LINE.stiffness, SPRING_LINE.damping)
-        // (无障碍) 减弱动态：当前行不做上扬/放大淡入，只按信息就位
-        const enterY = REDUCED_MOTION ? 0 : -7 * s * (1 - enterRiseK)
+        // 当前行进入：scale 走 ease-in-out 0.3s 从 0.88 展开到 1.0（展开放大钩子）；
+        //   alpha 走 0.45s 淡入（放大行淡入）；Y 从 +8px 上浮就位（rect 外扩 10px 的观感）。
+        //   (无障碍) 减弱动态：不做放大/上浮，只保留信息就位。
+        const expandScale = REDUCED_MOTION ? 1 : 0.88 + 0.12 * expandK
+        const enterAlpha = REDUCED_MOTION ? 1 : expandFadeK
+        const enterY = REDUCED_MOTION ? 0 : 8 * s * (1 - expandK)
         currentLineEl.style.setProperty('--modeng-enter-y', `${enterY.toFixed(2)}px`)
-        currentLineEl.style.setProperty('--modeng-enter-scale', composedScale.toFixed(4))
+        currentLineEl.style.setProperty('--modeng-enter-scale', expandScale.toFixed(4))
         currentLineEl.style.setProperty('--modeng-enter-alpha', enterAlpha.toFixed(4))
       }
-      // 相邻行滚动时滞错峰（AMLL 波浪滚动感）：
-      //   - idx±1：完整 split 位移（16px 上移 / 20px 下移）+ 上一行淡出 1→0.60
-      //   - idx±2、idx±3：位移按距离错峰衰减（×0.66 / ×0.42），且慢半拍（×distance 系数），
-      //     形成"离当前行越远、跟进越晚越慢"的滚动波浪，配合滚动弹簧整列推进。
-      //   splitK 由 SPRING_SPLIT 弹簧推进，错峰体现在各行的位移量级随距离递减。
+      // 相邻行错峰跟随（逆向行步长系数 0.04s，0x2F76F7 循环步长）：
+      //   离当前行每远一行，波浪延后 0.04s 启动，位移幅度随距离衰减 —— 形成"涟漪向外扩散"。
+      //   位移由 back 曲线 k 从 0→1 收敛回 0（临时扰动，动画结束回到布局稳态，无跳变）；
+      //   整列位置本身由下面的滚动跟随统一推进。
       const splitStrength = (d: number) => {
         const ad = Math.abs(d)
         if (ad === 1) return 1
-        if (ad === 2) return 0.66
-        if (ad === 3) return 0.42
+        if (ad === 2) return 0.62
+        if (ad === 3) return 0.38
         return 0
       }
-      // 逐行时间错峰：离当前行每远一行，波浪延后 0.045s 再跟进 → 真正的"涟漪向外扩散"节奏
-      //   （原来只按距离衰减位移量级、但所有行同时起跑；现在每行各自弹簧按距离开跑，
-      //    近行先动、远行慢半拍，波浪感更贴 AMLL 的逐行 spring 错峰。）
-      const SPLIT_STAGGER_S = 0.045
+      const SPLIT_STAGGER_S = LB_THRESHOLD.wordStep
       const writeSplit = (lineEl: HTMLDivElement | undefined, d: number) => {
         const ad = Math.abs(d)
-        // 距当前行越远，split 弹簧越晚启动（错峰波浪）
+        // 距当前行越远，位移曲线越晚启动（错峰波浪）
         const delayed = Math.max(0, switchSecFull - (ad - 1) * SPLIT_STAGGER_S)
-        const kHere = springPos(0, 1, delayed, SPRING_SPLIT.stiffness, SPRING_SPLIT.damping)
-        // 位移：上一行向上（负）/ 下一行向下（正），随距离错峰衰减；减弱动态时不做拆分
-        const amt = REDUCED_MOTION ? 0 : (d < 0 ? -16 : 20) * kHere * splitStrength(d)
+        const kHere = evalCurve(LB_EASING.switch, delayed)
+        // 位移：上一行向上（负）/ 下一行向下（正），随曲线收敛回 0；减弱动态时不做拆分
+        const amt = REDUCED_MOTION ? 0 : (d < 0 ? -14 : 18) * (1 - kHere) * splitStrength(d)
         const varName = d < 0 ? '--modeng-leave-y' : '--modeng-next-y'
-        // 上一行还负责淡出，仅施加给紧邻的 idx-1
-        if (lineEl && kHere < 0.999) {
+        if (lineEl && Math.abs(amt) > 0.01) {
           lineEl.style.setProperty(varName, `${amt.toFixed(2)}px`)
-          if (d === -1) lineEl.style.setProperty('--modeng-leave-alpha', (1 - 0.40 * kHere).toFixed(4))
         } else if (lineEl) {
           lineEl.style.removeProperty(varName)
-          if (d === -1) lineEl.style.removeProperty('--modeng-leave-alpha')
         }
       }
       writeSplit(lineDomRefs.current.get(idx - 1), -1)
@@ -1223,15 +1095,17 @@ export default function ModengPlayerPage({
           //   松手后若仍在回弹（scr.offset≠0），也要继续收敛到当前行（不受播放/暂停限制）。
           const returning = Math.abs(scr.offset) > 0.5
           const distErr = Math.abs(baseTarget - scrollPosRef.current)
-          const rate = Math.min(0.95, SPRING_SCROLL.followRate + distErr / 1800)
+          const rate = SCROLL_FOLLOW_RATE + Math.min(12, distErr / 24)
           const dtSec = dt / 1000
           const blend = 1 - Math.exp(-rate * (dtSec > 0 ? dtSec : 0.0166))
           if (!scrollBootRef.current) {
             scrollPosRef.current = baseTarget
             scrollBootRef.current = true
           }
-          const shouldFollow = playing || returning
-          scrollPosRef.current += (baseTarget - scrollPosRef.current) * (shouldFollow ? blend : 0)
+          // 跟随不再受 playing 门控：暂停状态下拖动进度条 / 点击某行 seek 时，列表同样要平滑滚到
+          //   新的当前行；否则当前行会跑出视口，用户看到的是一列错位的歌词（实机比对时发现的缺陷）。
+          scrollPosRef.current += (baseTarget - scrollPosRef.current) * blend
+          ;(paint as any)._scrollSettling = Math.abs(baseTarget - scrollPosRef.current) > 0.5
           // 回弹归位后清零用户位移，避免下次切行时残留偏移
           if (returning && Math.abs(baseTarget - scrollPosRef.current) < 0.5) scr.offset = 0
         }
@@ -1244,11 +1118,24 @@ export default function ModengPlayerPage({
       }
       if (elapsedRef.current) elapsedRef.current.textContent = formatTime(clampedNow)
       if (remainRef.current) remainRef.current.textContent = `-${formatTime(Math.max(0, dur - clampedNow))}`
+      // —— 6. 暂停时是否仍需继续跑帧（供 tick 的 shouldRun 判断）——
+      //   行切换窗口未走完 / 间奏仍在淡入淡出 / 拖拽回弹未归位 —— 任一成立就继续驱动，
+      //   保证"暂停后 seek"也能看到完整的行进入动画，而不是卡在 opacity≈0 的首帧。
+      ;(paint as any)._animating =
+        (wall - switchAtRef.current) < (LB_EASING.expandFade.duration * 1000 + 150) ||
+        interludeRef.current.fadeIn > 0.001 ||
+        Math.abs(scrubRef.current.offset) > 0.5 ||
+        (paint as any)._scrollSettling === true
     }
+
+    // 暂停时是否仍需继续跑帧：行切换 / 橡皮筋回弹 / 间奏淡入淡出这类"UI 过渡"必须走完，
+    //   否则暂停状态下拖动进度条或点击某行 seek 时，新行会永远停在入场首帧
+    //   （alpha≈0 → 整行歌词不可见）。_animating 由 paint() 每帧写入。
+    const shouldRun = () => playing || (paint as any)._animating === true
 
     const tick = (wall: number) => {
       if (lastPaint && wall - lastPaint < 1000 / 120) {
-        raf = playing && document.visibilityState === 'visible' ? requestAnimationFrame(tick) : 0
+        raf = shouldRun() && document.visibilityState === 'visible' ? requestAnimationFrame(tick) : 0
         return
       }
       const dt = lastPaint ? (wall - lastPaint) : 16.6
@@ -1256,7 +1143,7 @@ export default function ModengPlayerPage({
       if (playing) beatPhase = (beatPhase + dt / BEAT_PERIOD_MS) % 1
       const extrapolated = playing ? (wall - anchorWall) / 1000 : 0
       paint(anchorTime + extrapolated, wall, dt)
-      raf = playing && document.visibilityState === 'visible' ? requestAnimationFrame(tick) : 0
+      raf = shouldRun() && document.visibilityState === 'visible' ? requestAnimationFrame(tick) : 0
     }
 
     const sync = () => {
@@ -1266,13 +1153,13 @@ export default function ModengPlayerPage({
       playing = snapshot.isPlaying
       if (snapshot.duration > 0) durationRef.current = snapshot.duration
       paint(anchorTime, anchorWall, 16.6)
-      if (playing && !raf && document.visibilityState === 'visible') raf = requestAnimationFrame(tick)
+      if (shouldRun() && !raf && document.visibilityState === 'visible') raf = requestAnimationFrame(tick)
     }
 
     sync()
     const unsubscribe = playbackTimeStore.subscribe(sync)
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && playing && !raf) raf = requestAnimationFrame(tick)
+      if (document.visibilityState === 'visible' && shouldRun() && !raf) raf = requestAnimationFrame(tick)
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
@@ -1281,7 +1168,10 @@ export default function ModengPlayerPage({
       if (raf) cancelAnimationFrame(raf)
       raf = 0
     }
-  }, [currentIndex, lyrics, lineWords, playbackTimeStore, timeOffset])
+    // s 也必须入依赖：窗口尺寸变化会改变 s / lineH / currentY，而这些被 paint 闭包捕获；
+    //   若不入依赖，rAF 仍按旧尺寸计算滚动与行距（实机比对时窗口尺寸不等于默认 951 即暴露：
+    //   当前行会被滚到视口外，而非停在 41% 锚点）。
+  }, [currentIndex, lyrics, lineWords, playbackTimeStore, timeOffset, s])
 
   // ---- 拖拽（进度条 / 音量） ----
   const dragBar = (event: React.PointerEvent<HTMLDivElement>, onFrac: (frac: number) => void) => {
@@ -1305,7 +1195,7 @@ export default function ModengPlayerPage({
     ? {
         base: '#202022',
         lineSung: '#ffffff',
-        lineUnsungCurrent: 'rgba(235,235,245,0.50)',
+        lineUnsungCurrent: 'rgba(235,235,245,0.627)',
         title: '#ffffff',
         sub: 'rgba(235,235,245,0.629)',
         dim: 'rgba(235,235,245,0.4)',
@@ -1322,7 +1212,7 @@ export default function ModengPlayerPage({
     : {
         base: '#fafafc',
         lineSung: '#1c1c1e',
-        lineUnsungCurrent: 'rgba(60,60,67,0.46)',
+        lineUnsungCurrent: 'rgba(60,60,67,0.588)',
         title: '#1c1c1e',
         sub: 'rgba(60,60,67,0.588)',
         dim: 'rgba(60,60,67,0.4)',
@@ -1372,6 +1262,7 @@ export default function ModengPlayerPage({
     }
     return paragraph % 2 === 1 ? 'right' : 'left'
   }
+  /** 单行最终对齐侧：未开启"左右交替"时统一靠左（与下方 alignItems 的 sideAlign 分支同义，供两处渲染复用） */
   const lineSideFor = (index: number) => (sideAlign ? lineSideOf(index) : 'left')
 
   const VolumeIcon = volume <= 0.001 ? VolumeX : volume < 0.5 ? Volume1 : Volume2
@@ -1513,15 +1404,45 @@ export default function ModengPlayerPage({
           padding: 0 16px;
           box-sizing: border-box;
         }
-        /* 逐字颜色：纯 color 驱动，不用 background-clip:text / -webkit-text-fill-color:transparent。
-           这两个属性是白屏反复出现的根源——任何时序竞态（React 重渲染清 style、rAF 闭包旧值、
-           降级清理顺序）都会导致"transparent + bg 残留"→1帧白块。
-           纯 color 方案：rAF 每帧写 el.style.color = mixWordColor(prog)，字始终可见。
-           词内从左到右渐变放弃（Web 端 background-clip:text 不如 Skia saveLayerAlpha 稳定），
-           改为整字颜色随 prog 渐变（unsung→sung ease-out），效果接近但零白屏风险。 */
+        /* 逐词高亮：回归 LyricsBlossom 实机风格（也是用户新截图呈现的效果）。
+           - 每一词/字一个独立颜色，由 rAF 每帧写 el.style.color = mixWordColor(prog)。
+             整字做 ARGB 线性插值，不会出现 background-clip:text 那种"把一个字竖着切成两段"的观感；
+             对中文单字尤其重要，截图里"美人画卷残留"等当前行都是整字明亮/整字暗淡交替。
+           - 保留 Apple Music 带来的"smooth progression"手感：当前词 prog 在 0→1 之间时，
+             颜色会从 unsung 连续插值到 sung，行间自然形成由亮到暗的推进，而不是硬跳。
+           - 2026-09-12 修 descender 截断：已把主歌词文本行 line-height 从 1.15 提到 1.4，
+             确保 y/g/p/q/j 下伸笔画在 inline-block 盒内，纯色渲染也不会被截。
+        */
         .modeng-word {
-          will-change: transform, color, opacity;
+          will-change: color;
           font-synthesis-weight: none;
+        }
+        /* 鼠标悬停在歌词区时，取消整列非当前行的模糊（LyricsBlossom 的"看清未播放歌词"手感）。
+           CSS 直接 !important 覆盖行级 --modeng-line-blur 的 filter，零 JS / 零 React 重渲染。 */
+        .modeng-lyric-list.modeng-hovering .modeng-line-wrap {
+          filter: blur(0px) !important;
+        }
+        /* 鼠标所在行：显示胶囊底框（圆角矩形 + 0.216 alpha，与选区胶囊同 alpha 但整行覆盖）。
+           line-wrap 已经包含 transform/transform-origin 等，所以给 ::before 加 position:absolute + z-index:-1
+           需要先在 line-wrap 上建立独立层叠上下文（position:relative + z-index:0）。 */
+        .modeng-line-wrap { position: relative; z-index: 0; }
+        .modeng-line-wrap::before {
+          content: '';
+          position: absolute;
+          left: 0; right: 0;
+          top: 2%; bottom: 2%;
+          border-radius: 0.32em;
+          background: rgba(255, 255, 255, 1);
+          opacity: 0;
+          pointer-events: none;
+          z-index: -1;
+          transition: opacity 0.18s ease;
+        }
+        .modeng-lyric-line.modeng-line-hovered .modeng-line-wrap::before {
+          opacity: 0.216;
+        }
+        .modeng-lyric-light .modeng-line-wrap::before {
+          background: rgba(0, 0, 0, 1);
         }
         /* enableBlur：把整行 blur 从 JSX 内联 filter 统一收敛到类名 + CSS 变量。
            原因：JSX style 的 filter: blur() 与 transition.filter + 行内 transform 互相竞争，
@@ -2028,12 +1949,10 @@ export default function ModengPlayerPage({
               >
                 <Film style={{ width: 14 * s, height: 14 * s }} />
               </button>
-              {/* 快捷设置：自包含下拉面板，触发样式对齐左侧 chip 组，面板向上展开 */}
+              {/* 快捷设置：触发按钮沿用左侧 chip 样式；面板已是全局居中弹窗（宿主在 App 层） */}
               <QuickSettings
-                forceClose={false}
                 playerTheme={playerTheme}
                 isPureMusic={isPureMusic}
-                expandUp
                 triggerClassName="modeng-btn modeng-btn-chip flex items-center justify-center rounded-lg"
                 triggerWidth={28 * s}
                 triggerHeight={28 * s}
@@ -2092,9 +2011,33 @@ export default function ModengPlayerPage({
         {/* ---- 右栏：逐词歌词（纯音乐时整栏不渲染，由左侧控制条独立居中） ---- */}
         {!isPureMusic && (
           <div
-            className="absolute top-0 bottom-0 right-0 overflow-hidden"
+            className="modeng-lyric-list absolute top-0 bottom-0 right-0 overflow-hidden"
             style={{ left: rightX }}
             onPointerDown={startLyricScrub}
+            onMouseEnter={e => {
+              const list = e.currentTarget
+              list.classList.add('modeng-hovering')
+              // 鼠标进入时立即识别所在行（mousemove 之前就触发一次，避免延迟一帧才显示胶囊）
+              const row = (e.relatedTarget as HTMLElement | null)?.closest?.('.modeng-lyric-line')
+                ?? list.querySelector('.modeng-lyric-line')
+              if (row) list.querySelectorAll('.modeng-lyric-line').forEach(el => el.classList.remove('modeng-line-hovered'))
+              if (row) row.classList.add('modeng-line-hovered')
+            }}
+            onMouseMove={e => {
+              // 用 closest 找鼠标当前所在的行；只更新类名（无 React 重渲染）。
+              const list = e.currentTarget
+              const row = (e.target as HTMLElement | null)?.closest?.('.modeng-lyric-line') as HTMLElement | null
+              if (!row) return
+              const prev = list.querySelector('.modeng-lyric-line.modeng-line-hovered')
+              if (prev === row) return
+              if (prev) prev.classList.remove('modeng-line-hovered')
+              row.classList.add('modeng-line-hovered')
+            }}
+            onMouseLeave={e => {
+              const list = e.currentTarget
+              list.classList.remove('modeng-hovering')
+              list.querySelectorAll('.modeng-lyric-line.modeng-line-hovered').forEach(el => el.classList.remove('modeng-line-hovered'))
+            }}
           >
             <div
               ref={scrollContentWrapRef}
@@ -2133,8 +2076,8 @@ export default function ModengPlayerPage({
               const blurPx = isCurrent ? 0 : lineBlur(distance)
               const enableBlur = blurPx > 0.001
               return (
+                <Fragment key={`${line.time}-${index}`}>
                 <div
-                  key={`${line.time}-${index}`}
                   ref={el => {
                     if (el) {
                       lineDomRefs.current.set(index, el)
@@ -2155,7 +2098,11 @@ export default function ModengPlayerPage({
                     // 长行自动换行到下一行；多语言（含英文长单词）在必要时允许断词
                     wordBreak: 'break-word',
                     overflowWrap: 'break-word',
-                    fontSize: (isCurrent ? 46 : 38) * s,
+                    // 字号实机校准：LyricsBlossom 当前行文字带高 27px（清晰行，1:1 实测）
+                    //   → 字号 ≈ 31px @768 窗口 = 窗口高的 4.04% → 38.4 @951 基准。
+                    //   原 46px 偏大约 17%（整屏歌词因此偏大、可读行数偏少）。
+                    //   当前行 / 非当前行字号比取 1.15（实机目测约 1.12~1.16，原实现 1.21 偏大）。
+                    fontSize: (isCurrent ? 38.5 : 33.5) * s,
                     fontWeight: isCurrent ? 700 : 600,
                     color: lineBaseColor,
                     // E. 不再内联 filter: blur() → 写 CSS var 由类名决定是否应用
@@ -2171,10 +2118,13 @@ export default function ModengPlayerPage({
                   <div
                     className="modeng-line-wrap w-full"
                     style={{
-                      // 左右交替歌词：按歌曲结构整块内容靠左/靠右（col 内 alignItems 控制横向对齐）
+                      // 左右交替歌词：按歌曲结构整块内容靠左/靠右（col 内 alignItems 控制横向对齐）。
+                      // 默认（未开启 sideAlign）左对齐：每句歌词整体靠左，文字左对齐 → 整齐、可读。
                       display: 'flex',
                       flexDirection: 'column' as const,
-                      alignItems: lineSideFor(index) === 'right' ? 'flex-end' : 'flex-start',
+                      alignItems: sideAlign
+                        ? (lineSideOf(index) === 'right' ? 'flex-end' : 'flex-start')
+                        : 'flex-start',
                     }}
                   >
                     {/* 罗马音行（逐字或整行）：显示在主歌词上方，淡色与行距离同步 */}
@@ -2182,7 +2132,7 @@ export default function ModengPlayerPage({
                       <div
                         data-testid={isCurrent ? 'modeng-roman' : undefined}
                         style={{
-                          fontSize: (isCurrent ? 20 : 16) * s,
+                          fontSize: (isCurrent ? 17 : 13.5) * s,
                           fontWeight: isCurrent ? 500 : 400,
                           color: lineColor(distance, line.agent),
                           letterSpacing: 0.5 * s,
@@ -2206,10 +2156,22 @@ export default function ModengPlayerPage({
                         )}
                       </div>
                     ) : null}
-                    {/* 主歌词文本行（允许长行自动换行；inline-block 词块会在边界处自然折行） */}
+                    {/* 主歌词文本行：允许长行自动换行；inline-block 词块在边界处自然折行，
+                       中英文混排时长英文单词也会按 break-word 截断，避免最右侧被遮住。 */}
                     <div
                       className="flex flex-wrap items-center"
-                      style={{ lineHeight: 1.15, maxWidth: '100%' }}
+                      style={{
+                        // line-height 1.15 → 1.4：内联盒子（inline-block 词块）需要装下 y/g/p/q/j 等
+                        //   含下伸笔画的英文 descender。原 1.15 偏紧，背景渐变 + color:transparent
+                        //   组合下，下伸笔画超出盒子 → 那部分字形没背景填充，看起来被"截掉"。
+                        //   配合 .modeng-word padding-bottom:0.08em 双重保险。中文无 descender 不受影响。
+                        lineHeight: 1.4,
+                        maxWidth: '100%',
+                        wordBreak: 'break-word',
+                        overflowWrap: 'break-word',
+                        textAlign: 'left',
+                        justifyContent: 'flex-start',
+                      }}
                     >
                       {words && words.length > 0 ? (
                         words.map((word, wordIndex) =>
@@ -2223,7 +2185,7 @@ export default function ModengPlayerPage({
                                 else wordColorRefs.current.delete(`w${index}-${wordIndex}`)
                               }}
                               className="modeng-word inline-block"
-                              // rAF 启动前用 color 渲染（纯 color 驱动，不用 background）。
+                              // rAF 启动前用 color 渲染（纯色驱动，不再用 background-clip:text 渐变）。
                               //   isCurrent 行用 wordInitialColor（unsung 色）；
                               //   非当前行不写 inline style，走父 lineColor(distance) 继承。
                               style={isCurrent ? { color: wordInitialColor } : undefined}
@@ -2344,14 +2306,13 @@ export default function ModengPlayerPage({
                       <div
                         data-testid={isCurrent ? 'modeng-translation' : undefined}
                         style={{
-                          fontSize: (isCurrent ? 20 : 16) * s,
+                          fontSize: (isCurrent ? 17 : 13.5) * s,
                           fontWeight: isCurrent ? 500 : 400,
-                          color: lineColor(distance, line.agent),
+                          color: lineBaseColor,
                           letterSpacing: 0.3 * s,
                           lineHeight: 1,
-                          // 当前行含间奏三点时，翻译行应与三点进一步拉开；非当前行维持 5s 紧凑。
-                          marginTop: isCurrent ? 10 * s : 5 * s,
-                          opacity: isCurrent ? 0.95 : 0.85,
+                          // 间奏三点已迁出到独立 frame（见下方），这里恢复默认 5s 紧凑间距即可。
+                          marginTop: 5 * s,
                         }}
                       >
                         {line.translation.trim()}
@@ -2359,6 +2320,56 @@ export default function ModengPlayerPage({
                     ) : null}
                   </div>
                 </div>
+                {/* 间奏三点独立帧：作为当前行的兄弟节点渲染，与歌词框完全脱钩。
+                   - 仅 isCurrent 时存在；rAF 通过 fadeIn 控制可见度与上下间距（fadeIn=0 时上下间距与
+                     minHeight 归零，不挤占布局；fadeIn=1 时三变量插值到 24s/22s/76s，独立成帧）。
+                   - 不是 .modeng-lyric-line，鼠标 hover 时不参与行级胶囊逻辑（closest('.modeng-lyric-line') 不会匹配）。
+                   - 三点错峰呼吸（~1.5s 周期，120ms/点相位差），临近下一句时按 remain 错峰熄灭对齐开唱时机。 */}
+                {isCurrent ? (
+                  <div
+                    ref={el => { interludeWrapRef.current = el ?? null }}
+                    className="modeng-interlude-frame modeng-interlude-dots"
+                    style={{
+                      // 与 .modeng-lyric-line 共享列宽（padding 0 16px 对齐行内边距），但本身不带 hover capsule / 行级 transform / minHeight。
+                      // 留出 0~76s 的可伸缩高度，由 --modeng-interlude-min-h 控制；上下间距由 --modeng-interlude-pad-top/bottom 控制。
+                      padding: '0 16px',
+                      boxSizing: 'border-box',
+                      marginTop: 'calc(var(--modeng-interlude-pad-top, 0px))',
+                      marginBottom: 'calc(var(--modeng-interlude-pad-bottom, 0px))',
+                      minHeight: 'calc(var(--modeng-interlude-min-h, 0px))',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 18 * s,
+                      // 整体微缩放/透明度写在容器（fadeIn × vanish × appear），呼吸交由每个 dot。
+                      opacity: 0,
+                      transform: 'translateZ(0) scale(1)',
+                      transformOrigin: 'left 45%',
+                      willChange: 'transform, opacity, margin, min-height',
+                      pointerEvents: 'none', // 不拦截行 hover / 点击；继续透传给歌词行
+                    }}
+                  >
+                    {[0, 1, 2].map(i => (
+                      <span
+                        key={`dot-${index}-${i}`}
+                        style={{
+                          display: 'inline-block',
+                          width: 12 * s,
+                          height: 12 * s,
+                          borderRadius: '50%',
+                          background: dark ? 'rgba(235,235,245,0.78)' : 'rgba(60,60,67,0.72)',
+                          boxShadow: dark
+                            ? `0 0 ${10 * s}px rgba(255,255,255,0.18), 0 ${2 * s}px ${4 * s}px rgba(0,0,0,0.25)`
+                            : `0 0 ${8 * s}px rgba(0,0,0,0.12), 0 ${2 * s}px ${4 * s}px rgba(0,0,0,0.10)`,
+                          transform: 'translateZ(0) scale(1)',
+                          transformOrigin: 'center center',
+                          willChange: 'transform, opacity',
+                          flexShrink: 0,
+                        }}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                </Fragment>
               )
             })}
             </div>

@@ -89,22 +89,43 @@ export function StemMixerPopover({
 
   return (
     <div ref={rootRef} className="relative flex items-center" data-stem-mixer-variant={variant}>
+      {/* 沉浸模式下本按钮是玻璃板里的一行（行宽 = 板宽），放大 1.08 会让高亮冒出板外 →
+          与 ImmersiveControls 同规矩：板内只换底色，按压只向内微缩。 */}
       <motion.button
         type="button"
-        whileHover={disabled ? undefined : { scale: 1.08 }}
-        whileTap={disabled ? undefined : { scale: 0.95 }}
+        whileHover={disabled || immersive ? undefined : { scale: 1.08 }}
+        whileTap={disabled ? undefined : { scale: immersive ? 0.94 : 0.95 }}
         onClick={openOrEnable}
         disabled={disabled}
-        className={`relative rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${immersive ? `border backdrop-blur-md ${size === 'compact' ? 'p-2.5' : 'p-3'}` : 'p-2'} ${dark ? immersive ? 'border-white/20 bg-black/40 hover:bg-black/60' : 'hover:bg-white/10' : immersive ? 'border-black/20 bg-white/50 hover:bg-white/70' : 'hover:bg-black/10'}`}
-        style={immersive ? {
-          backgroundColor: control.active ? accentColor : undefined,
-          borderColor: control.active ? `${accentColor}66` : undefined,
-          boxShadow: control.active ? `0 0 20px ${accentColor}40, inset 0 1px 1px rgba(255,255,255,0.3)` : '0 4px 12px rgba(0,0,0,0.15)',
-        } : undefined}
+        className={`relative transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${immersive
+          ? `rounded-[18px] ${size === 'compact' ? 'p-2.5' : 'p-3'} ${dark ? 'hover:bg-white/[0.13]' : 'hover:bg-black/[0.10]'}`
+          : `rounded-full p-2 ${dark ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}`}
         title={control.locked ? 'AutoMix 过渡期间暂不可调整分轨' : control.reason || '人声与乐器调节'}
         aria-label="人声与乐器调节"
       >
-        <AudioLines className={immersive ? size === 'compact' ? 'h-5 w-5' : 'h-6 w-6' : 'h-4 w-4'} style={{ color: immersive && control.active ? '#fff' : control.active ? accentColor : muted }} />
+        {/* 沉浸模式：本按钮在工具条底板上是一行**透明行**（底色/描边都在底板上），
+            所以启用态自己画底色 —— 沿用原启用态的封面主色平涂配方，并在板左缘外挂一条主色指示条，
+            与 ImmersiveControls 里那几行保持一致（主色透明度用 color-mix，hex / rgb() 都能上透明度）。 */}
+        {immersive && control.active && (
+          <>
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 rounded-[18px]"
+              style={{
+                backgroundColor: accentColor,
+                boxShadow: `0 0 20px color-mix(in srgb, ${accentColor} 25%, transparent), inset 0 1px 1px rgba(255,255,255,0.3)`,
+              }}
+            />
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute left-[-7px] top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full"
+              style={{ backgroundColor: accentColor }}
+            />
+          </>
+        )}
+        {/* 图标加 relative：上面那层主色行是 absolute（定位元素会盖在未定位内容之上），
+            图标必须自己定位才能画回它上面。 */}
+        <AudioLines className={immersive ? `${size === 'compact' ? 'h-5 w-5' : 'h-6 w-6'} relative` : 'h-4 w-4'} style={{ color: immersive && control.active ? '#fff' : control.active ? accentColor : muted }} />
         {control.status === 'separating' && <span className="absolute right-0 top-0 h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: accentColor }} />}
       </motion.button>
 
