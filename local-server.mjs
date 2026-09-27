@@ -4980,6 +4980,9 @@ app.get('/api/qq/mv/url', async (req, res) => {
 // Web 通道 music.musichallAlbum.AlbumInfoServer.GetAlbumDetail 响应里有该字段
 // （部分专辑会下发值）；**严格判定**：vid 非空且能解析出真实视频 URL 才算"有
 // 动态封面"——任何一步为空/失败一律返回 cover:null，绝不拿静态图冒充动态封面。
+// 本地覆盖表（可选）：{albumMid|albumId: vid}，供开发者/高级用户手动补充
+// 无法从 web 通道获取到的动态封面 vid（格式：{'004FTIIj2CDuJQ': '013yzzz53frDyE'}）。
+const QQ_DYNAMIC_COVER_OVERRIDES = join(dirname(fileURLToPath(import.meta.url)), 'qq-dynamic-cover-overrides.json')
 const QQ_DYNAMIC_COVER_CACHE_MAX = 80
 const qqDynamicCoverCache = new Map()
 
@@ -5029,23 +5032,40 @@ async function resolveQQDynamicCover({ songMid, title, artist, cookie }) {
 
   // 2) 歌曲 → 专辑 mid
   let albumMid = ''
+  let albumId = ''
   try {
     const detail = await postMusicu('music.pf_song_detail_svr', 'get_song_detail', { song_mid: mid, song_id: 0 })
     albumMid = String(detail?.data?.track_info?.album?.mid || '')
+    albumId = String(detail?.data?.track_info?.album?.id || '')
   } catch {
     return null
   }
   if (!albumMid) return null
 
-  // 3) 专辑 → dynamicCoverVid（严格判定：空串 = 该专辑无动态封面）
+  // 3) dynamicCoverVid 两级来源（严格判定：任何一步为空/失败 → cover:null，绝不拿静态图冒充）：
+  //    a. 本地覆盖表 qq-dynamic-cover-overrides.json（{albumMid|albumId: vid}，
+  //       供开发者/高级用户手动补充；文件不存在即跳过）
+  //    b. web GetAlbumDetail 的 dynamicCoverVid 字段
+  //       现状（2026-09-27 深挖结论）：该字段对一切 JSON 客户端（web/签名网关/App comm+UA）
+  //       恒为空串——QQ 动态封面 vid 只经 App 的 NS/JCE 二进制协议下发（服务端分流）。
+  //       本步保持接入，腾讯一旦放开 web 字段本功能即自动生效。
   let vid = ''
   try {
-    const albumDetail = await postMusicu('music.musichallAlbum.AlbumInfoServer', 'GetAlbumDetail', { album_mid: albumMid })
-    vid = String(albumDetail?.data?.albumInfo?.dynamicCoverVid
-      ?? albumDetail?.data?.dynamicCoverVid
-      ?? '').trim()
-  } catch {
-    return null
+    const overridePath = QQ_DYNAMIC_COVER_OVERRIDES
+    if (existsSync(overridePath)) {
+      const overrides = JSON.parse(readFileSync(overridePath, 'utf8'))
+      vid = String(overrides?.[albumMid] || overrides?.[albumId] || '').trim()
+      if (vid) console.log('[QQ音乐动态封面] vid 来自本地覆盖表:', albumMid, '→', vid)
+    }
+  } catch { /* 覆盖表缺失/损坏即跳过 */ }
+  if (!vid) {
+    try {
+      const albumDetail = await postMusicu('music.musichallAlbum.AlbumInfoServer', 'GetAlbumDetail', { album_mid: albumMid })
+      vid = String(albumDetail?.data?.albumInfo?.dynamicCoverVid
+        ?? albumDetail?.data?.dynamicCoverVid
+        ?? '').trim()
+      if (vid) console.log('[QQ音乐动态封面] vid 来自 web GetAlbumDetail:', albumMid, '→', vid)
+    } catch { /* 无字段即视为无动态封面 */ }
   }
   if (!vid) return null
 
