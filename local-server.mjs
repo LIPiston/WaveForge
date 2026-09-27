@@ -4973,6 +4973,129 @@ app.get('/api/qq/mv/url', async (req, res) => {
   }
 })
 
+// ── QQ 动态封面（专辑 dynamicCoverVid → 视频流）──────────────────────────────
+// 机制（2026-09-27 逆向定稿）：QQ 音乐播放页动态封面 = 专辑级资源，JCE
+// com.tencent.jce.musichallAlbum.BasicAlbumInfo.dynamicCoverVid（视频 vid）→
+// MV 取流系统 → 1080×1080 mp4（ThumbPlayer 播放；实测 Dark Necessities 实物 6MB）。
+// Web 通道 music.musichallAlbum.AlbumInfoServer.GetAlbumDetail 响应里有该字段
+// （部分专辑会下发值）；**严格判定**：vid 非空且能解析出真实视频 URL 才算"有
+// 动态封面"——任何一步为空/失败一律返回 cover:null，绝不拿静态图冒充动态封面。
+const QQ_DYNAMIC_COVER_CACHE_MAX = 80
+const qqDynamicCoverCache = new Map()
+
+async function resolveQQDynamicCover({ songMid, title, artist, cookie }) {
+  const requestCookie = cookie || qqMusicCookie
+  const parsedCookie = parseQQCookie(requestCookie)
+  const musicId = String(parsedCookie.uin || parsedCookie.qqmusic_uin || '').replace(/\D/g, '')
+  const musicKey = parsedCookie.qm_keyst || parsedCookie.qqmusic_key || ''
+  const authComm = {
+    ct: 24, cv: 4747474, platform: 'yqq.json',
+    ...(musicId ? { uin: musicId, qq: musicId } : {}),
+    ...(musicKey ? {
+      authst: musicKey,
+      tmeLoginType: Number(parsedCookie.tmeLoginType) || Number(parsedCookie.login_type) || undefined,
+      g_tk: qqHash33(musicKey),
+    } : {}),
+    format: 'json', inCharset: 'utf-8', outCharset: 'utf-8', notice: 0, need_new_code: 1
+  }
+  const postMusicu = async (module, method, param) => {
+    const resp = await axios.post(QQ_MUSICU_URL, {
+      comm: authComm, req_0: { module, method, param }
+    }, { headers: { ...QQ_HEADERS, Cookie: requestCookie, 'Content-Type': 'application/json' }, validateStatus: () => true, timeout: 12000 })
+    return resp.data?.req_0 || {}
+  }
+
+  // 1) 歌 mid：参数直给，或 title+artist 经 smartbox 联想匹配（歌手名必须命中）
+  let mid = String(songMid || '').trim()
+  if (!mid && title) {
+    try {
+      const q = artist ? `${title} ${artist}` : title
+      const sb = await axios.get(`https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg?key=${encodeURIComponent(q)}&format=json`, {
+        headers: QQ_HEADERS, timeout: 10000, validateStatus: () => true
+      })
+      const items = sb.data?.data?.song?.itemlist || []
+      const artistLower = String(artist || '').toLowerCase()
+      const matched = items.find(it => {
+        const singers = String(it.singer || '').toLowerCase()
+        return artistLower ? singers.includes(artistLower) || artistLower.includes(singers) : true
+      }) || (items.length === 1 ? items[0] : null)
+      if (!matched) return null
+      mid = String(matched.mid || '')
+    } catch {
+      return null
+    }
+  }
+  if (!mid) return null
+
+  // 2) 歌曲 → 专辑 mid
+  let albumMid = ''
+  try {
+    const detail = await postMusicu('music.pf_song_detail_svr', 'get_song_detail', { song_mid: mid, song_id: 0 })
+    albumMid = String(detail?.data?.track_info?.album?.mid || '')
+  } catch {
+    return null
+  }
+  if (!albumMid) return null
+
+  // 3) 专辑 → dynamicCoverVid（严格判定：空串 = 该专辑无动态封面）
+  let vid = ''
+  try {
+    const albumDetail = await postMusicu('music.musichallAlbum.AlbumInfoServer', 'GetAlbumDetail', { album_mid: albumMid })
+    vid = String(albumDetail?.data?.albumInfo?.dynamicCoverVid
+      ?? albumDetail?.data?.dynamicCoverVid
+      ?? '').trim()
+  } catch {
+    return null
+  }
+  if (!vid) return null
+
+  // 4) vid → 视频流（MV 取流系统；与 /api/qq/mv/url 同款）
+  try {
+    const payload = {
+      comm: authComm,
+      req_0: { module: 'gosrf.Stream.MvUrlProxy', method: 'GetMvUrls', param: { vids: [vid], request_typet: 10001 } }
+    }
+    const resp = await axios.post(QQ_MUSICU_URL, payload, {
+      headers: { ...QQ_HEADERS, Cookie: requestCookie, 'Content-Type': 'application/json' },
+      validateStatus: () => true, timeout: 12000
+    })
+    const mv = resp.data?.req_0?.data?.[vid] || {}
+    const mp4 = Array.isArray(mv.mp4) ? mv.mp4 : []
+    const urls = []
+    for (const obj of mp4) {
+      const candidates = Array.isArray(obj.freeflow_url) && obj.freeflow_url.length > 0
+        ? obj.freeflow_url
+        : Array.isArray(obj.url) ? obj.url : []
+      if (candidates.length > 0) urls.push(candidates[candidates.length - 1])
+    }
+    if (urls.length === 0) return null
+    return { videoUrl: urls[urls.length - 1], posterUrl: null, vid, albumMid, source: 'qq-dynamic-cover-vid' }
+  } catch {
+    return null
+  }
+}
+
+app.get('/api/qq/animated-cover', async (req, res) => {
+  try {
+    const { songMid, title, artist, album, cookie } = req.query
+    const cacheKey = `${String(songMid || '')}|${String(title || '')}|${String(artist || '')}`
+    if (qqDynamicCoverCache.has(cacheKey)) {
+      return res.json({ code: 0, cover: qqDynamicCoverCache.get(cacheKey) })
+    }
+    const cover = await resolveQQDynamicCover({ songMid, title, artist, album, cookie })
+    qqDynamicCoverCache.set(cacheKey, cover)
+    while (qqDynamicCoverCache.size > QQ_DYNAMIC_COVER_CACHE_MAX) {
+      const oldest = qqDynamicCoverCache.keys().next().value
+      if (oldest === undefined) break
+      qqDynamicCoverCache.delete(oldest)
+    }
+    res.json({ code: 0, cover })
+  } catch (error) {
+    console.error('[QQ音乐动态封面] 错误:', error.message)
+    res.json({ code: 0, cover: null })
+  }
+})
+
 // QQ 歌曲关联 MV（GetSongRelatedMv）
 app.get('/api/qq/song/mv', async (req, res) => {
   try {

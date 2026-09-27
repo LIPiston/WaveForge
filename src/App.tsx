@@ -29,6 +29,7 @@ import { airplayController } from './services/airplayController'
 import { runShaderWarmup } from './services/shaderWarmup'
 import { useAudioAnalyzer } from './hooks/useAudioAnalyzer'
 import { useAppleDynamicCover } from './hooks/useAppleDynamicCover'
+import { useQQDynamicCover } from './hooks/useQQDynamicCover'
 import { FOLIA_STYLES } from './vendor/folia/stylesMeta'
 import { useAudioPulseStore, type AudioPulseStore } from './hooks/useAudioPulse'
 import { useAutoHideCursor } from './hooks/useAutoHideCursor'
@@ -1410,6 +1411,19 @@ function App() {
     duration: isAppleRadioPlayback ? undefined : currentSong?.duration,
     trackKey: isAppleRadioPlayback ? '' : currentSong?.id || currentSong?.mid || '',
   })
+  // QQ 动态封面（专辑 dynamicCoverVid → 视频流；严格判定见 services/qqDynamicCover）。
+  // QQ 平台的当前歌曲带 mid 直查；其他平台按 标题+歌手 跨平台匹配（歌手名必须命中）。
+  const qqDynamicCover = useQQDynamicCover({
+    songMid: isAppleRadioPlayback ? '' : (currentSong?.platform === 'qq' ? currentSong?.mid : ''),
+    title: isAppleRadioPlayback ? '' : currentSong?.name || '',
+    artist: isAppleRadioPlayback ? '' : (currentSong?.artists || []).map((artist: { name: string }) => artist.name).join(', '),
+    album: isAppleRadioPlayback ? '' : currentSong?.album?.name || '',
+    trackKey: isAppleRadioPlayback ? '' : currentSong?.id || currentSong?.mid || '',
+  })
+  // 动态封面优先级：QQ 有动态封面（严格判定）→ 用 QQ 的；否则回退 Apple Music 的。
+  // （跨平台规则：网易云/汽水等任何平台，QQ 有而当前平台没有 → 用 QQ 的；
+  //   两者都没有 → null → 平台静态封面。绝不拿静态图冒充动态封面。）
+  const dynamicCover = qqDynamicCover.cover ?? appleDynamicCover.cover
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('mvBackgroundActiveChanged', { detail: mvBackgroundActive }))
   }, [mvBackgroundActive])
@@ -9327,8 +9341,8 @@ function App() {
                       transitionFromTrack={transitionFromTrack}
                       transitionToTrack={transitionToTrack}
                       pulseStore={audioPulseStore}
-                      animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
-                      animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
+                      animatedCoverUrl={dynamicCover?.videoUrl ?? null}
+                      animatedCoverPoster={dynamicCover?.posterUrl ?? null}
                     />
 
                     {/* 歌曲信息 - 过渡时双层淡入淡出 */}
@@ -9548,8 +9562,8 @@ function App() {
                     songAlbum={currentSong.album?.name}
                     coverUrl={displayCoverUrl}
                     appleCoverUrl={appleCoverUrl || undefined}
-                    animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
-                    animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
+                    animatedCoverUrl={dynamicCover?.videoUrl ?? null}
+                    animatedCoverPoster={dynamicCover?.posterUrl ?? null}
                     trackId={currentSong.id || currentSong.mid}
                     translationEnabled={translationEnabled}
                     romanEnabled={romanEnabled}
@@ -9635,8 +9649,8 @@ function App() {
                       transitionFromTrack={transitionFromTrack}
                       transitionToTrack={transitionToTrack}
                       pulseStore={audioPulseStore}
-                      animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
-                      animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
+                      animatedCoverUrl={dynamicCover?.videoUrl ?? null}
+                      animatedCoverPoster={dynamicCover?.posterUrl ?? null}
                     />
 
                     {/* 歌曲信息 - 过渡时双层淡入淡出 */}
