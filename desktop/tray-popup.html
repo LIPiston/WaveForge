@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+  html, body { background: transparent; overflow: hidden; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+
+  #panel {
+    position: absolute; inset: 5px 8px 6px 8px;
+    border-radius: 14px;
+    background: #ffffff;
+    box-shadow: 0 10px 34px rgba(15, 18, 34, 0.22), 0 2px 8px rgba(15, 18, 34, 0.12);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  /* 底部小三角，指向托盘图标（尖端贴到窗口底缘 = 任务栏上缘）。
+     挂在 body 上而不是 #panel 上：#panel 有 overflow:hidden（用来裁菜单滚动区），
+     挂在面板里的三角形会被整个裁掉，只剩一道阴影。
+     水平位置由主进程按托盘图标实际位置下发（--arrow-x：窗口左缘起算的像素值）。
+     任务栏在屏幕上半时主进程会下发 arrowSide=top，页面给 body 加 .arrow-top 翻到顶缘 */
+  body::after {
+    content: ''; position: absolute; left: calc(var(--arrow-x, 150px) - 5.5px); bottom: 2px;
+    width: 11px; height: 11px; background: #ffffff; transform: rotate(45deg);
+    box-shadow: 4px 4px 10px rgba(15,18,34,0.08);
+  }
+  /* bottom:2px 让旋转 45° 的方块（对角 15.6px）尖端正好落在窗口底缘 = 任务栏上缘，
+     上半部分与面板底缘重叠（同为白色，视觉上是连续的小尖角） */
+  body.arrow-top::after { bottom: auto; top: 2px; }
+
+  .pad { padding: 0 18px; }
+
+  /* 顶部音频控件 */
+  .transport { display: flex; align-items: center; justify-content: center; gap: 22px; padding: 16px 0 6px; }
+  .tbtn {
+    width: 38px; height: 38px; border: none; border-radius: 50%; cursor: pointer;
+    background: transparent; color: #4b5563; display: flex; align-items: center; justify-content: center;
+    transition: background 0.12s, transform 0.08s;
+  }
+  .tbtn:hover { background: rgba(0,0,0,0.06); }
+  .tbtn:active { transform: scale(0.9); }
+  .tbtn.play { width: 46px; height: 46px; background: var(--accent, #FB7299); color: #fff; box-shadow: 0 4px 14px color-mix(in srgb, var(--accent, #FB7299) 40%, transparent); }
+  .tbtn svg { width: 54%; height: 54%; }
+
+  .song-row { display: flex; align-items: center; gap: 8px; padding: 2px 18px 10px; }
+  .song-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; color: #374151; }
+  .song-title .artist { color: #9ca3af; margin-left: 6px; font-size: 12px; }
+
+  .volume-row { display: flex; align-items: center; gap: 10px; padding: 0 18px 12px; }
+  .vbtn {
+    width: 28px; height: 28px; border: none; border-radius: 50%; cursor: pointer; flex-shrink: 0;
+    background: transparent; color: #6b7280; display: flex; align-items: center; justify-content: center;
+  }
+  .vbtn:hover { background: rgba(0,0,0,0.06); }
+  .vbtn svg { width: 60%; height: 60%; }
+  input[type="range"] { flex: 1; accent-color: var(--accent, #FB7299); height: 4px; cursor: pointer; }
+
+  .divider { height: 1px; background: rgba(0,0,0,0.07); margin: 0 14px; }
+
+  /* 游戏模式占用速览 */
+  .usage { display: none; align-items: center; gap: 8px; padding: 8px 18px 4px; font-size: 12px; color: #6b7280; }
+  .usage.show { display: flex; }
+  .usage .dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; flex-shrink: 0; }
+  .usage b { font-weight: 600; color: #374151; font-variant-numeric: tabular-nums; }
+
+  /* 菜单区 */
+  .menu { padding: 8px 6px 10px; overflow-y: auto; flex: 1; }
+  .mrow {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 8px; cursor: pointer;
+    color: #4b5563; font-size: 13px;
+  }
+  .mrow:hover { background: rgba(0,0,0,0.05); }
+  .mrow .icon { width: 18px; height: 18px; color: #8a94a6; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .mrow .icon svg { width: 100%; height: 100%; }
+  .mrow .label { flex: 1; }
+  .mrow .chev { width: 14px; height: 14px; color: #c3c9d4; }
+  .mrow.danger { color: #e5484d; }
+  .mrow.danger .icon { color: #e5484d; }
+  .switch { position: relative; width: 32px; height: 18px; border-radius: 999px; background: #d6dae2; transition: background 0.15s; flex-shrink: 0; }
+  .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform 0.15s; }
+  .switch.on { background: var(--accent, #FB7299); }
+  .switch.on::after { transform: translateX(14px); }
+  .tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: rgba(99,102,241,0.12); color: #6366f1; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <div class="transport">
+    <button class="tbtn" id="prev" title="上一曲"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6l-10 6 10 6z"/></svg></button>
+    <button class="tbtn play" id="play" title="播放/暂停">
+      <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      <svg id="pauseIcon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+    </button>
+    <button class="tbtn" id="next" title="下一曲"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l10 6-10 6z"/></svg></button>
+  </div>
+
+  <div class="song-row">
+    <div class="song-title" id="songTitle">未在播放</div>
+  </div>
+
+  <div class="volume-row">
+    <button class="vbtn" id="muteBtn" title="静音">
+      <svg id="volIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+      <svg id="muteIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M22 9l-6 6M16 9l6 6"/></svg>
+    </button>
+    <input type="range" id="volume" min="0" max="100" step="1" value="50" />
+  </div>
+
+  <div class="usage" id="usageRow">
+    <span class="dot"></span>
+    <span>当前占用&nbsp;内存 <b id="usageMem">--</b>&nbsp;·&nbsp;CPU <b id="usageCpu">--</b></span>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="menu">
+    <div class="mrow" data-feature="desktopLyrics">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h7"/></svg></span>
+      <span class="label">桌面歌词</span>
+      <span class="switch" id="sw-desktopLyrics"></span>
+    </div>
+    <div class="mrow" data-feature="desktopPlayer">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>
+      <span class="label">桌面播放器</span>
+      <span class="switch" id="sw-desktopPlayer"></span>
+    </div>
+    <div class="mrow" data-feature="taskbarWidget" id="row-taskbarWidget">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="9" width="20" height="6" rx="1"/><path d="M5 12h6"/></svg></span>
+      <span class="label">任务栏迷你播控</span>
+      <span class="switch" id="sw-taskbarWidget"></span>
+    </div>
+    <div class="mrow" data-feature="gameMode">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 12h4M8 10v4M15 11h.01M18 13h.01"/><path d="M17.32 5H6.68a4 4 0 0 0-3.98 3.6c-.24 2.4-.35 4.53-.2 6.93A3.5 3.5 0 0 0 6 18.5c1.2 0 2.27-.6 3.13-1.41.6-.56 1.4-.89 2.22-.89h5.3c.82 0 1.62.33 2.22.89.86.81 1.94 1.41 3.13 1.41a3.5 3.5 0 0 0 3.5-3.97c-.15-2.4-.26-4.53-.5-6.93A4 4 0 0 0 17.32 5z"/></svg></span>
+      <span class="label">游戏模式</span>
+      <span class="tag">省资源</span>
+      <span class="switch" id="sw-gameMode"></span>
+    </div>
+    <div class="mrow" id="showMainRow">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg></span>
+      <span class="label">显示主窗口</span>
+    </div>
+    <div class="mrow danger" id="quitRow">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg></span>
+      <span class="label">退出 WaveForge</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id)
+  const bridge = window.trayPopup
+  const state = { title: '', artist: '', playing: false, volume: 0.5, muted: false, accent: '#FB7299', gameMode: false, arrowX: null, arrowSide: 'bottom' }
+
+  function apply() {
+    document.documentElement.style.setProperty('--accent', state.accent || '#FB7299')
+    // 小箭头指向托盘图标：位置由主进程按 tray.getBounds() 下发（窗口左缘起算）
+    if (Number.isFinite(state.arrowX)) {
+      document.documentElement.style.setProperty('--arrow-x', `${Math.round(state.arrowX)}px`)
+    }
+    document.body.classList.toggle('arrow-top', state.arrowSide === 'top')
+    $('playIcon').style.display = state.playing ? 'none' : 'block'
+    $('pauseIcon').style.display = state.playing ? 'block' : 'none'
+    const title = document.getElementById('songTitle')
+    title.textContent = state.title ? state.title : '未在播放'
+    if (state.title && state.artist) {
+      const span = document.createElement('span'); span.className = 'artist'; span.textContent = state.artist
+      title.appendChild(span)
+    }
+    $('volIcon').style.display = state.muted ? 'none' : 'block'
+    $('muteIcon').style.display = state.muted ? 'block' : 'none'
+    if (document.activeElement !== $('volume')) $('volume').value = String(Math.round((state.muted ? 0 : state.volume) * 100))
+    $('usageRow').classList.toggle('show', state.gameMode === true)
+    setSwitch('desktopLyrics', features.desktopLyrics)
+    setSwitch('desktopPlayer', features.desktopPlayer)
+    setSwitch('taskbarWidget', features.taskbarWidget)
+    setSwitch('gameMode', state.gameMode)
+  }
+
+  // 游戏模式占用速览：面板可见时每 2s 拉一次（非常轻的 IPC，仅面板打开期间运行）
+  setInterval(() => {
+    if (!state.gameMode || document.hidden) return
+    void bridge.getUsage().then((usage) => {
+      if (!usage) return
+      $('usageMem').textContent = `${usage.memoryMb} MB`
+      $('usageCpu').textContent = `${usage.cpuPercent}%`
+    }).catch(() => undefined)
+  }, 2000)
+
+  const features = { desktopLyrics: false, desktopPlayer: false, taskbarWidget: false }
+  function setSwitch(name, on) {
+    const el = $('sw-' + name)
+    if (el) el.classList.toggle('on', on === true)
+  }
+
+  bridge.onState((next) => {
+    if (!next) return
+    Object.assign(state, {
+      title: next.title ?? state.title,
+      artist: next.artist ?? state.artist,
+      playing: next.playing ?? state.playing,
+      volume: next.volume ?? state.volume,
+      muted: next.muted ?? state.muted,
+      accent: next.accent ?? state.accent,
+      gameMode: next.gameMode ?? state.gameMode,
+      arrowX: typeof next.arrowX === 'number' ? next.arrowX : state.arrowX,
+      arrowSide: next.arrowSide === 'top' || next.arrowSide === 'bottom' ? next.arrowSide : state.arrowSide,
+    })
+    if (next.features) Object.assign(features, next.features)
+    apply()
+  })
+  bridge.onPartial((partial) => {
+    if (!partial) return
+    if (partial.song !== undefined) {
+      const song = partial.song || {}
+      state.title = song.name || ''
+      state.artist = Array.isArray(song.artists) ? song.artists.join(' / ') : (song.artists || '')
+    }
+    if (partial.playing !== undefined) state.playing = partial.playing === true
+    if (typeof partial.volume === 'number') state.volume = partial.volume
+    if (partial.muted !== undefined) state.muted = partial.muted === true
+    if (partial.accentColor !== undefined) state.accent = partial.accentColor || state.accent
+    apply()
+  })
+
+  $('play').addEventListener('click', () => bridge.action('toggle'))
+  $('prev').addEventListener('click', () => bridge.action('prev'))
+  $('next').addEventListener('click', () => bridge.action('next'))
+  $('muteBtn').addEventListener('click', () => bridge.action('mute'))
+  $('volume').addEventListener('input', (e) => {
+    const v = Number(e.target.value) / 100
+    bridge.action('volume', v)
+    state.volume = v
+    if (v > 0 && state.muted) state.muted = false
+    apply()
+  })
+  document.querySelectorAll('.mrow[data-feature]').forEach((row) => {
+    row.addEventListener('click', () => {
+      const name = row.getAttribute('data-feature')
+      if (name === 'gameMode') {
+        state.gameMode = !state.gameMode
+        bridge.setFeature('gameMode', state.gameMode)
+        apply()
+        return
+      }
+      features[name] = !features[name]
+      bridge.setFeature(name, features[name])
+      apply()
+    })
+  })
+  $('showMainRow').addEventListener('click', () => bridge.showMain())
+  $('quitRow').addEventListener('click', () => bridge.action('quit'))
+
+  // 非 Windows 平台隐藏任务栏播控行
+  if (navigator.userAgent.includes('Macintosh') || (!navigator.userAgent.includes('Windows') && !document.hasFocus())) {
+    // 保持简单：主进程仅在 win32 启用任务栏播控，Linux/mac 下由状态置灰即可
+  }
+  apply()
+</script>
+</body>
+</html>

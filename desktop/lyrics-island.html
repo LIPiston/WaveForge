@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+  html, body { background: transparent; overflow: hidden; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif; }
+
+  #stage {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  /* 玻璃药丸：半透明白底 + 虹彩边缘光 + 内侧高光，参考用户提供的样式稿 */
+  #pill {
+    position: relative;
+    height: calc(var(--pill-h, 76px));
+    min-width: 220px;
+    max-width: calc(100vw - 40px);
+    border-radius: 999px;
+    padding: 0 34px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: linear-gradient(118deg, rgba(255,255,255,0.72) 0%, rgba(244,240,255,0.5) 38%, rgba(238,246,255,0.5) 66%, rgba(255,244,246,0.66) 100%);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255,255,255,0.75);
+    box-shadow:
+      0 10px 34px rgba(148,132,255,0.22),
+      0 3px 12px rgba(255,168,204,0.18),
+      inset 0 1.5px 3px rgba(255,255,255,0.95),
+      inset 0 -8px 18px rgba(196,186,255,0.2);
+    cursor: default;
+    /* 宽度随歌词自适应：行变化时才触发一次 transition（合成器友好的布局动画，频率极低） */
+    transition: width 0.45s cubic-bezier(0.22, 0.61, 0.36, 1);
+    will-change: width;
+  }
+  #pill.dragging { transition: none; cursor: grabbing; }
+  #pill::before {
+    /* 虹彩描边：用伪元素渐变勾边，不参与布局 */
+    content: ''; position: absolute; inset: 0; border-radius: 999px; padding: 1.5px;
+    background: linear-gradient(120deg, rgba(255,170,200,0.85), rgba(170,200,255,0.7), rgba(190,255,230,0.6), rgba(255,220,170,0.7));
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  #content { display: flex; flex-direction: column; align-items: center; gap: 2px; overflow: hidden; max-width: 100%; }
+
+  /* 歌词行 */
+  #line {
+    font-size: calc(var(--fs, 26px));
+    font-weight: 600;
+    line-height: 1.25;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    color: #6b7280;
+    text-shadow: 0 1px 0 rgba(255,255,255,0.9);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  }
+  #translation {
+    font-size: calc(var(--fs, 26px) * 0.44);
+    line-height: 1.2;
+    white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    color: rgba(107,114,128,0.62);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+  }
+  #translation:empty { display: none; }
+
+  /* 逐字 karaoke（与任务栏播控同一套归一化 + 柔和填充逻辑） */
+  .kw { position: relative; display: inline-block; }
+  .kw-base { display: inline-block; }
+  .kw-fill { position: absolute; left: 0; top: 50%; transform: translateY(-50%); overflow: hidden; white-space: nowrap; pointer-events: none; }
+  .kw-space { display: inline-block; }
+
+  /* 播控浮层：点药丸出现，3 秒无操作自动回到歌词 */
+  #controls {
+    position: absolute; inset: 0; border-radius: 999px;
+    display: flex; align-items: center; justify-content: center; gap: 18px;
+    background: linear-gradient(118deg, rgba(255,255,255,0.82), rgba(240,244,255,0.78));
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.18s ease;
+  }
+  #pill.show-controls #controls { opacity: 1; pointer-events: auto; }
+  #pill.show-controls #content { opacity: 0; }
+  #content { transition: opacity 0.18s ease; }
+  .ctl {
+    width: 40px; height: 40px; min-width: 40px; border: none; border-radius: 50%; cursor: pointer;
+    background: rgba(255,255,255,0.6); color: #6b7280;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.12s, transform 0.08s;
+  }
+  .ctl:hover { background: rgba(255,255,255,0.95); }
+  .ctl:active { transform: scale(0.9); }
+  .ctl.play { width: 48px; height: 48px; min-width: 48px; background: var(--accent, #FB7299); color: #fff; box-shadow: 0 4px 14px color-mix(in srgb, var(--accent, #FB7299) 45%, transparent); }
+  .ctl svg { width: 52%; height: 52%; }
+  #closeBtn {
+    position: absolute; top: 4px; right: 12px; width: 24px; height: 24px; border: none; border-radius: 50%;
+    background: transparent; color: rgba(107,114,128,0.55); cursor: pointer;
+    display: none; align-items: center; justify-content: center;
+  }
+  #pill.show-controls #closeBtn { display: flex; }
+  #closeBtn:hover { background: rgba(0,0,0,0.08); color: #374151; }
+  #closeBtn svg { width: 14px; height: 14px; }
+
+  /* 品牌待机态 */
+  .brand-shimmer {
+    background: linear-gradient(90deg, #FB7299, #7c6cff, #49d6e8, #FB7299);
+    background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-size: 300% 100%; animation: brand-shimmer 3s linear infinite;
+  }
+  @keyframes brand-shimmer { 0% { background-position: 0% 50% } 100% { background-position: 300% 50% } }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="pill">
+    <div id="content">
+      <div id="line"><span id="lineInner">WaveForge</span></div>
+      <div id="translation"></div>
+    </div>
+    <div id="controls">
+      <button class="ctl" id="prev" title="上一曲"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6l-10 6 10 6z"/></svg></button>
+      <button class="ctl play" id="play" title="播放/暂停">
+        <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="pauseIcon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+      </button>
+      <button class="ctl" id="next" title="下一曲"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l10 6-10 6z"/></svg></button>
+    </div>
+    <button id="closeBtn" title="关闭歌词岛"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg></button>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id)
+  const bridge = window.lyricsIsland
+  const clamp01 = (v) => Math.max(0, Math.min(1, v))
+
+  const state = {
+    song: null, lyric: null, playing: false, progress: 0, accent: '#FB7299', scale: 1,
+  }
+  let progressAt = 0 // performance.now() 锚点：进度 = progress + (now - progressAt)/1000（播放中）
+
+  // ── 逐字时序归一化（与任务栏播控同一套实现，行为一致） ──
+  const FALLBACK_FIRST_WORD_DURATION_MS = 140
+  const reconcileBoundaryParentheses = (lineText, sourceTokens) => {
+    if (!lineText || sourceTokens.length === 0) return sourceTokens.slice()
+    let tokens = sourceTokens.map(t => ({ ...t }))
+    const leading = (text) => text.trimStart().match(/^[（(]+/u)?.[0] || ''
+    const trailing = (text) => text.trimEnd().match(/[）)]+$/u)?.[0] || ''
+    const completeLeading = Array.from(leading(lineText))
+    const timedLeading = Array.from(leading(tokens.map(t => t.word).join('')))
+    const missingLeading = completeLeading.slice(0, Math.max(0, completeLeading.length - timedLeading.length))
+    if (missingLeading.length > 0) tokens = [...missingLeading.map(word => ({ word, startTime: 0, duration: 0 })), ...tokens]
+    const completeTrailing = Array.from(trailing(lineText))
+    const timedTrailing = Array.from(trailing(tokens.map(t => t.word).join('')))
+    const missingTrailingCount = Math.max(0, completeTrailing.length - timedTrailing.length)
+    if (missingTrailingCount > 0) {
+      const lastToken = tokens[tokens.length - 1]
+      tokens.push(...completeTrailing.slice(completeTrailing.length - missingTrailingCount).map(word => ({ word, startTime: Math.max(0, lastToken.startTime + Math.max(0, lastToken.duration)), duration: 0 })))
+    }
+    return tokens
+  }
+  const normalizeAbsoluteStarts = (words, lineTimeSeconds) => {
+    const lineStartMs = Math.max(0, lineTimeSeconds * 1000)
+    const visibleStarts = words.filter(w => w.word && w.word.trim() && Number.isFinite(w.startTime)).map(w => w.startTime)
+    if (visibleStarts.length === 0 || lineStartMs < 1000) return words
+    const firstStart = visibleStarts[0]
+    return (firstStart > 1000 && Math.abs(firstStart - lineStartMs) < 15000) ? words.map(w => ({ ...w, startTime: Math.max(0, w.startTime - lineStartMs) })) : words
+  }
+  const restoreLyricWordSpacing = (words, lineText) => {
+    const expandedWords = words.flatMap(word => {
+      if (/^\s+$/u.test(word.word)) return [{ ...word, duration: 0 }]
+      const leading = word.word.match(/^\s+/u)?.[0] || '', trailing = word.word.match(/\s+$/u)?.[0] || ''
+      const content = word.word.slice(leading.length, Math.max(leading.length, word.word.length - trailing.length))
+      const result = []
+      if (leading) result.push({ word: leading, startTime: word.startTime, duration: 0 })
+      if (content) result.push({ ...word, word: content })
+      if (trailing) result.push({ word: trailing, startTime: word.startTime + Math.max(0, word.duration), duration: 0 })
+      return result.length > 0 ? result : [word]
+    })
+    const normalizedLineText = lineText.trim().replace(/\s+/gu, ' ')
+    const visibleIndices = expandedWords.map((w, i) => w.word.trim() ? i : -1).filter(i => i >= 0)
+    const insertSpaceAfter = new Set(); let lineCursor = 0
+    visibleIndices.forEach((wordIndex, visibleIndex) => {
+      const token = expandedWords[wordIndex].word.trim()
+      const tokenIndex = normalizedLineText.indexOf(token, lineCursor)
+      if (tokenIndex < 0) return
+      const tokenEnd = tokenIndex + token.length
+      const separator = normalizedLineText.slice(tokenEnd).match(/^\s+/u)?.[0] || ''
+      lineCursor = tokenEnd + separator.length
+      const nextVisibleIndex = visibleIndices[visibleIndex + 1]
+      if (!separator || nextVisibleIndex === undefined) return
+      if (!expandedWords.slice(wordIndex + 1, nextVisibleIndex).some(nextWord => /^\s+$/u.test(nextWord.word))) insertSpaceAfter.add(wordIndex)
+    })
+    return expandedWords.flatMap((word, index) => insertSpaceAfter.has(index) ? [word, { word: ' ', startTime: word.startTime + Math.max(0, word.duration), duration: 0 }] : [word])
+  }
+  const normalizeSequentialWordTiming = (words) => {
+    if (words.length === 0) return words
+    const visibleIndices = words.map((w, i) => w.word && w.word.trim() ? i : -1).filter(i => i >= 0)
+    if (visibleIndices.length === 0) return words
+    const starts = []
+    visibleIndices.forEach((wordIndex, visibleIndex) => {
+      const rawStart = Number.isFinite(words[wordIndex].startTime) ? Math.max(0, words[wordIndex].startTime) : 0
+      if (visibleIndex === 0) { starts.push(rawStart); return }
+      const previousStart = starts[visibleIndex - 1], previousWord = words[visibleIndices[visibleIndex - 1]]
+      const hasUsablePreviousDuration = Number.isFinite(previousWord.duration) && previousWord.duration > 8
+      starts.push(rawStart >= previousStart + (rawStart <= previousStart || !hasUsablePreviousDuration ? FALLBACK_FIRST_WORD_DURATION_MS : 1) ? rawStart : previousStart + (rawStart <= previousStart || !hasUsablePreviousDuration ? FALLBACK_FIRST_WORD_DURATION_MS : 1))
+    })
+    const normalized = words.map(w => ({ ...w }))
+    visibleIndices.forEach((wordIndex, visibleIndex) => {
+      const startTime = starts[visibleIndex], nextStart = starts[visibleIndex + 1]
+      const rawDuration = Number.isFinite(words[wordIndex].duration) && words[wordIndex].duration > 8 ? words[wordIndex].duration : FALLBACK_FIRST_WORD_DURATION_MS
+      normalized[wordIndex] = { ...words[wordIndex], startTime, duration: nextStart !== undefined ? Math.max(1, Math.min(rawDuration, nextStart - startTime)) : Math.max(1, rawDuration) }
+    })
+    let previousEnd = 0
+    normalized.forEach((word, index) => { if (word.word && word.word.trim()) previousEnd = word.startTime + word.duration; else normalized[index] = { ...word, startTime: previousEnd, duration: 0 } })
+    return normalized
+  }
+
+  const KARAOKE_DELAY_MS = 200, KARAOKE_FILL_EXTENSION = 42
+  let karaokeWords = null, karaokeLineStartMs = 0, karaokeWordEls = [], karaokeLineKey = '', karaokeRaf = 0
+  let lastLineWidth = 0
+
+  const softFillStyle = (fillWidth) => {
+    const extendedWidth = Math.min(100, fillWidth + KARAOKE_FILL_EXTENSION)
+    const fillEdge = extendedWidth > 0 ? fillWidth / extendedWidth * 100 : 0
+    const featherStart = Math.max(0, fillEdge - 18), featherShoulder = Math.max(featherStart, fillEdge - 6), featherTail = fillEdge + (100 - fillEdge) * 0.54
+    const fillMask = `linear-gradient(90deg, black 0%, black ${featherStart}%, rgba(0,0,0,0.94) ${featherShoulder}%, rgba(0,0,0,0.76) ${fillEdge}%, rgba(0,0,0,0.28) ${featherTail}%, transparent 100%)`
+    return { width: `${extendedWidth}%`, WebkitMaskImage: fillMask, maskImage: fillMask }
+  }
+
+  function rebuildKaraoke(lyric) {
+    const line = lyric.line || ''
+    const words = Array.isArray(lyric.words) ? lyric.words.filter(w => w && Number.isFinite(w.startTime) && Number.isFinite(w.duration)).map(w => ({ word: String(w.word ?? ''), startTime: w.startTime, duration: w.duration })) : []
+    const key = line + '|' + words.length + '|' + (words[0] ? words[0].startTime : '')
+    if (key === karaokeLineKey) return
+    karaokeLineKey = key
+    const inner = $('lineInner')
+    $('translation').textContent = lyric.translation || ''
+    if (words.length === 0) {
+      inner.textContent = line
+      karaokeWords = null; karaokeWordEls = []
+      updatePillWidth(line.length)
+      return
+    }
+    const fixedWords = reconcileBoundaryParentheses(line, words)
+    const relativeWords = normalizeAbsoluteStarts(fixedWords, Number(lyric.lineStart) || 0)
+    const spacedWords = restoreLyricWordSpacing(relativeWords, line)
+    karaokeWords = normalizeSequentialWordTiming(spacedWords)
+    karaokeLineStartMs = (Number(lyric.lineStart) || 0) * 1000
+    inner.textContent = ''
+    karaokeWordEls = []
+    for (const word of karaokeWords) {
+      const isSpace = !word.word || word.word.trim() === ''
+      if (isSpace) {
+        const el = document.createElement('span'); el.className = 'kw-space'; el.textContent = word.word || ' '
+        el.style.width = `${Math.max(1, Array.from(word.word || ' ').length) * 0.24}em`
+        inner.appendChild(el); karaokeWordEls.push({ el, isSpace: true, startTime: 0, duration: 0 })
+        continue
+      }
+      const el = document.createElement('span'); el.className = 'kw'
+      const baseEl = document.createElement('span'); baseEl.className = 'kw-base'; baseEl.textContent = word.word
+      const fillEl = document.createElement('span'); fillEl.className = 'kw-fill'; fillEl.textContent = word.word
+      el.appendChild(baseEl); el.appendChild(fillEl); inner.appendChild(el)
+      karaokeWordEls.push({ el, baseEl, fillEl, isSpace: false, startTime: word.startTime, duration: Math.max(1, word.duration) })
+    }
+    // 药丸宽度：以整行文本实测宽度为准（与逐字无关，只在换行时计算一次）
+    updatePillWidth(line.length)
+  }
+
+  // 药丸宽度自适应：用行内实际渲染宽度（逐字 DOM 已就位）取 line 容器 scrollWidth，
+  // 只在行变化时执行一次；宽度变化交给 CSS transition 做动效。
+  function updatePillWidth() {
+    const line = $('line')
+    const target = Math.min(
+      document.documentElement.clientWidth - 40,
+      Math.max(220, Math.ceil(line.scrollWidth) + 68)
+    )
+    lastLineWidth = target
+    $('pill').style.width = target + 'px'
+  }
+
+  function renderKaraokeFill(curSec) {
+    if (!karaokeWords || karaokeWordEls.length === 0) return
+    const currentMs = Math.max(0, curSec * 1000 - karaokeLineStartMs - KARAOKE_DELAY_MS)
+    const dim = 'rgba(107,114,128,0.5)'
+    const accent = state.accent || '#FB7299'
+    for (const item of karaokeWordEls) {
+      if (item.isSpace) continue
+      const fillProgress = clamp01((currentMs - item.startTime) / item.duration)
+      const fillWidth = fillProgress * 100
+      const fullyFilled = currentMs >= item.startTime + item.duration
+      item.baseEl.style.color = fullyFilled ? 'transparent' : dim
+      item.fillEl.style.color = accent
+      if (fullyFilled) { item.fillEl.style.width = '100%'; item.fillEl.style.WebkitMaskImage = 'none'; item.fillEl.style.maskImage = 'none' }
+      else if (fillWidth > 0) { const style = softFillStyle(fillWidth); item.fillEl.style.width = style.width; item.fillEl.style.WebkitMaskImage = style.WebkitMaskImage; item.fillEl.style.maskImage = style.maskImage }
+      else { item.fillEl.style.width = '0%'; item.fillEl.style.WebkitMaskImage = 'none'; item.fillEl.style.maskImage = 'none' }
+    }
+  }
+
+  // rAF 只在「播放中 + 可见」时运转；窗口被遮挡/隐藏时 Chromium 节流会自动挂起
+  function startKaraokeRaf() {
+    if (karaokeRaf) return
+    const step = () => {
+      if (!state.playing || !karaokeWords || karaokeWords.length === 0 || document.hidden) { karaokeRaf = 0; return }
+      karaokeRaf = requestAnimationFrame(step)
+      const cur = state.playing && progressAt ? state.progress + Math.max(0, (performance.now() - progressAt) / 1000) : state.progress
+      renderKaraokeFill(cur)
+    }
+    karaokeRaf = requestAnimationFrame(step)
+  }
+
+  function applyScale(scale) {
+    const s = Number(scale) || 1
+    document.documentElement.style.setProperty('--fs', (26 * s) + 'px')
+    document.documentElement.style.setProperty('--pill-h', Math.round(76 * s) + 'px')
+  }
+
+  function apply() {
+    const hasSong = Boolean(state.song && state.song.name)
+    document.documentElement.style.setProperty('--accent', state.accent || '#FB7299')
+    const inner = $('lineInner')
+    if (!hasSong) {
+      karaokeWords = null; karaokeWordEls = []; karaokeLineKey = ''
+      inner.textContent = 'WaveForge 澜音工坊'
+      inner.classList.add('brand-shimmer')
+      $('translation').textContent = ''
+      updatePillWidth()
+      return
+    }
+    inner.classList.remove('brand-shimmer')
+    const lyric = state.lyric
+    if (lyric && lyric.line) rebuildKaraoke(lyric)
+    else { karaokeWords = null; karaokeWordEls = []; karaokeLineKey = ''; inner.textContent = state.song.name; $('translation').textContent = ''; updatePillWidth() }
+    $('playIcon').style.display = state.playing ? 'none' : 'block'
+    $('pauseIcon').style.display = state.playing ? 'block' : 'none'
+    progressAt = performance.now()
+    if (karaokeWords) startKaraokeRaf()
+  }
+
+  // ── 播控浮层：点药丸切换，3 秒无操作自动回到歌词 ──
+  let controlsVisible = false
+  let controlsTimer = 0
+  function setControlsVisible(visible) {
+    controlsVisible = visible
+    $('pill').classList.toggle('show-controls', visible)
+    if (controlsTimer) { clearTimeout(controlsTimer); controlsTimer = 0 }
+    if (visible) {
+      controlsTimer = window.setTimeout(() => { controlsTimer = 0; setControlsVisible(false) }, 3000)
+    }
+  }
+
+  // ── 拖动 vs 点击：位移超过阈值视为拖动 ──
+  let pointerSession = null
+  $('pill').addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return
+    pointerSession = { x: e.screenX, y: e.screenY, moved: false, startX: e.screenX, startY: e.screenY }
+  })
+  window.addEventListener('pointermove', (e) => {
+    if (!pointerSession) return
+    const dx = e.screenX - pointerSession.startX, dy = e.screenY - pointerSession.startY
+    if (!pointerSession.moved && Math.hypot(dx, dy) < 5) return
+    if (!pointerSession.moved) {
+      pointerSession.moved = true
+      $('pill').classList.add('dragging')
+      if (controlsVisible) setControlsVisible(false)
+      bridge.startDrag({ x: e.screenX, y: e.screenY })
+    }
+    bridge.dragTo({ x: e.screenX, y: e.screenY })
+  })
+  window.addEventListener('pointerup', () => {
+    if (!pointerSession) return
+    const moved = pointerSession.moved
+    pointerSession = null
+    $('pill').classList.remove('dragging')
+    bridge.endDrag()
+    if (!moved) setControlsVisible(!controlsVisible) // 单击：切换播控浮层
+  })
+
+  $('play').addEventListener('click', (e) => { e.stopPropagation(); bridge.sendControl('toggle'); setControlsVisible(true) })
+  $('prev').addEventListener('click', (e) => { e.stopPropagation(); bridge.sendControl('prev'); setControlsVisible(true) })
+  $('next').addEventListener('click', (e) => { e.stopPropagation(); bridge.sendControl('next'); setControlsVisible(true) })
+  $('closeBtn').addEventListener('click', (e) => { e.stopPropagation(); bridge.sendControl('close') })
+
+  // ── IPC 接线 ──
+  bridge.onState((partial) => {
+    if (!partial || typeof partial !== 'object') return
+    if (partial.song !== undefined) state.song = partial.song
+    if (partial.lyric !== undefined) state.lyric = partial.lyric
+    if (partial.playing !== undefined) state.playing = partial.playing === true
+    if (typeof partial.progress === 'number') { state.progress = partial.progress; progressAt = performance.now() }
+    if (partial.accent !== undefined || partial.accentColor !== undefined) state.accent = partial.accent ?? partial.accentColor
+    if (partial.scale !== undefined) { state.scale = partial.scale; applyScale(state.scale) }
+    apply()
+  })
+  bridge.onSettings((settings) => {
+    if (!settings) return
+    if (settings.scale !== undefined) { state.scale = settings.scale; applyScale(state.scale) }
+  })
+  void bridge.getState().then((snapshot) => { if (snapshot) { Object.assign(state, snapshot); applyScale(snapshot.scale || 1); apply() } }).catch(() => undefined)
+  void bridge.getSettings().then((settings) => { if (settings && settings.scale !== undefined) { state.scale = settings.scale; applyScale(state.scale) } }).catch(() => undefined)
+
+  window.addEventListener('resize', () => updatePillWidth())
+  applyScale(state.scale)
+  apply()
+</script>
+</body>
+</html>

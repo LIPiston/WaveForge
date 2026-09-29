@@ -10,9 +10,14 @@
  * bridge 进程生命周期：首次 Apple 歌曲时自动启动（由主进程 spawn），退出时跟随主进程关闭。
  */
 
+import { isGameModeFrozen } from './gameModeRuntime'
+
 const BRIDGE_PORT = 18790
 const BRIDGE_URL = `http://127.0.0.1:${BRIDGE_PORT}`
 const POLL_INTERVAL = 200 // ms
+// 游戏模式冻结（主窗已隐藏到托盘）：进度插值由任务栏播控的 1s 兜底推送维持，
+// 这里 5Hz 的 /state 轮询降到 1Hz，省掉 4/5 的本地 HTTP + JSON 解析唤醒，解冻即恢复
+const POLL_INTERVAL_FROZEN = 1000
 const SPAWN_FAILURE_RETRY_MS = 60_000
 
 export interface ApplePlaybackState {
@@ -150,7 +155,9 @@ function startPolling() {
     } finally {
       window.clearTimeout(timeout)
       if (pollController === controller) pollController = null
-      if (polling && generation === pollGeneration) pollTimer = window.setTimeout(poll, POLL_INTERVAL)
+      if (polling && generation === pollGeneration) {
+        pollTimer = window.setTimeout(poll, isGameModeFrozen() ? POLL_INTERVAL_FROZEN : POLL_INTERVAL)
+      }
     }
   }
   void poll()

@@ -1,5 +1,17 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { DEFAULT_FLUID_PALETTE, extractCoverPalette } from '../utils/coverPalette'
+import { isRenderSuspended, subscribeGameModeFrozen } from '../services/gameModeRuntime'
+import { isTvModeActive } from '../platform'
+import { isPerfModeEfficiency, isPerfModeEnhanced } from '../tv/perfMode'
+
+/** TV 播放中的帧间隔（ms）：效能档 24fps、普通档 30fps、增强档/非 TV 0（不钳）。
+ *  全屏 FBM 片元着色器是播放页最大的 GPU 负载，TV 上必须钳帧；画面是慢速流体噪声，低帧率无感。 */
+function resolveTvPlayingFrameMs(): number {
+  if (!isTvModeActive()) return 0
+  if (isPerfModeEfficiency()) return 1000 / 24
+  if (!isPerfModeEnhanced()) return 1000 / 30
+  return 0
+}
 
 /**
  * 摩登流体背景（自研）：用封面取色驱动一个域扭曲噪声场，缓慢流动的色块。
@@ -243,17 +255,24 @@ export default memo(function ModernFluidBackground({
     const IDLE_FRAME_MS = 1000 / Math.max(1, idleFps)
     // 收敛判定：三个通道差值都小于此阈值即视为调色板已稳定（远低于 8bit 可辨步长）
     const PALETTE_EPSILON = 0.002
+    // 「不该出帧」的两种状态：页面被判定隐藏，或游戏模式已把主窗隐藏到托盘
+    const suspended = () => isRenderSuspended()
 
     const render = (now: number) => {
       // 窗口隐藏：直接停帧（Electron 关闭 backgroundThrottling 后 rAF 后台仍全速跑，
       // 这块是全屏 FBM 片元着色器，必须主动停），可见时由 visibilitychange 重启。
-      if (document.visibilityState === 'hidden') {
+      // 游戏模式冻结（主窗隐藏到托盘）与「窗口隐藏」同语义：Page Visibility 在
+      // backgroundThrottling:false 下不会翻，必须一起判，否则打游戏时仍在满帧跑着色器。
+      if (suspended()) {
         rafId = null
         running = false
         return
       }
       const playing = isPlayingRef.current
-      const minFrameMs = playing ? 0 : IDLE_FRAME_MS
+      // 播放中全屏 FBM 片元着色器是最大的 GPU 负载之一：TV 上按性能档钳帧
+      //（效能档 24fps、普通档 30fps，增强档/桌面端不钳），画面是慢速流体噪声，低帧率无感
+      const playingFrameMs = resolveTvPlayingFrameMs()
+      const minFrameMs = playing ? playingFrameMs : IDLE_FRAME_MS
       // lastFrame === 0 表示循环刚起步：必须先画一帧建立画面，不能受空闲帧率门槛拦截。
       // （否则暂停状态下起步 delta 恒为 16.7 < 83ms，循环会一直空转且永不绘制，
       //   画布停在上一次的空白/旧帧上。）
@@ -304,7 +323,7 @@ export default memo(function ModernFluidBackground({
 
     const start = () => {
       if (running || rafId !== null) return
-      if (document.visibilityState === 'hidden') return
+      if (suspended()) return
       running = true
       lastFrame = 0
       rafId = requestAnimationFrame(render)
@@ -312,7 +331,7 @@ export default memo(function ModernFluidBackground({
     startRef.current = start
 
     const handleVisibility = () => {
-      if (document.visibilityState === 'hidden') {
+      if (suspended()) {
         if (rafId !== null) cancelAnimationFrame(rafId)
         rafId = null
         running = false
@@ -321,12 +340,15 @@ export default memo(function ModernFluidBackground({
       }
     }
     document.addEventListener('visibilitychange', handleVisibility)
+    // 冻结开始/结束沿用同一套停/启逻辑（事件名不同、语义一致）
+    const unsubscribeGameMode = subscribeGameModeFrozen(() => handleVisibility())
 
     // 统一经 start() 起步：它带 running/可见性守卫，避免与并发的 start() 双开 rAF
     start()
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)
+      unsubscribeGameMode()
       startRef.current = null
       if (rafId !== null) cancelAnimationFrame(rafId)
       rafId = null

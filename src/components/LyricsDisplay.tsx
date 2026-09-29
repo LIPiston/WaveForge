@@ -1,10 +1,13 @@
 import { motion, AnimatePresence, useReducedMotion, useSpring } from 'framer-motion'
 import { parseStoredBoolean } from '../utils/storage'
 import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudioPulse'
+import { useTransitionLyricsCrossfade } from '../hooks/useTransitionVisual'
+import type { TransitionVisualStore } from '../audio/transitionVisualStore'
 import { memo, useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { reconcileBoundaryParentheses } from '../utils/lyricBoundaryParentheses'
 import { normalizeSequentialWordTiming, prepareLyricWords } from '../utils/lyricWordTiming'
 import { getAgentTintColor, getAppleMusicSettings } from '../services/appleMusic'
+import { isRenderSuspended, subscribeGameModeFrozen } from '../services/gameModeRuntime'
 import {
   bandMaskForProgress,
   charEmphasizeDelay,
@@ -604,6 +607,23 @@ interface LyricsDisplayProps {
   singleNextLinePreview?: boolean
   backgroundEffect?: BackgroundEffect
   isTransitioning?: boolean
+  /** 过渡交叉淡化窗口进度（overlayProgress 0-1，最后 ~4 秒窗口）：>0 时歌词按同一时钟淡出，
+   *  与封面/MV 的交叉淡化同步——而不是动画窗口一开就整体压暗消失。 */
+  transitionFadeProgress?: number
+  /** 歌词交叉淡化（整段过渡时长）：与下一首歌词形成交叉——本层按 1-q 淡出，
+   *  下一首歌词层（由 App 另行渲染）按 q 淡入。q 直接订阅视觉轨道 store（30fps）。 */
+  crossfadeActive?: boolean
+  crossfadeStore?: TransitionVisualStore | null
+  /** 托管切换（过渡进行中 / 视觉已切到目标曲）：抑制行入场动画、滚动一步到位。
+   *  旧实现里切歌瞬间歌词会"从旧位置平滑滚上去"（用户反馈的"归位/向上滚"），
+   *  根因是滚动查询命中了仍在退场的旧歌词树 + 入场动画叠加。 */
+  managedCrossfade?: boolean
+  /** 上报当前焦点行下标：过渡期"先行淡入的下一首歌词层"用它告诉宿主自己停在那一句，
+   *  视觉切换帧宿主再把同一句作为 indexHint 交给正式歌词树 —— 切换帧不跳行、不滚动。 */
+  onActiveIndexChange?: (index: number) => void
+  /** 托管切换时的初始锚点：切歌瞬间 currentTime 可能还停在上一首（引擎一帧滞后），
+   *  按时间扫会锚错行；这里直接用过渡期下一首歌词层停留的那一句。 */
+  indexHint?: number | null
   trackId?: string | number
   pulseStore?: AudioPulseStore
   playerTheme?: 'light' | 'dark'
@@ -639,6 +659,12 @@ export default memo(function LyricsDisplay({
   singleNextLinePreview = false,
   backgroundEffect = 'blur',
   isTransitioning = false,
+  transitionFadeProgress = 0,
+  crossfadeActive = false,
+  crossfadeStore = null,
+  managedCrossfade = false,
+  onActiveIndexChange,
+  indexHint = null,
   trackId,
   pulseStore = EMPTY_AUDIO_PULSE_STORE,
   playerTheme = 'dark',
@@ -650,6 +676,30 @@ export default memo(function LyricsDisplay({
   const effectiveLyricStyle = lyricStyleMode ?? storedLyricStyle
   const effectiveScrollTransitionStyle = scrollTransitionStyle ?? scrollStyleOfStyle(effectiveLyricStyle)
   const isModernScroll = displayMode === 'scroll' && effectiveScrollTransitionStyle === 'amodern'
+  // P1-14：过渡窗口内旧歌词树的最暗态由 transitionFadeProgress 决定；commit 帧 trackId 变化会让
+  // 新歌词树以 initial=0 重新挂载（而旧树此刻还停在暗态）⇒ 观感是"歌名已换、歌词还在往上爬"。
+  // 这里渲染期只读"上一次提交的快照"，把新树的初始不透明度对齐到旧树退场前的实际值；
+  // 快照只在 effect 中写入，保证 StrictMode 双渲染下同一帧算出的值一致。
+  const lyricFadeOpacity = transitionFadeProgress > 0
+    ? 1 - 0.88 * Math.max(0, Math.min(1, transitionFadeProgress))
+    : (isTransitioning ? 0.14 : 1)
+  const lyricFadeActive = isTransitioning || transitionFadeProgress > 0
+  // 交叉淡化（整段过渡）：本层 1-q 淡出，下一首歌词层 q 淡入 —— q 订阅视觉轨道（30fps，逐帧无台阶）。
+  const crossfadeQ = useTransitionLyricsCrossfade(crossfadeActive ? crossfadeStore : null, 0)
+  // 托管窗口（过渡音频在放 → 提交）内不套用"整树暗态"：交叉淡化由 crossfadeQ 驱动，
+  // 切换帧之后直接满不透明 —— 否则 isTransitioning 残留会把刚接管的歌词压到 0.14 再弹回来。
+  const treeOpacity = managedCrossfade
+    ? (crossfadeActive ? 1 - crossfadeQ : 1)
+    : lyricFadeOpacity
+  const lyricFadeSnapshotRef = useRef({ trackId, fadeActive: false, opacity: 1 })
+  const lyricEnterOpacity = managedCrossfade
+    ? 1
+    : lyricFadeSnapshotRef.current.trackId !== trackId && lyricFadeSnapshotRef.current.fadeActive
+      ? lyricFadeSnapshotRef.current.opacity
+      : 0
+  useEffect(() => {
+    lyricFadeSnapshotRef.current = { trackId, fadeActive: lyricFadeActive, opacity: lyricFadeOpacity }
+  }, [trackId, lyricFadeActive, lyricFadeOpacity])
   // 浅色主题下歌词用深色文字，保证在淡白雾背景上可读
   const activeLyricColor = isLightTheme ? 'rgba(15, 15, 15, 0.92)' : 'rgba(255, 255, 255, 1)'
   const inactiveLyricColor = isLightTheme ? 'rgba(0, 0, 0, 0.38)' : 'rgba(255, 255, 255, 0.38)'
@@ -706,6 +756,13 @@ export default memo(function LyricsDisplay({
   /** 焦点行视觉模型（摩登风格）：行级 opacity/scale/blur/字体由它驱动 */
   const useLineMotionModel = isAmllLyricMotion
   const containerRef = useRef<HTMLDivElement>(null)
+  // 当前这首歌的歌词树（AnimatePresence 里 key=trackId 的那层）。
+  // 滚动定位必须在这棵树内部查询行节点：切歌瞬间旧树还在退场（DOM 仍在容器里），
+  // 按容器查会命中旧树的行 → 滚到旧位置 → 再由 smooth 跟滚上去（"归位/向上滚"观感根源）。
+  const treeRef = useRef<HTMLDivElement>(null)
+  // 供滚动函数（render 期创建、事件/effect 中调用）读取最新值
+  const managedCrossfadeRef = useRef(managedCrossfade)
+  managedCrossfadeRef.current = managedCrossfade
   // 崭新模式：弹簧 transform 滚动引擎（零布局跳动，Apple Music 风）
   const springY = useSpring(0, { stiffness: 190, damping: 26, mass: 1.1 })
   const springWrapRef = useRef<HTMLDivElement>(null)
@@ -798,8 +855,9 @@ export default memo(function LyricsDisplay({
     }
 
     const tick = () => {
-      // 窗口隐藏时停帧（Electron backgroundThrottling 关闭，rAF 后台仍全速执行）
-      if (document.visibilityState === 'hidden') {
+      // 窗口隐藏时停帧（Electron backgroundThrottling 关闭，rAF 后台仍全速执行）。
+      // 游戏模式冻结（主窗隐藏到托盘）同语义：Page Visibility 在该配置下不会翻，必须一起判。
+      if (isRenderSuspended()) {
         wordRafRef.current = null
         return
       }
@@ -814,15 +872,18 @@ export default memo(function LyricsDisplay({
 
     const onVisibilityChange = () => {
       // 窗口恢复可见时重启平滑时钟（若组件仍应播放）
-      if (document.visibilityState === 'visible' && wordRafRef.current === null) {
+      if (!isRenderSuspended() && wordRafRef.current === null) {
         wordRafRef.current = requestAnimationFrame(tick)
       }
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
+    // 游戏模式冻结开始/结束：沿用同一套停/启逻辑
+    const unsubscribeGameMode = subscribeGameModeFrozen(() => onVisibilityChange())
     wordRafRef.current = requestAnimationFrame(tick)
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange)
+      unsubscribeGameMode()
       if (wordRafRef.current !== null) {
         cancelAnimationFrame(wordRafRef.current)
         wordRafRef.current = null
@@ -872,13 +933,17 @@ export default memo(function LyricsDisplay({
 
   const scrollLineToCenter = (index: number, behavior: ScrollBehavior = 'smooth') => {
     const container = containerRef.current
-    const el = container?.querySelector(`[data-index="${index}"]`) as HTMLElement | null
+    const scope = treeRef.current ?? container
+    const el = scope?.querySelector(`[data-index="${index}"]`) as HTMLElement | null
     if (!container || !el) return
-
-    // 用户要求减少动效时不做平滑滚动（尊重 prefers-reduced-motion）。
+    // 托管切换（过渡进行中/视觉切换帧）与 prefers-reduced-motion 下一律瞬时定位：
+    // 从旧位置平滑滚过去正是用户反馈的"歌词归位/向上滚"。
+    const effectiveBehavior: ScrollBehavior = (managedCrossfadeRef.current || (behavior === 'smooth' && prefersReducedMotion))
+      ? 'auto'
+      : behavior
     container.scrollTo({
       top: getCenteredScrollTop(container, el),
-      behavior: behavior === 'smooth' && prefersReducedMotion ? 'auto' : behavior,
+      behavior: effectiveBehavior,
     })
   }
 
@@ -1122,7 +1187,17 @@ export default memo(function LyricsDisplay({
     prevTrackIdRef.current = trackId
     const adjustedTime = currentTime + LYRIC_TIMING_LEAD_SECONDS + lyricOffset
     let nextIndex = -1
-    if (trackChanged && displayLyricsData.length > 0) {
+    // 托管切换（过渡期"先行淡入的下一首歌词层"已经在放同一首歌）：
+    // 直接用它上报的那一句作为锚点 —— 视觉切换帧不跳行、不滚动。
+    // 注意这也要覆盖"挂载"这一帧：视觉切换时歌词树是新 key 重新挂载的（trackChanged 为 false），
+    // 若只处理 trackChanged，新树会按（可能还差一帧的）引擎时间线自行扫描 → 闪一下第一句。
+    const hintValid = managedCrossfade
+      && typeof indexHint === 'number'
+      && indexHint >= 0
+      && indexHint < displayLyricsData.length
+    if (hintValid) {
+      nextIndex = indexHint as number
+    } else if (trackChanged && displayLyricsData.length > 0) {
       // 切歌瞬间 currentTime 可能还是上一首的值（引擎位置一帧滞后），按它扫描会
       // 把焦点锚到新歌词的中部（用户实测"焦点莫名其妙跑到歌词中部"）。
       // 切歌一律先锚定第一句，等时间驱动 effect（currentTime 归位后）接管。
@@ -1143,6 +1218,7 @@ export default memo(function LyricsDisplay({
 
     currentIndexRef.current = nextIndex
     setCurrentIndex(nextIndex)
+    onActiveIndexChange?.(nextIndex)
     if (trackChanged) {
       if (modernReturnTimerRef.current !== null) {
         window.clearTimeout(modernReturnTimerRef.current)
@@ -1192,6 +1268,7 @@ export default memo(function LyricsDisplay({
     if (adjustedTime < displayLyricsData[0].time) {
       if (currentIndex !== 0) {
         setCurrentIndex(0)
+        onActiveIndexChange?.(0)
         if (onCurrentTranslationChange) {
           onCurrentTranslationChange(displayLyricsData[0].translation ?? '')
         }
@@ -1211,6 +1288,7 @@ export default memo(function LyricsDisplay({
 
         if (currentIndex !== nextIndex) {
           setCurrentIndex(nextIndex)
+          onActiveIndexChange?.(nextIndex)
           if (onCurrentTranslationChange) {
             const translation = displayLyricsData[nextIndex].translation ?? ''
             onCurrentTranslationChange(translation)
@@ -1319,7 +1397,9 @@ export default memo(function LyricsDisplay({
       const layoutCenter = (trackRect.top - containerRect.top) - springY.get()
         + (elRect.top + elRect.height / 2 - trackRect.top)
       const target = containerRect.height * 0.36 - layoutCenter - modernManualY
-      if (prefersReducedMotion) springY.jump(target)
+      // 托管切换（过渡中/视觉切换帧）：焦点一步到位，不做弹簧滑行——弹簧从旧位置滑过去
+      // 正是"切歌后歌词向上滚/归位"的观感来源。
+      if (prefersReducedMotion || managedCrossfadeRef.current) springY.jump(target)
       else springY.set(target)
     }
     // 初始测量：容器有尺寸时直接算，否则等 ResizeObserver 异步触发
@@ -2398,18 +2478,31 @@ export default memo(function LyricsDisplay({
           ...(usePlusLighterBlend ? { mixBlendMode: 'plus-lighter' as const } : {}),
         }}
       >
-      {/* 歌词滚动容器：过渡切歌时前一曲淡出快（0.18s）、后一曲淡入慢（0.5s），避免叠字难看 */}
-      <AnimatePresence mode="wait">
+      {/* 歌词滚动容器：过渡切歌时歌词跟随封面/MV 的同一淡化时钟退场——
+          交叉淡化窗口（transitionFadeProgress 0→1）内渐隐，与封面交叉淡化同步；
+          commit 后新歌词反向入场。窗口外歌词保持完全可读，不再提前消失。
+          AnimatePresence 不用 mode="wait"：新旧两棵歌词树并行交叉（旧的淡出+新的淡入
+          同时进行），而不是"旧树卸载→空白→新树挂载"的卸载重装式切换。 */}
+      <AnimatePresence>
         <motion.div
           key={trackId}
-          initial={{ opacity: 0 }}
+          ref={treeRef}
+          // P1-14：commit 帧从"旧树退场时的暗态"起步（而非 0），避免歌名已换、歌词还在从暗处爬上来的割裂感；
+          // 非过渡切歌仍是 0，保持原有淡入。
+          // 托管切换（managedCrossfade）：一步到位 1（下一首歌词层已经在同一位置同样式淡入到 1），
+          // 切换帧零可见变化。
+          initial={{ opacity: lyricEnterOpacity }}
           animate={{
-            opacity: isTransitioning ? 0 : 1,
-            transition: isTransitioning
-              ? { duration: 0.18, ease: 'easeIn' }
-              : { duration: 0.5, ease: 'easeOut' },
+            opacity: treeOpacity,
+            y: isTransitioning || transitionFadeProgress > 0 ? -10 : 0,
+            transition: crossfadeActive
+              // 交叉淡化进度本身就是逐帧值（30fps 订阅），这里不能再叠补间，否则每帧重启缓动 → 拖影
+              ? { duration: 0 }
+              : isTransitioning || transitionFadeProgress > 0
+                ? { duration: 0.3, ease: 'linear' }
+                : { duration: 0.55, ease: 'easeOut' },
           }}
-          exit={{ opacity: 0, transition: { duration: 0.18, ease: 'easeIn' } }}
+          exit={{ opacity: 0, transition: { duration: 0.45, ease: 'easeIn' } }}
           className={`absolute inset-0 flex min-w-0 flex-col justify-start px-8 ${scrollAlignment === 'center' ? 'items-center' : 'items-start'}`}
           style={{
             paddingTop: '0',
@@ -2429,7 +2522,7 @@ export default memo(function LyricsDisplay({
           className="w-full shrink-0 pointer-events-none"
           style={{ height: isModernScroll ? '0%' : '46%' }}
         />
-        {!isTransitioning && preparedLyricsData.map((preparedLyric, index) => {
+        {preparedLyricsData.map((preparedLyric, index) => {
           const lyric = preparedLyric.lyric
           const globalIndex = index
           const isCurrent = globalIndex === currentIndex
@@ -2517,7 +2610,9 @@ export default memo(function LyricsDisplay({
               onMouseEnter={() => handleLyricMouseEnter(globalIndex)}
               onMouseLeave={handleLyricMouseLeave}
               onClick={() => handleLyricClick(lyric.interludeStartTime ?? lyric.time, globalIndex)}
-              initial={prefersReducedMotion ? false : { opacity: 0, y: 18, filter: 'blur(8px)' }}
+              // 托管切换（过渡中/视觉切换帧）：行不做入场动画——下一首歌词层已经以同样式可见，
+              // 再播一次 y:18 + blur 入场就是"歌词从下面爬上来"的观感。
+              initial={prefersReducedMotion || managedCrossfade ? false : { opacity: 0, y: 18, filter: 'blur(8px)' }}
               animate={{
                 opacity: isBlinking ? [lineOpacity, 0.95, lineOpacity] : lineOpacity,
                 y: lineY,

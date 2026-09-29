@@ -243,12 +243,31 @@ class AudioDownloadService {
    * 与 downloadForAnalysis 相同，暴露给外部直接调用。
    */
   async downloadForAnalysis(url, trackKey, options = {}) {
-    const canonicalUrl = normalizeAudioUrl(url)
     if (typeof trackKey !== 'string' || !trackKey.trim() || trackKey.length > 256) {
       throw new Error('Invalid track key')
     }
     trackKey = trackKey.trim()
     const { timeout = 60000, maxSize = 100 * 1024 * 1024 } = options // 100MB max
+
+    // Check if already in cache —— 必须排在 403 冷却检查之前：
+    // 冷却按「URL」记录（典型：预热期拿到空 vkey URL 被上游 403）。文件已经缓存时
+    // 根本不需要下载，若被 URL 冷却挡住，渲染/分析会在文件就绪的情况下依然拿不到
+    // 路径（实测表现：快进/跳进度触发重新准备 → 整轮 render-fail → 永久回退固定交叉）。
+    const cachedEntry = this.cacheIndex.get(trackKey)
+    const cacheUsable = Boolean(
+      cachedEntry
+      && this.isInsideTempRoot(cachedEntry.filePath)
+      && this._extensionMatchesContent(cachedEntry.filePath),
+    )
+    if (cacheUsable) {
+      // Update last access time
+      cachedEntry.lastAccess = Date.now()
+      this.saveCacheIndex()
+      console.log(`[AudioCache] Cache hit: ${trackKey}`)
+      return cachedEntry.filePath
+    }
+
+    const canonicalUrl = normalizeAudioUrl(url)
     const now = this.now()
     const forbiddenUntil = this.forbiddenUntilByUrl.get(canonicalUrl) || 0
     if (forbiddenUntil > now) {
@@ -258,20 +277,11 @@ class AudioDownloadService {
     }
     if (forbiddenUntil) this.forbiddenUntilByUrl.delete(canonicalUrl)
 
-    // Check if already in cache
-    const cached = this.cacheIndex.get(trackKey)
-    if (cached && this.isInsideTempRoot(cached.filePath)) {
+    if (cachedEntry) {
       // 历史误命名（内容与扩展名不符，如 B 站 DASH 的 AAC/MP4 被存成 .mp3）
       // 会让 Python/librosa 永远解不开这个"假 mp3"。发现即作废重下，
       // 新文件按响应内容纠正扩展名。
-      if (this._extensionMatchesContent(cached.filePath)) {
-        // Update last access time
-        cached.lastAccess = Date.now()
-        this.saveCacheIndex()
-        console.log(`[AudioCache] Cache hit: ${trackKey}`)
-        return cached.filePath
-      }
-      console.warn(`[AudioCache] Cached file content mismatch (${cached.filePath}), re-downloading with correct extension`)
+      console.warn(`[AudioCache] Cached file content mismatch (${cachedEntry.filePath}), re-downloading with correct extension`)
       this.deleteCacheFile(trackKey)
     }
 

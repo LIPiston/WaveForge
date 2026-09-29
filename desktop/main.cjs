@@ -22,7 +22,7 @@ for (const stream of [process.stdout, process.stderr]) {
 
 // Avoid spawning chcp/cmd.exe here. Electron is a GUI process, and the child
 // console can flash visibly whenever the main process is initialized.
-const { app, BrowserWindow, ipcMain, protocol, shell, session, safeStorage, dialog, globalShortcut, clipboard, utilityProcess, net, nativeImage } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, shell, session, safeStorage, dialog, globalShortcut, clipboard, utilityProcess, net, nativeImage, Tray } = require('electron')
 const LOCAL_API_SERVICE = 'waveforge-local-api'
 const LOCAL_API_PROTOCOL_VERSION = 1
 const path = require('path')
@@ -939,6 +939,7 @@ function broadcastDesktopPlayerState() {
   if (desktopLyricsWindow && !desktopLyricsWindow.isDestroyed()) {
     desktopLyricsWindow.webContents.send('desktop-lyrics:state', getDesktopPlayerSnapshot())
   }
+  broadcastLyricsIslandState(buildLyricsIslandSnapshot())
   broadcastRemoteState()
 }
 
@@ -972,6 +973,26 @@ function broadcastDesktopPlayerPartial(partial) {
     }
     if (Object.keys(lyricsPartial).length > 0) {
       desktopLyricsWindow.webContents.send('desktop-lyrics:state', lyricsPartial)
+    }
+  }
+  // 歌词岛：只要歌词/播放态/进度（不要频谱），高频 10Hz tick 在游戏模式冻结后自动停发
+  if (lyricsIslandWindow && !lyricsIslandWindow.isDestroyed()) {
+    const islandPartial = {}
+    for (const key of ['song', 'lyric', 'playing', 'accentColor', 'progress']) {
+      if (Object.prototype.hasOwnProperty.call(partial, key)) islandPartial[key] = partial[key]
+    }
+    if (Object.keys(islandPartial).length > 0) {
+      lyricsIslandWindow.webContents.send('lyrics-island:state', islandPartial)
+    }
+  }
+  // 托盘弹窗：仅可见时推送（song 对象含 name/artists，弹窗自取所需字段）
+  if (trayPopupWindow && !trayPopupWindow.isDestroyed() && trayPopupWindow.isVisible()) {
+    const popupPartial = {}
+    for (const key of ['song', 'playing', 'volume', 'muted', 'accentColor']) {
+      if (Object.prototype.hasOwnProperty.call(partial, key)) popupPartial[key] = partial[key]
+    }
+    if (Object.keys(popupPartial).length > 0) {
+      trayPopupWindow.webContents.send('tray-popup:partial', popupPartial)
     }
   }
   // 高频路径（渲染端每 100ms 推 {spectrum, progress}）只广播最小字段集合，
@@ -1382,6 +1403,269 @@ ipcMain.on('desktop-lyrics:resize-to', (_event, point) => {
 ipcMain.on('desktop-lyrics:resize-end', () => {
   desktopLyricsResizeSession = null
   saveDesktopLyricsSettings()
+})
+
+// ===== 歌词岛：独立透明置顶「药丸」窗口（逐字歌词 + 轻量播控） =====
+// 设计目标：性能优先。纯本地 HTML（无 React/vite），仅在行变化时重排 DOM，
+// 逐字填充用 rAF（窗口隐藏/遮挡时 backgroundThrottling 自动暂停）。
+let lyricsIslandWindow = null
+let lyricsIslandDragSession = null
+const LYRICS_ISLAND_DEFAULTS = Object.freeze({ enabled: false, scale: 1, locked: false })
+const LYRICS_ISLAND_SCALES = new Set([0.75, 0.9, 1, 1.15, 1.3])
+const LYRICS_ISLAND_SIZE = { width: 780, height: 150 }
+let lyricsIslandSettings = { ...LYRICS_ISLAND_DEFAULTS }
+
+function getLyricsIslandSettingsPath() {
+  return path.join(app.getPath('userData'), 'lyrics-island-settings.json')
+}
+
+function sanitizeLyricsIslandSettings(input = {}, base = LYRICS_ISLAND_DEFAULTS) {
+  return {
+    enabled: input.enabled === undefined ? base.enabled === true : input.enabled === true,
+    scale: LYRICS_ISLAND_SCALES.has(Number(input.scale)) ? Number(input.scale) : base.scale,
+    locked: input.locked === undefined ? base.locked === true : input.locked === true,
+    x: Number.isFinite(Number(input.x)) ? Math.round(Number(input.x)) : null,
+    y: Number.isFinite(Number(input.y)) ? Math.round(Number(input.y)) : null,
+  }
+}
+
+function loadLyricsIslandSettings() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(getLyricsIslandSettingsPath(), 'utf8'))
+    const next = sanitizeLyricsIslandSettings(parsed, lyricsIslandSettings)
+    lyricsIslandSettings = { enabled: next.enabled, scale: next.scale, locked: next.locked }
+    if (next.x !== null && next.y !== null) {
+      lyricsIslandSettings.x = next.x
+      lyricsIslandSettings.y = next.y
+    }
+  } catch {
+    lyricsIslandSettings = { ...LYRICS_ISLAND_DEFAULTS }
+  }
+  return lyricsIslandSettings
+}
+
+function saveLyricsIslandSettings() {
+  try {
+    const settingsPath = getLyricsIslandSettingsPath()
+    const temporaryPath = `${settingsPath}.tmp`
+    const bounds = lyricsIslandWindow && !lyricsIslandWindow.isDestroyed() ? lyricsIslandWindow.getBounds() : null
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    fs.writeFileSync(temporaryPath, JSON.stringify({
+      enabled: lyricsIslandSettings.enabled,
+      scale: lyricsIslandSettings.scale,
+      locked: lyricsIslandSettings.locked,
+      x: bounds ? bounds.x : (lyricsIslandSettings.x ?? null),
+      y: bounds ? bounds.y : (lyricsIslandSettings.y ?? null),
+    }, null, 2), 'utf8')
+    fs.renameSync(temporaryPath, settingsPath)
+  } catch (error) {
+    console.error('[歌词岛] 保存设置失败:', error)
+  }
+}
+
+function getLyricsIslandDefaultBounds() {
+  const { screen } = require('electron')
+  const workArea = screen.getPrimaryDisplay().workArea
+  return {
+    x: Math.round(workArea.x + (workArea.width - LYRICS_ISLAND_SIZE.width) / 2),
+    y: Math.round(workArea.y + workArea.height - LYRICS_ISLAND_SIZE.height - 16),
+    ...LYRICS_ISLAND_SIZE,
+  }
+}
+
+function clampLyricsIslandBounds(bounds) {
+  const { screen } = require('electron')
+  const workArea = screen.getDisplayMatching(bounds).workArea
+  return {
+    x: Math.min(workArea.x + workArea.width - 80, Math.max(workArea.x - 40, bounds.x)),
+    y: Math.min(workArea.y + workArea.height - 60, Math.max(workArea.y - 40, bounds.y)),
+    width: LYRICS_ISLAND_SIZE.width,
+    height: LYRICS_ISLAND_SIZE.height,
+  }
+}
+
+function setLyricsIslandMousePassthrough(passthrough) {
+  if (!lyricsIslandWindow || lyricsIslandWindow.isDestroyed()) return
+  try {
+    lyricsIslandWindow.setIgnoreMouseEvents(passthrough === true, { forward: true })
+  } catch { /* 忽略 */ }
+}
+
+function broadcastLyricsIslandState(partial) {
+  if (!partial || Object.keys(partial).length === 0) return
+  if (lyricsIslandWindow && !lyricsIslandWindow.isDestroyed()) {
+    lyricsIslandWindow.webContents.send('lyrics-island:state', partial)
+  }
+}
+
+function broadcastLyricsIslandSettings() {
+  if (lyricsIslandWindow && !lyricsIslandWindow.isDestroyed()) {
+    lyricsIslandWindow.webContents.send('lyrics-island:settings', getLyricsIslandSettings())
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('lyrics-island:enabled-changed', lyricsIslandSettings.enabled === true)
+  }
+}
+
+function getLyricsIslandSettings() {
+  const { x, y, ...rest } = lyricsIslandSettings
+  return { ...rest }
+}
+
+function createLyricsIslandWindow() {
+  if (lyricsIslandWindow && !lyricsIslandWindow.isDestroyed()) return lyricsIslandWindow
+  const saved = { x: lyricsIslandSettings.x, y: lyricsIslandSettings.y }
+  const initialBounds = (saved.x !== null && saved.x !== undefined && saved.y !== null && saved.y !== undefined)
+    ? clampLyricsIslandBounds({ ...saved, ...LYRICS_ISLAND_SIZE })
+    : getLyricsIslandDefaultBounds()
+  lyricsIslandWindow = new BrowserWindow({
+    ...initialBounds,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
+    resizable: false,
+    movable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    fullscreenable: false,
+    maximizable: false,
+    minimizable: false,
+    show: false,
+    title: 'WaveForge 歌词岛',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'lyrics-island-preload.cjs'),
+      // 性能：保持默认节流。窗口被遮挡/隐藏时 rAF 与定时器自动降频，空闲占用趋近于零。
+      backgroundThrottling: true,
+    },
+  })
+  lyricsIslandWindow.setAlwaysOnTop(true, 'screen-saver')
+  // 纯本地 HTML（与任务栏播控同策略）：无 React/vite 依赖，dev/prod 行为一致，零额外构建开销
+  lyricsIslandWindow.loadFile(path.join(__dirname, 'lyrics-island.html'))
+
+  lyricsIslandWindow.once('ready-to-show', () => {
+    if (!lyricsIslandWindow || lyricsIslandWindow.isDestroyed()) return
+    lyricsIslandWindow.showInactive()
+    setLyricsIslandMousePassthrough(lyricsIslandSettings.locked)
+  })
+  lyricsIslandWindow.webContents.once('did-finish-load', () => {
+    if (lyricsIslandWindow && !lyricsIslandWindow.isDestroyed()) {
+      lyricsIslandWindow.webContents.send('lyrics-island:state', buildLyricsIslandSnapshot())
+    }
+    broadcastLyricsIslandSettings()
+  })
+  guardAgainstExternalNavigation(lyricsIslandWindow.webContents)
+  lyricsIslandWindow.on('closed', () => {
+    lyricsIslandWindow = null
+    lyricsIslandDragSession = null
+    if (lyricsIslandSettings.enabled) {
+      lyricsIslandSettings.enabled = false
+      saveLyricsIslandSettings()
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('lyrics-island:enabled-changed', false)
+      }
+    }
+  })
+  return lyricsIslandWindow
+}
+
+function closeLyricsIslandWindow() {
+  if (lyricsIslandWindow && !lyricsIslandWindow.isDestroyed()) lyricsIslandWindow.close()
+  lyricsIslandWindow = null
+  lyricsIslandDragSession = null
+}
+
+// 歌词岛快照：与任务栏播控同一数据源（desktopPlayerState），只带岛需要的字段
+function buildLyricsIslandSnapshot() {
+  const lyric = desktopPlayerState.lyric || null
+  return {
+    song: desktopPlayerState.song ? { name: desktopPlayerState.song.name || '' } : null,
+    lyric: lyric ? {
+      line: lyric.line || '',
+      translation: lyric.translation || '',
+      lineStart: Number(lyric.lineStart) || 0,
+      lineDuration: Number(lyric.lineDuration) || 0,
+      words: Array.isArray(lyric.words)
+        ? lyric.words.map((w) => ({
+            word: String(w?.word ?? ''),
+            startTime: Number(w?.startTime) || 0,
+            duration: Number(w?.duration) || 0,
+          }))
+        : [],
+    } : null,
+    playing: desktopPlayerState.playing === true,
+    progress: Number(desktopPlayerState.progress) || 0,
+    accent: String(desktopPlayerState.accentColor || '') || '#FB7299',
+    scale: lyricsIslandSettings.scale,
+  }
+}
+
+ipcMain.handle('lyrics-island:get-settings', () => getLyricsIslandSettings())
+
+ipcMain.handle('lyrics-island:get-state', () => buildLyricsIslandSnapshot())
+
+ipcMain.handle('lyrics-island:set-enabled', (_event, enabled) => {
+  lyricsIslandSettings = { ...lyricsIslandSettings, enabled: enabled === true }
+  saveLyricsIslandSettings()
+  if (lyricsIslandSettings.enabled) createLyricsIslandWindow()
+  else closeLyricsIslandWindow()
+  broadcastLyricsIslandSettings()
+  return { success: true, enabled: lyricsIslandSettings.enabled }
+})
+
+ipcMain.handle('lyrics-island:update-settings', (_event, partial) => {
+  const previousLocked = lyricsIslandSettings.locked
+  const previousScale = lyricsIslandSettings.scale
+  lyricsIslandSettings = { ...lyricsIslandSettings, ...sanitizeLyricsIslandSettings(partial, lyricsIslandSettings) }
+  if (Object.prototype.hasOwnProperty.call(partial || {}, 'locked')) {
+    setLyricsIslandMousePassthrough(lyricsIslandSettings.locked)
+  }
+  if (lyricsIslandSettings.enabled && !lyricsIslandWindow) createLyricsIslandWindow()
+  if (lyricsIslandSettings.scale !== previousScale) {
+    broadcastLyricsIslandState({ scale: lyricsIslandSettings.scale })
+  }
+  saveLyricsIslandSettings()
+  broadcastLyricsIslandSettings()
+  return getLyricsIslandSettings()
+})
+
+ipcMain.on('lyrics-island:control', (_event, action) => {
+  if (action === 'close') {
+    lyricsIslandSettings.enabled = false
+    saveLyricsIslandSettings()
+    closeLyricsIslandWindow()
+    broadcastLyricsIslandSettings()
+    return
+  }
+  if (action === 'toggle' || action === 'prev' || action === 'next') {
+    dispatchPlayerControl(action)
+  }
+})
+
+ipcMain.on('lyrics-island:drag-start', (_event, point) => {
+  if (!lyricsIslandWindow || lyricsIslandWindow.isDestroyed() || lyricsIslandSettings.locked) return
+  lyricsIslandDragSession = {
+    bounds: lyricsIslandWindow.getBounds(),
+    x: Number(point?.x) || 0,
+    y: Number(point?.y) || 0,
+  }
+})
+
+ipcMain.on('lyrics-island:drag-to', (_event, point) => {
+  if (!lyricsIslandWindow || lyricsIslandWindow.isDestroyed() || !lyricsIslandDragSession) return
+  const start = lyricsIslandDragSession
+  lyricsIslandWindow.setBounds(clampLyricsIslandBounds({
+    ...start.bounds,
+    x: start.bounds.x + ((Number(point?.x) || 0) - start.x),
+    y: start.bounds.y + ((Number(point?.y) || 0) - start.y),
+  }))
+})
+
+ipcMain.on('lyrics-island:drag-end', () => {
+  lyricsIslandDragSession = null
+  saveLyricsIslandSettings()
 })
 
 ipcMain.handle('desktop-player:set-enabled', (_event, enabled) => {
@@ -1920,6 +2204,7 @@ ipcMain.handle('diagnostics:get-vmp-status', guardTrustedIpc('privileged', () =>
 
 let taskbarWidgetClosedByUser = false
 let taskbarWidgetInteractive = false
+let taskbarWidgetHoverSent = null // 上次发给页面的悬停态（null = 需要重发一次）
 let taskbarWidgetExpanded = false
 let taskbarDisplayMetricsBound = false
 // 设置文件重载节流：updateTaskbarWidget 随播放进度每秒触发，避免每次同步读盘
@@ -2221,11 +2506,20 @@ function updateTaskbarWidget() {
     theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
   }
   if (win.webContents.isLoading()) {
-    win.webContents.once('did-finish-load', () => {
-      if (win.isDestroyed()) return
-      win.showInactive()
-      win.webContents.send('taskbar-widget:state', payload)
-    })
+    // 加载期间只挂一个监听：节流窗口反复到期会堆积多个 once 监听，load 完成后重复 showInactive+send。
+    // 这里记最新 payload，load 完成后统一发送一次。
+    win.webContents.__wfTaskbarPendingPayload = payload
+    if (!win.webContents.__wfTaskbarLoadHooked) {
+      win.webContents.__wfTaskbarLoadHooked = true
+      win.webContents.once('did-finish-load', () => {
+        const pending = win.webContents.__wfTaskbarPendingPayload
+        win.webContents.__wfTaskbarPendingPayload = null
+        win.webContents.__wfTaskbarLoadHooked = false
+        if (win.isDestroyed()) return
+        win.showInactive()
+        if (pending) win.webContents.send('taskbar-widget:state', pending)
+      })
+    }
   } else {
     win.webContents.send('taskbar-widget:state', payload)
     if (!win.isVisible()) win.showInactive()
@@ -2265,6 +2559,7 @@ function updateTaskbarWidgetInteractive() {
       taskbarWidgetInteractive = false
       try { taskbarWidgetWindow.setIgnoreMouseEvents(true, { forward: true }) } catch { /* 忽略 */ }
     }
+    taskbarWidgetHoverSent = null // 下次显示时重新同步一次悬停态
     return
   }
   const inside = taskbarWidgetCursorInside()
@@ -2280,8 +2575,13 @@ function updateTaskbarWidgetInteractive() {
     } catch { /* 忽略 */ }
   }
   if (taskbarWidgetWindow.isDestroyed()) return
-  // 通知页面悬停状态：进入取消收拢定时器，离开触发收拢（原 mouseleave 行为）
-  taskbarWidgetWindow.webContents.send('taskbar-widget:hover', inside === true)
+  // 通知页面悬停状态：进入取消收拢定时器，离开触发收拢（原 mouseleave 行为）。
+  // 只在状态翻转时发：轮询每 120ms（游戏模式 250ms）一次，无变化还发就是纯唤醒，
+  // 页面对同一个值本来也是幂等处理。
+  if (inside !== taskbarWidgetHoverSent) {
+    taskbarWidgetHoverSent = inside
+    taskbarWidgetWindow.webContents.send('taskbar-widget:hover', inside === true)
+  }
   // 托盘缓存过期时后台重测并贴齐（托盘图标增减改变宽度也能跟上）
   if (inside && taskbarTrayCache && Date.now() - taskbarTrayCacheAt > TASKBAR_TRAY_CACHE_MS) {
     refreshTaskbarTray()
@@ -2365,6 +2665,441 @@ ipcMain.handle('taskbar-widget:update-settings', (_event, partial) => {
   dockTaskbarWidgetWindow()
   broadcastTaskbarWidgetSettings()
   return getTaskbarWidgetSettings()
+})
+
+// ===== 游戏模式：极致压缩后台占用（会话级开关，重启回到标准模式） =====
+// 思路：标准模式保留全部能力；游戏模式启用后——
+//  1) 主窗口最小化改为「隐藏到托盘」，隐藏瞬间冻结后台元素；
+//  2) 渲染端停发 10Hz 频谱 tick、禁用 AutoMix/过渡渲染等大头；
+//  3) 主进程杀掉闲置 Python 服务与 Apple 桥（有请求时会按需重启，不破坏功能）。
+let gameModeEnabled = false
+let gameModeFrozen = false
+let wallpaperWatcherWasRunning = false
+const GAME_MODE_TASKBAR_POLL_MS = 250
+
+function broadcastGameMode() {
+  safeSendToWindow(mainWindow, 'game-mode:changed', gameModeEnabled, gameModeFrozen)
+  pushTrayPopupState()
+}
+
+function enterGameModeFreeze() {
+  if (gameModeFrozen) return
+  gameModeFrozen = true
+  safeSendToWindow(mainWindow, 'game-mode:freeze', true)
+  // 主进程侧：冻结闲置 Python 服务与 Apple 桥。均为按需拉起模型，
+  // 之后任何请求经 ensurePythonService / apple-bridge:spawn 都会自动重启。
+  // 有在途请求的服务跳过（用户说过的原则：还在被调用就不能停），等它空闲自停。
+  try {
+    for (const service of pythonServices.values()) {
+      if (service.activeRequests.size > 0) continue
+      stopPythonService(service, 'game mode')
+    }
+  } catch { /* 忽略 */ }
+  try { stopAppleBridgeTree() } catch { /* 忽略 */ }
+  // 壁纸联动监听：10s 一次 PowerShell 子进程查询，游戏期间壁纸变化无关紧要 → 暂停，解冻恢复
+  try {
+    wallpaperWatcherWasRunning = Boolean(wallpaperWatcher)
+    if (wallpaperWatcher) stopWallpaperWatcher()
+  } catch { /* 忽略 */ }
+  // 任务栏播控光标轮询降频（120ms → 250ms）：保留可用性，减少常驻唤醒
+  try { taskbarWidgetPolling.setPollingInterval(GAME_MODE_TASKBAR_POLL_MS) } catch { /* 忽略 */ }
+  // 人声分离 worker（HTDemucs）：常驻 torch + 模型权重，是本软件最大的单块内存，
+  // 只在分轨时被调用。冻结时回收（不置 closed，下个任务自动重启），有在途/排队任务则跳过。
+  try { stemRuntime?.stopIdleWorker?.() } catch { /* 忽略 */ }
+  try { trackStemRuntime?.stopIdleWorker?.() } catch { /* 忽略 */ }
+  // 隐藏数据桥（抖音/酷狗）：show:false 的常驻第三方页面，各占 100~300MB 渲染内存。
+  // 冻结时销毁，下次抓取时 ensure*Bridge 自动重建。45s 内有过页面活动则视为「还在被调用」跳过
+  // （一次抓取最长约 30s：6s 首次等待 + 最多 5 次重试，避免把在途抓取打断）。
+  try {
+    const bridgeIdleMs = 45_000
+    const now = Date.now()
+    const idle = (win, lastAt) => Boolean(win) && !win.isDestroyed() && !win.webContents.isLoading() && now - lastAt > bridgeIdleMs
+    if (idle(douyinBridgeWindow, douyinBridgeLastActivityAt)) douyinBridgeWindow.destroy()
+    if (idle(kugouBridgeWindow, kugouBridgeLastActivityAt)) kugouBridgeWindow.destroy()
+  } catch { /* 忽略 */ }
+  console.log('[游戏模式] 已冻结后台元素（Python 服务 / Apple 桥 / 壁纸联动 / 分离 worker / 隐藏数据桥 / 灯效插件 / 渲染端重负载）')
+}
+
+function exitGameModeFreeze() {
+  if (!gameModeFrozen) return
+  gameModeFrozen = false
+  safeSendToWindow(mainWindow, 'game-mode:freeze', false)
+  try {
+    if (wallpaperWatcherWasRunning) {
+      wallpaperWatcherWasRunning = false
+      startWallpaperWatcher()
+    }
+  } catch { /* 忽略 */ }
+  try { taskbarWidgetPolling.setPollingInterval(120) } catch { /* 忽略 */ }
+  console.log('[游戏模式] 已恢复标准模式后台元素')
+}
+
+function setGameModeEnabled(enabled) {
+  const next = enabled === true
+  if (next === gameModeEnabled) return { enabled: gameModeEnabled, frozen: gameModeFrozen }
+  gameModeEnabled = next
+  if (gameModeEnabled) {
+    // 主窗此刻已隐藏（用户在托盘菜单开启）→ 直接进入冻结
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) enterGameModeFreeze()
+    console.log('[游戏模式] 已启用（重启软件后自动回到标准模式）')
+  } else {
+    exitGameModeFreeze()
+  }
+  // 任务栏播控轮询：游戏模式期间降频（无论冻结与否，光标轮询都按需降载）
+  try { taskbarWidgetPolling.setPollingInterval(gameModeEnabled ? GAME_MODE_TASKBAR_POLL_MS : 120) } catch { /* 忽略 */ }
+  broadcastGameMode()
+  return { enabled: gameModeEnabled, frozen: gameModeFrozen }
+}
+
+ipcMain.handle('game-mode:get', () => ({ enabled: gameModeEnabled, frozen: gameModeFrozen }))
+
+ipcMain.handle('game-mode:set', (_event, enabled) => setGameModeEnabled(enabled === true))
+
+
+// ===== 系统托盘 + 托盘弹窗（QQ 音乐式快控面板） =====
+let tray = null
+let trayPopupWindow = null
+let trayPopupJustHiddenAt = 0
+const TRAY_POPUP_SIZE = { width: 300, height: 380 }
+
+function getTrayIconImage() {
+  // 打包版 files 清单包含 logo.png；开发态直接读项目根，兜底空图标由调用方放弃创建
+  const candidates = [
+    path.join(app.getAppPath(), 'logo.png'),
+    path.join(__dirname, '../logo.png'),
+    path.join(__dirname, '../build/icon.ico'),
+  ]
+  for (const candidate of candidates) {
+    try {
+      if (!fs.existsSync(candidate)) continue
+      const image = nativeImage.createFromPath(candidate)
+      if (!image.isEmpty()) {
+        const size = process.platform === 'win32' ? 32 : 22
+        return image.resize({ width: size, height: size })
+      }
+    } catch { /* 尝试下一个候选 */ }
+  }
+  return nativeImage.createEmpty()
+}
+
+function createTray() {
+  if (tray) return tray
+  const image = getTrayIconImage()
+  if (image.isEmpty()) {
+    console.warn('[托盘] 未找到可用图标，跳过托盘创建')
+    return null
+  }
+  tray = new Tray(image)
+  tray.setToolTip('WaveForge 澜音工坊')
+  // 左键：打开/聚焦主界面；右键：弹出快控面板（与 QQ 音乐一致）
+  tray.on('click', () => showMainWindowFromTray())
+  tray.on('double-click', () => showMainWindowFromTray())
+  tray.on('right-click', () => {
+    if (!tray || tray.isDestroyed()) return
+    toggleTrayPopup()
+  })
+  // 后台预热托盘图标区矩形（快控面板定位的次级兜底：图标被收进溢出面板时用它贴托盘左缘）。
+  // 失败无所谓，定位还有 tray.getBounds() 与屏幕右缘两级兜底。
+  if (process.platform === 'win32') refreshTaskbarTray()
+  return tray
+}
+
+function destroyTray() {
+  try { if (tray && !tray.isDestroyed()) tray.destroy() } catch { /* 忽略 */ }
+  tray = null
+  if (trayPopupWindow && !trayPopupWindow.isDestroyed()) trayPopupWindow.destroy()
+  trayPopupWindow = null
+}
+
+function showMainWindowFromTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+// 托盘菜单开关复用对应 IPC handler 的底层逻辑（保持与设置面板状态一致）
+function applyDesktopLyricsEnabledFromTray(enabled) {
+  desktopLyricsSettings = { ...desktopLyricsSettings, enabled: enabled === true }
+  saveDesktopLyricsSettings()
+  if (desktopLyricsSettings.enabled) createDesktopLyricsWindow()
+  else closeDesktopLyricsWindow()
+  safeSendToWindow(mainWindow, 'desktop-lyrics:enabled-changed', desktopLyricsSettings.enabled)
+}
+
+function applyDesktopPlayerEnabledFromTray(enabled) {
+  desktopPlayerEnabled = enabled === true
+  saveDesktopPlayerSettings()
+  if (desktopPlayerEnabled) createDesktopPlayerWindow()
+  else closeDesktopPlayerWindow()
+  safeSendToWindow(mainWindow, 'desktop-player:enabled-changed', desktopPlayerEnabled)
+  pushTrayPopupState()
+}
+
+function applyTaskbarWidgetEnabledFromTray(enabled) {
+  if (process.platform !== 'win32') return
+  loadTaskbarWidgetSettings()
+  taskbarWidgetSettings = { ...taskbarWidgetSettings, enabled: enabled === true }
+  saveTaskbarWidgetSettings()
+  taskbarWidgetClosedByUser = false
+  if (taskbarWidgetSettings.enabled) updateTaskbarWidget()
+  else if (taskbarWidgetWindow && !taskbarWidgetWindow.isDestroyed()) taskbarWidgetWindow.hide()
+  safeSendToWindow(mainWindow, 'taskbar-widget:enabled-changed', taskbarWidgetSettings.enabled)
+  pushTrayPopupState()
+}
+
+// 弹窗定位：贴着「我们自己的托盘图标」弹出——左右以图标中心对齐，底缘贴任务栏上缘
+// （视觉上「从我们那枚图标长出来」），并让面板底部的小箭头跟着图标走。
+// 取不到图标矩形时按左右关系退让：先贴托盘图标区左缘向右展开（图标被收进溢出面板时的
+// 常见情况），最后才兜底贴屏幕右缘。所有分支都做工作区夹紧，避免跑出屏幕。
+let trayPopupArrowX = null // 面板内小箭头距窗口左缘的 DIP 距离（随每次定位刷新）
+let trayPopupArrowSide = 'bottom' // 箭头贴哪条边：任务栏在下 → bottom，任务栏在上 → top
+const TRAY_POPUP_MARGIN = 12
+const TRAY_POPUP_ARROW_PAD = 26 // 箭头离面板圆角的最小距离
+
+/** 当前托盘图标矩形（DIP，含任务栏整格高度）；拿不到/明显无效时返回 null */
+function getTrayIconBoundsDip() {
+  if (!tray || tray.isDestroyed()) return null
+  try {
+    const rect = tray.getBounds()
+    if (!rect) return null
+    const x = Number(rect.x)
+    const y = Number(rect.y)
+    const width = Number(rect.width)
+    const height = Number(rect.height)
+    if (![x, y, width, height].every(Number.isFinite)) return null
+    if (width <= 0 || height <= 0) return null // 图标被收进溢出面板时可能返回空矩形
+    if (x + width <= 0 || y + height <= 0) return null
+    return { x, y, width, height }
+  } catch {
+    return null
+  }
+}
+
+/** 通知区域（托盘图标区）左缘，DIP；未测到时返回 null */
+function getTaskbarTrayRectDip(display) {
+  if (taskbarTrayCache && Date.now() - taskbarTrayCacheAt < TASKBAR_TRAY_CACHE_MS) {
+    const scale = display.scaleFactor || 1
+    return {
+      left: Math.round(taskbarTrayCache.left / scale),
+      right: Math.round(taskbarTrayCache.right / scale),
+    }
+  }
+  // 游戏模式冻结期间不额外 spawn PowerShell 测量（省资源优先）
+  if (!gameModeEnabled) refreshTaskbarTray()
+  return null
+}
+
+function getTrayPopupPosition() {
+  const { screen } = require('electron')
+  const iconRect = getTrayIconBoundsDip()
+  const display = iconRect ? screen.getDisplayMatching(iconRect) : screen.getPrimaryDisplay()
+  const workArea = display.workArea
+  const width = TRAY_POPUP_SIZE.width
+  const maxX = workArea.x + workArea.width - width - TRAY_POPUP_MARGIN
+
+  // 1) 首选：以托盘图标中心对齐（左右关系按图标实际位置自动适配）
+  // 2) 次选：托盘图标区左缘向右展开（图标未显示在托盘上时）
+  // 3) 兜底：屏幕右缘（与旧行为一致）
+  let anchorX = null
+  let prefer = 'icon'
+  if (iconRect) {
+    anchorX = iconRect.x + iconRect.width / 2
+  } else {
+    const trayRect = getTaskbarTrayRectDip(display)
+    if (trayRect) {
+      prefer = 'tray'
+      anchorX = trayRect.left
+    }
+  }
+
+  let x
+  if (anchorX === null) {
+    x = Math.round(workArea.x + workArea.width - width - TRAY_POPUP_MARGIN)
+  } else if (prefer === 'icon') {
+    x = Math.round(anchorX - width / 2)
+  } else {
+    // 托盘左缘当作左对齐基准，右侧放不下时自然被夹到屏幕内
+    x = Math.round(anchorX)
+  }
+  x = Math.max(workArea.x + TRAY_POPUP_MARGIN, Math.min(maxX, x))
+
+  // 竖直：图标在屏幕下半 → 面板贴在任务栏上缘（向上长出来）；图标在上半 → 贴工作区上缘向下展开
+  let y
+  const iconUpperHalf = Boolean(iconRect && iconRect.y + iconRect.height / 2 < workArea.y + workArea.height / 2)
+  if (iconUpperHalf) {
+    y = Math.round(workArea.y + TRAY_POPUP_MARGIN)
+    trayPopupArrowSide = 'top'
+  } else {
+    y = Math.round(Math.max(workArea.y, workArea.y + workArea.height - TRAY_POPUP_SIZE.height))
+    trayPopupArrowSide = 'bottom'
+  }
+
+  // 小箭头指到锚点（图标中心 / 托盘图标区起点），并保证不贴到面板圆角
+  const arrowAnchor = iconRect
+    ? iconRect.x + iconRect.width / 2
+    : (anchorX === null ? workArea.x + workArea.width - TRAY_POPUP_MARGIN - 26 : anchorX + 16)
+  trayPopupArrowX = Math.round(
+    Math.max(TRAY_POPUP_ARROW_PAD, Math.min(width - TRAY_POPUP_ARROW_PAD, arrowAnchor - x)),
+  )
+
+  return {
+    x,
+    y,
+    width: TRAY_POPUP_SIZE.width,
+    height: TRAY_POPUP_SIZE.height,
+  }
+}
+
+function createTrayPopupWindow() {
+  if (trayPopupWindow && !trayPopupWindow.isDestroyed()) return trayPopupWindow
+  // 窗口参数与任务栏播控一致（不设 type:'toolbar'/focusable:false，避免 Win11 命中测试跳过）
+  trayPopupWindow = new BrowserWindow({
+    ...TRAY_POPUP_SIZE,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    hasShadow: false,
+    title: 'WaveForge 托盘播控',
+    webPreferences: {
+      preload: path.join(__dirname, 'tray-popup-preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+    },
+  })
+  trayPopupWindow.setAlwaysOnTop(true, 'screen-saver')
+  trayPopupWindow.loadFile(path.join(__dirname, 'tray-popup.html'))
+  trayPopupWindow.on('blur', () => {
+    trayPopupJustHiddenAt = Date.now()
+    if (trayPopupWindow && !trayPopupWindow.isDestroyed()) trayPopupWindow.hide()
+  })
+  trayPopupWindow.on('closed', () => { trayPopupWindow = null })
+  trayPopupWindow.webContents.once('did-finish-load', () => pushTrayPopupState())
+  return trayPopupWindow
+}
+
+function pushTrayPopupState() {
+  if (!trayPopupWindow || trayPopupWindow.isDestroyed()) return
+  const song = desktopPlayerState.song || {}
+  trayPopupWindow.webContents.send('tray-popup:state', {
+    title: song.name || '',
+    artist: Array.isArray(song.artists) ? song.artists.join(' / ') : (song.artists || ''),
+    playing: desktopPlayerState.playing === true,
+    volume: Math.max(0, Math.min(1, Number(desktopPlayerState.volume) || 0)),
+    muted: desktopPlayerState.muted === true,
+    accent: String(desktopPlayerState.accentColor || '') || '#FB7299',
+    arrowX: trayPopupArrowX === null ? Math.round(TRAY_POPUP_SIZE.width / 2) : trayPopupArrowX,
+    arrowSide: trayPopupArrowSide,
+    features: {
+      desktopLyrics: desktopLyricsSettings.enabled === true,
+      desktopPlayer: desktopPlayerEnabled === true,
+      taskbarWidget: process.platform === 'win32' && taskbarWidgetSettings.enabled === true,
+    },
+    gameMode: gameModeEnabled === true,
+  })
+}
+
+function showTrayPopup() {
+  const win = createTrayPopupWindow()
+  if (!win) return
+  try { win.setBounds(getTrayPopupPosition()) } catch { /* 忽略 */ }
+  // 占用速览的首帧：percentCPUUsage 是「距上次取值以来的均值」，先采样一次做基线，
+  // 面板 2s 后的第一次轮询才能给出真实 CPU（否则首帧恒为 0）
+  primeTrayPopupUsageSample()
+  pushTrayPopupState()
+  if (win.webContents.isLoading()) {
+    win.webContents.once('did-finish-load', () => {
+      if (win.isDestroyed()) return
+      win.show()
+      win.focus()
+    })
+  } else {
+    win.show()
+    win.focus()
+  }
+}
+
+function toggleTrayPopup() {
+  if (trayPopupWindow && !trayPopupWindow.isDestroyed() && trayPopupWindow.isVisible()) {
+    trayPopupJustHiddenAt = Date.now()
+    trayPopupWindow.hide()
+    return
+  }
+  // 点击托盘会先夺焦导致弹窗 blur→hide；350ms 内的再点击视为「收起弹窗」而非重新打开
+  if (Date.now() - trayPopupJustHiddenAt < 350) return
+  showTrayPopup()
+}
+
+ipcMain.on('tray-popup:action', (_event, action, payload) => {
+  if (action === 'quit') {
+    app.quit()
+    return
+  }
+  if (action === 'toggle' || action === 'prev' || action === 'next' || action === 'mute') {
+    dispatchPlayerControl(action)
+    return
+  }
+  if (action === 'volume' && typeof payload === 'number' && Number.isFinite(payload)) {
+    dispatchPlayerControl('volume', Math.max(0, Math.min(1, payload)))
+    return
+  }
+  if (action === 'close') {
+    trayPopupJustHiddenAt = Date.now()
+    if (trayPopupWindow && !trayPopupWindow.isDestroyed()) trayPopupWindow.hide()
+  }
+})
+
+ipcMain.on('tray-popup:show-main', () => {
+  trayPopupJustHiddenAt = Date.now()
+  if (trayPopupWindow && !trayPopupWindow.isDestroyed()) trayPopupWindow.hide()
+  showMainWindowFromTray()
+})
+
+// 占用速览：游戏模式下用户需要在任务管理器之外直接确认省资源效果
+// （主窗隐藏后任务管理器会把它归入「后台进程」组，不易找到）。
+// app.getAppMetrics() 覆盖全部子进程，元素形状是 ProcessMetric{ memory, cpu }：
+// 内存取工作集之和（KB），CPU 取 cpu.percentCPUUsage 之和——该值 Electron 已按逻辑核数
+// 归一为「整机占用百分比」，与任务管理器口径一致，不需要再除核数。
+// 注意两点：① 属性在 metric.memory / metric.cpu 上，写成 metric.metrics 会永远取到 0；
+// ② percentCPUUsage 是「距上次取值以来的均值」，首次调用必然为 0，
+//    所以面板每次弹出前先预热采样一次（primeTrayPopupUsageSample），2s 后首帧就是真实值。
+function readAppUsage() {
+  let memoryKb = 0
+  let cpuPercent = 0
+  for (const metric of app.getAppMetrics()) {
+    memoryKb += Number(metric?.memory?.workingSetSize) || 0
+    cpuPercent += Number(metric?.cpu?.percentCPUUsage) || 0
+  }
+  return { memoryMb: Math.round(memoryKb / 1024), cpuPercent: Math.max(0, Math.round(cpuPercent * 10) / 10) }
+}
+
+function primeTrayPopupUsageSample() {
+  try { readAppUsage() } catch { /* 忽略：预热失败不影响面板 */ }
+}
+
+ipcMain.handle('tray-popup:get-usage', () => {
+  try {
+    return readAppUsage()
+  } catch {
+    return { memoryMb: 0, cpuPercent: 0 }
+  }
+})
+
+ipcMain.on('tray-popup:set-feature', (_event, name, enabled) => {
+  if (name === 'desktopLyrics') applyDesktopLyricsEnabledFromTray(enabled === true)
+  else if (name === 'desktopPlayer') applyDesktopPlayerEnabledFromTray(enabled === true)
+  else if (name === 'taskbarWidget') applyTaskbarWidgetEnabledFromTray(enabled === true)
+  else if (name === 'gameMode') setGameModeEnabled(enabled === true)
 })
 
 
@@ -3294,6 +4029,42 @@ ipcMain.handle('get-current-wallpaper', async () => {
   }
 })
 
+// 自定义壁纸落盘目录（userData 下，随应用保留；localStorage 存 base64 会撑爆 ~5MB 配额导致重启丢壁纸）
+const customWallpaperDir = path.join(app.getPath('userData'), 'waveforge-wallpapers')
+
+// IPC 处理：保存用户上传的自定义壁纸到磁盘，返回本地路径 + waveforge-media URL
+ipcMain.handle('save-custom-wallpaper', async (_event, payload = {}) => {
+  try {
+    const dataBase64 = String(payload.dataBase64 || '')
+    if (!dataBase64) return { success: false, error: 'missing data' }
+    const buffer = Buffer.from(dataBase64, 'base64')
+    if (!buffer.length) return { success: false, error: 'empty data' }
+    await fs.promises.mkdir(customWallpaperDir, { recursive: true })
+    const rawName = String(payload.name || '')
+    const ext = rawName.includes('.') ? rawName.split('.').pop().replace(/[^a-z0-9]/gi, '').slice(0, 5) : ''
+    const fileName = `wp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext || (payload.type === 'video' ? 'mp4' : 'png')}`
+    const filePath = path.join(customWallpaperDir, fileName)
+    await fs.promises.writeFile(filePath, buffer)
+    return { success: true, path: filePath, mediaUrl: toMediaUrl(filePath), fileUrl: pathToFileURL(filePath).href, size: buffer.length }
+  } catch (error) {
+    console.error('❌ [IPC] 保存自定义壁纸失败:', error.message)
+    return { success: false, error: error.message }
+  }
+})
+
+// IPC 处理：把本地路径重新登记进 waveforge-media 白名单（白名单是主进程内存态，重启后为空）
+ipcMain.handle('register-media-files', async (_event, paths) => {
+  const urls = {}
+  for (const p of Array.isArray(paths) ? paths : []) {
+    if (typeof p !== 'string' || !p) continue
+    try {
+      const resolved = path.resolve(p)
+      if (resolved.startsWith(customWallpaperDir)) urls[p] = toMediaUrl(resolved)
+    } catch { /* 忽略非法路径 */ }
+  }
+  return urls
+})
+
 // IPC 处理：打开外部链接
 ipcMain.handle('open-external', guardTrustedIpc('privileged', async (event, url) => {
   logWallpaper('📞 [IPC] 收到打开外部链接请求:', url)
@@ -3471,10 +4242,10 @@ async function createQQLoginWindow() {
       
       console.log('🔧 [QQ登录] 清理 QQ 音乐缓存和 Cookie...')
       
-      // 清理 Cookie
+      // 清理 Cookie（removeSessionCookie 会剥掉前导点：`https://.qq.com` 不是合法 URL，清理会整体落空）
       const cookies = await session.cookies.get({ domain: '.qq.com' })
       for (const cookie of cookies) {
-        await session.cookies.remove(`https://${cookie.domain}`, cookie.name)
+        await removeSessionCookie(session, cookie)
       }
       
       // 登录窗口与主应用共用 session，不能清空全部 localStorage/indexDB，
@@ -4409,7 +5180,7 @@ ipcMain.handle('hse-write-scene-seed', async (_e, content) => {
 // HSE 离线导出落盘：把调音室渲染好的 MP3 直写到用户桌面。
 // 文件名由渲染层给（<歌曲名>-Modified.mp3），这里再做一次非法字符兜底清洗与
 // 重名自动 (2) 序号，绝不覆盖用户已存在的文件。300MB 上限防误传巨型数据。
-ipcMain.handle('hse-save-rendered-audio', async (_e, data, fileName) => {
+ipcMain.handle('hse-save-rendered-audio', guardTrustedIpc('privileged', async (_e, data, fileName) => {
   try {
     const buf = Buffer.from(data)
     if (!buf.length) return { ok: false, error: '导出内容为空' }
@@ -4431,7 +5202,7 @@ ipcMain.handle('hse-save-rendered-audio', async (_e, data, fileName) => {
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) }
   }
-})
+}))
 
 
 // 监听打开 QQ 登录窗口的请求
@@ -4458,6 +5229,7 @@ ipcMain.on('app-log', (event, message) => {
 let douyinBridgeWindow = null
 let douyinBridgeReady = false
 let douyinBridgeLoading = null
+let douyinBridgeLastActivityAt = 0
 
 function ensureDouyinBridge() {
   if (douyinBridgeWindow && !douyinBridgeWindow.isDestroyed()) {
@@ -4479,6 +5251,9 @@ function ensureDouyinBridge() {
   // 隐藏数据桥同样伪装为普通 Chrome（抖音风控对 Electron UA 的抓取接口会限流）
   douyinBridgeWindow.webContents.setUserAgent(REAL_CHROME_UA)
   douyinBridgeWindow.setMenuBarVisibility(false)
+  // 活动时间戳：游戏模式冻结时据此判断桥窗是否「还在被调用」，在途抓取不打断
+  douyinBridgeLastActivityAt = Date.now()
+  douyinBridgeWindow.webContents.on('did-start-loading', () => { douyinBridgeLastActivityAt = Date.now() })
   // 拦截 window.open：抖音站点弹窗会产生无引用、无守卫的游离原生窗口，桥窗不需要弹窗
   douyinBridgeWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   douyinBridgeWindow.webContents.on('destroyed', () => {
@@ -4487,7 +5262,9 @@ function ensureDouyinBridge() {
   })
   douyinBridgeWindow.webContents.on('did-finish-load', () => {
     douyinBridgeReady = true
+    douyinBridgeLastActivityAt = Date.now()
   })
+  douyinBridgeWindow.webContents.on('did-stop-loading', () => { douyinBridgeLastActivityAt = Date.now() })
   const loadPromise = douyinBridgeWindow.loadURL('https://www.douyin.com/')
     .catch(error => console.error('❌ [汽水数据桥] 加载抖音失败:', error))
   douyinBridgeLoading = loadPromise.then(() => douyinBridgeWindow)
@@ -4572,6 +5349,7 @@ ipcMain.handle('soda-scrape-search', async (_event, keyword) => {
 let kugouBridgeWindow = null
 let kugouBridgeReady = false
 let kugouBridgeLoading = null
+let kugouBridgeLastActivityAt = 0
 
 function ensureKugouBridge() {
   if (kugouBridgeWindow && !kugouBridgeWindow.isDestroyed()) {
@@ -4592,6 +5370,9 @@ function ensureKugouBridge() {
   })
   kugouBridgeWindow.webContents.setUserAgent(REAL_CHROME_UA)
   kugouBridgeWindow.setMenuBarVisibility(false)
+  // 活动时间戳：游戏模式冻结时据此判断桥窗是否「还在被调用」，在途抓取不打断
+  kugouBridgeLastActivityAt = Date.now()
+  kugouBridgeWindow.webContents.on('did-start-loading', () => { kugouBridgeLastActivityAt = Date.now() })
   // 拦截 window.open：页面弹窗会产生无引用、无守卫的游离原生窗口，桥窗不需要弹窗
   kugouBridgeWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   kugouBridgeWindow.webContents.on('destroyed', () => {
@@ -4600,7 +5381,9 @@ function ensureKugouBridge() {
   })
   kugouBridgeWindow.webContents.on('did-finish-load', () => {
     kugouBridgeReady = true
+    kugouBridgeLastActivityAt = Date.now()
   })
+  kugouBridgeWindow.webContents.on('did-stop-loading', () => { kugouBridgeLastActivityAt = Date.now() })
   const loadPromise = kugouBridgeWindow.loadURL('https://www.kugou.com/')
     .catch(error => console.error('❌ [酷狗数据桥] 加载酷狗失败:', error))
   kugouBridgeLoading = loadPromise.then(() => kugouBridgeWindow)
@@ -4652,10 +5435,13 @@ async function scrapeKugouUserInfo() {
     };
     const info = await tryFetch('https://www.kugou.com/yy/index.php?r=user/getinfo');
     const d = (info && (info.data || info.user_info || info.user)) || {};
+    const vipRaw = d.vip_level ?? d.is_vip ?? d.vip;
+    const vip = (typeof vipRaw === 'number' && vipRaw > 0) || vipRaw === true || vipRaw === 1;
     return JSON.stringify({
       nickname: d.nickname || d.user_name || d.userName || d.name || '',
       user_id: d.user_id || d.userid || d.id || '',
       avatar: d.avatar || d.head_img || d.headimg || d.user_pic || '',
+      vip,
     });
   })()`)
   try { return JSON.parse(result || '{}') } catch { return {} }
@@ -4682,13 +5468,20 @@ ipcMain.handle('kugou-scrape-user-info', async () => {
 })
 
 // 读取登录窗口持久化的 Apple 网页会话 Cookie；仅用于 editorial 请求的会话校验，不记录 Cookie 内容。
+// 按文件 mtime 缓存：探索页一次加载数百个 editorial 请求，逐请求 readFileSync 会串行卡主进程。
+let appleWebCookieCache = { mtimeMs: null, cookie: '' }
 function readAppleWebCookieHeader() {
   try {
     const file = path.join(app.getPath('userData'), 'apple-web-cookies.json')
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
-    return typeof data?.cookie === 'string' ? data.cookie : ''
+    let mtimeMs = null
+    try { mtimeMs = fs.statSync(file).mtimeMs } catch { mtimeMs = null }
+    if (appleWebCookieCache.mtimeMs === mtimeMs) return appleWebCookieCache.cookie
+    const data = mtimeMs === null ? null : JSON.parse(fs.readFileSync(file, 'utf8'))
+    const cookie = typeof data?.cookie === 'string' ? data.cookie : ''
+    appleWebCookieCache = { mtimeMs, cookie }
+    return cookie
   } catch {
-    return ''
+    return appleWebCookieCache.cookie || ''
   }
 }
 
@@ -6484,7 +7277,7 @@ async function createQQSkillKeyWindow() {
     await qmkSession.clearAuthCache()
     const qmkCookies = await qmkSession.cookies.get({})
     for (const cookie of qmkCookies) {
-      await qmkSession.cookies.remove(`https://${cookie.domain}`, cookie.name)
+      await removeSessionCookie(qmkSession, cookie)
     }
   } catch (err) {
     console.error('[QQ Skill Key] clear session failed:', err)
@@ -6597,12 +7390,12 @@ ipcMain.handle('open-qq-skill-key-window', async () => {
 })
 
 
-// IPC 处理：设置开发者模式
-ipcMain.handle('set-developer-mode', (event, enabled) => {
+// IPC 处理：设置开发者模式（仅主应用文档可调用，防被入侵的辅助窗口翻转调试面）
+ipcMain.handle('set-developer-mode', guardTrustedIpc('privileged', (event, enabled) => {
   developerMode = enabled
   console.log(`🔧 [DevMode] 开发者模式已${enabled ? '启用' : '禁用'}`)
   return { success: true }
-})
+}))
 
 // IPC 处理：获取开发者模式状态
 ipcMain.handle('get-developer-mode', () => {
@@ -6912,22 +7705,51 @@ function applyHighRefreshRate() {
   return { enabled, hz: targetHz, displayFrequency: displayHz }
 }
 
-/** 显示器/主窗口移动后重新贴合所在显示器刷新率（只绑定一次，避免重复监听） */
+/** 显示器/主窗口移动后重新贴合所在显示器刷新率 */
 let highRefreshBound = false
+let highRefreshMainWin = null
+const highRefreshHandlers = { move: null, resize: null, displayMetrics: null }
+function unbindHighRefreshListeners() {
+  if (highRefreshMainWin && !highRefreshMainWin.isDestroyed()) {
+    try {
+      if (highRefreshHandlers.move) highRefreshMainWin.removeListener('move', highRefreshHandlers.move)
+      if (highRefreshHandlers.resize) highRefreshMainWin.removeListener('resize', highRefreshHandlers.resize)
+    } catch { /* 忽略 */ }
+  }
+  try {
+    const { screen } = require('electron')
+    if (highRefreshHandlers.displayMetrics) screen.removeListener('display-metrics-changed', highRefreshHandlers.displayMetrics)
+  } catch { /* 忽略 */ }
+  highRefreshMainWin = null
+  highRefreshHandlers.move = null
+  highRefreshHandlers.resize = null
+  highRefreshHandlers.displayMetrics = null
+  highRefreshBound = false
+}
 function rebindHighRefreshRate() {
-  const { screen } = require('electron')
   if (performanceSettings.highRefreshRate === true) {
-    if (highRefreshBound) return
-    highRefreshBound = true
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    // 主窗口被重建（融合穿透）后旧监听随旧窗销毁；同窗已绑且未重建时不重复绑定
+    if (highRefreshBound && highRefreshMainWin === mainWindow && mainWindow && !mainWindow.isDestroyed()) return
+    unbindHighRefreshListeners()
+    const win = mainWindow
+    if (win && !win.isDestroyed()) {
+      highRefreshHandlers.move = applyHighRefreshRate
+      highRefreshHandlers.resize = applyHighRefreshRate
       try {
-        mainWindow.on('move', applyHighRefreshRate)
-        mainWindow.on('resize', applyHighRefreshRate)
+        win.on('move', highRefreshHandlers.move)
+        win.on('resize', highRefreshHandlers.resize)
       } catch { /* 忽略 */ }
+      highRefreshMainWin = win
     }
-    screen.on('display-metrics-changed', applyHighRefreshRate)
+    try {
+      const { screen } = require('electron')
+      highRefreshHandlers.displayMetrics = applyHighRefreshRate
+      screen.on('display-metrics-changed', highRefreshHandlers.displayMetrics)
+    } catch { /* 忽略 */ }
+    highRefreshBound = true
   } else {
-    highRefreshBound = false
+    // 关闭时必须真正摘掉监听，否则反复 开→关 会累积监听，一次事件触发 N 次 applyHighRefreshRate
+    unbindHighRefreshListeners()
   }
 }
 
@@ -7015,7 +7837,7 @@ const scheduleWindowStateSave = () => {
 // 挂起的登录 Promise 以"用户取消"收尾（不卡"登录中"）；任务栏 widget 与两个数据桥是
 // 隐藏工具窗，直接 destroy。
 function closeAllDependentWindows() {
-  const closable = [qqLoginWindow, kugouLoginWindow, spotifyLoginWindow, appleLoginWindow, sodaLoginWindow, qqSkillKeyWindow, desktopPlayerWindow, desktopLyricsWindow]
+  const closable = [qqLoginWindow, kugouLoginWindow, spotifyLoginWindow, appleLoginWindow, sodaLoginWindow, qqSkillKeyWindow, desktopPlayerWindow, desktopLyricsWindow, lyricsIslandWindow]
   for (const w of closable) {
     try { if (w && !w.isDestroyed()) w.close() } catch { /* 忽略 */ }
   }
@@ -7039,6 +7861,19 @@ function wireMainWindowEvents(win) {
   // 窗口关闭（含退出）前做最终状态保存——will-quit 时窗口可能已销毁拿不到 bounds
   win.on('close', () => {
     persistMainWindowState()
+  })
+
+  // 游戏模式：最小化改为「隐藏到托盘」并在隐藏后冻结后台元素（标准模式行为不变）
+  win.on('minimize', (event) => {
+    if (!gameModeEnabled) return
+    event.preventDefault()
+    win.hide()
+  })
+  win.on('hide', () => {
+    if (gameModeEnabled) enterGameModeFreeze()
+  })
+  win.on('show', () => {
+    if (gameModeEnabled) exitGameModeFreeze()
   })
 
   win.on('closed', () => {
@@ -7159,6 +7994,8 @@ async function recreateMainWindow(transparent) {
   if (wasAlwaysOnTop) win.setAlwaysOnTop(true)
   guardAgainstExternalNavigation(win)
   wireMainWindowEvents(win)
+  // 旧主窗的 move/resize 高刷监听随销毁消失，对新窗重绑（内部识别同窗跳过）
+  rebindHighRefreshRate()
 
   if (isDev) {
     win.loadURL(devServerUrl)
@@ -7737,6 +8574,33 @@ async function startLocalBackend() {
 // apple_bridge.py 用 pywebview + WebView2 承载 music.apple.com，作为 Electron Browser CDM
 // 原生 CENC 失败时的兼容兜底；渲染进程经带会话认证的 127.0.0.1 HTTP 接口控制播放。
 let appleBridgeChild = null
+
+/** 结束 Apple 桥进程树：pywebview 会拉起 msedgewebview2.exe，child.kill() 只杀 python 本体，
+ *  WebView2 残留进程会锁住 apple-bridge-profile 目录。win32 下用 taskkill /T 连树杀。
+ *  返回 Promise：退出路径可 await 确保杀干净，运行期路径可 fire-and-forget。 */
+function stopAppleBridgeTree() {
+  const child = appleBridgeChild
+  if (!child || child.killed) return Promise.resolve()
+  try {
+    if (process.platform === 'win32' && typeof child.pid === 'number') {
+      return new Promise((resolve) => {
+        try {
+          execFile('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true, timeout: 5000 }, () => {
+            try { if (appleBridgeChild === child && !child.killed) child.kill() } catch { /* ignore */ }
+            resolve()
+          })
+        } catch {
+          try { child.kill() } catch { /* ignore */ }
+          resolve()
+        }
+      })
+    }
+    child.kill()
+  } catch {
+    try { child.kill() } catch { /* ignore */ }
+  }
+  return Promise.resolve()
+}
 let appleBridgeSessionToken = ''
 const appleBridgePythonOkCache = new Map()
 const APPLE_BRIDGE_PORT = 18790
@@ -7884,7 +8748,7 @@ app.on('will-quit', async () => {
   try { localApiChild?.kill() } catch {}
   stopAllPythonServices('app quit')
   await sweepBackendOrphans('quit')
-  try { appleBridgeChild?.kill() } catch {}
+  await stopAppleBridgeTree().catch(() => {})
   if (stemRuntime) {
     try { stemRuntime.shutdown() } catch { /* optional runtime cleanup */ }
     stemRuntime = null
@@ -8142,7 +9006,7 @@ app.whenReady().then(async () => {
     if (!mainWindow || event.sender !== mainWindow.webContents) return false
     try {
       if (appleBridgeChild && !appleBridgeChild.killed) {
-        appleBridgeChild.kill()
+        stopAppleBridgeTree()
         console.log('[AppleBridge] bridge stopped by renderer (平台节能)')
       }
       return true
@@ -8197,6 +9061,26 @@ app.whenReady().then(async () => {
       return null
     }
     return analysisRuntime.audioDownload.peekCached(trackKey)
+  }))
+
+
+  // 删除指定 trackKey 的本地音频缓存：AutoMix 时长预检发现「分析时长与流时长不一致」
+  // （典型：早前无会员时下载过 30s 试听片段，缓存按 trackKey 命中后被永久复用）时，
+  // 渲染端删除陈旧缓存后重试，重试会按当前流 URL 重新下载完整音频。
+  ipcMain.handle('audio-download:delete-cached', guardTrustedIpc('privileged', (_event, trackKey) => {
+    if (!analysisRuntime || !analysisRuntime.audioDownload) {
+      return false
+    }
+    if (typeof trackKey !== 'string' || !trackKey.trim() || trackKey.length > 256) {
+      return false
+    }
+    try {
+      analysisRuntime.audioDownload.deleteCacheFile(trackKey.trim())
+      return true
+    } catch (error) {
+      console.warn('[AudioCache] delete-cached failed:', error)
+      return false
+    }
   }))
 
 
@@ -8470,6 +9354,7 @@ ipcMain.handle('audio-download:saveWav', guardTrustedIpc('privileged', async (_e
   desktopPlayerEnabled = desktopPlayerSaved.enabled
   desktopPlayerForm = desktopPlayerSaved.form
   desktopLyricsSettings = loadDesktopLyricsSettings()
+  loadLyricsIslandSettings()
 
   // castlabs ECS：先等 Widevine CDM 组件就绪再开窗口（首次会联网安装，失败不阻断——
   // AM 原生音源自动回退网易云/QQ 载体，其余功能不受影响）
@@ -8489,11 +9374,13 @@ ipcMain.handle('audio-download:saveWav', guardTrustedIpc('privileged', async (_e
   setTimeout(() => {
     if (desktopPlayerEnabled) createDesktopPlayerWindow()
     if (desktopLyricsSettings.enabled) createDesktopLyricsWindow()
+    if (lyricsIslandSettings.enabled) createLyricsIslandWindow()
   }, 1500)
   logStartupTiming('Creating main and splash windows')
   createWindow()
   setGlobalMediaKeysEnabled(mediaKeysEnabled)
   updateTaskbar() // Windows 任务栏缩略图按钮与进度条初始化（渲染进程就绪后推送状态会再刷新）
+  createTray() // 系统托盘：左键打开主界面，右键弹出快控面板（游戏模式开关在此）
 
   // WebView2 播放面不在启动阶段预热：正常 Apple CENC 播放不需要它；
   // 仅当 Electron L3/CENC 失败时由渲染端按需经 apple-bridge:spawn 拉起。
@@ -8542,6 +9429,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   Object.keys(mediaKeyAccelerators).forEach(accelerator => globalShortcut.unregister(accelerator))
+  // 托盘图标与弹窗：先于窗口销毁移除，避免退出后托盘残留幽灵图标
+  destroyTray()
   if (wallpaperWatcher) {
     clearInterval(wallpaperWatcher)
     wallpaperWatcher = null

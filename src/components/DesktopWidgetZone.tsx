@@ -4,6 +4,7 @@
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { useTvBack } from '../tv/tvCore'
+import { useGameModeFrozen } from '../hooks/useGameModeFrozen'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
@@ -110,10 +111,14 @@ const DATE_WITH_WEEKDAY_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
 // （WidgetShell/日期/专注态）跟着每秒 reconcile；拆出后主树不再受影响。
 function ClockTimeText() {
   const [now, setNow] = useState(() => new Date())
+  // 游戏模式冻结（主窗隐藏到托盘）：秒级 tick 只是为了让看不见的窗口好看，
+  // 停掉省下每秒一次 Intl 格式化 + reconcile；解冻时 effect 重跑，1s 内自动对上真实时间
+  const gameModeFrozen = useGameModeFrozen()
   useEffect(() => {
+    if (gameModeFrozen) return
     const timer = window.setInterval(() => setNow(new Date()), 1000)
     return () => window.clearInterval(timer)
-  }, [])
+  }, [gameModeFrozen])
   return (
     <div>
       <div className="text-[3.35rem] font-semibold leading-none tracking-[-0.05em] tabular-nums drop-shadow-xl">

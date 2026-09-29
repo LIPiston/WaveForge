@@ -88,6 +88,10 @@ contextBridge.exposeInMainWorld('electron', {
     },
     // 按需启停壁纸监控：仅桌面模式 + 联动开启时启用（避免非桌面模式持续查询拖慢性能）
     setWallpaperWatcherEnabled: (enabled) => ipcRenderer.invoke('set-wallpaper-watcher', Boolean(enabled)),
+    // 自定义壁纸落盘（userData/waveforge-wallpapers）：localStorage 存 base64 会撑爆配额导致重启丢壁纸
+    saveCustomWallpaper: (payload) => ipcRenderer.invoke('save-custom-wallpaper', payload),
+    // 会话内把本地路径重新登记进 waveforge-media 白名单（白名单是主进程内存态）
+    registerMediaFiles: (paths) => ipcRenderer.invoke('register-media-files', paths),
   },
   
   // 只读构建诊断（不暴露 EVS 输出、路径或凭据）
@@ -147,6 +151,10 @@ contextBridge.exposeInMainWorld('electron', {
     // AI 学到的推子/EQ 自动化参数（v2 短过渡用）
     aiMixAutomation: (plan, sourceAudioPath, targetAudioPath) =>
       ipcRenderer.invoke('render:aiMixAutomation', plan, sourceAudioPath, targetAudioPath),
+    // AutoMix Enhanced 三档（Lite / Advanced / Extreme）：QQ 官方智能混音接入
+    qqAutomix: (options) => ipcRenderer.invoke('render:qqAutomix', options),
+    // 播放前规划：只取交接时间轴（切点 / 过渡时长 / 目标曲续播位置）
+    qqAutomixCue: (options) => ipcRenderer.invoke('render:qqAutomixCue', options),
   },
 
   // HTDemucs stem-aware AutoMix Enhanced（模型缺失时返回 unavailable/null，v2 DSP 继续可用）
@@ -225,6 +233,8 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('audio-download:prepare', urlOrPath, trackKey),
     peekCached: (trackKey) =>
       ipcRenderer.invoke('audio-download:peekCached', trackKey),
+    deleteCached: (trackKey) =>
+      ipcRenderer.invoke('audio-download:delete-cached', trackKey),
     getMediaUrl: (filePath) => ipcRenderer.invoke('audio-download:getMediaUrl', filePath),
     saveWav: (trackKey, wavArrayBuffer) => ipcRenderer.invoke('audio-download:saveWav', trackKey, wavArrayBuffer),
     cleanupOldFiles: () => ipcRenderer.invoke('audio-download:cleanup'),
@@ -381,6 +391,34 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
 
+  // 歌词岛：独立「药丸」逐字歌词窗口（性能优先，纯本地页面）
+  lyricsIsland: {
+    setEnabled: (enabled) => ipcRenderer.invoke('lyrics-island:set-enabled', enabled),
+    getSettings: () => ipcRenderer.invoke('lyrics-island:get-settings'),
+    updateSettings: (partial) => ipcRenderer.invoke('lyrics-island:update-settings', partial),
+    onEnabledChanged: (callback) => {
+      const listener = (_event, enabled) => callback(enabled)
+      ipcRenderer.on('lyrics-island:enabled-changed', listener)
+      return () => ipcRenderer.removeListener('lyrics-island:enabled-changed', listener)
+    },
+  },
+
+  // 游戏模式：会话级开关（不持久化，重启软件回到标准模式）
+  gameMode: {
+    get: () => ipcRenderer.invoke('game-mode:get'),
+    set: (enabled) => ipcRenderer.invoke('game-mode:set', enabled),
+    onChange: (callback) => {
+      const enabledListener = (_event, enabled, frozen) => callback(enabled, frozen)
+      const freezeListener = (_event, frozen) => callback(undefined, frozen)
+      ipcRenderer.on('game-mode:changed', enabledListener)
+      ipcRenderer.on('game-mode:freeze', freezeListener)
+      return () => {
+        ipcRenderer.removeListener('game-mode:changed', enabledListener)
+        ipcRenderer.removeListener('game-mode:freeze', freezeListener)
+      }
+    },
+  },
+
   // 遥控器：局域网 Web 服务（手机扫码连接）+ 虚拟鼠标桥接
   remote: {
     start: (port) => ipcRenderer.invoke('remote:start', port),
@@ -482,6 +520,11 @@ contextBridge.exposeInMainWorld('electron', {
     setEnabled: (enabled) => ipcRenderer.invoke('taskbar-widget:set-enabled', enabled),
     getSettings: () => ipcRenderer.invoke('taskbar-widget:get-settings'),
     updateSettings: (partial) => ipcRenderer.invoke('taskbar-widget:update-settings', partial),
+    onEnabledChanged: (callback) => {
+      const listener = (_event, enabled) => callback(enabled)
+      ipcRenderer.on('taskbar-widget:enabled-changed', listener)
+      return () => ipcRenderer.removeListener('taskbar-widget:enabled-changed', listener)
+    },
   },
 })
 

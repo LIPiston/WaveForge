@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import { useEffect, useMemo, useRef } from 'react'
 import { type AudioPulseStore } from '../hooks/useAudioPulse'
+import { isRenderSuspended, subscribeGameModeFrozen } from '../services/gameModeRuntime'
 
 interface ModernAudioVisualizerProps {
   analyser: AnalyserNode | null
@@ -126,6 +127,8 @@ export default function ModernAudioVisualizer({
     let disposed = false
     // 是否有需要持续绘制的内容：播放中为 true；暂停后条柱衰减归零即为 false（定格末帧）
     let keepRunning = false
+    // 无数据源静态帧计数（见 draw 内 flatFrames 逻辑）
+    let flatFrames = 0
     // 渐变对象只依赖画布宽度与配色（配色在 effect 生命周期内不变），按宽度缓存；避免每帧新建 CanvasGradient 造成持续分配
     let cachedBarGradientWidth = -1
     let cachedBarGradient: CanvasGradient | null = null
@@ -153,7 +156,7 @@ export default function ModernAudioVisualizer({
       if (disposed || animationFrame || resumeTimer !== null) return
       resumeTimer = window.setTimeout(() => {
         resumeTimer = null
-        if (disposed || document.visibilityState === 'hidden') return
+        if (disposed || isRenderSuspended()) return
         animationFrame = requestAnimationFrame(draw)
       }, 1000 / 30)
     }
@@ -162,8 +165,9 @@ export default function ModernAudioVisualizer({
       animationFrame = 0
       if (disposed) return
       // 窗口隐藏时停帧：Electron backgroundThrottling 关闭后 rAF 在后台仍全速执行，
-      // 避免隐藏播放时 30fps canvas 空转（与 useAudioAnalyzer 的可见性门控一致）
-      if (document.visibilityState === 'hidden') return
+      // 避免隐藏播放时 30fps canvas 空转（与 useAudioAnalyzer 的可见性门控一致）。
+      // 游戏模式冻结（主窗隐藏到托盘）走同一判定：Page Visibility 在此配置下不会翻。
+      if (isRenderSuspended()) return
       if (now - lastSample < 1000 / 30) {
         scheduleNext()
         return
@@ -313,14 +317,19 @@ export default function ModernAudioVisualizer({
       context.fillRect(0, Math.floor(height / 2), width, 1)
       context.globalAlpha = 1
       const hasVisibleMotion = playingRef.current || maximumLevel > 0
-      keepRunning = hasVisibleMotion && document.visibilityState === 'visible'
+      // 无分析器数据源（TV 效能档关闭分析器等）：播放中条柱恒为静态最小高度，
+      // 连续 30 帧无变化即停帧（保留末帧）。analyser/isPlaying 变化会重建本 effect 唤醒；
+      // 有分析器时不启用（安静乐段全零是真实数据，停帧会冻住后续恢复）。
+      if (playingRef.current && maximumLevel === 0 && !analyser) flatFrames += 1
+      else flatFrames = 0
+      keepRunning = hasVisibleMotion && !isRenderSuspended() && (Boolean(analyser) || flatFrames < 30)
       // 播放 / 条柱衰减中才继续 30Hz 绘制；暂停且衰减归零、或页面不可见时停帧（停留末帧）
       if (keepRunning) scheduleNext()
     }
 
     const onVisibilityChange = () => {
       if (disposed) return
-      if (document.visibilityState === 'visible') {
+      if (!isRenderSuspended()) {
         // 取消待执行的 30Hz 定时器，恢复可见立即补一帧（末帧画面保留，不黑屏）
         if (resumeTimer !== null) {
           window.clearTimeout(resumeTimer)
@@ -334,12 +343,15 @@ export default function ModernAudioVisualizer({
       }
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
+    // 游戏模式冻结开始/结束：沿用同一套停/启逻辑
+    const unsubscribeGameMode = subscribeGameModeFrozen(() => onVisibilityChange())
     animationFrame = requestAnimationFrame(draw)
     return () => {
       disposed = true
       cancelAnimationFrame(animationFrame)
       if (resumeTimer !== null) window.clearTimeout(resumeTimer)
       document.removeEventListener('visibilitychange', onVisibilityChange)
+      unsubscribeGameMode()
       resizeObserver.disconnect()
     }
   }, [analyser, accentColor, paletteKey, isPlaying])
