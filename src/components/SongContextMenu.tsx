@@ -1,6 +1,8 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { Play, ListPlus, Heart, HeartOff, MessageSquare, Disc, User, Copy, ChevronRight, Info, ListMusic, ThumbsDown, SlidersHorizontal, Radio } from 'lucide-react'
+import { Play, ListPlus, Heart, HeartOff, MessageSquare, Disc, User, Copy, ChevronRight, Info, ListMusic, ThumbsDown, SlidersHorizontal, Radio, X , Lightbulb, Share2} from 'lucide-react'
 import { Song, getProxiedImageUrl } from '../services/musicApi'
+import { getAddablePlaylists, getPlaylistMutationId } from '../services/addablePlaylists'
+import { readPlaylistOwnersFromStorage } from '../services/playlistOwnership'
 import { getPlatformCapabilities, getPlatformCookie, getPlatformFavoriteLabels, platformLabel } from '../services/platforms'
 import type { MusicPlatform } from '../services/platforms'
 import { useEffect, useLayoutEffect, useState, useRef, useSyncExternalStore } from 'react'
@@ -17,6 +19,12 @@ import {
 import { getAppleLovedSongIds } from '../services/appleCatalog'
 import { addSodaSongToPlaylist, checkSodaLiked, isSodaLoggedIn, setSodaTrackLiked } from '../services/sodaService'
 import { addKugouSongToPlaylist, likeKugouSong } from '../services/kugouService'
+import { loadQQDislikeIds, peekQQDislike, subscribeQQDislike, toggleQQDislike } from '../features/qqExplore/qqDislike'
+
+/** 宿主一次性绑定给其它界面的右键菜单回调包（显隐/位置/song 由菜单自己管）。 */
+export type SongMenuBindings =
+  Omit<SongContextMenuProps, 'show' | 'x' | 'y' | 'song' | 'onClose' | 'platform'>
+  & { platform?: SongContextMenuProps['platform'] }
 
 interface SongContextMenuProps {
   show: boolean
@@ -34,14 +42,22 @@ interface SongContextMenuProps {
   onViewAlbum?: (song: Song) => void
   onViewArtist?: (song: Song) => void
   onCopyInfo?: (song: Song) => void
+  /** 分享：生成官方歌曲链接并复制（QQ/网易云客户端右键同款） */
+  onShare?: (song: Song) => void
   onDislike?: (song: Song) => void
   onAdjustPreferences?: () => void
   onAdjustRecommendation?: (song: Song) => void
+  /** 刷歌模式下额外提供「音乐偏好设置」入口（App 刷歌播放页右上角设置同源） */
+  showMusicPreference?: boolean
+  onOpenMusicPreference?: () => void
   userPlaylists: any[]
   platform: MusicPlatform
   playerTheme?: 'light' | 'dark'
   hideFavoriteAction?: boolean
   currentPlaylistId?: string
+  /** 菜单每次打开时的副作用：例如按当前歌曲平台刷新「添加到」候选歌单
+   *  （否则从队列/相似歌曲面板打开时，子菜单拿到的是空或上个平台的歌单）。 */
+  onMenuOpen?: () => void
 }
 
 const SUBMENU_VIEWPORT_MARGIN = 10
@@ -132,14 +148,18 @@ export default function SongContextMenu({
   onViewAlbum,
   onViewArtist,
   onCopyInfo,
+  onShare,
   onDislike,
   onAdjustPreferences,
   onAdjustRecommendation,
+  showMusicPreference,
+  onOpenMusicPreference,
   userPlaylists,
   platform,
   playerTheme = 'dark',
   hideFavoriteAction = false,
-  currentPlaylistId
+  currentPlaylistId,
+  onMenuOpen
 }: SongContextMenuProps) {
   const [showPlaylistSubmenu, setShowPlaylistSubmenu] = useState(false)
   const [submenuPosition, setSubmenuPosition] = useState<'right' | 'left'>('right')
@@ -159,10 +179,18 @@ export default function SongContextMenu({
 
   useEffect(() => {
     if (!show || !song) return
+    // 调用方已确定「这首歌属于我喜欢」（我喜欢歌单 / 播放条已喜欢的当前曲）时，
+    // 上下文就是权威：缓存未加载、归属键缺失（peekSongFavoriteStatus 在拿不到 userId 时
+    // **直接返回 false** 而不是 null）都不能翻案 —— 否则在「我喜欢」里右键会显示「我喜欢」
+    // （2026-09-27 用户实测事故，配合服务端 id/mid 形状 bug 一起修）。
+    if (hideFavoriteAction) {
+      setFavoriteStatus(true)
+      return
+    }
     // 红心状态唯一真相源：favoriteStatusService 归属键缓存（netease/qq/soda 统一，
     // 汽水归属键为 soda_user_id，喜欢列表由 playlistService.getLikedSongs 走 qishui-liked 分页拉全量）
     const cachedStatus = peekSongFavoriteStatus(song, resolvedPlatform, favoriteUserId)
-    setFavoriteStatus(cachedStatus ?? (hideFavoriteAction ? true : null))
+    setFavoriteStatus(cachedStatus)
     if (!favoriteUserId || cachedStatus !== null) return
 
     let cancelled = false
@@ -217,6 +245,13 @@ export default function SongContextMenu({
     window.addEventListener('playlist-content-changed', handleFavoriteChange)
     return () => window.removeEventListener('playlist-content-changed', handleFavoriteChange)
   }, [resolvedPlatform, show, song])
+
+  // 打开即通知宿主（刷新「添加到」候选歌单）
+  const onMenuOpenRef = useRef(onMenuOpen)
+  onMenuOpenRef.current = onMenuOpen
+  useEffect(() => {
+    if (show) onMenuOpenRef.current?.()
+  }, [show])
 
   // 重置图片加载状态
   useEffect(() => {
@@ -455,31 +490,54 @@ export default function SongContextMenu({
     showMenuToast('该平台暂不支持此操作', 'info')
     return true
   }
-  const ownedPlaylists = userPlaylists.filter((playlist) => {
-    if (playlist.isCollected || playlist.isLike) return false
-    // 显式标注平台的歌单：平台需与菜单平台或当前歌曲平台一致
-    // （汽水歌曲右键时 platform prop 可能仍是浏览页平台，需按 resolvedPlatform 放行汽水歌单）
-    const declaredPlatform = playlist.platform as MusicPlatform | undefined
-    if (declaredPlatform && declaredPlatform !== platform && declaredPlatform !== resolvedPlatform) return false
-    const mutationId = String(playlist.dirId || playlist.id)
-    if (currentPlaylistId && mutationId === String(currentPlaylistId)) return false
-    // 归属校验按歌单自身平台取对应 userId；未标注平台的歌单沿用菜单平台，行为不变
-    const ownerPlatform = declaredPlatform || platform
-    // Apple 资料库歌单无 userId 概念，直接放行
-    if (ownerPlatform === 'apple') return true
-    const playlistUserId = playlist.userId == null ? '' : String(playlist.userId)
-    const ownerUserId = ownerPlatform === platform
-      ? currentUserId
-      : (localStorage.getItem(getUserStorageKey(ownerPlatform)) || '')
-    // 歌单列表本身来自当前登录用户；旧会话没有落盘 userId 时也应能显示自建歌单。
-    return !playlistUserId || !ownerUserId || playlistUserId === ownerUserId
-  })
+  // 「添加到」候选 = 与歌曲同平台 + 平台可写 + 排除虚拟歌单（Apple 资料库/喜爱、汽水虚拟单）
+  // + 排除他人的/已收藏的歌单 + 排除当前正在浏览的歌单。
+  // 以前这里是另一套内联过滤（只排 isLike/isCollected），会把 Apple「我的音乐库」
+  // 列成可添加目标，点了必然失败（2026-09-27 审计 A2）——现在与播放页弹窗共用
+  // addablePlaylists 这一处实现。
+  const ownedPlaylists = getAddablePlaylists(
+    userPlaylists,
+    resolvedPlatform,
+    readPlaylistOwnersFromStorage(),
+  ).filter(playlist => !currentPlaylistId || getPlaylistMutationId(playlist) !== String(currentPlaylistId))
   // 红心显示统一由 favoriteStatus 通用缓存驱动（含汽水）；identifiers 在途时显示加载占位
+  // 专辑/歌手的可跳转 id：宿主 wrapper 在缺 id 时是"静默不动作"（点了没反应），
+  // 菜单侧据此直接隐藏该项，避免出现点了没反应的条目（2026-09-27 审计 B2）。
+  const hasUsableId = (value: unknown) => {
+    if (value === undefined || value === null) return false
+    const text = String(value).trim()
+    return text !== '' && text !== '0'
+  }
+  // 有的平台按**名字**导航（汽水：宿主与 musicApi 都走名字搜索），没有 id 也能跳；
+  // 只看 id 会把这类歌曲的菜单项误隐藏（2026-09-27 复查发现的回归）。
+  const nameNavigablePlatform = resolvedPlatform === 'soda'
+  const albumNavigable = Boolean(song?.album && (
+    hasUsableId(song.album.appleId) || hasUsableId(song.album.mid) || hasUsableId(song.album.id)
+    || (nameNavigablePlatform && String(song.album.name || '').trim() !== '')))
+  const artistNavigable = Boolean((song?.artists || []).some(artist => artist && (
+    hasUsableId(artist.appleId) || hasUsableId(artist.mid) || hasUsableId(artist.id)
+    || (nameNavigablePlatform && String(artist.name || '').trim() !== ''))))
+
   const favoriteActionIsRemove = favoriteStatus ?? hideFavoriteAction
   const favoriteStatusLoading = favoriteStatus === null && Boolean(favoriteUserId)
 
   // 共振是否处于挂起态（人在别的模式但房间还活着）→ 决定要不要多一项「推送至共振」
   const resonanceSuspended = useSyncExternalStore(subscribeResonanceSuspend, isResonanceSuspended, () => false)
+
+  // 多歌手选择弹窗：菜单关闭后仍要显示，故用独立状态承载（快照歌曲/歌手列表）
+  const [artistPicker, setArtistPicker] = useState<{ song: Song; artists: Song['artists'] } | null>(null)
+
+  // QQ「不喜欢」= App 同款歌曲黑名单（music.feedback.FeedbackBlack），需登录才有意义
+  const qqDislikeAvailable = resolvedPlatform === 'qq' && Boolean(getPlatformCookie('qq'))
+  const qqDisliked = useSyncExternalStore(
+    subscribeQQDislike,
+    () => peekQQDislike(qqDislikeAvailable ? song : null),
+    () => null as boolean | null,
+  )
+  useEffect(() => {
+    if (!show || !song || !qqDislikeAvailable) return
+    void loadQQDislikeIds().catch(() => {})
+  }, [show, song, qqDislikeAvailable])
 
   const menuItems = [
     {
@@ -505,7 +563,8 @@ export default function SongContextMenu({
       disabled: true,
       onClick: () => undefined,
     }] : []),
-    ...(!favoriteStatusLoading && !favoriteActionIsRemove && onAddToFavorites ? [{
+    ...(!favoriteStatusLoading && !favoriteActionIsRemove && onAddToFavorites
+      && getPlatformCapabilities(resolvedPlatform).likeSong ? [{
       label: favoriteLabels.add,
       icon: Heart,
       onClick: () => {
@@ -514,9 +573,10 @@ export default function SongContextMenu({
         onClose()
       }
     }] : []),
-    // 酷狗「取消喜欢」上游无移除端点（/api/kugou/like like=false 只回执不生效）——诚实隐藏该入口，
-    // 其余平台照常展示；「我喜欢」新增仍走真实网关不受影响
-    ...(!favoriteStatusLoading && favoriteActionIsRemove && onRemoveFromFavorites && resolvedPlatform !== 'kugou' ? [{
+    // 「取消喜欢」按能力位决定（酷狗上游无移除端点）：与播放页径向菜单共用
+    // capabilities.unlikeSong，避免两处入口一个隐藏一个假成功（2026-09-27 审计）
+    ...(!favoriteStatusLoading && favoriteActionIsRemove && onRemoveFromFavorites
+      && getPlatformCapabilities(resolvedPlatform).unlikeSong ? [{
       label: favoriteLabels.remove,
       icon: HeartOff,
       onClick: () => {
@@ -570,7 +630,7 @@ export default function SongContextMenu({
         onClose()
       }
     }] : []),
-    ...(onViewAlbum ? [{
+    ...(onViewAlbum && albumNavigable ? [{
       label: '查看专辑',
       icon: Disc,
       onClick: () => {
@@ -578,10 +638,17 @@ export default function SongContextMenu({
         onClose()
       }
     }] : []),
-    ...(onViewArtist ? [{
+    ...(onViewArtist && artistNavigable ? [{
       label: '查看歌手',
       icon: User,
       onClick: () => {
+        // 多位歌手：先弹选择（背景用当前歌曲封面）；Apple 的父级按 appleId 取详情、不认选择，维持原样
+        const artists = (song?.artists || []).filter(artist => artist && (artist.name || artist.mid || artist.id))
+        if (artists.length > 1 && resolvedPlatform !== 'apple' && song) {
+          setArtistPicker({ song, artists })
+          onClose()
+          return
+        }
         onViewArtist?.(song)
         onClose()
       }
@@ -614,6 +681,23 @@ export default function SongContextMenu({
       icon: ThumbsDown,
       onClick: () => { onAdjustRecommendation(song); onClose() },
     }] : []),
+    ...(showMusicPreference && onOpenMusicPreference ? [{
+      label: '音乐偏好设置',
+      icon: SlidersHorizontal,
+      onClick: () => { onOpenMusicPreference(); onClose() },
+    }] : []),
+    ...(qqDislikeAvailable ? [{
+      label: qqDisliked === true ? '取消不喜欢' : '不喜欢',
+      icon: ThumbsDown,
+      onClick: () => {
+        if (!song) return
+        void toggleQQDislike(song).then(
+          next => showMenuToast(next ? '已标记为不喜欢' : '已取消不喜欢', 'success'),
+          (error: unknown) => showMenuToast(error instanceof Error ? error.message : '操作失败，请稍后重试', 'error'),
+        )
+        onClose()
+      },
+    }] : []),
     ...(onDislike && song?.platform === 'netease' ? [{
       label: '不感兴趣',
       icon: ThumbsDown,
@@ -624,9 +708,10 @@ export default function SongContextMenu({
     }] : []),
     ...(getPlatformCapabilities(resolvedPlatform).similarSongs ? [{
       label: '相似歌曲',
-      icon: ListMusic,
+      icon: Lightbulb,
       onClick: () => {
-        window.dispatchEvent(new CustomEvent('waveforge:show-similar-songs', { detail: song }))
+        // 网易云客户端灯泡同款：直接取相似歌曲插播并切换播放
+        window.dispatchEvent(new CustomEvent('waveforge:play-similar-song', { detail: song }))
         onClose()
       }
     }] : []),
@@ -635,6 +720,14 @@ export default function SongContextMenu({
       icon: Copy,
       onClick: () => {
         onCopyInfo(song)
+        onClose()
+      }
+    }] : []),
+    ...(onShare ? [{
+      label: '分享',
+      icon: Share2,
+      onClick: () => {
+        onShare(song)
         onClose()
       }
     }] : [])
@@ -654,6 +747,7 @@ export default function SongContextMenu({
   const scrollbarThumb = isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.25)'
 
   return (
+    <>
     <AnimatePresence>
       {show && (
         <>
@@ -661,6 +755,7 @@ export default function SongContextMenu({
           <motion.div
             ref={menuRef}
             data-song-context-menu="true"
+            data-tv-scope
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
@@ -814,6 +909,86 @@ export default function SongContextMenu({
         </>
       )}
     </AnimatePresence>
+    {/* 多歌手选择：背景用当前歌曲封面（重糊压暗），列出全部歌手供选择 */}
+    <AnimatePresence>
+      {artistPicker && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.18 }}
+          className="fixed inset-0 z-[10020] flex items-center justify-center bg-black/60 p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-label="选择歌手"
+          data-tv-scope
+          onMouseDown={event => { if (event.target === event.currentTarget) setArtistPicker(null) }}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.97 }}
+            transition={{ duration: 0.18 }}
+            className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/[0.12] bg-[#101216] shadow-2xl"
+          >
+            {/* 卡片内部背景 = 当前歌曲封面（外部不铺图）；压暗保证文字可读 */}
+            {artistPicker.song.album?.picUrl ? (
+              <div className="absolute inset-0">
+                <img
+                  src={getProxiedImageUrl(artistPicker.song.album.picUrl, 512)}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  draggable={false}
+                />
+                <div className="absolute inset-0 bg-gradient-to-b from-black/62 via-black/58 to-black/72" />
+              </div>
+            ) : null}
+            <div className="relative z-10 flex max-h-[70vh] flex-col">
+            <div className="flex items-start justify-between gap-4 border-b border-white/[0.08] px-5 py-4">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-white">选择歌手</h3>
+                <p className="mt-0.5 truncate text-xs text-white/45">{artistPicker.song.name}</p>
+              </div>
+              <button type="button" onClick={() => setArtistPicker(null)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-white/50 transition hover:bg-white/[0.08] hover:text-white" aria-label="关闭歌手选择">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-[46vh] space-y-1.5 overflow-y-auto p-4">
+              {artistPicker.artists.map((artist, index) => {
+                const avatar = String(artist.mid || '').trim()
+                  ? `https://y.gtimg.cn/music/photo_new/T001R300x300M000${String(artist.mid).trim()}.jpg`
+                  : ''
+                return (
+                  <button
+                    key={`${artist.mid || artist.id || artist.name}-${index}`}
+                    type="button"
+                    onClick={() => {
+                      onViewArtist?.({ ...artistPicker.song, artists: [artist] })
+                      setArtistPicker(null)
+                    }}
+                    className="flex w-full items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.03] px-3 py-2.5 text-left transition hover:border-white/[0.14] hover:bg-white/[0.08]"
+                  >
+                    <span className="h-11 w-11 shrink-0 overflow-hidden rounded-full bg-white/[0.08]">
+                      {avatar ? (
+                        <img src={avatar} alt="" className="h-full w-full object-cover" draggable={false} />
+                      ) : (
+                        <span className="flex h-full w-full items-center justify-center"><User className="h-5 w-5 text-white/40" /></span>
+                      )}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm text-white/90">{artist.name}</span>
+                    </span>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-white/30" />
+                  </button>
+                )
+              })}
+            </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+    </>
   )
 }
 

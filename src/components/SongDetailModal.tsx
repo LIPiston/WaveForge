@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import { X, Music, Disc3, Clock, BadgeCheck, Crown, Calendar, Video, CircleDollarSign, ListMusic, Mic2, ScrollText, BookOpen, RefreshCw, Play, Activity, Loader2, ChevronRight, User } from 'lucide-react'
 import type { Song } from '../services/musicApi'
 import type { MusicPlatform } from '../services/platforms'
-import { getLyrics, getNeteaseSongWiki, getQQSongPlaylist, getProxiedImageUrl, getQQListenAlso, getQQLikeAlso, getNeteaseSimiSong, getNeteaseRelatedPlaylist, getNeteaseSongBlog } from '../services/musicApi'
+import { getLyrics, getNeteaseSongWikiRows, getQQSongPlaylist, getProxiedImageUrl, getQQListenAlso, getQQLikeAlso, getNeteaseSimiSong, getNeteaseRelatedPlaylist, getNeteaseSongBlog, type NeteaseWikiRow } from '../services/musicApi'
 import { fetchAppleSongDetail, type AppleSongDetail } from '../services/appleWebService'
 import { createTtlCache } from '../utils/ttlCache'
 import LyricModal from './LyricModal'
@@ -52,6 +52,10 @@ interface SongDetailModalProps {
   onOpenAlbum?: (albumId: string, platform: 'apple') => void
   /** 打开出演艺人详情 */
   onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
+  /** 跨平台「查看歌手」（播放页右键菜单同款：由 App 按平台解析艺人 ID） */
+  onViewArtistSong?: (song: Song) => void
+  /** 跨平台「查看专辑」（播放页右键菜单同款） */
+  onViewAlbumSong?: (song: Song) => void
   /** 冻结：由 App 保持挂载但当前不可见（关闭弹窗）。隐藏时不消费返回键、不渲染视频。 */
   suspended?: boolean
 }
@@ -79,7 +83,7 @@ const NETBASE_FEE_LABELS: Record<number, string> = {
   8: '免费（低音质）',
 }
 
-function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist, onOpenAlbum, onOpenArtist, suspended = false }: SongDetailModalProps) {
+function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist, onOpenAlbum, onOpenArtist, onViewArtistSong, onViewAlbumSong, suspended = false }: SongDetailModalProps) {
   // TV 遥控器 BACK：关闭歌曲详情弹窗（冻结隐藏时不消费返回键，交给上层）
   useTvBack(() => {
     if (suspended) return false
@@ -97,6 +101,7 @@ function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist, onOpenAlbum
   const [, setLyricsLoading] = useState(false)
   // 网易云歌曲百科 / QQ 所在歌单
   const [wiki, setWiki] = useState<string>('')
+  const [wikiRows, setWikiRows] = useState<NeteaseWikiRow[]>([])
   const [songPlaylists, setSongPlaylists] = useState<{ id: string; name: string; coverUrl: string }[]>([])
   // QQ「听也在听」15 首 + 「喜欢也爱歌单」6 个
   const [listenAlso, setListenAlso] = useState<Song[]>([])
@@ -322,13 +327,12 @@ function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist, onOpenAlbum
     let cancelled = false
     if (song.platform === 'netease') {
       const wikiKey = `wiki:netease:${song.id}`
-      const cachedWiki = songPayloadCache.get(wikiKey)
-      if (cachedWiki) { setWiki(cachedWiki); return }
-      void getNeteaseSongWiki(song.id).then((summary) => {
-        if (cancelled || !summary) return
-        const text = String(summary).slice(0, 300)
-        setWiki(text)
-        if (text) songPayloadCache.set(wikiKey, text)
+      const cachedWiki = songPayloadCache.get(wikiKey) as NeteaseWikiRow[] | undefined
+      if (cachedWiki) { setWikiRows(cachedWiki); return }
+      void getNeteaseSongWikiRows(song.id).then((rows) => {
+        if (cancelled || !rows.length) return
+        setWikiRows(rows)
+        if (rows.length) songPayloadCache.set(wikiKey, rows)
       })
     } else if (song.platform === 'qq' && song.mid) {
       const wikiKey = `wiki:qq:${song.mid}`
@@ -617,7 +621,24 @@ function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist, onOpenAlbum
               </div>
               <div className="flex-1 min-w-0">
                 <h1 className="text-2xl font-bold text-white leading-snug break-words">{song.name || '未知歌曲'}</h1>
-                <p className={`${textSecondary} text-sm mt-1 truncate`}>{artists}</p>
+                <p className={`${textSecondary} text-sm mt-1 truncate`}>
+                  {onViewArtistSong && Array.isArray(song.artists) && song.artists.length > 0 ? (
+                    song.artists.map((artist, artistIndex) => (
+                      <span key={`${artist.name}-${artistIndex}`}>
+                        {artistIndex > 0 ? ' / ' : ''}
+                        <button
+                          type="button"
+                          onClick={() => onViewArtistSong(song)}
+                          className="transition-opacity hover:opacity-75 hover:underline underline-offset-2"
+                        >
+                          {artist.name}
+                        </button>
+                      </span>
+                    ))
+                  ) : (
+                    artists
+                  )}
+                </p>
                 <div className="flex items-center gap-3 mt-3 flex-wrap">
                   {song.vip && (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] text-white" style={{ backgroundColor: accentColor }}>
@@ -667,7 +688,18 @@ function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist, onOpenAlbum
             {/* 左列：信息 / 基础信息 / 幕后团队 / 百科 / 所在歌单 */}
             <div className="w-80 flex-shrink-0 overflow-y-auto pr-1 space-y-5">
               <div className="space-y-2.5">
-                {infoRow(<Disc3 className="w-4 h-4" />, '专辑', albumName)}
+                {onViewAlbumSong ? (
+                  <button
+                    type="button"
+                    onClick={() => onViewAlbumSong(song)}
+                    className="w-full flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-white/10 text-left"
+                    style={{ background: 'rgba(255,255,255,0.05)' }}
+                  >
+                    <span className="shrink-0" style={{ color: accentColor }}><Disc3 className="w-4 h-4" /></span>
+                    <span className={`${textSecondary} text-sm shrink-0`}>专辑</span>
+                    <span className={`flex-1 min-w-0 text-sm ${textPrimary} truncate text-right`}>{albumName}</span>
+                  </button>
+                ) : infoRow(<Disc3 className="w-4 h-4" />, '专辑', albumName)}
                 {infoRow(<Clock className="w-4 h-4" />, '时长', formatDuration(song.duration), true)}
                 {publishDate && infoRow(<Calendar className="w-4 h-4" />, '发行时间', publishDate, true)}
                 {extra?.bpm ? infoRow(<Activity className="w-4 h-4" />, 'BPM', String(extra.bpm), true) : null}
@@ -752,15 +784,31 @@ function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist, onOpenAlbum
                 </div>
               )}
 
-              {/* 网易云歌曲百科 */}
-              {song.platform === 'netease' && wiki && (
+              {/* 网易云歌曲百科（音乐百科结构化行：曲风/语种/发行/BPM/制作...） */}
+              {song.platform === 'netease' && wikiRows.length > 0 && (
                 <div>
                   <div className="flex items-center gap-2 mb-2.5">
                     <BookOpen className="w-4 h-4" style={{ color: accentColor }} />
                     <h4 className={`text-sm font-semibold ${textPrimary}`}>歌曲百科</h4>
                   </div>
-                  <div className="rounded-xl px-3 py-2.5" style={{ background: 'rgba(255,255,255,0.05)' }}>
-                    <p className={`${textPrimary} text-sm leading-relaxed`}>{wiki}</p>
+                  <div className="rounded-xl px-3 py-2.5 space-y-1.5" style={{ background: 'rgba(255,255,255,0.05)' }}>
+                    {wikiRows.map(row => (
+                      <div key={row.label} className="flex gap-2 text-sm leading-6">
+                        <span className={`shrink-0 ${textSecondary}`}>{row.label}</span>
+                        <span className={`flex-1 min-w-0 ${textPrimary} break-words`}>
+                          {row.items.map((item, itemIndex) => (
+                            <span key={`${item.text}-${itemIndex}`}>
+                              {itemIndex > 0 ? '、' : ''}
+                              {item.url ? (
+                                <span className="cursor-pointer transition-opacity hover:opacity-75" style={{ color: accentColor }}>{item.text}</span>
+                              ) : (
+                                item.text
+                              )}
+                            </span>
+                          ))}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}

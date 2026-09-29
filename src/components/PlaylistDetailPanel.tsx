@@ -1,9 +1,10 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { ChevronDown, Music, Play, Clock, Crown, Heart, Infinity as InfinityIcon, Info, Radio } from 'lucide-react'
+import { ChevronDown, Music, Play, Clock, Crown, Heart, Infinity as InfinityIcon, Info, Radio, Search, X } from 'lucide-react'
 import { Song, getProxiedImageUrl, resolveSongAlbumIdentifier, isSameSong } from '../services/musicApi'
 import { getPlatformCapabilities } from '../services/platforms'
 import type { MusicPlatform } from '../services/platforms'
 import { subscribePlaylist } from '../services/playlistService'
+import { filterPlaylistSongs } from '../services/playlistSearch'
 import { Fragment, useState, useRef, useEffect, useCallback, useMemo, memo, type UIEvent } from 'react'
 import CachedImage from './CachedImage'
 import AnimatedArtworkCover from './AnimatedArtworkCover'
@@ -300,12 +301,23 @@ function PlaylistDetailPanel({
   
   // 判断歌曲是否为当前播放的歌曲（Apple：id 可能为 0，用 isSameSong 按 appleId 判定）
   const isSongCurrent = (song: Song) => isSameSong(currentSong, song)
+
+  // ── 歌单内搜索（2026-09-27）────────────────────────────────────────────
+  // 歌单动辄几百上千首（用户「喜欢的音乐」861 首），没有搜索翻不动。
+  // 搜索栏默认收起，点头部「搜索」按钮才延伸展开；匹配范围 = 歌名 / 歌手 / 专辑。
+  // 注意：只过滤**列表渲染**；「播放全部」与点歌后的播放队列仍是整张歌单。
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  // 匹配逻辑抽到 services/playlistSearch（纯函数，有单测）
+  const listSongs = useMemo(() => filterPlaylistSongs(songs, searchQuery), [songs, searchQuery])
   
   // 计算当前播放歌曲在列表中的索引
   const currentSongIndex = useMemo(() => {
     if (!currentSong) return -1
-    return songs.findIndex(song => isSameSong(song, currentSong))
-  }, [currentSong, songs])
+    // 用过滤后的列表：搜索时「跳到当前歌曲」必须落在可见结果里，否则会跳到不存在的行
+    return listSongs.findIndex(song => isSameSong(song, currentSong))
+  }, [currentSong, listSongs])
   const totalDurationMinutes = useMemo(
     () => Math.floor(songs.reduce((total, song) => total + song.duration, 0) / 60000),
     [songs]
@@ -325,17 +337,30 @@ function PlaylistDetailPanel({
     commitViewport(container.scrollTop, container.clientHeight)
   }
 
+  // 搜索结果变了就回顶部：虚拟列表按 scrollTop 算可见区间，停在原位置会整片空白
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+    container.scrollTop = 0
+    commitViewport(0, container.clientHeight)
+  }, [searchQuery, commitViewport])
+
+  // 展开搜索栏后自动聚焦，省一次点击
+  useEffect(() => {
+    if (searchOpen) window.requestAnimationFrame(() => searchInputRef.current?.focus())
+  }, [searchOpen])
+
   const viewportHeight = viewport.height || (typeof window === 'undefined' ? 640 : Math.max(320, window.innerHeight * 0.7))
   const visibleStart = Math.max(0, Math.floor(viewport.scrollTop / DETAIL_ROW_HEIGHT) - DETAIL_OVERSCAN)
   const visibleEnd = Math.min(
-    songs.length,
+    listSongs.length,
     Math.ceil((viewport.scrollTop + viewportHeight) / DETAIL_ROW_HEIGHT) + DETAIL_OVERSCAN
   )
   const visibleSongs = useMemo(
-    () => songs.slice(visibleStart, visibleEnd).map((song, offset) => ({ song, index: visibleStart + offset })),
-    [songs, visibleStart, visibleEnd]
+    () => listSongs.slice(visibleStart, visibleEnd).map((song, offset) => ({ song, index: visibleStart + offset })),
+    [listSongs, visibleStart, visibleEnd]
   )
-  const virtualListHeight = songs.length * DETAIL_ROW_HEIGHT
+  const virtualListHeight = listSongs.length * DETAIL_ROW_HEIGHT
 
   const handleConfirmRemoval = async () => {
     if (!pendingRemoval || !playlist) return
@@ -814,6 +839,28 @@ function PlaylistDetailPanel({
                     </div>
                   </div>
 
+                  {songs.length > 0 && (
+                    <motion.button
+                      whileHover={{ scale: 1.03 }}
+                      whileTap={{ scale: 0.97 }}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        // 关闭时清空查询：否则搜索栏收起后列表还停在过滤结果上，看着像"歌少了"
+                        const next = !searchOpen
+                        setSearchOpen(next)
+                        if (!next) setSearchQuery('')
+                      }}
+                      aria-label={searchOpen ? '关闭歌单内搜索' : '搜索歌单内歌曲'}
+                      title="搜索歌单内歌曲"
+                      className={`ml-auto px-4 py-2 rounded-xl border transition-all flex items-center gap-2 ${searchOpen
+                        ? 'border-transparent'
+                        : playerTheme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 text-white/80 hover:text-white' : 'border-black/10 bg-black/5 hover:bg-black/10 hover:border-black/20 text-black/70 hover:text-black'}`}
+                      style={searchOpen ? { backgroundColor: `${accentColor}22`, borderColor: `${accentColor}66`, color: accentColor } : undefined}
+                    >
+                      <Search className="w-4 h-4" />
+                      搜索
+                    </motion.button>
+                  )}
                   {getPlatformCapabilities(playlist.platform || currentPlatform).comments && (
                     <motion.button
                       whileHover={{ scale: 1.03 }}
@@ -822,7 +869,7 @@ function PlaylistDetailPanel({
                         event.stopPropagation()
                         setShowPlaylistInfo(true)
                       }}
-                      className={`ml-auto px-4 py-2 rounded-xl border transition-all flex items-center gap-2 ${playerTheme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 text-white/80 hover:text-white' : 'border-black/10 bg-black/5 hover:bg-black/10 hover:border-black/20 text-black/70 hover:text-black'}`}
+                      className={`px-4 py-2 rounded-xl border transition-all flex items-center gap-2 ${playerTheme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 text-white/80 hover:text-white' : 'border-black/10 bg-black/5 hover:bg-black/10 hover:border-black/20 text-black/70 hover:text-black'}`}
                     >
                       <Info className="w-4 h-4" />
                       详情
@@ -830,6 +877,56 @@ function PlaylistDetailPanel({
                   )}
                 </div>
               )}
+
+              {/* 歌单内搜索栏：点头部「搜索」按钮后由上往下延伸展开 */}
+              <AnimatePresence initial={false}>
+                {searchOpen && (
+                  <motion.div
+                    key="playlist-search-bar"
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.22, ease: 'easeOut' }}
+                    className="overflow-hidden"
+                  >
+                    <div className="px-8 pt-3">
+                      <div className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${playerTheme === 'dark' ? 'border-white/10 bg-white/5' : 'border-black/10 bg-black/5'}`}>
+                        <Search className={`w-4 h-4 shrink-0 ${playerTheme === 'dark' ? 'text-white/40' : 'text-black/40'}`} />
+                        <input
+                          ref={searchInputRef}
+                          value={searchQuery}
+                          onChange={event => setSearchQuery(event.target.value)}
+                          onKeyDown={event => {
+                            if (event.key === 'Escape') {
+                              event.stopPropagation()
+                              setSearchQuery('')
+                              setSearchOpen(false)
+                            }
+                          }}
+                          placeholder="搜索歌名 / 歌手 / 专辑"
+                          aria-label="搜索歌单内歌曲"
+                          className={`min-w-0 flex-1 bg-transparent text-sm outline-none ${playerTheme === 'dark' ? 'text-white placeholder:text-white/35' : 'text-black placeholder:text-black/35'}`}
+                        />
+                        {searchQuery.trim() && (
+                          <span className={`shrink-0 text-xs ${playerTheme === 'dark' ? 'text-white/45' : 'text-black/45'}`}>
+                            {listSongs.length} / {songs.length} 首
+                          </span>
+                        )}
+                        {searchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setSearchQuery('')}
+                            aria-label="清空搜索"
+                            className={`shrink-0 rounded-full p-1 transition ${playerTheme === 'dark' ? 'text-white/45 hover:bg-white/10 hover:text-white' : 'text-black/45 hover:bg-black/10 hover:text-black'}`}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {/* 歌曲列表 - 支持向下滚动，卡片向上移动 */}
               <div 
@@ -916,6 +1013,18 @@ function PlaylistDetailPanel({
                     <div className="flex flex-col items-center justify-center h-32">
                       <Music className={`w-12 h-12 mb-2 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
                       <div className={playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}>当前歌单暂无歌曲</div>
+                    </div>
+                  ) : listSongs.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-32">
+                      <Search className={`w-12 h-12 mb-2 ${playerTheme === 'dark' ? 'text-white/20' : 'text-black/20'}`} />
+                      <div className={playerTheme === 'dark' ? 'text-white/60' : 'text-black/55'}>没有匹配「{searchQuery.trim()}」的歌曲</div>
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery('')}
+                        className={`mt-2 rounded-full border px-3 py-1.5 text-xs font-medium transition ${playerTheme === 'dark' ? 'border-white/15 bg-white/8 text-white hover:bg-white/14' : 'border-black/15 bg-black/5 text-black hover:bg-black/10'}`}
+                      >
+                        清空搜索
+                      </button>
                     </div>
                   ) : (
                     <div className="relative w-full" style={{ height: `${virtualListHeight}px` }}>
@@ -1090,6 +1199,8 @@ function PlaylistDetailPanel({
           song={null}
           resourceType="playlist"
           playlist={{ ...playlist, platform: currentPlatform }}
+          playerTheme={playerTheme}
+          accentColor={accentColor}
         />
       )}
 

@@ -7,7 +7,7 @@ import { getProxiedImageUrl } from '../services/musicApi'
 import type { MusicPlatform } from '../services/platforms'
 import { platformLabel } from '../services/platforms'
 import { getAddablePlaylists, getPlaylistMutationId } from '../services/addablePlaylists'
-import type { PlaylistOwnershipContext } from '../services/playlistOwnership'
+import { readPlaylistOwnersFromStorage } from '../services/playlistOwnership'
 import CachedImage from './CachedImage'
 
 interface Props {
@@ -21,15 +21,6 @@ interface Props {
   onAdd: (song: Song, playlistId: string) => void
 }
 
-function getOwners(): PlaylistOwnershipContext {
-  return {
-    neteaseUserId: localStorage.getItem('netease_user_id') || undefined,
-    qqUserId: localStorage.getItem('qq_user_id') || undefined,
-    spotifyUserId: localStorage.getItem('spotify_user_id') || undefined,
-    kugouUserId: localStorage.getItem('kugou_user_id') || undefined,
-    sodaUserId: localStorage.getItem('soda_user_id') || undefined,
-  }
-}
 
 export default function PlaybackAddToPlaylistModal({ show, song, playlists, loading, accentColor, playerTheme = 'dark', onClose, onAdd }: Props) {
   // TV 遥控：BACK 关闭本弹窗
@@ -41,7 +32,7 @@ export default function PlaybackAddToPlaylistModal({ show, song, playlists, load
   const [addingId, setAddingId] = useState<string | null>(null)
   const platform = (song.platform || 'netease') as MusicPlatform
   const isDark = playerTheme === 'dark'
-  const addable = useMemo(() => getAddablePlaylists(playlists, platform, getOwners()), [playlists, platform])
+  const addable = useMemo(() => getAddablePlaylists(playlists, platform, readPlaylistOwnersFromStorage()), [playlists, platform])
 
   useEffect(() => {
     if (!show) setAddingId(null)
@@ -50,7 +41,7 @@ export default function PlaybackAddToPlaylistModal({ show, song, playlists, load
   return (
     <AnimatePresence>
       {show && (
-        <motion.div data-playback-radial-block="true" className="fixed inset-0 z-[10035] flex items-center justify-center p-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+        <motion.div data-playback-radial-block="true" data-tv-scope className="fixed inset-0 z-[10035] flex items-center justify-center p-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
           <button type="button" aria-label="关闭添加到歌单" className="absolute inset-0 bg-black/55 backdrop-blur-md" onClick={onClose} />
           <motion.div role="dialog" aria-modal="true" aria-label="添加到歌单" className={`relative flex max-h-[72vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border shadow-2xl ${isDark ? 'border-white/15 bg-slate-950/95 text-white' : 'border-black/10 bg-white/95 text-black'}`} initial={{ y: 18, scale: 0.96 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: 0.96 }}>
             <header className={`flex items-center gap-3 border-b p-4 ${isDark ? 'border-white/10' : 'border-black/10'}`}>

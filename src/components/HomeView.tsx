@@ -7,10 +7,12 @@ import { usePerfMode } from '../tv/perfMode'
 import { Play, Music, LogOut, Crown, User, Heart, MonitorSmartphone, Search, Settings, History, Speaker } from 'lucide-react'
 import { Song, resolveSongAlbumIdentifier, getSongUrl, isSameSong } from '../services/musicApi'
 import type { MusicPlatform } from '../services/platforms'
-import { getVisiblePlatforms, PLATFORM_VISIBILITY_EVENT, PLATFORM_ORDER_EVENT } from '../services/platforms'
+import { getPlatformCapabilities, getVisiblePlatforms, PLATFORM_VISIBILITY_EVENT, PLATFORM_ORDER_EVENT } from '../services/platforms'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
 import ModeSelectionPanel, { MODE_SELECTION_CLOSE_MS, MODE_SELECTION_PANEL_HEIGHT } from './ModeSelectionPanel'
 import { getCachedUserPlaylists, getPlaylistDetail, getUserPlaylists, streamNeteasePlaylistTracks } from '../services/playlistService'
+import { isSpecialPlaylist as isSpecialPlaylistRecord } from '../services/playlistOwnership'
+import { buildPlaylistShareUrl } from '../services/playlistShare'
 import { getAppleLibraryPlaylists, enrichApplePlaylistTrackCounts, getAppleFavoriteSongs, getAppleRecentPlayed, getApplePlaylistTracks, getAppleCatalogPlaylistTracks, getAppleLibrarySongs, appleSongToSong, appleLibraryTrackToSong, createApplePlaylist, deleteApplePlaylist, updateApplePlaylist, removeAppleTracksFromPlaylist, getLastAppleMutationResult, APPLE_FAVORITES_ID, APPLE_LIBRARY_ID } from '../services/appleCatalog'
 import CachedImage from './CachedImage'
 import { preloadArtwork } from '../services/artworkLoader'
@@ -660,6 +662,11 @@ function HomeView({
     localStorage.setItem('homeModuleIndex_soda', currentSodaIndex.toString())
   }, [currentSodaIndex])
 
+  // Apple 卡片索引此前漏写持久化，重启后必回 0
+  useEffect(() => {
+    localStorage.setItem('homeModuleIndex_apple', currentAppleIndex.toString())
+  }, [currentAppleIndex])
+
   useEffect(() => {
     if (moduleLoading) {
       setModuleCoversReady(false)
@@ -1299,11 +1306,17 @@ function HomeView({
     }
   }
 
+  // 歌单右键菜单的开关一律来自能力表（默认全 true，漏传就会在酷狗/汽水上露出点了会失败的项）
+  const playlistMenuCapabilities = getPlatformCapabilities(platform)
+
   // Share a playlist (copies the share link to the clipboard)
   const handleSharePlaylist = (playlist: any) => {
-    const url = platform === 'qq'
-      ? `https://y.qq.com/n/ryqq/playlist/${playlist.id}`
-      : `https://music.163.com/#/playlist?id=${playlist.id}`
+    // 平台链接统一由 playlistShare 生成（原来只区分 qq/netease，其它平台复制出错误链接）
+    const url = buildPlaylistShareUrl(playlist, (playlist?.platform || platform) as MusicPlatform)
+    if (!url) {
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '该平台暂不支持分享歌单链接', type: 'info' } }))
+      return
+    }
     try {
       navigator.clipboard.writeText(url).catch(() => {
         // Electron 中 clipboard API 可能被 CSP 限制，回退到 textarea 选择复制
@@ -3166,9 +3179,14 @@ function HomeView({
             : onRemoveFromFavorites
         }
         onRemoveFromPlaylist={
-          selectedPlaylist?.userId?.toString() === (platform === 'qq' ? qqUserId : neteaseUserId) &&
+          // 能力 + 归属双门：酷狗/汽水没有移除端点（removeTracksFromPlaylist=false），
+          // Apple 的两个虚拟歌单（资料库/喜爱）也不能移除曲目。
+          getPlatformCapabilities(selectedPlaylist?.platform || platform).removeTracksFromPlaylist &&
+          // 归属按歌单自身平台取 userId（原来只比 qq/netease，Spotify 歌单明明支持移除却被挡）
+          selectedPlaylist?.userId?.toString() === getPlaylistOwnerUserId((selectedPlaylist?.platform || platform) as MusicPlatform) &&
           !selectedPlaylist?.isLike &&
-          !selectedPlaylist?.isCollected
+          !selectedPlaylist?.isCollected &&
+          !isSpecialPlaylistRecord(selectedPlaylist)
             ? handleRemoveFromPlaylist
             : undefined
         }
@@ -3356,8 +3374,12 @@ function HomeView({
         onShare={handleSharePlaylist}
         isOwner={platform === 'apple' ? true : Boolean(playlistContextMenu.playlist?.ownedByMe) || playlistContextMenu.playlist?.userId?.toString() === getPlaylistOwnerUserId(platform)}
         isSubscribed={isSubscribed}
-        isSpecialPlaylist={Boolean(playlistContextMenu.playlist?.isLike)}
-        canEdit={platform === 'netease' || platform === 'apple'}
+        isSpecialPlaylist={isSpecialPlaylistRecord(playlistContextMenu.playlist)}
+        canEdit={playlistMenuCapabilities.updatePlaylist}
+        canDelete={playlistMenuCapabilities.deletePlaylist}
+        canSubscribe={playlistMenuCapabilities.subscribePlaylist}
+        canShare={playlistMenuCapabilities.sharePlaylist
+          && (platform !== 'apple' || String(playlistContextMenu.playlist?.id || '').startsWith('pl.'))}
       />
 
       {/* Create playlist dialog */}

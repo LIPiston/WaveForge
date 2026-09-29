@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef } from 'react'
+import { memo, useCallback, useRef, useState, type MouseEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { X, Play, Music, Loader2, Sparkles } from 'lucide-react'
@@ -8,6 +8,9 @@ import { isSodaLoggedIn } from '../services/sodaService'
 import CachedImage from './CachedImage'
 import ScrollToTop from './ScrollToTop'
 import ScrollToCurrentSong from './ScrollToCurrentSong'
+import { createPortal } from 'react-dom'
+import { useModeParked } from '../utils/modeLayer'
+import SongContextMenu, { type SongMenuBindings } from './SongContextMenu'
 import { useTvBack } from '../tv/tvCore'
 
 interface PlaylistPanelProps {
@@ -20,6 +23,9 @@ interface PlaylistPanelProps {
   qqVip?: boolean
   currentPlatform?: 'netease' | 'qq' | 'apple' | 'spotify' | 'kugou' | 'soda'
   onSmartReorder?: () => void
+  /** 右键菜单回调包（与播放页同一套）。2026-09-27 审计 C1：队列行原本没有右键；
+   *  目前提供 播放/下一首/喜欢/添加到/评论/专辑/歌手/详情/复制 等（本应用暂无"从队列移除"能力）。 */
+  songMenu?: SongMenuBindings
   isSmartReordering?: boolean
   smartReorderProgress?: { completed: number; total: number }
   playerTheme?: 'light' | 'dark'
@@ -39,6 +45,7 @@ const PlaylistRow = memo(function PlaylistRow({
   isVip,
   platform,
   onSongSelect,
+  onContextMenu,
 }: {
   song: Song
   index: number
@@ -47,6 +54,7 @@ const PlaylistRow = memo(function PlaylistRow({
   isVip: boolean
   platform: string
   onSongSelect: (index: number) => void
+  onContextMenu: (event: MouseEvent, song: Song, index: number) => void
 }) {
   return (
     <motion.button
@@ -54,6 +62,7 @@ const PlaylistRow = memo(function PlaylistRow({
       whileHover={{ scale: 1.012, x: -2 }}
       whileTap={{ scale: 0.99 }}
       onClick={() => onSongSelect(index)}
+      onContextMenu={event => onContextMenu(event, song, index)}
       className="absolute inset-x-0 flex w-full cursor-pointer items-center gap-4 overflow-hidden rounded-2xl px-4 text-left"
       style={{
         top: 0,
@@ -141,7 +150,9 @@ function PlaylistPanel({
   isSmartReordering = false,
   smartReorderProgress,
   playerTheme = 'dark',
+  songMenu,
 }: PlaylistPanelProps) {
+  const parked = useModeParked()
   const isVip = currentPlatform === 'netease' ? neteaseVip : qqVip
   const isDark = playerTheme === 'dark'
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -152,6 +163,18 @@ function PlaylistPanel({
   })
 
   const onSelect = useCallback((index: number) => onSongSelect(index), [onSongSelect])
+
+  // 队列行右键菜单：回调包放 ref，openMenu 保持稳定引用（否则会击穿 PlaylistRow 的 memo）
+  const [menu, setMenu] = useState<{ show: boolean; x: number; y: number; song: Song | null }>(
+    { show: false, x: 0, y: 0, song: null })
+  const songMenuRef = useRef(songMenu)
+  songMenuRef.current = songMenu
+  const openMenu = useCallback((event: MouseEvent, song: Song) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setMenu({ show: true, x: event.clientX, y: event.clientY, song })
+  }, [])
+  const closeMenu = useCallback(() => setMenu(previous => ({ ...previous, show: false })), [])
 
   // @tanstack/react-virtual：固定行高 + overscan，滚动只渲染可见行
   const rowVirtualizer = useVirtualizer({
@@ -263,6 +286,7 @@ function PlaylistPanel({
                           isVip={isVip}
                           platform={currentPlatform}
                           onSongSelect={onSelect}
+                          onContextMenu={openMenu}
                         />
                       </div>
                     )
@@ -270,6 +294,22 @@ function PlaylistPanel({
                 </div>
               )}
             </div>
+
+            {/* portal 到 body：面板容器带 will-change:transform，会成为 fixed 后代的
+                包含块，直接内联渲染菜单坐标会整体偏移（复查 2026-09-27） */}
+            {songMenuRef.current && typeof document !== 'undefined' && !parked && createPortal(
+              <SongContextMenu
+                show={menu.show}
+                x={menu.x}
+                y={menu.y}
+                song={menu.song}
+                onClose={closeMenu}
+                {...songMenuRef.current}
+                platform={menu.song?.platform || currentPlatform}
+                playerTheme={playerTheme}
+              />,
+              document.body,
+            )}
 
             <ScrollToCurrentSong
               containerRef={scrollContainerRef}

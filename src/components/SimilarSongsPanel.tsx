@@ -1,10 +1,12 @@
-import { memo, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { motion } from 'framer-motion'
 import { X, Music, Play, ListPlus } from 'lucide-react'
 import type { Song } from '../services/musicApi'
 import { getSimilarSongs, getProxiedImageUrl } from '../services/musicApi'
 import { createTtlCache } from '../utils/ttlCache'
 import { useTvBack } from '../tv/tvCore'
+import { createPortal } from 'react-dom'
+import SongContextMenu, { type SongMenuBindings } from './SongContextMenu'
 
 // 相似歌曲短 TTL 缓存：同一首歌反复开关面板不再重发请求 / 重放加载态。
 // 空结果与错误不入缓存（否则「确实没有」会被钉死）。仅内存、不落盘；登录态变化时清空。
@@ -16,6 +18,8 @@ const similarCacheKey = (song: Song) => `${song.platform || 'netease'}:${song.mi
 
 interface SimilarSongsPanelProps {
   song: Song
+  /** 右键菜单回调包（与播放页同一套）。2026-09-27 审计 C4：相似歌曲行原本只有两个按钮。 */
+  songMenu?: SongMenuBindings
   onClose: () => void
   onPlayNow?: (song: Song) => void
   onPlayNext?: (song: Song) => void
@@ -24,7 +28,7 @@ interface SimilarSongsPanelProps {
   suspended?: boolean
 }
 
-function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme, suspended = false }: SimilarSongsPanelProps) {
+function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme, suspended = false, songMenu }: SimilarSongsPanelProps) {
   // TV 遥控器 BACK：关闭相似歌曲面板（冻结隐藏时不消费返回键，交给上层）
   useTvBack(() => {
     if (suspended) return false
@@ -35,6 +39,17 @@ function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme, 
   const cachedInitialSongs = similarSongsCache.get(similarCacheKey(song))
   const [songs, setSongs] = useState<Song[]>(() => cachedInitialSongs || [])
   const [loading, setLoading] = useState(() => !cachedInitialSongs?.length)
+  // 行右键菜单（回调包放 ref 保持 openMenu 稳定）
+  const [menu, setMenu] = useState<{ show: boolean; x: number; y: number; song: Song | null }>(
+    { show: false, x: 0, y: 0, song: null })
+  const songMenuRef = useRef(songMenu)
+  songMenuRef.current = songMenu
+  const openMenu = useCallback((event: MouseEvent, target: Song) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setMenu({ show: true, x: event.clientX, y: event.clientY, song: target })
+  }, [])
+  const closeMenu = useCallback(() => setMenu(previous => ({ ...previous, show: false })), [])
 
   useEffect(() => {
     const handleAccent = (e: Event) => {
@@ -222,7 +237,11 @@ function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme, 
               <div className="text-center py-10 text-white/50 text-sm">暂无相似歌曲</div>
             ) : (
               songs.map((s, i) => (
-                <div key={s.mid || s.id || i} className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-white/5 transition-colors group">
+                <div
+                  key={s.mid || s.id || i}
+                  onContextMenu={songMenuRef.current ? event => openMenu(event, s) : undefined}
+                  className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-white/5 transition-colors group"
+                >
                   <span className="w-5 text-center text-xs text-white/35">{i + 1}</span>
                   <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.08)' }}>
                     {s.album?.picUrl ? <img src={getProxiedImageUrl(s.album.picUrl, 100)} alt="" className="w-full h-full object-cover" /> : <Music className="w-5 h-5 m-auto text-white/40" />}
@@ -241,6 +260,21 @@ function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme, 
           </div>
         </div>
       </motion.div>
+      {/* portal 到 body：菜单必须落在背景层（onClick=onClose）的 DOM 子树之外，
+          否则点菜单项会冒泡触发关闭整个面板（复查 2026-09-27） */}
+      {songMenuRef.current && typeof document !== 'undefined' && createPortal(
+        <SongContextMenu
+          show={menu.show}
+          x={menu.x}
+          y={menu.y}
+          song={menu.song}
+          onClose={closeMenu}
+          {...songMenuRef.current}
+          platform={menu.song?.platform || song.platform || 'netease'}
+          playerTheme={playerTheme}
+        />,
+        document.body,
+      )}
     </motion.div>
   )
 }
