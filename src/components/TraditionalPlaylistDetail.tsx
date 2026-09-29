@@ -50,6 +50,7 @@ interface TraditionalPlaylistDetailProps {
   onRemoveFromPlaylist?: (song: Song, playlistId: string) => void | Promise<void>
   onViewComments?: (song: Song) => void
   onCopyInfo?: (song: Song) => void
+  onShare?: (song: Song) => void
   userPlaylists?: any[]
   /** 当前登录用户名/头像：自建/我喜欢歌单无 creator 时展示 */
   ownUserName?: string
@@ -80,7 +81,7 @@ const DetailCover = ({ src, alt, className, role = 'card', priority = 'critical'
 function TraditionalPlaylistDetail({
   playlist, songs, loading, error = '', onRetry, currentSong, playerTheme, accentColor, onClose, onSongSelect,
   onOpenArtist, onOpenAlbum, onPlayNext, onAddToFavorites, onRemoveFromFavorites, onAddToPlaylist, onRemoveFromPlaylist,
-  onViewComments, onCopyInfo, userPlaylists = [], ownUserName, ownUserAvatar, ownUserId, isOwner = false, onOpenUserProfile,
+  onViewComments, onCopyInfo, onShare, userPlaylists = [], ownUserName, ownUserAvatar, ownUserId, isOwner = false, onOpenUserProfile,
 }: TraditionalPlaylistDetailProps) {
   const [menu, setMenu] = useState<{ show: boolean; x: number; y: number; song: Song | null }>({ show: false, x: 0, y: 0, song: null })
   const [collected, setCollected] = useState(Boolean(playlist?.isCollected))
@@ -276,7 +277,7 @@ function TraditionalPlaylistDetail({
         </>
       )}
     </main>
-    <SongContextMenu show={menu.show} x={menu.x} y={menu.y} song={menu.song} onClose={() => setMenu({ show: false, x: 0, y: 0, song: null })} onPlayNow={song => onSongSelect(song, songs)} onPlayNext={onPlayNext} onAddToFavorites={onAddToFavorites} onRemoveFromFavorites={onRemoveFromFavorites} onAddToPlaylist={onAddToPlaylist} onRemoveFromPlaylist={onRemoveFromPlaylist ? song => { void onRemoveFromPlaylist(song, playlistId) } : canRemoveAppleTracks ? song => { void removeAppleTrack(song) } : undefined} currentPlaylistId={playlistId} onViewComments={onViewComments} onViewAlbum={song => { const albumId = song.album?.appleId || song.album?.mid || song.album?.id; if (albumId) onOpenAlbum?.(String(albumId), song.platform || platform) }} onViewArtist={song => { const artist = song.artists?.[0]; const artistId = artist?.appleId || artist?.mid || artist?.id; if (artistId) onOpenArtist?.(String(artistId), song.platform || platform) }} onCopyInfo={onCopyInfo} userPlaylists={userPlaylists} platform={platform} playerTheme={playerTheme} />
+    <SongContextMenu show={menu.show} x={menu.x} y={menu.y} song={menu.song} onClose={() => setMenu({ show: false, x: 0, y: 0, song: null })} onPlayNow={song => onSongSelect(song, songs)} onPlayNext={onPlayNext} onAddToFavorites={onAddToFavorites} onRemoveFromFavorites={onRemoveFromFavorites} onAddToPlaylist={onAddToPlaylist} onRemoveFromPlaylist={onRemoveFromPlaylist ? song => { void onRemoveFromPlaylist(song, playlistId) } : canRemoveAppleTracks ? song => { void removeAppleTrack(song) } : undefined} currentPlaylistId={playlistId} onViewComments={onViewComments} onViewAlbum={song => { const albumId = song.album?.appleId || song.album?.mid || song.album?.id; if (albumId) onOpenAlbum?.(String(albumId), song.platform || platform) }} onViewArtist={song => { const artist = song.artists?.[0]; const artistId = artist?.appleId || artist?.mid || artist?.id; if (artistId) onOpenArtist?.(String(artistId), song.platform || platform) }} onCopyInfo={onCopyInfo} onShare={onShare} userPlaylists={userPlaylists} platform={platform} playerTheme={playerTheme} />
   </div>
 }
 

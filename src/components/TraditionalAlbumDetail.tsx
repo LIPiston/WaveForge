@@ -29,13 +29,14 @@ interface TraditionalAlbumDetailProps {
   onAddToPlaylist?: (song: Song, playlistId: string) => void
   onViewComments?: (song: Song) => void
   onCopyInfo?: (song: Song) => void
+  onShare?: (song: Song) => void
   onOpenArtist?: (artistId: string, platform: MusicPlatform) => void
   userPlaylists?: any[]
 }
 
 function TraditionalAlbumDetail({
   albumId, platform, accent, isDark, currentSong, onClose, onSongSelect,
-  onPlayNext, onAddToFavorites, onRemoveFromFavorites, onAddToPlaylist, onViewComments, onCopyInfo, onOpenArtist, userPlaylists = [],
+  onPlayNext, onAddToFavorites, onRemoveFromFavorites, onAddToPlaylist, onViewComments, onCopyInfo, onShare, onOpenArtist, userPlaylists = [],
 }: TraditionalAlbumDetailProps) {
   const [album, setAlbum] = useState<any>(null)
   const [songs, setSongs] = useState<Song[]>([])
@@ -143,7 +144,7 @@ function TraditionalAlbumDetail({
                 </>
               )}
       </main>
-      <SongContextMenu show={menu.show} x={menu.x} y={menu.y} song={menu.song} onClose={() => setMenu({ show: false, x: 0, y: 0, song: null })} onPlayNow={song => onSongSelect(song, songs, { mode: 'traditional', surface: 'traditional-album', platform: song.platform || platform, albumId: albumId || undefined })} onPlayNext={onPlayNext} onAddToFavorites={onAddToFavorites} onRemoveFromFavorites={onRemoveFromFavorites} onAddToPlaylist={onAddToPlaylist} onViewComments={onViewComments} onViewAlbum={() => undefined} onViewArtist={song => { const artist = song.artists?.[0]; const artistId = artist?.appleId || artist?.mid || artist?.id; if (artistId) onOpenArtist?.(String(artistId), song.platform || platform) }} onCopyInfo={onCopyInfo} userPlaylists={userPlaylists} platform={menu.song?.platform || platform} playerTheme={isDark ? 'dark' : 'light'} />
+      <SongContextMenu show={menu.show} x={menu.x} y={menu.y} song={menu.song} onClose={() => setMenu({ show: false, x: 0, y: 0, song: null })} onPlayNow={song => onSongSelect(song, songs, { mode: 'traditional', surface: 'traditional-album', platform: song.platform || platform, albumId: albumId || undefined })} onPlayNext={onPlayNext} onAddToFavorites={onAddToFavorites} onRemoveFromFavorites={onRemoveFromFavorites} onAddToPlaylist={onAddToPlaylist} onViewComments={onViewComments} onViewArtist={song => { const artist = song.artists?.[0]; const artistId = artist?.appleId || artist?.mid || artist?.id; if (artistId) onOpenArtist?.(String(artistId), song.platform || platform) }} onCopyInfo={onCopyInfo} onShare={onShare} userPlaylists={userPlaylists} platform={menu.song?.platform || platform} playerTheme={isDark ? 'dark' : 'light'} />
     </div>
   )
 }

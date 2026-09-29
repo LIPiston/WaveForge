@@ -33,10 +33,12 @@ interface TraditionalLibraryProps {
   onViewComments?: (song: Song) => void
   onCopyInfo?: (song: Song) => void
   userPlaylists?: any[]
+  /** 歌曲卡右键：复用 TraditionalView 的 songMenu 通道 */
+  onSongMenu?: (menu: { show: boolean; x: number; y: number; song: Song | null }) => void
 }
 
 function TraditionalLibrary({
-  platform, accent, isDark, loggedIn, username, loading, payload, recommendationSongs, onSongSelect,
+  platform, accent, isDark, loggedIn, username, loading, payload, recommendationSongs, onSongSelect, onSongMenu,
 }: TraditionalLibraryProps) {
   const muted = isDark ? 'text-white/50' : 'text-slate-500'
   const surface = isDark ? 'bg-white/[0.055] border-white/10' : 'bg-white/75 border-black/10'
@@ -94,6 +96,11 @@ function TraditionalLibrary({
                     key={songKey(song)}
                     type="button"
                     onClick={() => onSongSelect(song, section.songs, { mode: 'traditional', surface: 'traditional-library', platform: song.platform || platform })}
+                    onContextMenu={event => {
+                      if (!onSongMenu) return
+                      event.preventDefault()
+                      onSongMenu({ show: true, x: event.clientX, y: event.clientY, song })
+                    }}
                     className={`group overflow-hidden rounded-2xl border p-2 text-left transition hover:-translate-y-1 ${surface}`}
                   >
                     <div className="relative aspect-square overflow-hidden rounded-xl">

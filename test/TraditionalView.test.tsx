@@ -31,6 +31,43 @@ vi.mock('../src/services/exploreApi', () => ({
     songs: [{ id: 2, name: '歌单歌曲', artists: [{ name: '歌手B' }], album: { name: '专辑B', picUrl: '' }, duration: 180000, platform: 'netease' }],
   })),
   fetchExploreChart: vi.fn(),
+  fetchExploreChannel: vi.fn(),
+}))
+
+// 传统模式首页 = PC 客户端风格页面（QQPcHome 吃聚合 payload；NeteasePcHome 自拉原生数据）。
+// 外壳冒烟测试直接用真实组件（jsdom 网络失败会优雅降级），只断言外壳接线与 PC 结构。
+vi.mock('../src/features/qqExplore/QQExplorePage', () => ({ default: () => <div data-testid="qq-explore-page" /> }))
+
+// QQ 首页的数据源 = QQ 客户端原生推荐流（不是手机端聚合数据）：这里给它一份与客户端同构的
+// 两卡货架，验证首页按 feed 卡片渲染与点击分发。
+vi.mock('../src/features/qqExplore/api', () => ({
+  fetchQQExploreBootstrap: vi.fn(async () => ({
+    feed: {
+      loadMark: 1,
+      hasMore: false,
+      cursor: { page: 1, shelfCount: 1 },
+      modules: [{
+        id: 'hi', instanceId: 'hi', title: 'Hi 测试用户  今日为你推荐', style: 2, source: 'qq-native-recommend-feed', refresh: null,
+        cards: [
+          { id: 'c-radio', feedKey: 'hi', type: 700, subtype: 711, style: 201, title: '猜你喜欢', subtitle: '', coverUrl: 'https://x/radio.png', songs: [], action: { type: 'play-radio' } },
+          { id: 'c-daily', feedKey: 'hi', type: 500, subtype: 510, style: 202, title: '每日30首', subtitle: 'イエナイ-花村想太', layerTitle: 'Daily 30', coverUrl: 'https://x/daily.png', songs: [], action: { type: 'open-playlist', playlistId: '7912452323' } },
+        ],
+      }],
+    },
+    musicHall: [],
+    daily30: { playlistId: '7912452323', title: '测试用户的今日私享', coverUrl: 'https://x/daily30.png', dateKey: '2026-09-29', songs: [{ id: 1, name: '日推歌曲', artists: [{ name: '歌手A' }], album: { name: '专辑', picUrl: '' }, duration: 240000, platform: 'qq' }] },
+  })),
+  fetchQQRadarSongs: vi.fn(async () => ({ songs: [], hasMore: false, page: 1 })),
+  fetchQQExploreFeed: vi.fn(async () => ({ modules: [], loadMark: 0, hasMore: false, cursor: { page: 1, shelfCount: 0 } })),
+  fetchQQExploreAppendShelf: vi.fn(async () => ({ modules: [] })),
+  fetchQQExploreSimilarShelf: vi.fn(async () => ({ modules: [] })),
+  resolveQQExploreSongs: vi.fn(async () => []),
+  resolveQQExploreSong: vi.fn(async () => null),
+  fetchQQExplorePreferences: vi.fn(async () => ({ items: [] })),
+  saveQQExplorePreferences: vi.fn(async () => ({ saved: 0 })),
+  fetchQQDislikeList: vi.fn(async () => ({ songs: [] })),
+  fetchQQExploreFeedbackOptions: vi.fn(async () => ({ options: [], affirmText: '' })),
+  submitQQExploreFeedback: vi.fn(async () => ({ success: true })),
 }))
 
 vi.mock('../src/services/playlistService', () => ({
@@ -41,6 +78,8 @@ vi.mock('../src/services/playlistService', () => ({
   ]),
   subscribePlaylist: vi.fn(async () => ({ code: 200 })),
   createPlaylist: vi.fn(async () => ({ code: 200 })),
+  // PC 复刻左栏的计数与红心判定会读它（真实模块返回标识符列表，不含歌曲对象）
+  getLikedSongs: vi.fn(async () => ({ ids: ['1'], mids: [] })),
   invalidateUserPlaylistsCache: vi.fn(),
 }))
 
@@ -167,48 +206,44 @@ describe('传统模式 TraditionalView', () => {
   })
   afterEach(() => cleanup())
 
-  it('渲染首页（发现）：平台药丸、搜索按钮、排行榜、新歌、推荐歌单', async () => {
+  it('渲染首页（发现）：平台药丸、左栏搜索入口、网易云推荐页快捷卡', async () => {
     render(<TraditionalView {...baseProps} />)
     expect(screen.getByText('网易云')).toBeTruthy()
     expect(screen.getByRole('button', { name: '搜索' })).toBeTruthy()
-    await waitFor(() => expect(screen.getByText('排行榜')).toBeTruthy(), { timeout: 3000 })
-    expect(screen.getByText('飙升榜')).toBeTruthy()
-    expect(screen.getByText('新歌速递')).toBeTruthy()
-    expect(screen.getByText('新歌一首')).toBeTruthy()
-    await waitFor(() => expect(screen.getAllByText('推荐歌单').length).toBeGreaterThan(0), { timeout: 3000 })
+    // 网易云 PC 推荐页：官方 7 张快捷卡（接口不可用时用本地兜底标题，结构必须在）
+    await waitFor(() => expect(screen.getByText('每日推荐')).toBeTruthy(), { timeout: 4000 })
+    expect(screen.getByText('私人漫游')).toBeTruthy()
+    expect(screen.getByText('音乐播客')).toBeTruthy()
   })
 
-  it('首页失败后显示错误并可重试恢复内容', async () => {
-    vi.mocked(fetchExploreHome)
-      .mockRejectedValueOnce(new Error('网络暂时不可用'))
-      .mockResolvedValueOnce(cannedHomePayload as any)
+  it('聚合首页失败时客户端推荐页照常渲染', async () => {
+    vi.mocked(fetchExploreHome).mockRejectedValueOnce(new Error('网络暂时不可用'))
     render(<TraditionalView {...baseProps} />)
-    expect((await screen.findByRole('alert')).textContent).toContain('网络暂时不可用')
-    fireEvent.click(screen.getByRole('button', { name: '重试' }))
-    await waitFor(() => expect(screen.getByText('排行榜')).toBeTruthy())
-    expect(fetchExploreHome).toHaveBeenCalledTimes(2)
+    // 复刻推荐页自含原生数据链路：聚合 payload 失败不影响客户端结构渲染
+    await waitFor(() => expect(screen.getByText('每日推荐')).toBeTruthy(), { timeout: 4000 })
+    expect(fetchExploreHome).toHaveBeenCalled()
   })
 
   it('点击搜索按钮进入独立搜索页（中间栏）', async () => {
     render(<TraditionalView {...baseProps} />)
     fireEvent.click(screen.getByRole('button', { name: '搜索' }))
-    await waitFor(() => expect(screen.getByPlaceholderText(/搜索 网易云/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByPlaceholderText(/在网易云音乐中搜索/)).toBeTruthy())
   })
 
-  it('音乐库页显示个性化推荐（不是用户歌单列表）', async () => {
+  it('非复刻平台（Apple）音乐库页仍显示个性化推荐', async () => {
+    localStorage.setItem('waveforge:platform', 'apple')
     render(<TraditionalView {...baseProps} />)
-    fireEvent.click(screen.getByRole('button', { name: '音乐库' }))
-    await waitFor(() => expect(screen.getByText(/专属音乐库|量身推荐/)).toBeTruthy())
-    expect(screen.getByText('每日推荐')).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: '音乐库' }))
+    await waitFor(() => expect(screen.getByText(/专属音乐库|量身推荐|热门音乐推荐/)).toBeTruthy())
+    expect(screen.getAllByText(/每日推荐|热门推荐/).length).toBeGreaterThan(0)
   })
 
-  it('左栏歌单含 我的歌单/收藏 切换与创建入口，歌单显示全量', async () => {
+  it('网易云左栏按官方分组显示 创建的歌单/收藏的歌单 与新建入口', async () => {
     render(<TraditionalView {...baseProps} />)
     await waitFor(() => expect(screen.getByText('我的歌单一')).toBeTruthy(), { timeout: 3000 })
-    expect(screen.getByText('收藏')).toBeTruthy()
-    fireEvent.click(screen.getByText('收藏'))
-    await waitFor(() => expect(screen.getByText('收藏的歌单')).toBeTruthy())
-    expect(screen.getByLabelText('创建歌单')).toBeTruthy()
+    expect(screen.getByText(/^创建的歌单/)).toBeTruthy()
+    expect(screen.getAllByText('收藏的歌单').length).toBeGreaterThan(0)
+    expect(screen.getByLabelText('新建歌单')).toBeTruthy()
   })
 
   it('左上角后退/前进箭头支持页面历史导航', async () => {
@@ -218,14 +253,14 @@ describe('传统模式 TraditionalView', () => {
     expect((back as HTMLButtonElement).disabled).toBe(true)
     // 进入搜索页 → 后退可用
     fireEvent.click(screen.getByRole('button', { name: '搜索' }))
-    await waitFor(() => expect(screen.getByPlaceholderText(/搜索 网易云/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByPlaceholderText(/在网易云音乐中搜索/)).toBeTruthy())
     fireEvent.click(back)
     await waitFor(() => expect(screen.getByRole('button', { name: '搜索' })).toBeTruthy())
     // 搜索页被冻结保留（不卸载），但已经隐藏、不再可见/可交互
-    expect(isHiddenPane(screen.getByPlaceholderText(/搜索 网易云/))).toBe(true)
+    expect(isHiddenPane(screen.getByPlaceholderText(/在网易云音乐中搜索/))).toBe(true)
     // 前进回到搜索页
     fireEvent.click(screen.getByLabelText('前进'))
-    await waitFor(() => expect(isHiddenPane(screen.getByPlaceholderText(/搜索 网易云/))).toBe(false))
+    await waitFor(() => expect(isHiddenPane(screen.getByPlaceholderText(/在网易云音乐中搜索/))).toBe(false))
   })
 
   it('平台药丸在右上角（头部仍渲染平台标签）', async () => {
@@ -310,17 +345,19 @@ describe('传统模式 TraditionalView', () => {
 
   it('恢复 traditional-search 来源并由 TV back 返回首页', async () => {
     render(<TraditionalView {...baseProps} restorePlaybackOrigin={{ revision: 1, mode: 'traditional', surface: 'traditional-search', platform: 'netease' }} />)
-    await waitFor(() => expect(screen.getByPlaceholderText(/搜索 网易云/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByPlaceholderText(/在网易云音乐中搜索/)).toBeTruthy())
     expect(dispatchTvBack()).toBe(true)
     // 冻结语义：搜索页保留在 DOM 但已隐藏
-    await waitFor(() => expect(isHiddenPane(screen.getByPlaceholderText(/搜索 网易云/))).toBe(true))
+    await waitFor(() => expect(isHiddenPane(screen.getByPlaceholderText(/在网易云音乐中搜索/))).toBe(true))
   })
 
-  it('旧偏好中的关闭推荐不再隐藏排行榜和推荐歌单', async () => {
+  it('旧偏好中的关闭推荐不影响客户端推荐页渲染', async () => {
     localStorage.setItem('waveforge:traditional-preferences:v2', JSON.stringify({ showRecommendations: false, density: 'compact', sidebarWidth: 'narrow' }))
     render(<TraditionalView {...baseProps} />)
-    await waitFor(() => expect(screen.getByText('排行榜')).toBeTruthy())
-    expect(screen.getAllByText('推荐歌单').length).toBeGreaterThan(0)
+    // 复刻页的快捷卡与区块不受旧「关闭推荐」偏好影响
+    await waitFor(() => expect(screen.getByText('每日推荐')).toBeTruthy(), { timeout: 4000 })
+    expect(screen.getByText('私人漫游')).toBeTruthy()
+    expect(screen.getByText('音乐播客')).toBeTruthy()
   })
 
   it('英文歌词水平排版，日文假名歌词竖排', () => {
@@ -334,17 +371,21 @@ describe('传统模式 TraditionalView', () => {
     expect(screen.getByText('君のことが好きだよ').style.writingMode).toBe('vertical-rl')
   })
 
-  it('我的歌单和收藏分别记忆滚动位置', async () => {
-    render(<TraditionalView {...baseProps} />)
+  it('QQ 左栏 自建歌单/收藏歌单 分别记忆滚动位置', async () => {
+    localStorage.setItem('waveforge:platform', 'qq')
+    render(<TraditionalView {...baseProps} qqLoggedIn qqUsername="QQ 用户" qqUserId="1" />)
+    // QQ 左栏默认停在「收藏歌单」（与客户端一致），先切到自建歌单再验证两个列表各自记位置
+    await waitFor(() => expect(screen.getByText('收藏的歌单')).toBeTruthy(), { timeout: 3000 })
+    fireEvent.click(screen.getByText('自建歌单'))
     await waitFor(() => expect(screen.getByText('我的歌单一')).toBeTruthy())
     const scroller = screen.getByTestId('traditional-playlist-scroll')
     scroller.scrollTop = 135
-    fireEvent.click(screen.getByText('收藏'))
+    fireEvent.click(screen.getByText('收藏歌单'))
     expect(scroller.scrollTop).toBe(0)
     scroller.scrollTop = 48
-    fireEvent.click(screen.getByText('我的歌单'))
+    fireEvent.click(screen.getByText('自建歌单'))
     expect(scroller.scrollTop).toBe(135)
-    fireEvent.click(screen.getByText('收藏'))
+    fireEvent.click(screen.getByText('收藏歌单'))
     expect(scroller.scrollTop).toBe(48)
   })
 
@@ -414,7 +455,7 @@ describe('传统模式 TraditionalView', () => {
     const onOpenPlayer = vi.fn()
     render(<TraditionalView {...baseProps} currentSong={playingSong} queue={[playingSong]} onOpenPlayer={onOpenPlayer} />)
     fireEvent.click(screen.getByRole('button', { name: '搜索' }))
-    await waitFor(() => expect(screen.getByPlaceholderText(/搜索 网易云/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByPlaceholderText(/在网易云音乐中搜索/)).toBeTruthy())
     fireEvent.click(screen.getAllByTitle('进入播放页')[0])
     expect(onOpenPlayer).toHaveBeenCalledWith({ mode: 'traditional', surface: 'traditional-search', platform: 'netease' })
   })
@@ -422,11 +463,12 @@ describe('传统模式 TraditionalView', () => {
   it('右栏队列切歌保留当前传统页面来源', async () => {
     const onSongSelect = vi.fn()
     const queuedSong = { ...playingSong, id: 89, name: '队列下一首' }
+    localStorage.setItem('waveforge:platform', 'apple')
     render(<TraditionalView {...baseProps} currentSong={playingSong} queue={[playingSong, queuedSong]} onSongSelect={onSongSelect} />)
-    fireEvent.click(screen.getByRole('button', { name: '音乐库' }))
-    await waitFor(() => expect(screen.getByText(/专属音乐库|量身推荐/)).toBeTruthy())
+    fireEvent.click(await screen.findByRole('button', { name: '音乐库' }))
+    await waitFor(() => expect(screen.getByText(/专属音乐库|量身推荐|热门音乐推荐/)).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: /队列下一首/ }))
-    expect(onSongSelect).toHaveBeenCalledWith(queuedSong, [playingSong, queuedSong], { mode: 'traditional', surface: 'traditional-library', platform: 'netease' })
+    expect(onSongSelect).toHaveBeenCalledWith(queuedSong, [playingSong, queuedSong], { mode: 'traditional', surface: 'traditional-library', platform: 'apple' })
   })
 
   it('主播放按钮提供语义并为浅色封面选择可读图标色', () => {
@@ -467,18 +509,16 @@ describe('传统模式 TraditionalView', () => {
     }
   })
 
-  it('网易云排行榜预览缺少 id 时不直接播放占位歌曲', async () => {
-    const onSongSelect = vi.fn()
-    const { fetchExploreChart } = await import('../src/services/exploreApi')
-    vi.mocked(fetchExploreChart).mockResolvedValueOnce({ playlist: { id: 'chart', name: '榜单', coverImgUrl: '', trackCount: 1, platform: 'netease' }, songs: [playingSong] } as any)
-    const payload = { ...cannedHomePayload, charts: [{ id: 'chart', name: '榜单', group: '网易云', coverUrl: '', platform: 'netease', songs: [{ id: 0, name: '榜单预览', artist: '歌手' }] }] }
-    vi.mocked(fetchExploreHome).mockResolvedValueOnce(payload as any)
-    render(<TraditionalView {...baseProps} onSongSelect={onSongSelect} />)
-    await screen.findByText('排行榜')
-    const chartRow = screen.getByRole('button', { name: /榜单预览/ })
-    fireEvent.click(chartRow)
-    await waitFor(() => expect(fetchExploreChart).toHaveBeenCalled())
-    await waitFor(() => expect(onSongSelect).toHaveBeenCalledWith(playingSong, [playingSong], expect.objectContaining({ platform: 'netease' })))
+  it('QQ 平台首页按客户端原生推荐流渲染 Hero 卡（不是聚合数据）', async () => {
+    render(<TraditionalView {...baseProps} />)
+    fireEvent.click(screen.getByText('QQ音乐'))
+    // 主推大卡 + 彩色功能卡都来自 QQ 客户端自己的推荐流
+    await waitFor(() => expect(screen.getByText('猜你喜欢')).toBeTruthy(), { timeout: 4000 })
+    // 标签用 feed 自带的官方名（layerTitle），说明行用真实副标题 + 歌单中文名
+    expect(screen.getByText('Daily 30')).toBeTruthy()
+    expect(screen.getByText(/イエナイ-花村想太/)).toBeTruthy()
+    expect(screen.getByText('每日30首')).toBeTruthy()
+    expect(screen.getByText('你的歌单宝藏库')).toBeTruthy()
   })
 
   it('所有者歌单不应被判定为可收藏', () => {
@@ -498,11 +538,12 @@ describe('传统模式 TraditionalView', () => {
     expect(isPlaylistOwner({ id: 'p.mine', platform: 'apple', ownedByMe: true })).toBe(true)
   })
 
-  it('空封面渲染占位而不是空 src 图片', async () => {
-    const payload = { ...cannedHomePayload, charts: [{ id: 'empty-cover', name: '无封面榜单', group: '网易云', coverUrl: '', platform: 'netease', songs: [{ id: 0, name: '预览歌曲', artist: '歌手' }] }] }
-    vi.mocked(fetchExploreHome).mockResolvedValueOnce(payload as any)
+  it('QQ 平台 PC 首页渲染歌单封面且无空 src 图片', async () => {
+    const payload = { ...cannedHomePayload, playlists: [{ id: 'pl-empty', name: '无封面歌单', coverUrl: '', trackCount: 3, platform: 'qq' }] }
+    vi.mocked(fetchExploreHome).mockResolvedValue(payload as any)
     render(<TraditionalView {...baseProps} />)
-    expect(await screen.findByLabelText('无封面榜单 封面占位')).toBeTruthy()
+    fireEvent.click(screen.getByText('QQ音乐'))
+    expect((await screen.findAllByLabelText('无封面歌单 封面占位')).length).toBeGreaterThan(0)
     expect(document.querySelector('img[src=""]')).toBeNull()
   })
 

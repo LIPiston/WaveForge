@@ -7,6 +7,9 @@ import { getProxiedImageUrl, searchAlbums, searchArtists, searchPlaylists, searc
 import type { MusicPlatform } from '../services/platforms'
 import { getPlatformCapabilities, platformLabel } from '../services/platforms'
 import SongContextMenu from './SongContextMenu'
+import PlaylistContextMenu from './PlaylistContextMenu'
+import { subscribePlaylist } from '../services/playlistService'
+import { buildPlaylistShareUrl } from '../services/playlistShare'
 import CachedImage from './CachedImage'
 import type { PlaybackOrigin } from '../types/playbackNavigation'
 import { createTtlCache } from '../utils/ttlCache'
@@ -46,6 +49,10 @@ interface TraditionalSearchProps {
   onViewComments?: (song: Song) => void
   onCopyInfo?: (song: Song) => void
   userPlaylists?: any[]
+  /** 外部入口（如 QQ 推荐页「搜歌名」）预填的关键词：进页即自动搜索 */
+  initialKeyword?: string
+  /** 右键分享（生成官方链接并复制） */
+  onShare?: (song: Song) => void
 }
 
 const TAB_LABELS: Array<[SearchTab, string]> = [
@@ -56,9 +63,9 @@ const supportsPlaylistSearch = (platform: MusicPlatform) => getPlatformCapabilit
 function TraditionalSearch({
   platform, accent, isDark, active = true, currentSong, onSongSelect, onOpenPlaylist,
   onOpenArtist, onOpenAlbum, onPlayNext, onAddToFavorites, onRemoveFromFavorites,
-  onAddToPlaylist, onViewComments, onCopyInfo, userPlaylists = [],
+  onAddToPlaylist, onViewComments, onCopyInfo, userPlaylists = [], initialKeyword, onShare,
 }: TraditionalSearchProps) {
-  const [keyword, setKeyword] = useState('')
+  const [keyword, setKeyword] = useState(initialKeyword || '')
   const [tab, setTab] = useState<SearchTab>('songs')
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
@@ -68,6 +75,8 @@ function TraditionalSearch({
   const [playlists, setPlaylists] = useState<any[]>([])
   const [error, setError] = useState('')
   const [songMenu, setSongMenu] = useState<{ show: boolean; x: number; y: number; song: Song | null }>({ show: false, x: 0, y: 0, song: null })
+  // 搜索结果歌单卡右键菜单（收藏/分享；能力门随当前平台）
+  const [playlistMenu, setPlaylistMenu] = useState<{ show: boolean; x: number; y: number; playlist: any }>({ show: false, x: 0, y: 0, playlist: null })
   const [history, setHistory] = useState<string[]>(() => {
     try { return Array.isArray(JSON.parse(localStorage.getItem(`waveforge:traditional-search-history:${platform}`) || '[]')) ? JSON.parse(localStorage.getItem(`waveforge:traditional-search-history:${platform}`) || '[]') : [] } catch { return [] }
   })
@@ -349,6 +358,7 @@ function TraditionalSearch({
                   key={`${playlist.id}:${index}`}
                   type="button"
                   onClick={() => onOpenPlaylist(playlist)}
+                  onContextMenu={event => { event.preventDefault(); setPlaylistMenu({ show: true, x: event.clientX, y: event.clientY, playlist }) }}
                   className={`overflow-hidden rounded-2xl border p-2 text-left transition hover:-translate-y-1 ${surface}`}
                 >
                   <CachedImage src={playlist.coverUrl || playlist.coverImgUrl || ''} alt="" className="aspect-square w-full rounded-xl object-cover" role="card" priority="visible" fallback={<div className="flex aspect-square w-full items-center justify-center rounded-xl" style={{ background: `${accent}22` }}><Music2 className="h-6 w-6 opacity-35" /></div>} />
@@ -370,6 +380,7 @@ function TraditionalSearch({
         onRemoveFromFavorites={onRemoveFromFavorites}
         onAddToPlaylist={onAddToPlaylist}
         onViewComments={onViewComments}
+        onShare={onShare}
         onViewAlbum={song => {
           const albumId = song.album?.appleId || song.album?.mid || song.album?.id
           if (albumId) onOpenAlbum?.(String(albumId), song.platform || platform)
@@ -383,6 +394,37 @@ function TraditionalSearch({
         userPlaylists={userPlaylists}
         platform={songMenu.song?.platform || platform}
         playerTheme={isDark ? 'dark' : 'light'}
+      />
+
+      {/* 搜索结果歌单卡右键菜单：搜索结果是他人歌单，不提供编辑/删除；收藏/分享按平台能力表开门 */}
+      <PlaylistContextMenu
+        show={playlistMenu.show} x={playlistMenu.x} y={playlistMenu.y} playlist={playlistMenu.playlist}
+        onClose={() => setPlaylistMenu({ show: false, x: 0, y: 0, playlist: null })}
+        onEdit={() => undefined}
+        onDelete={() => undefined}
+        onSubscribe={(target, subscribe) => {
+          void subscribePlaylist(target.id.toString(), subscribe, target.platform || platform)
+            .then(() => {
+              window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: subscribe ? '已收藏歌单' : '已取消收藏', type: 'success' } }))
+            })
+            .catch((error: unknown) => {
+              window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: error instanceof Error ? error.message : '歌单收藏操作失败，请重试', type: 'error' } }))
+            })
+        }}
+        onShare={target => {
+          const url = buildPlaylistShareUrl(target, target.platform || platform)
+          if (!url) {
+            window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '当前平台暂不支持分享歌单', type: 'info' } }))
+            return
+          }
+          void navigator.clipboard?.writeText(url)
+          window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '歌单链接已复制', type: 'success' } }))
+        }}
+        isOwner={false}
+        canEdit={false}
+        canDelete={false}
+        canSubscribe={getPlatformCapabilities(platform).subscribePlaylist}
+        canShare={getPlatformCapabilities(platform).sharePlaylist}
       />
     </div>
   )
