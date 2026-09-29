@@ -37,11 +37,12 @@ export interface UpdateManifest {
 
 export const GITEE_RELEASES_URL = 'https://gitee.com/kirito666233/wave-forge/releases'
 
-/** 逐个源拉取更新清单，任一成功即返回；全部失败返回 null。 */
+/** 逐个源拉取更新清单，任一成功即返回；全部失败返回 null。
+ *  单源 10s 超时：某个源 TCP 挂起时不再无限等待，顺延到下一个源。 */
 export async function fetchUpdateManifest(): Promise<UpdateManifest | null> {
   for (const url of UPDATE_MANIFEST_URLS) {
     try {
-      const res = await fetch(url, { cache: 'no-store' })
+      const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(10_000) })
       if (res.ok) return (await res.json()) as UpdateManifest
     } catch {
       // 尝试下一个源

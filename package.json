@@ -104,6 +104,7 @@
     "asarUnpack": [
       "resources/python-embed/**/*",
       "desktop/workers/**/*.py",
+      "desktop/workers/qq_automix_lab/**/*",
       "server/**/*.py",
       "python-beat-service/**/*.py",
       "python-apple-bridge/**/*.py"

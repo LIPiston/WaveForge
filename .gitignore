@@ -45,6 +45,15 @@ probe*.wav
 # TV 壁纸扫码上传（dev-tv-server.mjs 存项目根，运行时生成不入库）
 waveforge-wallpapers/
 
+# TV 运行时状态快照（tv-extensions.mjs 写到 wallpapers 目录同级，根目录这份是陈旧拷贝）
+tv-debug-state.json
+
+# MuMu/模拟器调试截图与控件 dump（本地调试痕迹，不入库）
+mumu-*.png
+mumu-*.xml
+qq-127.0.0.1*.png
+qq-emulator-*.png
+
 # TV 端兑换授权记录（dev 时存项目根，运行时生成不入库）
 tv-license.json
 
@@ -96,3 +105,11 @@ debug-minimal/dist/
 
 # 登录状态调试产物
 test-login-status.txt
+
+# 本地基准/评测工作目录（AutoMix 语料评测与探针输出，可重建，不入库）
+.tmp/
+
+# 外部工具调试截图与一次性探针脚本（本地痕迹，不入库）
+opencodepcs-*.png
+try_mixplan*.mjs
+test_dislike_signed.mjs
