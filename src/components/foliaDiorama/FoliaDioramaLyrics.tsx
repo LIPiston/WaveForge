@@ -153,7 +153,6 @@ export default function FoliaDioramaLyrics({
     return () => { cancelled = true }
   }, [])
   const renderQuality = resolveDioramaRenderQuality({ mvBackgroundActive, gpuSoftwareCompositing })
-  const shouldRenderCanvas = !mvBackgroundActive
   const currentTime = useMotionValue(0)
   // sequencer 状态机（切歌铺段 / 歌词晚到原位重建 / 行推进与循环）抽到 hook：5 state + 4 ref + 4 effect
   // + setTimeout 跟踪全在 hook 内，主组件只保留 rAF 时间同步与 WebGL 恢复（与 sequencer 无关）。
@@ -185,7 +184,7 @@ export default function FoliaDioramaLyrics({
       const extrapolated = playing ? Math.min(0.5, (now - anchorWall) / 1000) : 0
       currentTime.set(anchorTime + extrapolated + timeOffset)
       // 未播放或窗口隐藏时停帧（Electron backgroundThrottling 关闭，隐藏后 rAF 仍全速）
-      if (playing && shouldRenderCanvas && document.visibilityState === 'visible') {
+      if (playing && document.visibilityState === 'visible') {
         raf = requestAnimationFrame(tick)
       } else {
         raf = 0
@@ -194,7 +193,7 @@ export default function FoliaDioramaLyrics({
     syncClock()
     const unsubscribe = playbackTimeStore.subscribe(syncClock)
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && raf === 0 && playing && shouldRenderCanvas) raf = requestAnimationFrame(tick)
+      if (document.visibilityState === 'visible' && raf === 0 && playing) raf = requestAnimationFrame(tick)
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     raf = requestAnimationFrame(tick)
@@ -203,7 +202,7 @@ export default function FoliaDioramaLyrics({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       cancelAnimationFrame(raf)
     }
-  }, [currentTime, playbackTimeStore, timeOffset, shouldRenderCanvas])
+  }, [currentTime, playbackTimeStore, timeOffset])
 
   // ── 运动参数（默认 normal 强度） ───────────────────────────────────────────────────────
   const motion = useMemo(() => resolveDioramaMotionParams(DEFAULT_DIORAMA_TUNING, 'normal'), [])
@@ -269,58 +268,64 @@ export default function FoliaDioramaLyrics({
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('focus', onVisibility)
     }
-  }, [canvasRecoveryKey])
+    // mvBackgroundActive 变化会用 key 重建 Canvas（alpha 是上下文创建参数），需重新挂监听
+  }, [canvasRecoveryKey, mvBackgroundActive])
 
   return (
     <div className={`relative h-full w-full overflow-hidden ${mvBackgroundActive ? 'bg-transparent' : 'bg-[#05060c]'}`}>
-      {shouldRenderCanvas && (
-        <div ref={canvasHostRef} className="absolute inset-0">
-          <Canvas
-            key={canvasRecoveryKey}
-            dpr={renderQuality.dpr}
-            flat
-            camera={{ fov: 55, near: 0.1, far: 140, position: [0, 0.6, 9] }}
-            gl={{ powerPreference: 'high-performance', alpha: false }}
-            className="h-full w-full"
-            onCreated={(state) => {
-              // 引擎实例级懒预热：R3F 场景就位后把真实编译产物写入 GpuDiskCache，
-              // 下次启动/重进播放页直接命中（对 ShaderMaterial 裸预热已是逐字一致，这里再兜底
-              // 覆盖 R3F 其余内置材质的注入形态）。塞进 setTimeout 等子树挂完，失败静默。
-              window.setTimeout(() => {
-                try {
-                  void state.gl.compileAsync(state.scene, state.camera)
-                } catch { /* 尽力而为 */ }
-              }, 400)
-            }}
-          >
-            <DioramaScene
-              currentTime={currentTime}
-              sequencer={sequencer}
-              globalIndex={globalIndex}
-              motion={motion}
-              fontStack={FONT_STACK}
-              accentColor={accentColor}
-              outgoingGlobalIndex={outgoingGlobalIndex}
-              onSeek={onSeek}
-              pulseStore={effectivePulse}
-              flightActive={flightActive}
-              analyzerStore={analyzerStore}
-              linesEpoch={linesEpoch}
-              coverUrl={coverUrl}
-              mvBackgroundActive={false}
-            />
-            <CameraRig
-              currentTime={currentTime}
-              sequencer={sequencer}
-              globalIndex={globalIndex}
-              activeLineWidthRef={activeLineWidthRef}
-              motion={motion}
-              transitionEpoch={transitionEpoch}
-            />
-            {renderQuality.postFx && <DioramaPostFx strength={0.24} radius={0.45} threshold={0.92} />}
-          </Canvas>
-        </div>
-      )}
+      <div ref={canvasHostRef} className="absolute inset-0">
+        <Canvas
+          // alpha 是 WebGL 上下文的创建参数、中途不可改：MV 背景激活状态翻转时用 key 重建 Canvas
+          key={`${mvBackgroundActive ? 'mv' : 'std'}-${canvasRecoveryKey}`}
+          dpr={renderQuality.dpr}
+          flat
+          camera={{ fov: 55, near: 0.1, far: 140, position: [0, 0.6, 9] }}
+          // MV 背景激活时启用 alpha 透明，让下层 MV 视频透过 Canvas 可见；
+          // 否则保持默认（不透明）以获得更好的深度清晰度与性能。
+          gl={{ powerPreference: 'high-performance', alpha: mvBackgroundActive }}
+          className="h-full w-full"
+          onCreated={(state) => {
+            // 引擎实例级懒预热：R3F 场景就位后把真实编译产物写入 GpuDiskCache，
+            // 下次启动/重进播放页直接命中（对 ShaderMaterial 裸预热已是逐字一致，这里再兜底
+            // 覆盖 R3F 其余内置材质的注入形态）。塞进 setTimeout 等子树挂完，失败静默。
+            window.setTimeout(() => {
+              try {
+                void state.gl.compileAsync(state.scene, state.camera)
+              } catch { /* 尽力而为 */ }
+            }, 400)
+          }}
+        >
+          <DioramaScene
+            currentTime={currentTime}
+            sequencer={sequencer}
+            globalIndex={globalIndex}
+            motion={motion}
+            fontStack={FONT_STACK}
+            accentColor={accentColor}
+            outgoingGlobalIndex={outgoingGlobalIndex}
+            onSeek={onSeek}
+            pulseStore={effectivePulse}
+            flightActive={flightActive}
+            analyzerStore={analyzerStore}
+            linesEpoch={linesEpoch}
+            coverUrl={coverUrl}
+            mvBackgroundActive={mvBackgroundActive}
+            lightweightScene={renderQuality.lightweightScene}
+          />
+          <CameraRig
+            currentTime={currentTime}
+            sequencer={sequencer}
+            globalIndex={globalIndex}
+            activeLineWidthRef={activeLineWidthRef}
+            motion={motion}
+            transitionEpoch={transitionEpoch}
+          />
+          {/* HDR UnrealBloom：发光体真实泛光（flat=NoToneMapping 与 OutputPass 配套）；
+              强度 0.24 + 门槛 0.92：亮封面背景不会击穿阈值引发闪白，歌词点亮仍可见。
+              MV 背景共存 / 软件合成时按策略关闭（renderQuality.postFx） */}
+          {renderQuality.postFx && <DioramaPostFx strength={0.24} radius={0.45} threshold={0.92} />}
+        </Canvas>
+      </div>
 
       {/* 底部字幕：当前行翻译/罗马音 + 下一行提示（毛玻璃药丸） */}
       <div className="pointer-events-none absolute inset-x-0 bottom-7 z-10 flex flex-col items-center gap-1.5 px-8 text-center">

@@ -8,6 +8,7 @@ import type { LyricLine } from '../services/musicApi'
 import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
 import { getResolvedArtworkUrl, preloadArtwork } from '../services/artworkLoader'
 import ProgressiveGlyphText from './ProgressiveGlyphText'
+import { WALLPAPER_CONTROLS_ANCHOR_ID, WALLPAPER_CONTROLS_ANCHOR_CHANGE_EVENT } from './ImmersiveControls'
 
 interface WallpaperLyricsProps {
   lyrics: LyricLine[]
@@ -298,6 +299,11 @@ export default function WallpaperLyrics({
     return () => observer.disconnect()
   }, [])
 
+  // 封面（连带控件锚点）挂载/卸载时广播：ImmersiveControls compact 变体据此重新 portal 定位
+  useEffect(() => {
+    window.dispatchEvent(new Event(WALLPAPER_CONTROLS_ANCHOR_CHANGE_EVENT))
+  }, [coverUrl])
+
   const seed = `${trackId ?? songTitle}:${songArtist}`
   const layout = useMemo(() => buildWallpaperLayout(lyrics, viewport, seed), [lyrics, seed, viewport])
   const activeBlock = useMemo(() => {
@@ -360,12 +366,13 @@ export default function WallpaperLyrics({
       <div className="absolute inset-0" style={{ backgroundColor: colorWithAlpha(wallpaperPalette.surface, isDark ? 0.82 : 0.88), backgroundImage: `radial-gradient(circle at 78% 18%, ${colorWithAlpha(wallpaperAccent, isDark ? 0.34 : 0.2)} 0%, transparent 50%), radial-gradient(circle at 18% 82%, ${colorWithAlpha(accentColor, isDark ? 0.2 : 0.14)} 0%, transparent 42%), linear-gradient(115deg, ${colorWithAlpha(wallpaperPalette.paper, isDark ? 0.78 : 0.84)} 0%, ${colorWithAlpha(wallpaperPalette.surface, isDark ? 0.72 : 0.82)} 100%)` }} />
       <div aria-hidden="true" className="pointer-events-none absolute inset-0 opacity-30" style={{ backgroundImage: isDark ? 'repeating-linear-gradient(104deg, rgba(255,255,255,.018) 0 1px, transparent 1px 5px)' : 'repeating-linear-gradient(104deg, rgba(74,64,48,.025) 0 1px, transparent 1px 5px)' }} />
       {resolvedCoverUrl && (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute bottom-[10%] right-[1.5vw] z-[1] w-[min(30vw,340px)]"
-          style={{ transform: 'rotate(-4deg)' }}
-        >
+        <div className="absolute bottom-[10%] right-[1.5vw] z-[1] w-[min(30vw,340px)]">
           {/* 拍立得相纸：宽幅 + 厚纸边 + 手写风标注，与辉煌的金框竖版形成区分 */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none"
+            style={{ transform: 'rotate(-4deg)' }}
+          >
           <div
             className="relative overflow-hidden px-3 pb-4 pt-3"
             style={{
@@ -386,6 +393,10 @@ export default function WallpaperLyrics({
               </span>
             </div>
           </div>
+          </div>
+          {/* 紧凑控件条锚点（ImmersiveControls 的 compact 变体 portal 到此）：
+              相纸正下方、略微贴合；有/无封面时锚点随相纸挂载/卸载，控件条自动回退右上角 */}
+          <div id={WALLPAPER_CONTROLS_ANCHOR_ID} className="mt-2" />
         </div>
       )}
       <div className="pointer-events-none absolute inset-0 z-20" style={{ background: isDark ? 'radial-gradient(circle at center, transparent 32%, rgba(0,0,0,.16) 72%, rgba(0,0,0,.52) 100%)' : 'radial-gradient(circle at center, transparent 30%, rgba(255,255,255,.1) 68%, rgba(236,230,218,.46) 100%)' }} />
@@ -423,7 +434,7 @@ export default function WallpaperLyrics({
                 <span>{isActive ? 'now printing' : isPassed ? 'archive' : 'unprinted'}</span>
                 <span className="ml-auto">{String(block.visualIndex + 1).padStart(3, '0')}</span>
               </div>
-              <div className="whitespace-normal break-words font-semibold leading-[1.04] [overflow-wrap:anywhere]" style={{ fontSize: block.fontSize, fontWeight: block.hero ? 760 : 620, letterSpacing: block.hero ? '-.045em' : '-.025em', textShadow: isActive ? `0 0 ${block.hero ? 26 : 20}px ${colorWithAlpha(wallpaperAccent, .34)}, 0 8px 28px rgba(0,0,0,.32)` : isDark ? '0 2px 14px rgba(0,0,0,.38)' : 'none' }}>
+              <div className="whitespace-normal break-words font-semibold leading-[1.04] [overflow-wrap:anywhere]" style={{ fontSize: block.fontSize, fontWeight: block.hero ? 760 : 620, letterSpacing: block.hero ? '-.045em' : '-.025em', textShadow: isActive ? '0 8px 28px rgba(0,0,0,.32)' : isDark ? '0 2px 14px rgba(0,0,0,.38)' : 'none' }}>
                 {isActive ? (
                   <ProgressiveGlyphText
                     line={block.line}
@@ -431,7 +442,8 @@ export default function WallpaperLyrics({
                     timeOffset={timeOffset}
                     filledColor={wallpaperFill}
                     inactiveColor={colorWithAlpha(wallpaperPalette.primary, isDark ? 0.2 : 0.26)}
-                    glowColor={colorWithAlpha(wallpaperAccent, 0.78)}
+                    /* 不传 glowColor：墙纸模式不要逐字发光（会在当前行下方糊出一片"光幕"）。
+                       当前行靠填充色 + "now printing" 标签 + 主题色标尺线区分，不再靠光晕。 */
                   />
                 ) : block.line.text}
               </div>

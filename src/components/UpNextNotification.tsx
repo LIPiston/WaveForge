@@ -28,6 +28,8 @@ export default function UpNextNotification({ show, nextSong, secondsRemaining, m
   const isEnhancedTransition = enhanced && mode === 'transition'
   const styleTag = isEnhancedTransition && transitionStyle ? TRANSITION_STYLE_LABEL[transitionStyle] : undefined
 
+  // 根节点带 `data-wf-upnext-card` 标记：沉浸模式右上角的收起箭头据此测量本弹框底边做纵向避让
+  // （见 ImmersiveControls 的 arrowAvoidY），保证二者不互相压住。纯标记属性，不参与样式与层级。
   return (
     <AnimatePresence>
       {show && (
@@ -37,6 +39,7 @@ export default function UpNextNotification({ show, nextSong, secondsRemaining, m
           exit={{ opacity: 0, y: -50, x: 50 }}
           transition={{ type: 'spring', damping: 25, stiffness: 300 }}
           className="fixed top-6 right-6 z-50"
+          data-wf-upnext-card=""
         >
           <div
             onClick={onSkip}

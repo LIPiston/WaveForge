@@ -242,11 +242,10 @@ export default function AppleRadioNowPlayingPage({
                 <AudioLines className="h-5 w-5 opacity-55" />
               </button>
             )}
-            {/* 设置：电台页专属入口（QuickSettings 面板本身按 isPureMusic 收敛掉歌词相关项） */}
+            {/* 设置：电台页专属入口（弹窗面板本身按 isPureMusic 收敛掉歌词相关项） */}
             <QuickSettings
               playerTheme={playerTheme}
               isPureMusic
-              expandUp={false}
               triggerClassName={`flex h-10 w-10 items-center justify-center rounded-full ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/8'}`}
               triggerWidth={40}
               triggerHeight={40}

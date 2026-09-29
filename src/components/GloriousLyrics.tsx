@@ -5,6 +5,9 @@ import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
 import { getResolvedArtworkUrl, preloadArtwork } from '../services/artworkLoader'
 import { buildTimedLyricGlyphs } from '../utils/lyricWordTiming'
 import ProgressiveGlyphText from './ProgressiveGlyphText'
+// 控件条锚点（ImmersiveControls 的 glorious 变体 portal 到此）：
+// 只取两个字符串常量，不会把控件组件本身拉进本 chunk
+import { GLORIOUS_CONTROLS_ANCHOR_ID, GLORIOUS_CONTROLS_ANCHOR_CHANGE_EVENT } from './ImmersiveControls'
 
 interface GloriousLyricsProps {
   lyrics: LyricLine[]
@@ -156,6 +159,12 @@ export default function GloriousLyrics({
   const lineNumber = String(Math.max(1, visibleLineIndex + 1)).padStart(2, '0')
   const totalLines = String(Math.max(1, visibleLyrics.length)).padStart(2, '0')
 
+  // 封面（连带其下方控件锚点）挂载/卸载时广播：ImmersiveControls 的 glorious 变体据此重新 portal 定位。
+  // 控件组件挂在播放页上、本组件按需 lazy 加载，挂载顺序不定，事件广播 + 控件侧挂载时同步双保险。
+  useEffect(() => {
+    window.dispatchEvent(new Event(GLORIOUS_CONTROLS_ANCHOR_CHANGE_EVENT))
+  }, [coverUrl])
+
   return (
     <div
       className="relative h-full min-h-[440px] w-full overflow-hidden text-white"
@@ -194,11 +203,12 @@ export default function GloriousLyrics({
       )}
 
       {resolvedCoverUrl && (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -right-[1vw] top-[10vh] z-[2] w-[min(22vw,300px)]"
-          style={{ transform: 'rotate(7deg)' }}
-        >
+        /* 定位层：只负责"右上角竖版封面"的位置与宽度，供下方控件条锚点共用同一宽度基准；
+           7° 倾斜下移到内层纯装饰节点，避免把控件条也带着一起倾斜、
+           也让锚点的右缘（paddingRight 回收 1vw 越界量）能对齐到封面可见右缘。 */
+        <div className="absolute -right-[1vw] top-[10vh] z-[2] w-[min(22vw,300px)]">
+          {/* 竖版画廊装裱（纯装饰：aria-hidden + 不吃指针事件） */}
+          <div aria-hidden="true" className="pointer-events-none" style={{ transform: 'rotate(7deg)' }}>
           {/* 竖版画廊装裱：深色衬底 + 金色细框 */}
           <div
             className="relative aspect-[3/4] overflow-hidden"
@@ -218,6 +228,18 @@ export default function GloriousLyrics({
           <span className="absolute -right-3 -top-3 h-5 w-5" style={{ borderRight: `2px solid ${palette.highlight}`, borderTop: `2px solid ${palette.highlight}`, boxShadow: `0 0 12px ${colorWithAlpha(palette.vivid, .5)}` }} />
           <span className="absolute -bottom-3 -left-3 h-5 w-5" style={{ borderLeft: `2px solid ${palette.highlight}`, borderBottom: `2px solid ${palette.highlight}`, boxShadow: `0 0 12px ${colorWithAlpha(palette.vivid, .5)}` }} />
           <span className="absolute -bottom-3 -right-3 h-5 w-5" style={{ borderRight: `2px solid ${palette.highlight}`, borderBottom: `2px solid ${palette.highlight}`, boxShadow: `0 0 12px ${colorWithAlpha(palette.vivid, .5)}` }} />
+          </div>
+
+          {/* 控件条锚点（ImmersiveControls 的 glorious 变体 portal 到此）：
+              封面卡片正下方的小尺寸横向按钮条（返回主页 / 翻译 / 罗马音 / MV 背景 / 播放设置 / 调音室）。
+              mt-10 让出卡片 7° 旋转外扩的高度，paddingRight 回收外层 1vw 的右侧越界量，
+              按钮条右缘因此与封面可见右缘齐平且不会被窗口右缘裁切。
+              无封面时本锚点不存在，控件条自动回退右上角小条，功能不丢。 */}
+          <div
+            id={GLORIOUS_CONTROLS_ANCHOR_ID}
+            className="flex w-full justify-end"
+            style={{ marginTop: '2.5rem', paddingRight: 'calc(1vw + 8px)' }}
+          />
         </div>
       )}
       <div

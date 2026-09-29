@@ -220,7 +220,9 @@ const hasProxyBridge = () => typeof window !== 'undefined' && !!electron()?.prox
 // ─────────────────────────── 各域写入逻辑（与 SettingsPanel 逐一对齐） ───────────────────────────
 
 // 播放过渡三开关互斥：开启其一则关闭另外两个
-const setTransitionModeExclusive = (target: 'crossfade' | 'gapless' | 'autoMix', value: boolean) => {
+// 导出给「播放设置」弹窗（QuickSettingsDialog）复用 —— 那里也提供三选一的过渡方式切换，
+// 互斥规则必须只有一份，否则两处会各自写出一组不一致的键。
+export const setTransitionModeExclusive = (target: 'crossfade' | 'gapless' | 'autoMix', value: boolean) => {
   const keys = {
     crossfade: 'crossfadeEnabled',
     gapless: 'gaplessEnabled',
