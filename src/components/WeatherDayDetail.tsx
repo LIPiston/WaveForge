@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronLeft, ChevronRight, Cloud, Droplets, Sun, Sunrise, Sunset, ThermometerSun, Umbrella, Wind, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
+import { useModeParked } from '../utils/modeLayer'
 import { getWeatherLabel, type WeatherSnapshot } from '../services/weatherService'
 import { WeatherGlyph, getUvLabel } from './weatherVisualTheme'
 
@@ -16,6 +17,9 @@ const formatClock = (value: string) => value?.slice(11, 16) || '--:--'
 const formatDate = (value: string) => new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date(`${value}T12:00:00`))
 
 export default function WeatherDayDetail({ open, dayIndex, weather, onClose, onSelectDay }: WeatherDayDetailProps) {
+  // 挂起（所属模式层被切走）时不渲染这个 portal：portal 挂在 body 上，不受挂起层
+  // visibility:hidden 约束，留着会盖住当前模式。只隐藏不卸载，切回来状态原样。
+  const parked = useModeParked()
   const day = weather.daily[dayIndex]
   if (!day || typeof document === 'undefined') return null
   const hours = weather.hourly.filter(hour => hour.time.slice(0, 10) === day.date)
@@ -23,6 +27,8 @@ export default function WeatherDayDetail({ open, dayIndex, weather, onClose, onS
   const humidity = Math.round(average(hours.map(hour => hour.humidity)))
   const cloudCover = Math.round(average(hours.map(hour => hour.cloudCover)))
   const isDay = day.weatherCode < 3
+
+  if (parked) return null
 
   return createPortal(
     <AnimatePresence>

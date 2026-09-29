@@ -69,7 +69,8 @@ export function installElectronShim(): void {
       getInitialState: async () => ({ enabled: false }),
       onEnabledChanged: () => () => {},
       onControl: () => () => {},
-      setEnabled: () => {},
+      // 返回 resolved Promise：调用方普遍对结果 .then/.catch（同步返回 undefined 会直接 TypeError）
+      setEnabled: async () => {},
       getSettings: async () => ({}),
       pushState: () => {},
     },
@@ -77,7 +78,7 @@ export function installElectronShim(): void {
       getInitialState: async () => ({ enabled: false }),
       getSettings: async () => ({}),
       onEnabledChanged: () => () => {},
-      setEnabled: () => {},
+      setEnabled: async () => {},
     },
   }
 }

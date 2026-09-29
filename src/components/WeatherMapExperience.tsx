@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
+import { useModeParked } from '../utils/modeLayer'
 import { AnimatePresence, motion } from 'framer-motion'
 import L, { type Coords, type DoneCallback, type GridLayerOptions, type LatLng, type Map as LeafletMap } from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -880,6 +881,9 @@ interface WeatherFieldLayerPair {
 const getWeatherFieldOpacity = (layerId: WeatherMapLayerId) => layerId === 'cloud' ? .62 : .78
 
 function WeatherMapModal({ weather, open, onClose }: Pick<WeatherMapExperienceProps, 'weather' | 'open' | 'onClose'>) {
+  // 挂起（所属模式层被切走）时不渲染这个 portal：portal 挂在 body 上，不受挂起层
+  // visibility:hidden 约束，留着会盖住当前模式。只隐藏不卸载，切回来状态原样。
+  const parked = useModeParked()
   const mapElementRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<LeafletMap | null>(null)
   const popupCardRef = useRef<HTMLDivElement | null>(null)
@@ -1389,6 +1393,8 @@ function WeatherMapModal({ weather, open, onClose }: Pick<WeatherMapExperiencePr
   }
 
   if (typeof document === 'undefined') return null
+  if (parked) return null
+
   return createPortal(
     <AnimatePresence>
       {open && (

@@ -11,6 +11,7 @@ import { ChevronDown, Search, Settings, Play, Clock, Volume2, VolumeX, Captions,
 import PluginShortcuts from './PluginShortcuts'
 import PlaylistCarousel3D from './PlaylistCarousel3D'
 import PlaylistContextMenu from './PlaylistContextMenu'
+import SongContextMenu from './SongContextMenu'
 import EditPlaylistModal from './EditPlaylistModal'
 import DeletePlaylistModal from './DeletePlaylistModal'
 import DesktopMiniPlayer from './DesktopMiniPlayer'
@@ -382,6 +383,8 @@ function DesktopView({
   const [showPlaylistDetail, setShowPlaylistDetail] = useState(false)
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null)
   const [playlistContextMenu, setPlaylistContextMenu] = useState<{ show: boolean; x: number; y: number; playlist: Playlist | null }>({ show: false, x: 0, y: 0, playlist: null })
+  // 桌面小组件歌曲行右键菜单（最近播放/每日推荐/队列/喜爱/新歌等 SongRow 统一入口）
+  const [widgetSongMenu, setWidgetSongMenu] = useState<{ show: boolean; x: number; y: number; song: Song | null; songs: Song[] }>({ show: false, x: 0, y: 0, song: null, songs: [] })
   const [showEditPlaylist, setShowEditPlaylist] = useState(false)
   const [showDeletePlaylist, setShowDeletePlaylist] = useState(false)
   const [playlistMutationBusy, setPlaylistMutationBusy] = useState(false)
@@ -743,8 +746,8 @@ function DesktopView({
           ? data.wallpapers as WallpaperEngineWallpaper[]
           : []
 
-        // 保存到缓存并剔除已失效的轮换条目。
-        localStorage.setItem('weWallpapersCache', JSON.stringify(nextWallpapers))
+        // 保存到缓存并剔除已失效的轮换条目（上限 400 条：WE 库大的用户列表 JSON 可达数百 KB）
+        localStorage.setItem('weWallpapersCache', JSON.stringify(nextWallpapers.slice(0, 400)))
         setWeWallpapers(nextWallpapers)
         weWallpapersRef.current = nextWallpapers
 
@@ -1421,12 +1424,13 @@ function DesktopView({
         }
         return
       } else if (wallpaper && typeof wallpaper === 'object') {
-        // 对象类型：上传的文件
-        nextSignature = `image:${wallpaper.id}:${wallpaper.dataUrl.length}`
+        // 对象类型：上传的文件（磁盘方案 mediaUrl / 旧数据 dataUrl）
+        const wallpaperUrl = (wallpaper as any).mediaUrl || (wallpaper as any).dataUrl || ''
+        nextSignature = `image:${wallpaper.id}:${wallpaperUrl.length}`
         if (!forceReload && wallpaperSourceRef.current === nextSignature) return
         wallpaperSourceRef.current = nextSignature
         setDesktopLiveWallpaper(null)
-        setDesktopWallpaper(wallpaper.dataUrl)
+        setDesktopWallpaper(wallpaperUrl)
       } else {
         if (!forceReload && wallpaperSourceRef.current === nextSignature) return
         wallpaperSourceRef.current = nextSignature
@@ -2144,6 +2148,9 @@ function DesktopView({
     onMoveQueueItem,
     onPlaylistSelect: handlePlaylistSelect,
     onOpenArtist,
+    onSongContextMenu: (event: React.MouseEvent, song: Song, songs: Song[]) => {
+      setWidgetSongMenu({ show: true, x: event.clientX, y: event.clientY, song, songs })
+    },
   })
   widgetHandlersRef.current = {
     onVolumeChange,
@@ -2154,6 +2161,9 @@ function DesktopView({
     onMoveQueueItem,
     onPlaylistSelect: handlePlaylistSelect,
     onOpenArtist,
+    onSongContextMenu: (event: React.MouseEvent, song: Song, songs: Song[]) => {
+      setWidgetSongMenu({ show: true, x: event.clientX, y: event.clientY, song, songs })
+    },
   }
 
   const handleWidgetVolumeChange = useCallback((nextVolume: number) => widgetHandlersRef.current.onVolumeChange(nextVolume), [])
@@ -2164,6 +2174,10 @@ function DesktopView({
   const handleWidgetMoveQueueItem = useCallback((from: number, to: number) => widgetHandlersRef.current.onMoveQueueItem(from, to), [])
   const handleWidgetPlaylistSelect = useCallback((playlist: DesktopMusicWidgetContext['playlists'][number]) => { void widgetHandlersRef.current.onPlaylistSelect(playlist as Playlist) }, [])
   const handleWidgetOpenArtist = useCallback((artistId: string, platform: MusicPlatform) => widgetHandlersRef.current.onOpenArtist?.(artistId, platform), [])
+  const handleWidgetSongContextMenu = useCallback((event: React.MouseEvent, song: Song, songs: Song[]) => {
+    event.preventDefault()
+    widgetHandlersRef.current.onSongContextMenu(event, song, songs)
+  }, [])
 
   const desktopMusicWidgetContext = useMemo<DesktopMusicWidgetContext>(() => ({
     currentSong,
@@ -2184,8 +2198,9 @@ function DesktopView({
     onMoveQueueItem: handleWidgetMoveQueueItem,
     onPlaylistSelect: handleWidgetPlaylistSelect,
     onOpenArtist: handleWidgetOpenArtist,
+    onSongContextMenu: handleWidgetSongContextMenu,
     onOpenAlbum,
-  }), [currentSong, isPlaying, activePlaybackStore, lyrics, lyricOffset, playbackQueue, currentIndex, playlists, currentPlatform, volume, handleWidgetVolumeChange, handleWidgetPlayPause, handleWidgetNext, handleWidgetSongSelect, handleWidgetRemoveQueueItem, handleWidgetMoveQueueItem, handleWidgetPlaylistSelect, handleWidgetOpenArtist, onOpenAlbum])
+  }), [currentSong, isPlaying, activePlaybackStore, lyrics, lyricOffset, playbackQueue, currentIndex, playlists, currentPlatform, volume, handleWidgetVolumeChange, handleWidgetPlayPause, handleWidgetNext, handleWidgetSongSelect, handleWidgetRemoveQueueItem, handleWidgetMoveQueueItem, handleWidgetPlaylistSelect, handleWidgetOpenArtist, handleWidgetSongContextMenu, onOpenAlbum])
 
   return (
     <div
@@ -2688,7 +2703,8 @@ function DesktopView({
                 </span>
               </motion.button>
 
-              {/* 桌面融合穿透开关 */}
+              {/* 桌面融合穿透开关：依赖桌面端窗口穿透 IPC，TV 无真实桌面可穿透——隐藏 */}
+              {!isTvUi && (
               <motion.button
                 whileHover={{ scale: 1.08 }}
                 whileTap={{ scale: 0.94 }}
@@ -2706,6 +2722,7 @@ function DesktopView({
                   <path d="M3 9h18M9 21V9M6 6h.01M10 6h.01" />
                 </svg>
               </motion.button>
+              )}
 
               {/* 设置按钮 */}
               <motion.button
@@ -3069,6 +3086,31 @@ function DesktopView({
         )}
       </AnimatePresence>
 
+      <SongContextMenu
+        show={widgetSongMenu.show}
+        x={widgetSongMenu.x}
+        y={widgetSongMenu.y}
+        song={widgetSongMenu.song}
+        onClose={() => setWidgetSongMenu(previous => ({ ...previous, show: false }))}
+        onPlayNow={song => onSongSelect(song, widgetSongMenu.songs.length > 0 ? widgetSongMenu.songs : [song])}
+        onPlayNext={onPlayNext}
+        onAddToFavorites={onAddToFavorites}
+        onRemoveFromFavorites={onRemoveFromFavorites}
+        onAddToPlaylist={onAddToPlaylist}
+        onViewComments={onViewComments}
+        onViewAlbum={song => {
+          const albumId = song.album?.appleId || song.album?.mid || song.album?.id
+          if (albumId) onOpenAlbum?.(String(albumId), song.platform || currentPlatform)
+        }}
+        onViewArtist={song => {
+          const artist = song.artists?.[0]
+          const artistId = artist?.appleId || artist?.mid || artist?.id
+          if (artistId) onOpenArtist?.(String(artistId), song.platform || currentPlatform)
+        }}
+        onCopyInfo={onCopyInfo}
+        userPlaylists={playlists}
+        platform={widgetSongMenu.song?.platform || currentPlatform}
+      />
       <PlaylistContextMenu
         show={playlistContextMenu.show}
         x={playlistContextMenu.x}

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Search, X, Music, History, Clock, User, Disc, Sparkles, TrendingUp, ListMusic, ArrowUpRight, Play } from 'lucide-react'
 import { searchSongs, searchSuggest, searchArtists, searchAlbums, searchQuick, searchPlaylists, Song, Artist, Album, SearchSuggestion, getProxiedImageUrl, loadAlbumCovers, resolveSongAlbumIdentifier, searchHot } from '../services/musicApi'
 import { mergeFusedSearchResults, type FusedSearchIntent, type MusicPlatform } from '../services/fusedSearch'
-import { isPlatformVisible, platformLabel, PLATFORM_VISUAL_METADATA } from '../services/platforms'
+import { isPlatformVisible, platformLabel, PLATFORM_VISUAL_METADATA, getPlatformCapabilities } from '../services/platforms'
 import { useTvBack } from '../tv/tvCore'
 import CachedImage from './CachedImage'
 import ArtistDetailModal from './ArtistDetailModal'
@@ -12,10 +12,13 @@ import ScrollToTop from './ScrollToTop'
 import ScrollToCurrentSong from './ScrollToCurrentSong'
 import type { PlaybackOrigin, SongSelectHandler } from '../types/playbackNavigation'
 import SongContextMenu from './SongContextMenu'
-import { getUserPlaylists } from '../services/playlistService'
+import PlaylistContextMenu from './PlaylistContextMenu'
+import { getUserPlaylists, subscribePlaylist } from '../services/playlistService'
+import { buildPlaylistShareUrl } from '../services/playlistShare'
 import { searchAppleSongsAsSongs, searchAppleCatalogArtists, searchAppleCatalogAlbums, searchAppleCatalogV1, getAppleSearchSuggestionItems, getAppleLibraryPlaylists, appleSongToSong } from '../services/appleCatalog'
 import { getAppleCredentials } from '../services/appleAuth'
 import { parseStoredArray } from '../utils/storage'
+import { getPlatformVipState } from '../services/audioQualitySettings'
 import { debugLog } from '../utils/debugLog'
 
 interface SearchPanelProps {
@@ -366,10 +369,17 @@ export default function SearchPanel({
   const selectedAlbumPlatform: MusicPlatform = selectedAlbum?.platform || 'netease'
   const [selectedArtistAlbumId, setSelectedArtistAlbumId] = useState<string | number | undefined>()
   const [selectedArtistTab, setSelectedArtistTab] = useState<PlaybackOrigin['artistTab']>('hotSongs')
+  // 搜索结果歌单卡右键菜单（收藏/分享；能力门随歌单平台）
+  const [playlistContextMenu, setPlaylistContextMenu] = useState<{
+    show: boolean; x: number; y: number
+    playlist: { id: string; name: string; coverImgUrl: string; trackCount: number; creator: string; platform: MusicPlatform } | null
+  }>({ show: false, x: 0, y: 0, playlist: null })
   // TV BACK closes the deepest search surface before dismissing the whole panel.
   useTvBack(() => {
     if (songContextMenu.show) {
       setSongContextMenu(previous => ({ ...previous, show: false }))
+    } else if (playlistContextMenu.show) {
+      setPlaylistContextMenu({ show: false, x: 0, y: 0, playlist: null })
     } else if (selectedAlbum) {
       setSelectedAlbum(null)
     } else if (selectedArtist) {
@@ -379,7 +389,7 @@ export default function SearchPanel({
       onClose()
     }
     return true
-  }, [onClose, selectedAlbum, selectedArtist, songContextMenu.show])
+  }, [onClose, selectedAlbum, selectedArtist, songContextMenu.show, playlistContextMenu.show])
   // 选歌播放：退出动画零时长，覆盖层当帧卸载。整屏 backdrop-filter 的退出节点在
   // 播放页同时挂载时会被 Chromium 保留为残留合成层（首页同款故障），退出动画越久越易触发。
   const [instantClose, setInstantClose] = useState(false)
@@ -696,7 +706,7 @@ export default function SearchPanel({
             qq: { loggedIn: qqSessionActive, vip: qqVip },
             apple: { loggedIn: appleLoggedIn, vip: appleLoggedIn },
             spotify: { loggedIn: spotifyLoggedIn, vip: false },
-            kugou: { loggedIn: kugouLoggedIn, vip: false },
+            kugou: { loggedIn: kugouLoggedIn, vip: getPlatformVipState('kugou') },
             soda: { loggedIn: Boolean(localStorage.getItem('soda_token')), vip: false },
           },
         })
@@ -877,8 +887,11 @@ export default function SearchPanel({
   // 触底自动续载：距底部 320px 内即预取下一页，替代原先的手动「加载更多」按钮。
   // 用 ref 记录上一次触发时的结果长度，避免滚动过程中重复调度同一批。
   const lastAutoLoadRef = useRef(0)
+  // 会话内滚动位置：卸载前写入 sessionStorage，重开面板后恢复到原位（关键词/结果已有 sessionStorage 还原）
+  const searchScrollTopRef = useRef(0)
   const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const el = event.currentTarget
+    searchScrollTopRef.current = el.scrollTop
     if (loading || loadingMore) return
     if (displayedResults.length >= allResults.length) return
     if (allResults.length === 0) return
@@ -887,6 +900,33 @@ export default function SearchPanel({
     lastAutoLoadRef.current = displayedResults.length
     void handleLoadMore()
   }
+
+  // 卸载时落盘滚动位；重开时按需恢复（新搜索 handleSearch 会归零并覆盖该值）
+  useEffect(() => {
+    return () => {
+      try { sessionStorage.setItem('waveforge_search_scroll_top', String(searchScrollTopRef.current)) } catch { /* ignore */ }
+    }
+  }, [])
+  useEffect(() => {
+    let saved = 0
+    try { saved = Number(sessionStorage.getItem('waveforge_search_scroll_top') || 0) } catch { saved = 0 }
+    if (!Number.isFinite(saved) || saved <= 0) return
+    let attempts = 0
+    let raf = 0
+    const tryRestore = () => {
+      const el = scrollContainerRef.current
+      attempts += 1
+      if (!el) return
+      if (el.scrollHeight > saved || attempts >= 30) {
+        el.scrollTop = saved
+        return
+      }
+      raf = window.requestAnimationFrame(tryRestore)
+    }
+    raf = window.requestAnimationFrame(tryRestore)
+    return () => window.cancelAnimationFrame(raf)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -1444,6 +1484,12 @@ export default function SearchPanel({
                       }
                     }
                   }}
+                  onContextMenu={event => {
+                    if (!playlist.id) return
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setPlaylistContextMenu({ show: true, x: event.clientX, y: event.clientY, playlist })
+                  }}
                   className={`group ${bgCard} rounded-xl p-3 cursor-pointer transition-all duration-200 border ${borderColor} ring-0 hover:ring-1 ${hoverRing} ${hoverBg} ${hoverLift}`}
                 >
                   <div className={`relative aspect-square rounded-lg overflow-hidden mb-2 ${playerTheme === 'dark' ? 'bg-white/5' : 'bg-black/5'}`}>
@@ -1835,6 +1881,42 @@ export default function SearchPanel({
         onCopyInfo={onCopyInfo}
         userPlaylists={contextUserPlaylists}
         platform={songContextMenu.song.platform || 'netease'}
+      />
+    )}
+
+    {/* 搜索结果歌单卡右键菜单：搜索结果是他人歌单，不提供编辑/删除；收藏/分享按歌单平台能力表开门 */}
+    {playlistContextMenu.playlist && (
+      <PlaylistContextMenu
+        show={playlistContextMenu.show}
+        x={playlistContextMenu.x}
+        y={playlistContextMenu.y}
+        playlist={playlistContextMenu.playlist}
+        onClose={() => setPlaylistContextMenu({ show: false, x: 0, y: 0, playlist: null })}
+        onEdit={() => undefined}
+        onDelete={() => undefined}
+        onSubscribe={(playlist, subscribe) => {
+          void subscribePlaylist(playlist.id.toString(), subscribe, (playlist.platform || 'netease') as MusicPlatform)
+            .then(() => {
+              window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: subscribe ? '已收藏歌单' : '已取消收藏', type: 'success' } }))
+            })
+            .catch((error: unknown) => {
+              window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: error instanceof Error ? error.message : '歌单收藏操作失败，请重试', type: 'error' } }))
+            })
+        }}
+        onShare={playlist => {
+          const url = buildPlaylistShareUrl(playlist, (playlist.platform || 'netease') as MusicPlatform)
+          if (!url) {
+            window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '当前平台暂不支持分享歌单', type: 'info' } }))
+            return
+          }
+          void navigator.clipboard?.writeText(url)
+          window.dispatchEvent(new CustomEvent('app-toast', { detail: { message: '歌单链接已复制', type: 'success' } }))
+        }}
+        isOwner={false}
+        canEdit={false}
+        canDelete={false}
+        canSubscribe={getPlatformCapabilities((playlistContextMenu.playlist.platform || 'netease') as MusicPlatform).subscribePlaylist}
+        canShare={getPlatformCapabilities((playlistContextMenu.playlist.platform || 'netease') as MusicPlatform).sharePlaylist}
       />
     )}
 

@@ -466,6 +466,10 @@ export interface ElectronAPI {
     onWallpaperChange: (callback: (wallpaper: WallpaperPayload | string) => void) => () => void
     /** 按需启停壁纸监控：仅桌面模式 + 壁纸联动开启时启用（避免非桌面模式持续查询拖慢性能） */
     setWallpaperWatcherEnabled: (enabled: boolean) => Promise<{ success: boolean }>
+    /** 自定义壁纸落盘：base64 数据写入 userData/waveforge-wallpapers，返回本地路径与 mediaUrl（避免 localStorage 配额溢出导致重启丢壁纸） */
+    saveCustomWallpaper?: (payload: { name: string; type: string; dataBase64: string }) => Promise<{ success: boolean; path?: string; mediaUrl?: string; fileUrl?: string; size?: number; error?: string }>
+    /** 会话内把本地路径重新登记进 waveforge-media 白名单（协议白名单是主进程内存态，重启后需重登记） */
+    registerMediaFiles?: (paths: string[]) => Promise<Record<string, string>>
   }
   diagnostics?: {
     getVmpStatus: () => Promise<VmpStatus>
@@ -529,6 +533,87 @@ export interface ElectronAPI {
     aiMixAutomation?: (plan: TransitionPlan, sourceAudioPath: string, targetAudioPath: string) => Promise<{
       success: boolean
       params?: Array<{ band: number[][][]; fader: number[][][][] }>
+      error?: string
+    }>
+    /** AutoMix Enhanced 三档渲染：Lite（本地）/ Advanced / Extreme（QQ 官方云端） */
+    qqAutomix?: (options: {
+      tier: 'lite' | 'advanced' | 'extreme'
+      sourceAudioPath: string
+      targetAudioPath: string
+      /** QQ 歌曲 mid（QQ 曲库曲目直接给；其他平台留空，由 标题+歌手 匹配） */
+      sourceMid?: string
+      targetMid?: string
+      /** 其他平台曲目元数据：云端档按 标题+歌手 匹配 QQ mid 后再请求 */
+      sourceTitle?: string
+      sourceArtist?: string
+      sourceTrackId?: string
+      targetTitle?: string
+      targetArtist?: string
+      targetTrackId?: string
+      /** 显式传入 QQ 登录票据；缺省时主进程读 userData/qq-cookie.txt */
+      cookie?: string
+      /** Lite 的过渡窗口（秒），默认 12 */
+      window?: number
+      sampleRate?: number
+      /**
+       * cue 时间轴（App 已用它排触发点/续播点/UI 进度）。传入后渲染必须按同一条时间轴产出，
+       * 避免"cue 与 render 各自取云端决策（或命中不同窗口的磁盘缓存）"导致时间轴错位。
+       */
+      cueTransitionStartSeconds?: number
+      cueTransitionDurationSeconds?: number
+      cueTargetStartSeconds?: number
+    }) => Promise<{
+      success: boolean
+      outputPath?: string
+      duration?: number
+      sampleRate?: number
+      size?: number
+      tier?: string
+      /** 实际生效档位（云端档不可用时会降级为 lite） */
+      effectiveTier?: string
+      /** 降级信息：{ requestedTier, effectiveTier, reason } */
+      fallback?: { requestedTier: string; effectiveTier: string; reason: string } | null
+      backend?: string
+      cached?: boolean
+      /** 过渡起点（源曲时间轴，秒）/ 过渡时长（秒）/ 目标曲切入位置（秒） */
+      transitionStartSeconds?: number
+      transitionDurationSeconds?: number
+      targetStartSeconds?: number
+      /** 过渡手法说明（渲染 worker 透传，过渡调试弹窗展示） */
+      techniques?: string[]
+      sourceCutSeconds?: number
+      error?: string
+    }>
+    /** AutoMix Enhanced 播放前规划：只取交接时间轴（不渲染、不解码整首歌） */
+    qqAutomixCue?: (options: {
+      tier: 'lite' | 'advanced' | 'extreme'
+      sourceAudioPath: string
+      targetAudioPath: string
+      sourceMid?: string
+      targetMid?: string
+      sourceTitle?: string
+      sourceArtist?: string
+      sourceTrackId?: string
+      targetTitle?: string
+      targetArtist?: string
+      targetTrackId?: string
+      cookie?: string
+      window?: number
+    }) => Promise<{
+      success: boolean
+      /** 实际生效档位（云端档不可用时会降级为 lite） */
+      tier?: string
+      effectiveTier?: string
+      requested_tier?: string
+      /** 源曲播到此处开始过渡 / 过渡段时长 / 目标曲切入位置（秒） */
+      transition_start_s?: number
+      transition_duration_s?: number
+      target_start_s?: number
+      source_cut_time_s?: number
+      source_mid?: string
+      target_mid?: string
+      mix_mode?: string
+      fallback?: { requestedTier: string; effectiveTier: string; reason: string } | null
       error?: string
     }>
   }
@@ -663,6 +748,8 @@ export interface ElectronAPI {
     prepare: (urlOrPath: string, trackKey: string) => Promise<string>
     /** 只读缓存命中检查：已缓存返回本地路径，未缓存返回 null（不触发下载） */
     peekCached?: (trackKey: string) => Promise<string | null>
+    /** 删除指定 trackKey 的本地音频缓存（分析发现试听片段等陈旧缓存时自愈用） */
+    deleteCached?: (trackKey: string) => Promise<boolean>
     /** 把已下载的音频文件映射为渲染进程可 fetch 的 waveforge-media:// URL（浏览器分析 m4a/aac 用） */
     getMediaUrl?: (filePath: string) => Promise<string>
     /** 保存渲染进程转码的 WAV（Chromium 解码 m4a/aac → 16bit PCM），返回路径；同 key 复用 */
@@ -759,6 +846,18 @@ export interface ElectronAPI {
     setEnabled: (enabled: boolean) => Promise<{ success: boolean; enabled?: boolean; reason?: string }>
     getSettings: () => Promise<TaskbarWidgetSettings>
     updateSettings: (partial: Partial<TaskbarWidgetSettings>) => Promise<TaskbarWidgetSettings>
+    onEnabledChanged?: (callback: (enabled: boolean) => void) => () => void
+  }
+  lyricsIsland: {
+    setEnabled: (enabled: boolean) => Promise<{ success: boolean; enabled: boolean }>
+    getSettings: () => Promise<LyricsIslandSettings>
+    updateSettings: (partial: Partial<LyricsIslandSettings>) => Promise<LyricsIslandSettings>
+    onEnabledChanged: (callback: (enabled: boolean) => void) => () => void
+  }
+  gameMode: {
+    get: () => Promise<{ enabled: boolean; frozen: boolean }>
+    set: (enabled: boolean) => Promise<{ enabled: boolean; frozen: boolean }>
+    onChange: (callback: (enabled: boolean | undefined, frozen: boolean | undefined) => void) => () => void
   }
 }
 
@@ -770,6 +869,12 @@ export interface TaskbarWidgetSettings {
   darken: boolean
   darkenLevel: number
   hideControls: boolean
+}
+
+export interface LyricsIslandSettings {
+  enabled: boolean
+  scale: number
+  locked: boolean
 }
 
 export interface AirplayDeviceInfo {

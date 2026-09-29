@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { createPortal } from 'react-dom'
+import { useModeParked } from '../utils/modeLayer'
 import { X } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { getAqiDescriptor, getAqiLabel, type WeatherSnapshot } from '../services/weatherService'
@@ -112,6 +113,9 @@ function SunArc({ sunrise, sunset, updatedAt, timeZone }: { sunrise: string; sun
 }
 
 export default function WeatherCardDetailOverlay({ card, weather, onClose }: CardDetailOverlayProps) {
+  // 挂起（所属模式层被切走）时不渲染这个 portal：portal 挂在 body 上，不受挂起层
+  // visibility:hidden 约束，留着会盖住当前模式。只隐藏不卸载，切回来状态原样。
+  const parked = useModeParked()
   if (typeof document === 'undefined') return null
 
   const hourlyLabels = useMemo(() => {
@@ -125,6 +129,8 @@ export default function WeatherCardDetailOverlay({ card, weather, onClose }: Car
   }, [weather])
 
   const meta = card ? CARD_META[card] : null
+
+  if (parked) return null
 
   return createPortal(
     <AnimatePresence>

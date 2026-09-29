@@ -727,12 +727,13 @@ input, textarea, [contenteditable="true"] {
 
 /* 流光效果 - Apple Music 风格（呼吸发光，不移动） */
 @keyframes glow {
+  /* 只动 opacity（合成器友好）：旧实现同时动 text-shadow，每帧都要重绘文字阴影，
+     提示常驻时是持续 paint 负担（用户反馈"控件动画有点卡、帧率不够"）。
+     静态辉光由元素自身 inline textShadow 提供，这里只做呼吸。 */
   0%, 100% {
-    text-shadow: 0 0 10px rgba(255,255,255,0.4), 0 2px 8px rgba(0,0,0,0.5);
-    opacity: 0.8;
+    opacity: 0.72;
   }
   50% {
-    text-shadow: 0 0 20px rgba(255,255,255,0.8), 0 2px 8px rgba(0,0,0,0.5);
     opacity: 1;
   }
 }

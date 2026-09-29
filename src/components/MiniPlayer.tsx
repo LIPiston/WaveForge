@@ -2,6 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Play, Pause, SkipForward, SkipBack, Volume2, VolumeX } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import CachedImage from './CachedImage'
+import { useTvMode, useRemoteCursorMode, useTvFocus, useTvBack } from '../tv/tvCore'
 
 interface MiniPlayerProps {
   show: boolean
@@ -127,6 +128,25 @@ export default function MiniPlayer({
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
   const [volumeBeforeMute, setVolumeBeforeMute] = useState(1.0)
   const volumeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  // TV：控制面板是 {isHovered && ...} 条件渲染，遥控器没有 hover——
+  // 焦点进入迷你播放器时展开（与 PC hover 等效），焦点离开自动收起
+  const tvMode = useTvMode()
+  const remoteCursorMode = useRemoteCursorMode()
+  const tvFocusedEl = useTvFocus()
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const tvFocusInside = Boolean(
+    tvMode && !remoteCursorMode && tvFocusedEl && containerRef.current?.contains(tvFocusedEl)
+  )
+  const expanded = isHovered || tvFocusInside
+
+  // BACK：先收起音量条，再收起展开的面板，最后才放行给外层（关播放页等）
+  useTvBack(() => {
+    if (showVolumeSlider) {
+      setShowVolumeSlider(false)
+      return true
+    }
+    return false
+  }, [showVolumeSlider])
 
   // 当封面变化时提取颜色
   useEffect(() => {
@@ -206,16 +226,17 @@ export default function MiniPlayer({
           exit={{ x: 80, y: 80, scale: 0.8, opacity: 0 }}
           transition={{ type: 'spring', damping: 24, stiffness: 220 }}
           className="fixed bottom-6 right-6 z-50 origin-bottom-right"
+          ref={containerRef}
           onMouseEnter={() => setIsHovered(true)}
           onMouseLeave={() => setIsHovered(false)}
         >
           <motion.div
-            animate={{ width: isHovered ? 326 : 92, height: isHovered ? 126 : 92 }}
+            animate={{ width: expanded ? 326 : 92, height: expanded ? 126 : 92 }}
             transition={{ type: 'spring', damping: 25, stiffness: 260 }}
             className="relative origin-bottom-right"
           >
             <motion.div
-              animate={{ opacity: isHovered ? 1 : 0 }}
+              animate={{ opacity: expanded ? 1 : 0 }}
               className="absolute inset-0 overflow-hidden rounded-[22px]"
               style={{
                 border: `1px solid ${extractedColor}66`,
@@ -223,7 +244,7 @@ export default function MiniPlayer({
               }}
             />
             <AnimatePresence initial={false}>
-              {isHovered && (
+              {expanded && (
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 overflow-hidden rounded-[22px]">
                   <CachedImage src={coverUrl} alt="" className="h-full w-full scale-125 object-cover blur-2xl" draggable={false} role="background" priority="deferred" retainPrevious />
                   <div className="absolute inset-0 bg-black/55 backdrop-blur-xl" />
@@ -234,7 +255,7 @@ export default function MiniPlayer({
 
             {/* 信息和控制区域 - 悬停时展开 */}
             <AnimatePresence>
-              {isHovered && (
+              {expanded && (
                 <motion.div
                   initial={{ x: 24, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
@@ -325,6 +346,7 @@ export default function MiniPlayer({
                         exit={{ y: 10, opacity: 0, scale: 0.95 }}
                         transition={{ duration: 0.2, ease: 'easeOut' }}
                         className="absolute bottom-2 right-2 flex items-center gap-2 rounded-full px-3 py-1.5 shadow-lg"
+                        data-tv-scope
                         style={{
                           background: 'rgba(255, 255, 255, 0.1)',
                           backdropFilter: 'blur(20px) saturate(180%)',
@@ -361,12 +383,12 @@ export default function MiniPlayer({
           <motion.div
             whileHover={{ scale: 1.05 }}
             onClick={onClick}
-            animate={{ right: isHovered ? 0 : 6, bottom: isHovered ? 0 : 6 }}
+            animate={{ right: expanded ? 0 : 6, bottom: expanded ? 0 : 6 }}
             transition={{ type: 'spring', damping: 25, stiffness: 260 }}
             className="absolute z-20 h-20 w-20 cursor-pointer"
           >
             <AnimatePresence>
-              {!isHovered && (
+              {!expanded && (
                 <motion.svg
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}

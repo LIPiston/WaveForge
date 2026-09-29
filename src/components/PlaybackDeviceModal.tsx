@@ -199,6 +199,7 @@ export default function PlaybackDeviceModal({ show, onClose, playerTheme = 'dark
     <AnimatePresence>
       {show && (
         <motion.div
+          data-tv-scope
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}

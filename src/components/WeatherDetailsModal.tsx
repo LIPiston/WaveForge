@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useModeParked } from '../utils/modeLayer'
 import { useTvBack } from '../tv/tvCore'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
@@ -116,6 +117,9 @@ function MoonDiscSmall({ phase }: { phase: number }) {
 }
 
 export default function WeatherDetailsModal({ open, weather, onClose, onRefresh, loading, hazards, hazardLoading, hazardErrors, hazardTransportError = '', initialTab = 'weather', onHazardRefresh, onHazardEnsure }: WeatherDetailsModalProps) {
+  // 挂起（所属模式层被切走）时不渲染这个 portal：portal 挂在 body 上，不受挂起层
+  // visibility:hidden 约束，留着会盖住当前模式。只隐藏不卸载，切回来状态原样。
+  const parked = useModeParked()
   const [activeTab, setActiveTab] = useState<WeatherDetailsTab>(initialTab)
   const [weatherMapOpen, setWeatherMapOpen] = useState(false)
   const [moonOpen, setMoonOpen] = useState(false)
@@ -302,6 +306,10 @@ export default function WeatherDetailsModal({ open, weather, onClose, onRefresh,
       ))}
     </div>
   )
+
+  // 内部还挂着时间进度 / 台风 / 地震 / 天气图 / 月相几个子浮层，它们同样 portal 到 body——
+  // 这里返回 null 就一并挡住了，不需要各自再判一次。
+  if (parked) return null
 
   return createPortal(
     <AnimatePresence>

@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useModeParked } from '../utils/modeLayer'
 import { Moon as MoonIcon, X } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { WeatherSnapshot } from '../services/weatherService'
@@ -33,6 +34,9 @@ const RANGE_DAYS = 7
 const TICKS_PER_DAY = 12 // 每 2 小时一刻度
 
 export default function MoonPhaseExperience({ weather, open, onOpen, onClose }: MoonPhaseExperienceProps) {
+  // 挂起（所属模式层被切走）时不渲染这个 portal：portal 挂在 body 上，不受挂起层
+  // visibility:hidden 约束，留着会盖住当前模式。只隐藏不卸载，切回来状态原样。
+  const parked = useModeParked()
   const [offsetDays, setOffsetDays] = useState(0)
   const rulerRef = useRef<HTMLDivElement | null>(null)
   const draggingRef = useRef(false)
@@ -85,6 +89,8 @@ export default function MoonPhaseExperience({ weather, open, onOpen, onClose }: 
   }, [now])
 
   const markerX = (offsetDays / (RANGE_DAYS * 2) + 0.5) * 100
+
+  if (parked) return null
 
   return createPortal(
     <AnimatePresence>

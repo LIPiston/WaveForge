@@ -48,10 +48,12 @@ import {
   type ExplorePlaylist,
 } from '../services/exploreApi'
 import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
+import { largeCacheGet, largeCacheSet } from '../services/largeObjectCache'
 import MiniPlayer from './MiniPlayer'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
 import { AppleExplorePanel } from './AppleExplorePanel'
 import { getAppleLibraryPlaylists, APPLE_EXPLORE_COUNTRIES } from '../services/appleCatalog'
+import { getBackgroundArtworkSize } from '../services/artwork'
 import { fetchApplePlaylistTracksForPlay, fetchLibraryPlaylistTracksForPlay } from '../services/appleWebService'
 import { getPlatformCapabilities, getVisiblePlatforms, PLATFORM_VISIBILITY_EVENT, PLATFORM_ORDER_EVENT } from '../services/platforms'
 import ExploreSettingsPanel, {
@@ -61,6 +63,7 @@ import ExploreSettingsPanel, {
   type ExplorePreferences,
   type ExploreSectionId,
   type ExploreCardOpacity,
+  type ExploreCoverWallStyle,
 } from './ExploreSettingsPanel'
 import SongContextMenu from './SongContextMenu'
 import PlaylistContextMenu from './PlaylistContextMenu'
@@ -75,6 +78,7 @@ import QQExplorePage from '../features/qqExplore/QQExplorePage'
 import NeteaseExplorePage from '../features/neteaseExplore/NeteaseExplorePage'
 import { shouldShowEntitlementBadge, type PlatformEntitlements } from '../utils/musicEntitlements'
 import CachedImage from './CachedImage'
+import { FrozenScope } from './frozenScope'
 import type { ArtworkPriority, ArtworkRole } from '../services/artwork'
 
 // 全局设置镜像里的共享弹窗（按需加载）
@@ -258,6 +262,16 @@ const WALL_LAYOUT = {
   sparse: { columns: 10, rows: 6, gap: 16, minSpan: 1, maxSpan: 1, covers: 64 },
 } as const
 
+// ── 完整错落拼贴（mosaic）────────────────────────────────────────────────
+// 参考图2 的排列：一列列**完整方形封面**（不裁切、不变形），列与列之间用不同的
+// 垂直偏移形成错落；封面尺寸统一，不像 tiled 那样随机跨度（随机跨度必然裁切封面）。
+const MOSAIC_COLUMNS = 9
+const MOSAIC_PER_COLUMN = 7
+const MOSAIC_GAP = 6
+// 每列垂直错位量（列高的百分比）。手工标定而非伪随机：伪随机实测出现相邻两列
+// 偏移几乎相同（0.73% / 0.65%）→ 接缝对齐，"错落"感没了；这组保证相邻列差异明显。
+const MOSAIC_OFFSETS = [0.052, 0.018, 0.061, 0.03, 0.0, 0.044, 0.012, 0.055, 0.026]
+
 /** 稳定的伪随机数：同一张封面每次渲染都得到同样的「大小」，不会来回跳。 */
 function coverRandom(seed: number, salt: number): number {
   const value = Math.sin(seed * 12.9898 + salt * 78.233) * 43758.5453
@@ -272,7 +286,7 @@ function CoverWallBackground({
   accentRgb,
 }: {
   covers: string[]
-  style: 'tiled' | 'sparse'
+  style: ExploreCoverWallStyle
   animated: boolean
   blurPx: number
   accentRgb: string
@@ -283,8 +297,27 @@ function CoverWallBackground({
   // 非增强档停掉漂移、保留静态封面墙；桌面/增强档行为不变。
   // PC 端补充按性能档位降级：精简档（lite）停漂移但保留静态封面墙 + 模糊遮罩——
   // 内容静止后 backdrop-filter 不再逐帧重采样，视觉主体（封面墙 + 毛玻璃）完全不变。
-  const driftAnimated = animated && (tvMode ? isPerfModeEnhanced() : pcPerfTier !== 'lite')
-  const layout = WALL_LAYOUT[style]
+  // 另外：只要开了模糊就停漂移——模糊遮罩下的封面本来就看不清，漂移带来的观感收益
+  // 远小于「全屏毛玻璃每帧重算」的代价（同一条理由的另一半：静止即不必重采样）。
+  const driftAnimated = animated && blurPx <= 0 && (tvMode ? isPerfModeEnhanced() : pcPerfTier !== 'lite')
+  // mosaic 用列式布局，不查这张网格表；tiled/sparse 各自查表
+  const layout = style === 'sparse' ? WALL_LAYOUT.sparse : WALL_LAYOUT.tiled
+  const mosaicColumns = useMemo(() => {
+    if (style !== 'mosaic') return [] as { covers: string[]; offset: number }[]
+    const unique = Array.from(new Set(covers.filter(Boolean)))
+    if (unique.length === 0) return [] as { covers: string[]; offset: number }[]
+    const columns: { covers: string[]; offset: number }[] = []
+    let index = 0
+    for (let column = 0; column < MOSAIC_COLUMNS; column += 1) {
+      const items: string[] = []
+      for (let row = 0; row < MOSAIC_PER_COLUMN; row += 1) {
+        items.push(unique[index % unique.length])
+        index += 1
+      }
+      columns.push({ covers: items, offset: MOSAIC_OFFSETS[column % MOSAIC_OFFSETS.length] })
+    }
+    return columns
+  }, [covers, style])
   const tiles = useMemo(() => {
     const unique = Array.from(new Set(covers.filter(Boolean)))
     // 扩充到足够铺满背景的封面数
@@ -307,12 +340,45 @@ function CoverWallBackground({
   }, [covers, layout])
 
   const blurValue = `blur(${blurPx}px)`
+  // 源图档位跟**实际模糊半径**走：blur=0（「完整错落」默认）给大图保证封面清晰，
+  // 模糊档位下自动降级省带宽/光栅化（role=background 的默认档只有 128，
+  // 不模糊时铺满屏会糊成像素块）。
+  //
+  // 再封顶 512：瓦片实际尺寸只有屏宽的 1/9~1/12（1775px 屏约 150~200 CSS px，
+  // dpr=2 也就 400px），1024 档解码出来是 4MB/张 × 63 张 ≈ 250MB，
+  // 全花在看不见的像素上——「封面一多就吃满内存」里这是最容易被忽略的一块。
+  const tileArtworkSize = Math.min(512, getBackgroundArtworkSize(blurPx))
 
-  if (tiles.length === 0) return null
+  if (style === 'mosaic' ? mosaicColumns.length === 0 : tiles.length === 0) return null
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      {/* 封面墙主体：dense 流自动填缝，动画时缓慢平移 */}
+      {/* 完整错落拼贴：列式布局，每张封面完整（方形瓦片 = 专辑封面原始比例） */}
+      {style === 'mosaic' && (
+        <div
+          className="absolute inset-[-6%] flex"
+          style={{
+            animation: driftAnimated ? 'coverWallDrift 90s linear infinite' : undefined,
+            gap: MOSAIC_GAP,
+          }}
+        >
+          {mosaicColumns.map((column, columnIndex) => (
+            <div
+              key={columnIndex}
+              className="flex min-w-0 flex-1 flex-col"
+              style={{ gap: MOSAIC_GAP, transform: `translateY(-${(column.offset * 100).toFixed(2)}%)` }}
+            >
+              {column.covers.map((url, tileIndex) => (
+                <div key={`${tileIndex}-${url.slice(-24)}`} className="w-full overflow-hidden" style={{ aspectRatio: '1 / 1' }}>
+                  <CachedImage src={url} alt="" className="h-full w-full object-cover" draggable={false} lazy role="background" size={tileArtworkSize} priority="deferred" />
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+      {/* 封面墙主体（tiled/sparse）：dense 流自动填缝，动画时缓慢平移 */}
+      {style !== 'mosaic' && (
       <div
         className="absolute inset-[-12%]"
         style={{
@@ -336,16 +402,18 @@ function CoverWallBackground({
               borderRadius: style === 'sparse' ? 16 : undefined,
             }}
           >
-            <CachedImage src={tile.url} alt="" className="h-full w-full object-cover" draggable={false} lazy role="background" priority="deferred" />
+            <CachedImage src={tile.url} alt="" className="h-full w-full object-cover" draggable={false} lazy role="background" size={tileArtworkSize} priority="deferred" />
           </div>
         ))}
       </div>
-      {/* 模糊遮罩：让前景清晰 */}
+      )}
+      {/* 模糊遮罩：让前景清晰。blur=0 时不写 backdrop-filter——`blur(0px)` 视觉上等于没有，
+          但一样会让这张全屏元素升成独立合成层并持续参与 backdrop 采样，
+          在「探索页常驻挂载」的前提下是白拿的 GPU 开销。 */}
       <div
         className="absolute inset-0"
         style={{
-          backdropFilter: blurValue,
-          WebkitBackdropFilter: blurValue,
+          ...(blurPx > 0 ? { backdropFilter: blurValue, WebkitBackdropFilter: blurValue } : null),
           background: `linear-gradient(160deg, rgba(${accentRgb},0.16) 0%, rgba(6,8,12,0.68) 45%, rgba(6,8,12,0.86) 100%)`,
         }}
       />
@@ -478,20 +546,6 @@ const readExploreCache = (): Partial<Record<ExplorePlatform, ExplorePayload>> =>
   return result
 }
 
-const writeExploreCache = (platform: ExplorePlatform, payload: ExplorePayload) => {
-  // payload 可达数百 KB～MB 级：配额满时 setItem 会抛 QuotaExceededError，
-  // 不能让它把整次「加载成功」变成一条错误横幅（请求成功了却不渲染）。放弃落盘即可。
-  try {
-    localStorage.setItem(`${EXPLORE_CACHE_KEY_PREFIX}${platform}`, JSON.stringify({
-      accountKey: getExploreAccountKey(platform),
-      dateKey: getExploreDateKey(),
-      payload
-    }))
-  } catch {
-    // 写不进去只影响下次冷启动占位，不影响本次展示
-  }
-}
-
 /**
  * 封面墙封面的缓存。
  * Apple / 网易云原生页的封面来自它们各自的即时请求（网易云不请求聚合首页、Apple 只加载页签数据），
@@ -502,6 +556,41 @@ const COVER_WALL_CACHE_PREFIX = 'exploreCoverWallCovers-v1:'
 
 /** 有独立原生页面的平台；其余平台共用下面那套聚合首页。 */
 const DEDICATED_PLATFORMS: ReadonlySet<ExplorePlatform> = new Set(['qq', 'netease', 'apple'])
+
+// —— 大对象缓存迁移（localStorage 配额问题）：聚合 payload / 封面墙列表可达数百 KB~MB，
+// 全部改写 IndexedDB（largeObjectCache），localStorage 只保留旧数据兼容读取，写入时逐键释放配额。
+const EXPLORE_CACHE_IDB_KEY = 'explore-cache-entries-v2'
+const COVER_WALL_IDB_KEY = 'explore-cover-wall-v2'
+let exploreCacheWriteQueue: Promise<void> = Promise.resolve()
+let coverWallWriteQueue: Promise<void> = Promise.resolve()
+
+const loadExploreCacheEntries = async (): Promise<Partial<Record<ExplorePlatform, ExploreCacheEntry>>> => {
+  const stored = await largeCacheGet<Partial<Record<ExplorePlatform, ExploreCacheEntry>>>(EXPLORE_CACHE_IDB_KEY)
+  const result: Partial<Record<ExplorePlatform, ExploreCacheEntry>> = {}
+  const today = getExploreDateKey()
+  for (const platform of EXPLORE_PLATFORMS) {
+    const entry = stored?.[platform]
+    if (entry?.payload && entry.dateKey === today && entry.accountKey === getExploreAccountKey(platform)) {
+      result[platform] = entry
+    }
+  }
+  return result
+}
+
+const writeExploreCache = (platform: ExplorePlatform, payload: ExplorePayload) => {
+  // 串行化读改写：多平台并发回传时避免相互覆盖。写失败只影响下次冷启动占位，不影响本次展示。
+  exploreCacheWriteQueue = exploreCacheWriteQueue.then(async () => {
+    try {
+      const stored = (await largeCacheGet<Partial<Record<ExplorePlatform, ExploreCacheEntry>>>(EXPLORE_CACHE_IDB_KEY)) || {}
+      stored[platform] = { accountKey: getExploreAccountKey(platform), dateKey: getExploreDateKey(), payload }
+      await largeCacheSet(EXPLORE_CACHE_IDB_KEY, stored)
+      // IDB 已成为权威缓存：释放 localStorage 里同平台的遗留大对象，还回配额
+      try { localStorage.removeItem(`${EXPLORE_CACHE_KEY_PREFIX}${platform}`) } catch { /* 忽略 */ }
+    } catch {
+      // 忽略
+    }
+  })
+}
 
 const readCoverWallCache = (platform: ExplorePlatform): string[] => {
   try {
@@ -519,18 +608,32 @@ const readCoverWallCache = (platform: ExplorePlatform): string[] => {
   return []
 }
 
+const loadCoverWallCacheEntries = async (): Promise<Partial<Record<ExplorePlatform, string[]>>> => {
+  const stored = await largeCacheGet<Partial<Record<ExplorePlatform, { accountKey: string; dateKey: string; covers: string[] }>>>(COVER_WALL_IDB_KEY)
+  const result: Partial<Record<ExplorePlatform, string[]>> = {}
+  const today = getExploreDateKey()
+  for (const platform of EXPLORE_PLATFORMS) {
+    const entry = stored?.[platform]
+    if (entry && Array.isArray(entry.covers) && entry.dateKey === today && entry.accountKey === getExploreAccountKey(platform)) {
+      result[platform] = entry.covers.filter((value: unknown): value is string => typeof value === 'string')
+    }
+  }
+  return result
+}
+
 const writeCoverWallCache = (platform: ExplorePlatform, covers: string[]) => {
   // 空列表不覆盖已有缓存：刚挂载时原生页还没数据，写空会把上次的封面抹掉。
   if (covers.length === 0) return
-  try {
-    localStorage.setItem(`${COVER_WALL_CACHE_PREFIX}${platform}`, JSON.stringify({
-      accountKey: getExploreAccountKey(platform),
-      dateKey: getExploreDateKey(),
-      covers,
-    }))
-  } catch {
-    // 配额不足等写入失败只影响下次占位，不影响本次展示
-  }
+  coverWallWriteQueue = coverWallWriteQueue.then(async () => {
+    try {
+      const stored = (await largeCacheGet<Partial<Record<ExplorePlatform, { accountKey: string; dateKey: string; covers: string[] }>>>(COVER_WALL_IDB_KEY)) || {}
+      stored[platform] = { accountKey: getExploreAccountKey(platform), dateKey: getExploreDateKey(), covers }
+      await largeCacheSet(COVER_WALL_IDB_KEY, stored)
+      try { localStorage.removeItem(`${COVER_WALL_CACHE_PREFIX}${platform}`) } catch { /* 忽略 */ }
+    } catch {
+      // 配额不足等写入失败只影响下次占位，不影响本次展示
+    }
+  })
 }
 
 // 迷你播放器包装：内部订阅播放时间（4Hz），ExploreView 本体不再因 currentTime prop 每秒重渲染
@@ -670,7 +773,9 @@ function ExploreView({
     song: Song | null
     songs: Song[]
     continuous: boolean
-  }>({ show: false, x: 0, y: 0, song: null, songs: [], continuous: false })
+    /** 刷歌模式右键：菜单额外提供「音乐偏好设置」入口 */
+    radarMode: boolean
+  }>({ show: false, x: 0, y: 0, song: null, songs: [], continuous: false, radarMode: false })
   const [playlistContextMenu, setPlaylistContextMenu] = useState<{ show: boolean; x: number; y: number; playlist: ExplorePlaylist | null }>({ show: false, x: 0, y: 0, playlist: null })
   const [feedPlaylistSubscriptions, setFeedPlaylistSubscriptions] = useState<Map<string, boolean>>(new Map())
   const [shuffleOffset, setShuffleOffset] = useState(0)
@@ -857,6 +962,31 @@ function ExploreView({
       previous[platform]?.length ? previous : { ...previous, [platform]: readCoverWallCache(platform) }
     ))
   }, [platform, authRevision])
+  // IDB 缓存水合（异步）：迁移后大缓存的权威来源在这里；localStorage 旧键随写入逐个释放
+  useEffect(() => {
+    let alive = true
+    void loadExploreCacheEntries().then(entries => {
+      if (!alive) return
+      setDataByPlatform(previous => {
+        const next = { ...previous }
+        for (const key of Object.keys(entries) as ExplorePlatform[]) {
+          if (!next[key] && entries[key]?.payload) next[key] = entries[key]!.payload
+        }
+        return next
+      })
+    })
+    void loadCoverWallCacheEntries().then(map => {
+      if (!alive) return
+      setArtworkCoversByPlatform(previous => {
+        const next = { ...previous }
+        for (const key of Object.keys(map) as ExplorePlatform[]) {
+          if (!next[key]?.length) next[key] = map[key]!
+        }
+        return next
+      })
+    })
+    return () => { alive = false }
+  }, [])
   // 内容不变时保持原引用，否则回传 → setState → 重渲染 → 再回传会自激循环。
   const handleArtworkCovers = useCallback((coverPlatform: ExplorePlatform, covers: string[]) => {
     setArtworkCoversByPlatform(previous => {
@@ -1012,7 +1142,10 @@ function ExploreView({
   // 用原生页回传的封面兜底，否则网易云下选了「封面墙」也只会显示渐变。
   const coverWallCovers = useMemo(() => {
     const songCovers = heroSongs.map(song => song.album?.picUrl || '').filter(Boolean)
-    return songCovers.length > 0 ? songCovers : (artworkCoversByPlatform[platform] || [])
+    // 歌曲封面优先，再把平台原生页回传的封面补进来：封面墙要铺几十张瓦片，
+    // 只有 30 首歌的封面会明显重复（「完整错落」不裁切，重复比随机裁切更容易看出来）。
+    const merged = [...songCovers, ...(artworkCoversByPlatform[platform] || [])].filter(Boolean)
+    return Array.from(new Set(merged))
   }, [heroSongs, artworkCoversByPlatform, platform])
 
   const rotateItems = useCallback(<T,>(items: T[], offset: number) => {
@@ -1054,10 +1187,11 @@ function ExploreView({
     song: Song,
     songs: Song[],
     continuous = false,
+    radarMode = false,
   ) => {
     event.preventDefault()
     event.stopPropagation()
-    setSongContextMenu({ show: true, x: event.clientX, y: event.clientY, song, songs, continuous })
+    setSongContextMenu({ show: true, x: event.clientX, y: event.clientY, song, songs, continuous, radarMode })
   }, [])
 
   const openPlaylistContextMenu = useCallback((event: React.MouseEvent, playlist: ExplorePlaylist) => {
@@ -1437,7 +1571,7 @@ function ExploreView({
           blurPx={suspended ? 0 : (
             preferences.background.coverWallBlur === 'custom'
               ? preferences.background.coverWallBlurCustom
-              : ({ soft: 18, medium: 32, strong: 56 } as const)[preferences.background.coverWallBlur]
+              : ({ none: 0, soft: 18, medium: 32, strong: 56 } as const)[preferences.background.coverWallBlur]
           )}
           accentRgb={accentRgb}
         />
@@ -1713,6 +1847,9 @@ function ExploreView({
 
           {visitedPlatforms.has('qq') && (
             <div className={platform === 'qq' ? 'contents' : 'hidden'} aria-hidden={platform !== 'qq'}>
+            {/* 被切走的平台面板 display:none 但保持挂载（保滚动位置/已加载内容）：
+                冻结作用域让面板内的封面释放已解码位图，切回来再从缓存解码。 */}
+            <FrozenScope.Provider value={platform !== 'qq'}>
             <QQExplorePage
               loggedIn={qqLoggedIn}
               username={qqUsername}
@@ -1745,15 +1882,17 @@ function ExploreView({
               onOpenPlaylists={() => setMoreSection('playlists')}
               onOpenCharts={() => setMoreSection('charts')}
               onOpenMVs={() => { setMvDirectPlay(false); setShowMVExplore(true) }}
-              onSongContextMenu={(event, song, songs) => openSongContextMenu(event, song, songs)}
+              onSongContextMenu={(event, song, songs, radarMode) => openSongContextMenu(event, song, songs, false, radarMode)}
               onViewComments={onViewComments}
               onAddToFavorites={onAddToFavorites}
               onRemoveFromFavorites={onRemoveFromFavorites}
             />
+            </FrozenScope.Provider>
             </div>
           )}
           {visitedPlatforms.has('netease') && (
             <div className={platform === 'netease' ? 'contents' : 'hidden'} aria-hidden={platform !== 'netease'}>
+            <FrozenScope.Provider value={platform !== 'netease'}>
             <NeteaseExplorePage
               loggedIn={neteaseLoggedIn}
               username={neteaseUsername}
@@ -1784,10 +1923,12 @@ function ExploreView({
               onAddToFavorites={onAddToFavorites}
               onRemoveFromFavorites={onRemoveFromFavorites}
             />
+            </FrozenScope.Provider>
             </div>
           )}
           {visitedPlatforms.has('apple') && (
             <div className={platform === 'apple' ? 'contents' : 'hidden'} aria-hidden={platform !== 'apple'}>
+            <FrozenScope.Provider value={platform !== 'apple'}>
             <AppleExplorePanel
               motionSuspended={motionSuspended || platform !== 'apple'}
               appleLoggedIn={appleLoggedIn}
@@ -1808,6 +1949,7 @@ function ExploreView({
               restorePlaybackOrigin={restorePlaybackOrigin}
               refreshSignal={appleRefreshSignal}
             />
+            </FrozenScope.Provider>
             </div>
           )}
           {/* Spotify / 酷狗 / 汽水共用这套聚合首页：数据按平台存在 dataByPlatform 里，
@@ -1887,7 +2029,7 @@ function ExploreView({
                       <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(5,7,11,0.92),rgba(5,7,11,0.08)_72%)]" />
                       <div className="relative flex h-full flex-col justify-end p-4">
                         <div className="mb-auto flex items-center justify-between">
-                          <span className="rounded-full bg-black/35 px-2.5 py-1 text-[10px] font-medium text-white/66 backdrop-blur-md">
+                          <span className="rounded-full bg-black/35 px-2.5 py-1 text-[10px] font-medium text-white/66">
                             {playlist.source === 'qqmusic-skills'
                               ? 'AI 歌单'
                               : playlist.source === 'qq-native-personalized'
@@ -2038,13 +2180,13 @@ function ExploreView({
                         <Cover src={playlist.coverUrl} alt={playlist.name} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
                         <div className="absolute inset-0 bg-black/0 transition group-hover:bg-black/20" />
                         {playlist.source === 'qqmusic-skills' && (
-                          <span className="absolute left-3 top-3 rounded-full bg-black/45 px-2.5 py-1 text-[10px] text-white/75 backdrop-blur-md">AI 推荐</span>
+                          <span className="absolute left-3 top-3 rounded-full bg-black/45 px-2.5 py-1 text-[10px] text-white/75">AI 推荐</span>
                         )}
                         {playlist.source === 'apple-personalized' && (
-                          <span className="absolute left-3 top-3 rounded-full bg-black/45 px-2.5 py-1 text-[10px] text-white/75 backdrop-blur-md">为你推荐</span>
+                          <span className="absolute left-3 top-3 rounded-full bg-black/45 px-2.5 py-1 text-[10px] text-white/75">为你推荐</span>
                         )}
                         {formatCount(playlist.playCount) && (
-                          <span className="absolute right-3 top-3 flex items-center gap-1 rounded-full bg-black/45 px-2.5 py-1 text-[10px] text-white/75 backdrop-blur-md">
+                          <span className="absolute right-3 top-3 flex items-center gap-1 rounded-full bg-black/45 px-2.5 py-1 text-[10px] text-white/75">
                             <Headphones className="h-3 w-3" /> {formatCount(playlist.playCount)}
                           </span>
                         )}
@@ -2238,7 +2380,7 @@ function ExploreView({
                               void handleChannel(channel, true)
                             }
                           }}
-                          className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full bg-black/45 text-white/75 opacity-0 backdrop-blur-md transition group-hover:opacity-100"
+                          className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full bg-black/45 text-white/75 opacity-0 transition group-hover:opacity-100"
                           aria-label={`直接播放${channel.name}`}
                         >
                           <Play className="h-3.5 w-3.5 fill-current" />
@@ -2442,6 +2584,8 @@ function ExploreView({
           song={songContextMenu.song}
           playerTheme={playerTheme}
           onClose={() => setSongContextMenu(previous => ({ ...previous, show: false }))}
+          showMusicPreference={songContextMenu.radarMode}
+          onOpenMusicPreference={() => window.dispatchEvent(new Event('waveforge:qq-open-music-preference'))}
           onPlayNow={song => playExploreCollection(
             song,
             songContextMenu.songs.length > 0 ? songContextMenu.songs : [song],
