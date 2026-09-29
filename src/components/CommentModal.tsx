@@ -2,15 +2,18 @@ import { useState, useEffect, useRef, useCallback, useMemo, memo, type ReactElem
 import { List, useDynamicRowHeight, type ListImperativeAPI, type RowComponentProps } from 'react-window'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Song } from '../services/musicApi'
-import type { MusicPlatform } from '../services/platforms'
+import { platformLabel, type MusicPlatform } from '../services/platforms'
 import { createSodaComment, fetchSodaComments, isSodaLoggedIn, type SodaComment } from '../services/sodaService'
-import { ThumbsUp, MessageCircle, Trash2, Send, ChevronDown, Edit3 } from 'lucide-react'
+import { ThumbsUp, MessageCircle, Trash2, Send, ChevronDown, X, Gauge, Image as ImageIcon, Copy, Smile, Loader2, Settings2 } from 'lucide-react'
 import ScrollToTop from './ScrollToTop'
 import DeleteCommentModal from './DeleteCommentModal'
 import CachedImage from './CachedImage'
+import CommentDanmaku from './CommentDanmaku'
 import { getResolvedArtworkUrl } from '../services/artworkLoader'
 import { debugLog, isVerboseLogEnabled } from '../utils/debugLog'
 import { createTtlCache } from '../utils/ttlCache'
+import { commentTimeValue, formatCommentTime } from '../utils/commentFormat'
+import { getReadableAccentColor } from '../utils/desktopAccentColor'
 import { useTvBack } from '../tv/tvCore'
 
 // 评论分页短 TTL 缓存：按 `平台:资源ID:排序` 存已加载的评论 + 游标/页码。
@@ -47,6 +50,12 @@ interface CommentModalProps {
   song?: Song | null
   playlist?: PlaylistCommentResource | null
   resourceType?: 'song' | 'playlist'
+  /** 播放器深浅色：评论区跟随全局主题，深浅两套底色都由封面推导 */
+  playerTheme?: 'light' | 'dark'
+  /** 封面色：用于弹幕/标签/按钮的高亮色，缺失时回退品牌粉 */
+  accentColor?: string
+  /** 打开网易云歌单（评论用户主页弹窗里的歌单卡） */
+  onOpenPlaylist?: (playlist: { id: string; name: string; coverUrl: string; platform: 'netease' }) => void
 }
 
 interface Reply {
@@ -59,6 +68,15 @@ interface Reply {
   }
   time: number | string
   beRepliedUser?: string
+  /** 楼中楼归属的根评论：QQ 回复要带 rootCommentId + parentCommentId 才能形成二级回复 */
+  rootId?: string
+  /** QQ 回复里可能出现的图片标记（网页接口不返回原图，只做提示） */
+  hasImage?: boolean
+}
+
+interface CommentTopic {
+  id: number | string
+  title: string
 }
 
 interface Comment {
@@ -75,11 +93,38 @@ interface Comment {
   replies?: Reply[]
   isLiked?: boolean
   isOwn?: boolean
-  replyPage?: number
-  hasMoreReplies?: boolean
+  rootCommentId?: number | string
+  /** 图片评论：网易云直接给图片地址；QQ 网页接口只在正文里留 [图片] 标记 */
+  contentPicUrl?: string | null
+  hasImage?: boolean
+  /** 评论自带的话题标签（网易云 topicList） */
+  topics?: CommentTopic[]
+  /** 歌词引用（QQ music.globalComment：LyricLines） */
+  lyricLines?: string[]
+  /** IP 属地（QQ Location / 网易云 IP 字段） */
+  ipLocation?: string
+  /** 表情贴纸（网易云 expressionUrl / QQ EmoPic） */
+  stickerUrl?: string
+  /** VIP 图标（QQ VipIcon） */
+  vipIcon?: string
+  /** 精选热评（弹幕气泡高亮用） */
+  hot?: boolean
 }
 
-type ViewMode = 'hot' | 'latest'
+/** 评论弹窗页签：总览=弹幕幕布；推荐（QQ 为精彩评论）/ 最热评论 / 最新评论为列表 */
+type CommentTab = 'overview' | 'recommend' | 'hot' | 'latest'
+/** 请求用的排序模式（决定 sortType / QQ cmd），与页签一一对应 */
+type LoadMode = 'recommend' | 'hot' | 'latest'
+
+/** 只带操作所需字段的评论引用：列表行、弹幕气泡、钉住面板都能直接传进来 */
+type CommentRef = { commentId: string; user: { nickname: string } }
+type LikeTarget = { commentId: string; isLiked?: boolean; likedCount: number }
+/** 回复目标：回复评论（rootId 为空）或回复楼中楼里某条回复（rootId 为根评论） */
+interface ReplyTarget {
+  commentId: string
+  username: string
+  rootId?: string
+}
 
 function normalizeDescriptionText(value?: string): string {
   return String(value || '')
@@ -98,6 +143,21 @@ function normalizeDescriptionText(value?: string): string {
     .trim()
 }
 
+/**
+ * QQ 评论正文清洗：网页接口把表情写成 `[em]e400867[/em]`、图片写成 `[图片]`，
+ * 表情码表只在客户端里（网页接口拿不到对应 Unicode），直接照抄会在界面上显示成乱码标记。
+ * 这里剥掉表情标记、把 [图片] 记成 hasImage 供列表渲染成图片占位。
+ */
+function cleanQQCommentContent(raw: string): { content: string; hasImage: boolean } {
+  const hasImage = /\[图片\]/.test(raw)
+  const content = raw
+    .replace(/\[em\]e?\d+\[\/em\]/gi, '')
+    .replace(/\[图片\]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+  return { content, hasImage }
+}
+
 function mapQQComments(rawComments: any[]): Comment[] {
   const commentMap = new Map<string, Comment>()
 
@@ -107,17 +167,22 @@ function mapQQComments(rawComments: any[]): Comment[] {
 
     const isReplyEnvelope = Boolean(raw.commentid && raw.rootcommentid && raw.commentid !== raw.rootcommentid)
     const middleReplies = Array.isArray(raw.middlecommentcontent) ? raw.middlecommentcontent : []
-    const mappedReplies: Reply[] = middleReplies.map((reply: any) => ({
-      replyId: String(reply.subcommentid || raw.commentid || `${rootId}-${reply.replynick || ''}`),
-      content: reply.subcommentcontent || '',
-      user: {
-        nickname: String(reply.replynick || raw.nick || '匿名用户').replace(/^@/, ''),
-        avatarUrl: isReplyEnvelope ? String(raw.avatarurl || '').replace(/^http:/, 'https:') : '',
-        userId: reply.encrypt_replyuin || reply.replyuin || raw.encrypt_uin || ''
-      },
-      time: Number(raw.time || 0) * 1000,
-      beRepliedUser: String(reply.replyednick || raw.rootcommentnick || '').replace(/^@/, '') || undefined
-    }))
+    const mappedReplies: Reply[] = middleReplies.map((reply: any) => {
+      const cleaned = cleanQQCommentContent(String(reply.subcommentcontent || ''))
+      return {
+        replyId: String(reply.subcommentid || raw.commentid || `${rootId}-${reply.replynick || ''}`),
+        content: cleaned.content,
+        hasImage: cleaned.hasImage || undefined,
+        user: {
+          nickname: String(reply.replynick || raw.nick || '匿名用户').replace(/^@/, ''),
+          avatarUrl: isReplyEnvelope ? String(raw.avatarurl || '').replace(/^http:/, 'https:') : '',
+          userId: reply.encrypt_replyuin || reply.replyuin || raw.encrypt_uin || ''
+        },
+        time: Number(raw.time || 0) * 1000,
+        beRepliedUser: String(reply.replyednick || raw.rootcommentnick || '').replace(/^@/, '') || undefined,
+        rootId,
+      }
+    })
 
     const existing = commentMap.get(rootId)
     if (existing) {
@@ -131,9 +196,15 @@ function mapQQComments(rawComments: any[]): Comment[] {
       return
     }
 
+    const rootContent = cleanQQCommentContent(String(raw.rootcommentcontent || ''))
+    const topics: CommentTopic[] = raw.taoge_topic
+      ? [{ id: String(raw.taoge_url || raw.taoge_topic), title: String(raw.taoge_topic) }]
+      : []
     commentMap.set(rootId, {
       commentId: rootId,
-      content: raw.rootcommentcontent || '',
+      content: rootContent.content,
+      hasImage: rootContent.hasImage || undefined,
+      topics: topics.length ? topics : undefined,
       user: {
         nickname: String(isReplyEnvelope ? raw.rootcommentnick : raw.nick || '匿名用户').replace(/^@/, ''),
         // 回复包中的 avatarurl 属于回复者，不能错误地展示成主评论头像。
@@ -165,51 +236,6 @@ function isQQCommentMutationSuccessful(result: any): boolean {
     .some(value => value === 0 || value === 100 || value === 200)
 }
 
-/** 毫秒时间戳 → 相对时间文案（刚刚/N分钟前/N小时前/...） */
-function formatRelativeTime(timestamp: number) {
-  if (!timestamp || isNaN(timestamp)) return '未知时间'
-
-  const date = new Date(timestamp)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-
-  if (diff < 0) return '刚刚'
-
-  const seconds = Math.floor(diff / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-  const days = Math.floor(hours / 24)
-  const months = Math.floor(days / 30)
-  const years = Math.floor(days / 365)
-
-  if (seconds < 60) return '刚刚'
-  if (minutes < 60) return `${minutes}分钟前`
-  if (hours < 24) return `${hours}小时前`
-  if (days < 30) return `${days}天前`
-  if (months < 12) return `${months}个月前`
-  return `${years}年前`
-}
-
-/**
- * 评论时间展示：兼容毫秒时间戳与「3天前」这类现成文本。
- * 汽水评论的 time 字段两者皆有可能（见 sodaService SodaComment 注释）。
- */
-function formatTime(timestamp: number | string) {
-  if (typeof timestamp === 'string') {
-    const text = timestamp.trim()
-    if (!text) return '未知时间'
-    // 纯数字字符串视为毫秒时间戳，其余原样展示
-    if (/^\d+$/.test(text)) return formatRelativeTime(Number(text))
-    return text
-  }
-  return formatRelativeTime(timestamp)
-}
-
-/** 排序用毫秒值：非数字文本（如「3天前」）按 0 处理，维持服务端顺序 */
-function commentTimeValue(time: number | string): number {
-  return typeof time === 'number' ? time : Number(time) || 0
-}
-
 /** 汽水评论 → 组件内部展示结构（含楼中楼回复预览；点赞/回复仅静态展示） */
 function mapSodaComments(rawComments: SodaComment[]): Comment[] {
   return rawComments
@@ -239,128 +265,342 @@ function mapSodaComments(rawComments: SodaComment[]): Comment[] {
     .filter(item => item.commentId && item.content)
 }
 
+/** QQ 评论正文净化：[em]eXXXX[/em] 内联表情码当前无法渲染原图，剥掉标记保留文字 */
+function stripQQEmotionMarks(text: string): string {
+  return String(text || '')
+    .replace(/\[em\]e\d+\[\/em\]/g, '')
+    .trim()
+}
+
+/** QQ 新版评论（music.globalComment.CommentRead，Hippy CmtList 逆向）→ 组件内部结构 */
+function mapQQCommentV2(raw: any): Comment {
+  const subs = (Array.isArray(raw?.SubComments) && raw.SubComments.length ? raw.SubComments : (Array.isArray(raw?.RepliedComments) ? raw.RepliedComments : [])) || []
+  const replies: Reply[] = subs.map((r: any) => ({
+    replyId: String(r.CmId || ''),
+    content: stripQQEmotionMarks(String(r.Content || '')),
+    user: {
+      nickname: String(r.Nick || '匿名用户'),
+      avatarUrl: String(r.Avatar || ''),
+      userId: r.EncryptUin ? String(r.EncryptUin) : undefined,
+    },
+    time: Number(r.PubTime || 0) * 1000,
+    beRepliedUser: r.ParentComment?.Nick ? String(r.ParentComment.Nick) : (r.RepliedNick ? String(r.RepliedNick) : undefined),
+    hasImage: r.Pic ? true : undefined,
+  }))
+  return {
+    commentId: String(raw.CmId || ''),
+    content: stripQQEmotionMarks(String(raw.Content || '')),
+    contentPicUrl: raw.Pic ? String(raw.Pic) : null,
+    stickerUrl: raw.EmoPic ? String(raw.EmoPic) : undefined,
+    vipIcon: raw.VipIcon ? String(raw.VipIcon) : undefined,
+    lyricLines: Array.isArray(raw.LyricLines) && raw.LyricLines.length ? raw.LyricLines.map((l: any) => String(l)) : undefined,
+    topics: Array.isArray(raw.HashTagList)
+      ? raw.HashTagList.filter((t: any) => t?.Name).map((t: any) => ({ id: String(t.ID ?? t.Name), title: String(t.Name) }))
+      : undefined,
+    ipLocation: raw.Location ? String(raw.Location) : undefined,
+    user: {
+      nickname: String(raw.Nick || '匿名用户'),
+      avatarUrl: String(raw.Avatar || ''),
+      userId: raw.EncryptUin ? String(raw.EncryptUin) : undefined,
+    },
+    time: Number(raw.PubTime || 0) * 1000,
+    likedCount: Number(raw.PraiseNum || 0),
+    replyCount: Number(raw.ReplyCnt || 0),
+    replies,
+    isLiked: Number(raw.IsPraised) === 1,
+    isOwn: Number(raw.IsSelf) === 1,
+  }
+}
+
+// ===== 评论列表虚拟化 =====
+// 评论行高可变（内容行数、展开楼中楼回复），采用扁平行数组 +
+// useDynamicRowHeight（ResizeObserver 实测行高），只在「最新评论」页签使用。
+type CommentRow =
+  | { kind: 'comment'; comment: Comment; index: number }
+  | { kind: 'load-more' }
+  | { kind: 'no-more' }
+
+type CommentRowData = {
+  rows: CommentRow[]
+  expandedReplies: Set<string>
+  isLoggedIn: boolean
+  canInteract: boolean
+  currentUserId: string
+  isDark: boolean
+  accent: string
+  /** 精彩评论页签：前三条加排名徽章 */
+  showRank: boolean
+  onLike: (comment: Comment) => void
+  onReply: (target: ReplyTarget) => void
+  onDelete: (comment: Comment) => void
+  onToggleReplies: (comment: Comment) => void
+  onOpenUser?: (comment: Comment) => void
+  isLoadingMore: boolean
+  onLoadMore: () => void
+}
+
+const RANK_COLORS = ['#f5a524', '#b8c0cc', '#c98b5e']
+
 // 挂载动画只作用于首屏 N 条评论，避免每条评论都重复创建 framer-motion 入场动画
 const COMMENT_ANIMATE_LIMIT = 20
 
 interface CommentItemProps {
   comment: Comment
   index: number
+  rank: number
+  showRank: boolean
   expanded: boolean
   isLoggedIn: boolean
+  canInteract: boolean
   canDelete: boolean
+  isDark: boolean
+  accent: string
   onLike: (comment: Comment) => void
-  onReply: (comment: Comment) => void
+  onReply: (target: ReplyTarget) => void
   onDelete: (comment: Comment) => void
   onToggleReplies: (comment: Comment) => void
+  onOpenUser?: (comment: Comment) => void
 }
 
 // 独立 memo 组件：点赞/删除/展开回复时只有目标评论的对象引用变化，
 // 其余行的 comment prop 引用不变，可跳过重渲染（避免整表重建）。
 const CommentItem = memo(function CommentItem({
-  comment, index, expanded, isLoggedIn, canDelete,
-  onLike, onReply, onDelete, onToggleReplies,
+  comment, index, rank, showRank, expanded, isLoggedIn, canInteract, canDelete,
+  isDark, accent, onLike, onReply, onDelete, onToggleReplies, onOpenUser,
 }: CommentItemProps) {
   const shouldAnimate = index < COMMENT_ANIMATE_LIMIT
   const visibleReplies = expanded ? comment.replies : comment.replies?.slice(0, 1)
+  const secondaryText = isDark ? 'text-white/45' : 'text-black/40'
+  const actionBase = isDark
+    ? 'text-white/55 hover:bg-white/10 hover:text-white'
+    : 'text-black/50 hover:bg-black/5 hover:text-black/80'
 
   return (
     <motion.div
-      {...(shouldAnimate ? { initial: { opacity: 0, y: 10 }, animate: { opacity: 1, y: 0 } } : {})}
-      className="p-4 hover:bg-white/3 transition-colors"
+      {...(shouldAnimate ? { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 } } : {})}
+      className={`px-6 py-4 transition-colors ${isDark ? 'hover:bg-white/4' : 'hover:bg-black/3'}`}
     >
-      <div className="flex items-start space-x-3">
-        <CachedImage
-          src={comment.user.avatarUrl}
-          alt={comment.user.nickname}
-          className="w-10 h-10 rounded-full object-cover flex-shrink-0"
-          role="row"
-          size={64}
-          priority="visible"
-          fallback={<div className="w-10 h-10 rounded-full bg-gray-700 flex-shrink-0" />}
-        />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-baseline space-x-2 mb-1">
-            <span className="text-sm font-medium text-blue-400">
-              {comment.user.nickname}
-            </span>
-            <span className="text-xs text-gray-500">
-              {formatTime(comment.time)}
-            </span>
+      <div className="flex items-start gap-3">
+        {showRank && (
+          <div
+            className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-[12px] font-bold"
+            style={{ background: `${RANK_COLORS[Math.min(rank - 1, 2)]}22`, color: RANK_COLORS[Math.min(rank - 1, 2)] }}
+          >
+            {rank}
           </div>
-          <p className="text-sm text-gray-200 leading-relaxed mb-3">
+        )}
+        {comment.user.avatarUrl ? (
+          <button
+            type="button"
+            onClick={() => onOpenUser?.(comment)}
+            title="查看用户主页"
+            className="h-9 w-9 flex-shrink-0 rounded-full transition-opacity hover:opacity-80"
+          >
+            <CachedImage
+              src={comment.user.avatarUrl}
+              alt={comment.user.nickname}
+              className="h-9 w-9 rounded-full object-cover"
+              role="row"
+              size={64}
+              priority="visible"
+              fallback={<div className={`h-9 w-9 rounded-full ${isDark ? 'bg-white/10' : 'bg-black/10'}`} />}
+            />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onOpenUser?.(comment)}
+            title="查看用户主页"
+            className="h-9 w-9 flex-shrink-0 rounded-full opacity-70 transition-opacity hover:opacity-100"
+            style={{ background: accent }}
+          />
+        )}
+
+        <div className="min-w-0 flex-1">
+          <div className="mb-1 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onOpenUser?.(comment)}
+              title="查看用户主页"
+              className="truncate text-[13px] font-semibold transition-opacity hover:opacity-75 hover:underline underline-offset-2"
+              style={{ color: accent }}
+            >
+              {comment.user.nickname}
+            </button>
+            {comment.vipIcon && (
+              <CachedImage src={comment.vipIcon} alt="VIP" className="h-4 w-auto max-w-16 shrink-0 object-contain" role="row" size={64} priority="visible" />
+            )}
+            {comment.isOwn && (
+              <span className="shrink-0 rounded-full px-1.5 py-[1px] text-[10px]" style={{ background: `${accent}22`, color: accent }}>
+                我
+              </span>
+            )}
+            <span className={`shrink-0 text-[11px] ${secondaryText}`}>{formatCommentTime(comment.time)}</span>
+            {comment.ipLocation && (
+              <span className={`shrink-0 text-[11px] ${secondaryText}`}>IP·{comment.ipLocation}</span>
+            )}
+          </div>
+
+          <p className={`whitespace-pre-wrap break-words text-[13.5px] leading-6 ${isDark ? 'text-white/88' : 'text-black/80'}`}>
             {comment.content}
           </p>
 
+          {/* 表情贴纸（网易云 expressionUrl / QQ EmoPic） */}
+          {comment.stickerUrl && (
+            <CachedImage
+              src={comment.stickerUrl}
+              alt="表情"
+              className="mt-2 h-16 w-16 object-contain"
+              role="row"
+              size={128}
+              priority="visible"
+            />
+          )}
+
+          {/* 歌词引用（QQ 客户端同款：LyricLines 渲染成引号块） */}
+          {comment.lyricLines && comment.lyricLines.length > 0 && (
+            <div className={`mt-2 rounded-lg border-l-2 py-1.5 pl-3 ${isDark ? 'border-white/20 bg-white/4' : 'border-black/12 bg-black/3'}`}>
+              {comment.lyricLines.map((line, lineIndex) => (
+                <p key={lineIndex} className={`text-[12.5px] leading-5 ${isDark ? 'text-white/62' : 'text-black/58'}`}>
+                  {line}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {/* 图片评论：网易云直接给图，QQ 网页接口只留 [图片] 标记（做占位说明） */}
+          {comment.contentPicUrl && (
+            <div className="mt-2">
+              <CachedImage
+                src={comment.contentPicUrl}
+                alt="评论图片"
+                className="max-h-[320px] w-auto max-w-full rounded-xl border object-cover"
+                role="row"
+                size={640}
+                priority="visible"
+                fit="contain"
+                fallback={
+                  <div className={`flex h-24 w-36 items-center justify-center rounded-xl text-[11px] ${isDark ? 'bg-white/6 text-white/40' : 'bg-black/4 text-black/40'}`}>
+                    图片加载失败
+                  </div>
+                }
+              />
+            </div>
+          )}
+          {!comment.contentPicUrl && comment.hasImage && (
+            <span className={`mt-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${isDark ? 'border-white/12 bg-white/6 text-white/50' : 'border-black/8 bg-black/4 text-black/45'}`}>
+              <ImageIcon className="h-3 w-3" />
+              该评论包含图片（当前接口未提供原图）
+            </span>
+          )}
+
+          {/* 话题标签（网易云 topicList）：按平台原生样式展示成 #话题# */}
+          {comment.topics && comment.topics.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {comment.topics.map(topic => (
+                <span
+                  key={`${topic.id}-${topic.title}`}
+                  className="rounded-full px-2 py-0.5 text-[11px]"
+                  style={{ background: `${accent}14`, color: accent }}
+                >
+                  #{topic.title}#
+                </span>
+              ))}
+            </div>
+          )}
+
           {/* 操作按钮 */}
-          <div className="flex items-center space-x-4 text-xs">
-            {isLoggedIn && (
-              <button
-                onClick={() => onLike(comment)}
-                className={`flex items-center space-x-1 transition-colors ${
-                  comment.isLiked ? 'text-pink-400' : 'text-gray-400 hover:text-pink-400'
-                }`}
-              >
-                <ThumbsUp className={`w-4 h-4 ${comment.isLiked ? 'fill-current' : ''}`} />
-                <span>{comment.likedCount > 0 ? comment.likedCount : '赞'}</span>
-              </button>
-            )}
+          <div className="mt-2.5 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => (isLoggedIn && canInteract ? onLike(comment) : undefined)}
+              disabled={!isLoggedIn || !canInteract}
+              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors disabled:cursor-default ${comment.isLiked ? '' : actionBase}`}
+              style={comment.isLiked ? { color: accent, background: `${accent}1f` } : undefined}
+            >
+              <ThumbsUp className={`h-3.5 w-3.5 ${comment.isLiked ? 'fill-current' : ''}`} />
+              <span>{comment.likedCount > 0 ? comment.likedCount : '赞'}</span>
+            </button>
 
-            {!isLoggedIn && (
-              <div className="flex items-center space-x-1 text-gray-400">
-                <ThumbsUp className="w-4 h-4" />
-                <span>{comment.likedCount > 0 ? comment.likedCount : '赞'}</span>
-              </div>
-            )}
-
-            {isLoggedIn && (
+            {isLoggedIn && canInteract && (
               <button
-                onClick={() => onReply(comment)}
-                className="flex items-center space-x-1 text-gray-400 hover:text-blue-400 transition-colors"
+                type="button"
+                onClick={() => onReply({ commentId: comment.commentId, username: comment.user.nickname })}
+                className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors ${actionBase}`}
               >
-                <MessageCircle className="w-4 h-4" />
+                <MessageCircle className="h-3.5 w-3.5" />
                 <span>回复</span>
               </button>
             )}
 
-            {canDelete && isLoggedIn && (
+            <button
+              type="button"
+              onClick={() => { void navigator.clipboard?.writeText(comment.content).catch(() => {}) }}
+              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors ${actionBase}`}
+              title="复制评论内容"
+            >
+              <Copy className="h-3.5 w-3.5" />
+              <span>复制</span>
+            </button>
+
+            {canDelete && isLoggedIn && canInteract && (
               <button
+                type="button"
                 onClick={() => onDelete(comment)}
-                className="flex items-center space-x-1 text-gray-400 hover:text-red-400 transition-colors"
+                className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors ${
+                  isDark ? 'text-white/55 hover:bg-white/10 hover:text-red-300' : 'text-black/50 hover:bg-black/5 hover:text-red-500'
+                }`}
               >
-                <Trash2 className="w-4 h-4" />
+                <Trash2 className="h-3.5 w-3.5" />
                 <span>删除</span>
               </button>
             )}
           </div>
 
-          {/* 回复列表 */}
-          {comment.replyCount > 0 && (
-            <div className="mt-3 bg-white/5 rounded-lg p-3">
+          {/* 回复列表（QQ 新接口的 ReplyCnt 恒为 0，但有 SubComments 预览时同样要显示楼层） */}
+          {(comment.replyCount > 0 || (comment.replies && comment.replies.length > 0)) && (
+            <div className={`mt-3 rounded-xl px-3.5 py-2.5 ${isDark ? 'bg-white/6' : 'bg-black/4'}`}>
               {comment.replies && comment.replies.length > 0 && (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   {visibleReplies?.map((reply) => (
-                    <div key={reply.replyId} className="text-sm">
-                      <span className="text-blue-400">{reply.user.nickname}</span>
+                    <div key={reply.replyId} className="text-[13px] leading-6">
+                      <span className="font-medium" style={{ color: accent }}>{reply.user.nickname}</span>
                       {reply.beRepliedUser && (
                         <>
-                          <span className="text-gray-500 mx-1">回复</span>
-                          <span className="text-blue-400">{reply.beRepliedUser}</span>
+                          <span className={`mx-1 ${secondaryText}`}>回复</span>
+                          <span className="font-medium" style={{ color: accent }}>{reply.beRepliedUser}</span>
                         </>
                       )}
-                      <span className="text-gray-500">: </span>
-                      <span className="text-gray-300">{reply.content}</span>
+                      <span className={secondaryText}>：</span>
+                      <span className={isDark ? 'text-white/80' : 'text-black/75'}>{reply.content}</span>
+                      {/* 回复楼中楼里的某条回复：QQ 需要带根评论 ID 才能形成二级楼；网易云按根评论回复 */}
+                      {isLoggedIn && canInteract && (
+                        <button
+                          type="button"
+                          onClick={() => onReply({ commentId: reply.replyId, username: reply.user.nickname, rootId: comment.commentId })}
+                          className={`ml-2 shrink-0 text-[11px] opacity-60 transition-opacity hover:opacity-100 ${isDark ? 'text-white/70' : 'text-black/55'}`}
+                        >
+                          回复
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
               )}
 
-              {/* 展开当前接口已经返回的楼中楼回复。 */}
-              {comment.replyCount > 1 && (
+              {/* 展开楼中楼回复：网易云有 replyCount 计数；QQ 靠点击后拉全量（GetReplyCommentList） */}
+              {(comment.replyCount > 1 || (comment.replies && comment.replies.length > 0)) && (
                 <button
+                  type="button"
                   onClick={() => onToggleReplies(comment)}
-                  className="mt-2 text-xs text-blue-400 hover:text-blue-300"
+                  className="mt-1.5 text-xs transition-opacity hover:opacity-80"
+                  style={{ color: accent }}
                 >
-                  {expanded ? '收起回复' : `查看${comment.replyCount}条回复`}
+                  {expanded
+                    ? '收起回复'
+                    : comment.replyCount > 1
+                      ? `查看${comment.replyCount}条回复`
+                      : '查看全部回复'}
                 </button>
               )}
             </div>
@@ -371,75 +611,31 @@ const CommentItem = memo(function CommentItem({
   )
 })
 
-// ===== 评论虚拟化 =====
-// 评论行高可变（内容行数、展开楼中楼回复、回复输入框），采用扁平行数组 +
-// useDynamicRowHeight（ResizeObserver 实测行高）。行类型涵盖：热评段标题、
-// 热评、分隔线、全部评论标题、普通评论、加载更多按钮、没有更多提示。
-type CommentRow =
-  | { kind: 'hot-header' }
-  | { kind: 'hot-comment'; comment: Comment; index: number }
-  | { kind: 'divider' }
-  | { kind: 'all-header' }
-  | { kind: 'comment'; comment: Comment; index: number }
-  | { kind: 'load-more' }
-  | { kind: 'no-more' }
-
-type CommentRowData = {
-  rows: CommentRow[]
-  expandedReplies: Set<string>
-  isLoggedIn: boolean
-  currentUserId: string
-  isPlaylistResource: boolean
-  onLike: (comment: Comment) => void
-  onReply: (comment: Comment) => void
-  onDelete: (comment: Comment) => void
-  onToggleReplies: (comment: Comment) => void
-  isLoadingMore: boolean
-  onLoadMore: () => void
-}
-
 // 虚拟行：按 kind 渲染；评论行复用已 memo 的 CommentItem（点赞/删除/展开仅目标行重渲染）。
 function CommentVirtualRow({ index, style, ...data }: RowComponentProps<CommentRowData>): ReactElement | null {
   const row = data.rows[index]
   if (!row) return null
-  if (row.kind === 'comment' || row.kind === 'hot-comment') {
+  if (row.kind === 'comment') {
     const comment = row.comment
     return (
       <div style={style}>
         <CommentItem
           comment={comment}
           index={row.index}
+          rank={row.index + 1}
+          showRank={data.showRank && row.index < 3}
           expanded={data.expandedReplies.has(comment.commentId)}
           isLoggedIn={data.isLoggedIn}
+          canInteract={data.canInteract}
           canDelete={Boolean(comment.isOwn || (data.currentUserId && comment.user.userId === data.currentUserId))}
+          isDark={data.isDark}
+          accent={data.accent}
           onLike={data.onLike}
           onReply={data.onReply}
           onDelete={data.onDelete}
           onToggleReplies={data.onToggleReplies}
+          onOpenUser={data.onOpenUser}
         />
-      </div>
-    )
-  }
-  if (row.kind === 'hot-header') {
-    return (
-      <div style={style} className="flex items-center gap-2 px-2 py-3 text-gray-400 text-sm border-b border-white/5">
-        <span className="text-yellow-500">★</span>
-        <span>精彩评论</span>
-      </div>
-    )
-  }
-  if (row.kind === 'divider') {
-    // 分隔线用内边距撑行高：外边距不进 ResizeObserver 测量，动态行高会按 1px 边框计，导致与相邻行重叠
-    return (
-      <div style={style} className="px-2 py-3">
-        <div className="border-t border-white/5" />
-      </div>
-    )
-  }
-  if (row.kind === 'all-header') {
-    return (
-      <div style={style} className="flex items-center gap-2 px-2 py-2 text-gray-400 text-sm">
-        <span>全部评论</span>
       </div>
     )
   }
@@ -447,19 +643,24 @@ function CommentVirtualRow({ index, style, ...data }: RowComponentProps<CommentR
     return (
       <div style={style} className="flex items-center justify-center py-6">
         <button
+          type="button"
           onClick={data.onLoadMore}
           disabled={data.isLoadingMore}
-          className="px-6 py-2.5 bg-white/10 hover:bg-white/20 backdrop-blur-sm text-white rounded-full transition-all flex items-center space-x-2 border border-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+          className={`flex items-center gap-2 rounded-full border px-6 py-2 text-[13px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+            data.isDark
+              ? 'border-white/15 bg-white/8 text-white/85 hover:bg-white/14'
+              : 'border-black/8 bg-white/70 text-black/70 hover:bg-white'
+          }`}
         >
           {data.isLoadingMore ? (
             <>
-              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-              <span>加载中...</span>
+              <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+              <span>加载中…</span>
             </>
           ) : (
             <>
               <span>加载更多评论</span>
-              <ChevronDown className="w-4 h-4" />
+              <ChevronDown className="h-3.5 w-3.5" />
             </>
           )}
         </button>
@@ -468,13 +669,47 @@ function CommentVirtualRow({ index, style, ...data }: RowComponentProps<CommentR
   }
   // no-more
   return (
-    <div style={style} className="flex items-center justify-center py-6 text-gray-500 text-sm">
+    <div style={style} className={`flex items-center justify-center py-6 text-xs ${data.isDark ? 'text-white/35' : 'text-black/35'}`}>
       没有更多评论了
     </div>
   )
 }
 
-export default function CommentModal({ isOpen, onClose, song = null, playlist = null, resourceType = 'song' }: CommentModalProps) {
+const DANMAKU_SPEEDS = [0.5, 1, 1.5, 2] as const
+/** 弹幕外观设置（字号/不透明度/昵称开关），localStorage 持久化 */
+const DANMAKU_STYLE_STORAGE_KEY = 'waveforge:danmaku-style:v1'
+interface DanmakuStyleSettings { fontScale: number; opacity: number; showNickname: boolean }
+const DANMAKU_FONT_SCALES = [0.85, 1, 1.15] as const
+const DANMAKU_OPACITIES = [0.65, 0.85, 1] as const
+function readDanmakuStyle(): DanmakuStyleSettings {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(DANMAKU_STYLE_STORAGE_KEY) || '')
+    if (parsed && typeof parsed === 'object') {
+      return {
+        fontScale: DANMAKU_FONT_SCALES.includes(parsed.fontScale) ? parsed.fontScale : 1,
+        opacity: DANMAKU_OPACITIES.includes(parsed.opacity) ? parsed.opacity : 1,
+        showNickname: parsed.showNickname !== false,
+      }
+    }
+  } catch { /* 读取失败用默认值 */ }
+  return { fontScale: 1, opacity: 1, showNickname: true }
+}
+const DANMAKU_SPEED_STORAGE_KEY = 'commentDanmakuSpeed'
+/** 弹幕池上限：所有列表页签加载到的评论（含楼中楼外的主楼）都会进池循环投放 */
+const DANMAKU_POOL_CAP = 200
+/** 发表框快捷表情：两平台正文都是纯文本，unicode emoji 双端通用 */
+const COMPOSER_EMOJIS = ['😂', '❤️', '😭', '😍', '🥹', '😅', '🤔', '👍', '🔥', '🎵', '🎶', '✨', '🙌', '👀', '🫶', '🌙']
+
+export default function CommentModal({
+  isOpen,
+  onClose,
+  song = null,
+  playlist = null,
+  resourceType = 'song',
+  playerTheme = 'dark',
+  accentColor = '#ec4899',
+  onOpenPlaylist: onOpenPlaylistProp,
+}: CommentModalProps) {
   // TV 遥控：BACK 应关闭本弹窗。此前没有任何返回处理，未消费的 BACK 会落到原生的
   // handleBackDefault → 第一次按 BACK 就把应用退掉（非播放页场景）。
   useTvBack(() => {
@@ -482,6 +717,8 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     onClose()
     return true
   }, [isOpen, onClose])
+  const isDark = playerTheme === 'dark'
+  const accent = useMemo(() => getReadableAccentColor(accentColor, '#ec4899'), [accentColor])
   const isPlaylistResource = resourceType === 'playlist'
   const resourcePlatform = isPlaylistResource ? (playlist?.platform || 'netease') : (song?.platform || 'netease')
   // QQ 评论接口的 topid 使用数字 songid，不是歌曲 MID。
@@ -499,9 +736,23 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
   const resourceSubtitle = isPlaylistResource
     ? (playlist?.creator?.nickname || (resourcePlatform === 'qq' ? 'QQ音乐歌单' : '网易云歌单'))
     : (song?.artists?.map((artist: any) => artist.name).join('、') || '')
+  const resourceAlbumName = isPlaylistResource ? '' : (song?.album?.name || '')
   const playlistDescription = normalizeDescriptionText(playlist?.description || playlist?.desc) || '当前歌单暂无简介'
   const [allComments, setAllComments] = useState<Comment[]>([])
   const [hotComments, setHotComments] = useState<Comment[]>([])
+  const [totalComments, setTotalComments] = useState(0)
+  const [tab, setTab] = useState<CommentTab>('overview')
+  const [danmakuSpeed, setDanmakuSpeed] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1
+    const saved = Number(window.localStorage.getItem(DANMAKU_SPEED_STORAGE_KEY))
+    return DANMAKU_SPEEDS.includes(saved as (typeof DANMAKU_SPEEDS)[number]) ? saved : 1
+  })
+  // 刚发表的评论：立刻作为「我」的弹幕上屏（等平台索引完成后由刷新流程取代）
+  const [myPostedComments, setMyPostedComments] = useState<Comment[]>([])
+  // 分享数（QQ ShareCnt）：评论区信息条用，展示这首歌被多少人传播过
+  const [shareCount, setShareCount] = useState(0)
+  // 发表框表情面板（PC 端快捷输入）
+  const [showEmojiPanel, setShowEmojiPanel] = useState(false)
 
   // 自动加载更多 refs（在变量声明后同步）
   const hasMoreCommentsRef = useRef(false)
@@ -545,14 +796,12 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
   const [commentRefreshKey, setCommentRefreshKey] = useState(0)
   const [pendingDeleteComment, setPendingDeleteComment] = useState<Comment | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
-  const [viewMode, setViewMode] = useState<ViewMode>('hot')
   const [newComment, setNewComment] = useState('')
-  const [replyingTo, setReplyingTo] = useState<{ commentId: string, username: string } | null>(null)
+  const [replyingTo, setReplyingTo] = useState<ReplyTarget | null>(null)
   const [expandedReplies, setExpandedReplies] = useState<Set<string>>(new Set())
-  const [showCommentInput, setShowCommentInput] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
-  
+
   // 分页相关状态
   const [currentPage, setCurrentPage] = useState(0)
   const [hasMoreComments, setHasMoreComments] = useState(true)
@@ -560,12 +809,12 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
   const [cursor, setCursor] = useState<string>('-1') // 网易云时间排序首屏使用 -1，后续使用服务端 cursor
   // 汽水评论游标：soda 接口为游标分页（与上方页码分页不同），组件内部自行维护
   const sodaCursorRef = useRef<string | undefined>(undefined)
-  
+
   // 获取登录状态和cookie
   const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [userCookie, setUserCookie] = useState('')
   const [currentUserId, setCurrentUserId] = useState<string>('')
-  
+
   // 检查登录状态并获取用户ID
   useEffect(() => {
     const getUserInfo = async () => {
@@ -573,7 +822,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         const neteaseCookie = localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
         setUserCookie(neteaseCookie)
         setIsLoggedIn(!!neteaseCookie)
-        
+
         // 获取当前用户ID
         if (neteaseCookie) {
           try {
@@ -590,7 +839,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         const qqCookie = localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
         setUserCookie(qqCookie)
         setIsLoggedIn(!!qqCookie)
-        
+
         // QQ音乐获取用户ID
         if (qqCookie) {
           try {
@@ -614,23 +863,25 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         setCurrentUserId('')
       }
     }
-    
+
     getUserInfo()
   }, [resourcePlatform])
 
   useEffect(() => {
     if (!currentUserId) return
-    setAllComments(previous => previous.map(comment => ({
-      ...comment,
-      isOwn: comment.user.userId === currentUserId
-    })))
+    const markOwn = (comment: Comment) => ({ ...comment, isOwn: comment.user.userId === currentUserId })
+    setAllComments(previous => previous.map(markOwn))
+    setHotComments(previous => previous.map(markOwn))
+    setMyPostedComments(previous => previous.map(markOwn))
   }, [currentUserId])
-  
-  // 模拟当前用户信息
 
-  // 汽水未登录：输入框置灰并提示登录，评论列表仍可浏览
-  const sodaInputLocked = resourcePlatform === 'soda' && !isLoggedIn  // 汽水评论接口暂不提供点赞/回复/删除能力，行内操作按钮退化为静态展示
+  // 汽水评论接口暂不提供点赞/回复/删除能力：行内操作退化为静态展示
   const sodaRowsStatic = resourcePlatform === 'soda'
+  const canInteract = !sodaRowsStatic
+  const composerLocked = !isLoggedIn
+  const composerPlaceholder = composerLocked
+    ? (resourcePlatform === 'soda' ? '登录汽水音乐后参与评论' : '登录后参与评论')
+    : (isPlaylistResource ? '发表歌单评价…' : '说点什么…')
 
   // 评论变更（发表/删除/刷新）后清缓存：只对「重新打开」做秒回，不把用户主动刷新也短路。
   const commentRefreshKeyRef = useRef(0)
@@ -639,20 +890,43 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
   useEffect(() => {
     if (isOpen) return
     setPendingDeleteComment(null)
-    setShowCommentInput(false)
     setReplyingTo(null)
     setExpandedReplies(new Set())
   }, [isOpen])
 
+  // 每次打开（或换资源）都从「总览」进场：弹幕幕布是这个弹窗的主界面。
+  // 只依赖 isOpen/resourceId，不依赖 tab 派生出的 loadMode，避免自我触发加载循环。
+  useEffect(() => {
+    if (!isOpen) return
+    setTab('overview')
+    // 换歌后自己刚发的那几条弹幕不再属于当前资源
+    setMyPostedComments([])
+    setShareCount(0)
+    setShowEmojiPanel(false)
+  }, [isOpen, resourceId])
+
+  // 页签 → 请求排序模式的映射：
+  // - 网易云「推荐」用独立的推荐排序（sortType 99）；「最热」是热度排序（2）
+  // - QQ 没有独立的推荐排序（逆向结论：cmd=8 最新附带精选热评、cmd=6/9 热度排序），
+  //   「推荐」直接展示精选热评集合，与「最热」共用同一个请求（cmd=6），不重复发请求
+  // - 「总览」进场时按「最热」加载，让精彩评论先进弹幕池
+  const loadMode: LoadMode = tab === 'latest'
+    ? 'latest'
+    : tab === 'recommend' && resourcePlatform === 'netease'
+      ? 'recommend'
+      : 'hot'
+
   useEffect(() => {
     if (isOpen && resourceId) {
-      const cacheKey = `${resourcePlatform}:${resourceId}:${viewMode}`
+      // 页签/资源/排序变化即失效所有在途请求：缓存命中分支不发新请求也不 bump seq，
+      // 若不在此处递增，旧页签的晚到响应会被误判为「新鲜」覆盖缓存回填的视图
+      commentsRequestSeqRef.current += 1
+      const cacheKey = `${resourcePlatform}:${resourceId}:${loadMode}`
       if (commentRefreshKey !== commentRefreshKeyRef.current) {
         commentRefreshKeyRef.current = commentRefreshKey
         commentPageCache.clear()
       }
-      // 每次打开都收起输入框/回复态（与旧的「打开即重置」一致；命中缓存也不能跳过）
-      setShowCommentInput(false)
+      // 每次打开都收起回复态（与旧的「打开即重置」一致；命中缓存也不能跳过）
       setNewComment('')
       setReplyingTo(null)
       // 命中缓存：回填已加载的评论/页码/游标，不发请求、不清空（不闪白）。
@@ -675,7 +949,8 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
       sodaCursorRef.current = undefined // 重置汽水评论游标
       loadComments(true)
     }
-  }, [isOpen, resourceId, viewMode, userCookie, commentRefreshKey])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, resourceId, loadMode, userCookie, commentRefreshKey])
 
   // 同步加载更多 refs
   useEffect(() => {
@@ -697,11 +972,11 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
       setError(null)
       return
     }
-    
+
     if (reset) {
       setLoading(true)
       // 只在「换资源/换排序」时清空；同一资源重校验（登录态刷新、主动刷新）保留旧列表，避免闪白。
-      const resourceKey = `${resourcePlatform}:${resourceId}:${viewMode}`
+      const resourceKey = `${resourcePlatform}:${resourceId}:${loadMode}`
       if (lastLoadedResourceRef.current !== resourceKey) {
         lastLoadedResourceRef.current = resourceKey
         setAllComments([])
@@ -711,22 +986,22 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     } else {
       setIsLoadingMore(true)
     }
-    
+
     setError(null)
-    
-    const cacheKey = `${resourcePlatform}:${resourceId}:${viewMode}`
+
+    const cacheKey = `${resourcePlatform}:${resourceId}:${loadMode}`
     // 本次加载产出的热评/游标/hasMore，供成功后写回缓存（用局部变量，避免读到过期 state）
     let nextHot: Comment[] | null = null
     let nextCursor: string | null = null
     let hasMoreAfter: boolean | null = null
-    
+
     try {
       const platform = resourcePlatform
       const songId = resourceId
       const pageToLoad = reset ? 0 : currentPage + 1
       const limit = 20
       const offset = pageToLoad * limit
-      
+
       // ── 汽水音乐：游标分页，数据经 sodaService 获取（不走下方页码分页请求）──
       // 仅歌曲资源生效：汽水无歌单评论接口，歌单资源不进入此分支
       if (!isPlaylistResource && platform === 'soda') {
@@ -769,26 +1044,135 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         }
         return
       }
-      
+
       // 网易云音乐: sortType 99=推荐排序, 2=热度排序, 3=时间排序
-      const sortType = viewMode === 'hot' ? 2 : 3
-      
+      const sortType = loadMode === 'recommend' ? 99 : loadMode === 'hot' ? 2 : 3
+
+      // ── QQ 新版评论（逆向 music.globalComment.CommentRead）：带图片/歌词引用/话题/IP 属地 ──
+      // 精选（推荐页签 + 总览进场）与最新评论走新接口；最热评论仍走 h5 cmd=6 全量热度排序
+      let comments: Comment[] = []
+      if (platform === 'qq' && (loadMode === 'hot' || loadMode === 'latest')) {
+        const method = loadMode === 'hot' ? 'GetHotCommentList' : 'GetNewCommentList'
+        let qqCursor: { id?: string; seq?: string } = {}
+        if (loadMode === 'latest' && !reset && cursor && cursor !== '-1') {
+          try { qqCursor = JSON.parse(cursor) } catch { qqCursor = {} }
+        }
+        const musicuResponse = await fetch('http://localhost:3001/api/qq/comment/musicu', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            module: 'music.globalComment.CommentRead',
+            method,
+            param: {
+              BizType: Number(qqCommentBizType),
+              BizId: String(songId),
+              LastCommentId: qqCursor.id || '',
+              LastCommentSeqNo: qqCursor.seq || '',
+              PageSize: limit,
+              PageNum: reset ? 0 : pageToLoad,
+              FromParentCmId: '', FromCommentId: '',
+              WithHot: 1, HotType: 6, PicEnable: 1, SelfSeeEnable: 1,
+              LastRspVer: '', CmListUIVer: 2, AudioEnable: 0,
+            },
+            cookie: userCookie,
+          }),
+        })
+        if (!musicuResponse.ok) throw new Error(`HTTP ${musicuResponse.status}`)
+        const musicuData = await musicuResponse.json()
+        // 晚到的旧请求直接丢弃
+        if (isStaleRequest()) return
+        const resultData = musicuData?.req
+        if (resultData?.code !== 0 || !resultData.data) {
+          throw new Error(`QQ 新版评论接口错误 ${resultData?.code ?? '未知'}`)
+        }
+        const commentListV2 = resultData.data.CommentList || {}
+        const rawCommentsV2 = commentListV2.Comments || []
+        const totalV2 = Number(commentListV2.Total || 0)
+        if (totalV2 > 0) setTotalComments(totalV2)
+        const shareCnt = Number(resultData.data.ShareCnt || 0)
+        if (shareCnt > 0) setShareCount(shareCnt)
+        // 过滤空记录：空 CmId/空正文会渲染空行，且多条空 id 在 dedupe Map 与 React key 上碰撞
+        comments = rawCommentsV2.map(mapQQCommentV2).filter((c: Comment) => c.commentId && c.content)
+        if (loadMode === 'latest') {
+          const lastRaw = rawCommentsV2[rawCommentsV2.length - 1]
+          if (lastRaw?.CmId) {
+            nextCursor = JSON.stringify({ id: String(lastRaw.CmId), seq: String(lastRaw.SeqNo || '') })
+            setCursor(nextCursor)
+          } else if (comments.length > 0) {
+            // 服务端返回了评论但末条无 CmId：游标无法推进，下一页会拉到同一批数据。
+            // 直接判定无更多，避免「加载更多」无限空转
+            setHasMoreComments(false)
+          }
+        } else if (reset) {
+          // 精选热评首屏：同步进 hotComments（QQ 推荐页签与弹幕池共用）；翻页不冲掉
+          nextHot = comments
+          setHotComments(comments)
+        }
+        // 最热/最新都可续页：热评 HasMore、最新游标
+        hasMoreAfter = Boolean(commentListV2.HasMore)
+        setHasMoreComments(hasMoreAfter)
+
+        if (comments.length === 0 && reset) {
+          setHasMoreComments(false)
+          setAllComments([])
+          return
+        }
+        if (reset) {
+          setAllComments(comments)
+          window.requestAnimationFrame(() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' }))
+          if (comments.length) {
+            commentPageCache.set(cacheKey, {
+              comments,
+              hot: nextHot ?? [],
+              page: pageToLoad,
+              hasMore: hasMoreAfter,
+              cursor: nextCursor ?? '-1',
+            })
+          }
+        } else {
+          setAllComments(prev => {
+            const merged = new Map(prev.map(c => [c.commentId, c]))
+            comments.forEach(c => merged.set(c.commentId, c))
+            const next = Array.from(merged.values())
+            // 最新按时间倒序；最热保持接口的热度排序（新页天然排在已加载内容之后）
+            return loadMode === 'latest'
+              ? next.sort((a, b) => commentTimeValue(b.time) - commentTimeValue(a.time))
+              : reset ? next : [...prev, ...comments.filter(c => !prev.some(p => p.commentId === c.commentId))]
+          })
+          const existing = commentPageCache.get(cacheKey)
+          if (existing) {
+            const merged = new Map(existing.comments.map(c => [c.commentId, c]))
+            comments.forEach(c => merged.set(c.commentId, c))
+            commentPageCache.set(cacheKey, {
+              ...existing,
+              comments: Array.from(merged.values()),
+              page: pageToLoad,
+              hasMore: hasMoreAfter !== null ? hasMoreAfter : existing.hasMore,
+              cursor: nextCursor ?? existing.cursor,
+            })
+          }
+        }
+        setCurrentPage(pageToLoad)
+        return
+      }
+
       // 构建请求URL
       let endpoint = ''
       if (platform === 'netease') {
         // 最新评论使用cursor分页，精彩评论使用offset分页
-        if (viewMode === 'latest') {
+        if (loadMode === 'latest') {
           const cursorToUse = reset ? '-1' : cursor
           endpoint = `http://localhost:3001/api/netease/comment/music?id=${encodeURIComponent(String(songId))}&limit=${limit}&offset=${offset}&sortType=${sortType}&cursor=${cursorToUse}&type=${commentType}&cookie=${encodeURIComponent(localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || '')}`
         } else {
           endpoint = `http://localhost:3001/api/netease/comment/music?id=${encodeURIComponent(String(songId))}&limit=${limit}&offset=${offset}&sortType=${sortType}&type=${commentType}&cookie=${encodeURIComponent(localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || '')}`
         }
       } else {
-        endpoint = `http://localhost:3001/api/qq/comment?id=${encodeURIComponent(String(songId))}&pagenum=${pageToLoad}&pagesize=${limit}&type=${viewMode}&biztype=${qqCommentBizType}&cookie=${encodeURIComponent(userCookie)}`
+        // 兜底路径：QQ 页签已全部切到新版接口（上方 musicu 分支），此端点仅在异常回退时使用
+        endpoint = `http://localhost:3001/api/qq/comment?id=${encodeURIComponent(String(songId))}&pagenum=${pageToLoad}&pagesize=${limit}&type=${loadMode === 'hot' ? 'hot' : 'latest'}&biztype=${qqCommentBizType}&cookie=${encodeURIComponent(userCookie)}`
       }
-      
+
       debugLog(`[评论加载] 平台: ${platform}, 歌曲ID: ${songId}, 页码: ${pageToLoad}`)
-      
+
       const response = await fetch(endpoint)
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
@@ -798,13 +1182,14 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
       // 晚到的旧请求直接丢弃（视图可能已切到另一种排序/另一个资源）
       if (isStaleRequest()) return
 
-      let comments: Comment[] = []
-      
       if (platform === 'netease') {
         if (data.code === 200) {
           // 新版API返回的数据在 data.comments 中
           const sourceComments = data.data?.comments || []
-          
+          // 评论总数（仅部分接口返回）
+          const total = Number(data.data?.total || 0)
+          if (total > 0) setTotalComments(total)
+
           // 网易云热评（精彩评论）单独展示
           if (data.data?.hotComments && Array.isArray(data.data.hotComments)) {
             nextHot = data.data.hotComments.map((c: any) => ({
@@ -823,23 +1208,31 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
             })).filter(Boolean)
             setHotComments(nextHot ?? [])
           }
-          
+
           // 保存cursor用于下次加载（仅最新评论需要）
-          if (viewMode === 'latest' && data.data?.cursor) {
+          if (loadMode === 'latest' && data.data?.cursor) {
             nextCursor = String(data.data.cursor)
             setCursor(nextCursor)
           }
-          
+
           // 检查是否还有更多评论
           const hasMore = data.data?.hasMore || false
           if (!hasMore) {
             hasMoreAfter = false
             setHasMoreComments(false)
           }
-          
+
           comments = sourceComments.map((c: any) => ({
             commentId: c.commentId,
             content: c.content,
+            contentPicUrl: c.contentPicUrl || c.contentPicExt?.picUrl || null,
+            stickerUrl: c.expressionUrl ? String(c.expressionUrl) : undefined,
+            ipLocation: c.ipLocation?.location ? String(c.ipLocation.location) : undefined,
+            topics: Array.isArray(c.topicList)
+              ? c.topicList
+                  .map((topic: any) => ({ id: topic?.actId ?? topic?.topicId ?? '', title: String(topic?.title || '') }))
+                  .filter((topic: CommentTopic) => topic.title)
+              : undefined,
             user: {
               nickname: c.user?.nickname || '匿名用户',
               avatarUrl: c.user?.avatarUrl || '',
@@ -853,7 +1246,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
             isLiked: c.liked || false,
             isOwn: currentUserId && c.user?.userId ? c.user.userId.toString() === currentUserId : false
           }))
-          
+
           // 对于有回复的评论，自动加载前2条回复作为预览
           const commentsWithReplies = comments.filter(c => c.replyCount > 0)
           if (commentsWithReplies.length > 0) {
@@ -892,7 +1285,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
               const batch = commentsWithReplies.slice(start, start + BATCH)
               replyResults.push(...await Promise.all(batch.map(floorOf)))
             }
-            
+
             // 更新评论的回复数据
             replyResults.forEach(result => {
               if (result) {
@@ -909,23 +1302,26 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         // 整页评论 JSON（含 beReplied/user）可达数百 KB，pretty-print 只在详细日志开启时执行，
         // 否则每次加载评论都会在主线程同步序列化一遍。
         if (isVerboseLogEnabled()) console.log('[QQ音乐评论] 原始数据:', JSON.stringify(data, null, 2))
-        
+
         if (data.result === 0 && data.data) {
           const rawComments = data.data.comments || []
           debugLog('[QQ音乐评论] 评论数组:', rawComments)
-          
+
+          const total = Number(data.data.total || 0)
+          if (total > 0) setTotalComments(total)
+
           if (rawComments.length > 0) {
             // QQ 的 middlecommentcontent 是回复数组，并非独立的扁平评论项。
             comments = mapQQComments(rawComments)
-            
+
             // 如果是最新评论，按时间降序排序
-            if (viewMode === 'latest') {
+            if (loadMode === 'latest') {
               comments.sort((a, b) => commentTimeValue(b.time) - commentTimeValue(a.time))
             }
-            
+
             debugLog('[QQ音乐评论] 处理后的评论:', comments)
           }
-          
+
           // QQ 评论：热评模式下 hotComments 是精选热评，comments 是全部评论；最新模式下 hotComments 是附带的热评
           if (platform === 'qq') {
             if (data.data?.hotComments && data.data.hotComments.length > 0) {
@@ -941,7 +1337,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
             nextHot = []
             setHotComments([])
           }
-          
+
           // 设置hasMore
           hasMoreAfter = Boolean(data.data.hasMore)
           setHasMoreComments(Boolean(data.data.hasMore))
@@ -949,7 +1345,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           debugLog('[QQ音乐评论] 无效的响应数据')
         }
       }
-      
+
       // 网易云楼中楼预览还有批量 await：状态落地前再校验一次
       if (isStaleRequest()) return
 
@@ -958,10 +1354,10 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         setAllComments([])
         return
       }
-      
+
       // 更新评论列表
       if (reset) {
-        const finalComments = viewMode === 'latest' ? [...comments].sort((a, b) => commentTimeValue(b.time) - commentTimeValue(a.time)) : comments
+        const finalComments = loadMode === 'latest' ? [...comments].sort((a, b) => commentTimeValue(b.time) - commentTimeValue(a.time)) : comments
         setAllComments(finalComments)
         window.requestAnimationFrame(() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' }))
         if (finalComments.length) {
@@ -978,7 +1374,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           const merged = new Map(prev.map(comment => [comment.commentId, comment]))
           comments.forEach(comment => merged.set(comment.commentId, comment))
           const next = Array.from(merged.values())
-          return viewMode === 'latest' ? next.sort((a, b) => commentTimeValue(b.time) - commentTimeValue(a.time)) : next
+          return loadMode === 'latest' ? next.sort((a, b) => commentTimeValue(b.time) - commentTimeValue(a.time)) : next
         })
         // 续页也同步进缓存（仅当已有首屏缓存），重开时能恢复已加载的多页
         const existing = commentPageCache.get(cacheKey)
@@ -994,9 +1390,9 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           })
         }
       }
-      
+
       setCurrentPage(pageToLoad)
-      
+
     } catch (err) {
       console.error('加载评论失败:', err)
       if (!isStaleRequest()) setError('加载评论失败，请重试')
@@ -1012,60 +1408,47 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     }
   }
 
-  // 获取当前视图的评论列表
-  const getDisplayComments = () => {
-    // 新版API已经在服务端进行了排序，直接返回
-    return allComments
-  }
+  // 三个列表状态（全部/热评/自己刚发的）共用同一套增删改，避免改了一处漏一处
+  const patchComment = useCallback((commentId: string, patch: (comment: Comment) => Comment) => {
+    const apply = (previous: Comment[]) => previous.map(comment => (comment.commentId === commentId ? patch(comment) : comment))
+    setAllComments(apply)
+    setHotComments(apply)
+    setMyPostedComments(apply)
+  }, [])
 
-  const displayComments = getDisplayComments()
+  const removeComment = useCallback((commentId: string) => {
+    const drop = (previous: Comment[]) => previous.filter(comment => comment.commentId !== commentId)
+    setAllComments(drop)
+    setHotComments(drop)
+    setMyPostedComments(drop)
+  }, [])
 
-  // ===== 评论虚拟化：扁平行数组 + 动态行高 =====
-  const commentRows = useMemo<CommentRow[]>(() => {
-    const rows: CommentRow[] = []
-    // 热评区网易云/QQ 共用：热评展示在顶部，下方是全部评论
-    if (hotComments.length > 0) {
-      rows.push({ kind: 'hot-header' })
-      hotComments.forEach((comment, index) => rows.push({ kind: 'hot-comment', comment, index }))
-      rows.push({ kind: 'divider' }, { kind: 'all-header' })
-    }
-    displayComments.forEach((comment, index) => rows.push({ kind: 'comment', comment, index }))
-    if (hasMoreComments && !loading) rows.push({ kind: 'load-more' })
-    else if (!hasMoreComments && displayComments.length > 0) rows.push({ kind: 'no-more' })
-    return rows
-  }, [hotComments, displayComments, hasMoreComments, loading])
-
-  // 变高行：ResizeObserver 实测每行高度；估算值用于首帧定位
-  const dynamicRowHeight = useDynamicRowHeight({ defaultRowHeight: 96 })
-  // 评论列表虚拟化后 List 外层 div 即滚动容器，同步给 scrollContainerRef
-  // （供续页判断与 ScrollToTop 使用）
-  const commentListRef = useRef<ListImperativeAPI | null>(null)
-  const commentOuterRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    if (isOpen && !loading && !error) {
-      const listEl = commentListRef.current?.element ?? null
-      if (listEl) scrollContainerRef.current = listEl
-    }
-    return () => {
-      scrollContainerRef.current = commentOuterRef.current
-    }
-  }, [isOpen, loading, error, commentRows.length])
+  const findComment = useCallback((commentId: string): Comment | undefined => (
+    allComments.find(comment => comment.commentId === commentId)
+    ?? hotComments.find(comment => comment.commentId === commentId)
+    ?? myPostedComments.find(comment => comment.commentId === commentId)
+  ), [allComments, hotComments, myPostedComments])
 
   // 点赞评论
-  const handleLike = async (commentId: string) => {
+  const handleLike = async (comment: LikeTarget | string) => {
+    const target = typeof comment === 'string' ? findComment(comment) : comment
+    if (!target) return
     if (!isLoggedIn) {
       setActionError('请先登录后再进行点赞操作')
       return
     }
 
-    const comment = allComments.find(c => c.commentId === commentId)
-    if (!comment) return
-
-    const newLikeState = !comment.isLiked
+    const commentId = target.commentId
+    const newLikeState = !target.isLiked
+    const applyLike = () => patchComment(commentId, (comment) => ({
+      ...comment,
+      isLiked: newLikeState,
+      likedCount: Math.max(0, newLikeState ? comment.likedCount + 1 : comment.likedCount - 1),
+    }))
 
     try {
       const platform = resourcePlatform
-      
+
       if (platform === 'netease') {
         const response = await fetch('http://localhost:3001/api/netease/comment/like', {
           method: 'POST',
@@ -1082,14 +1465,10 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         })
 
         const result = await response.json()
-        
+
         if (response.ok && result.code === 200) {
           // 点赞成功，仅更新目标评论（其余行的 comment 引用不变，避免整表重建）
-          setAllComments(previous => previous.map(c => (
-            c.commentId === commentId
-              ? { ...c, isLiked: newLikeState, likedCount: newLikeState ? c.likedCount + 1 : c.likedCount - 1 }
-              : c
-          )))
+          applyLike()
         } else {
           setActionError('点赞操作失败：' + (result.message || result.error || '未知错误'))
         }
@@ -1108,14 +1487,9 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         })
 
         const result = await response.json()
-        
+
         if (isQQCommentMutationSuccessful(result)) {
-          // 点赞成功，仅更新目标评论（其余行的 comment 引用不变，避免整表重建）
-          setAllComments(previous => previous.map(c => (
-            c.commentId === commentId
-              ? { ...c, isLiked: newLikeState, likedCount: newLikeState ? c.likedCount + 1 : c.likedCount - 1 }
-              : c
-          )))
+          applyLike()
         } else {
           setActionError('点赞操作失败：' + (result.error || result.message || '未知错误'))
         }
@@ -1127,13 +1501,14 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
   }
 
   // 删除评论
-  const handleDelete = async (commentId: string) => {
+  const handleDelete = async (comment: { commentId: string } | string) => {
+    const commentId = typeof comment === 'string' ? comment : comment.commentId
     setDeleteLoading(true)
     setActionError(null)
     setActionSuccess(null)
     try {
       const platform = resourcePlatform
-      
+
       if (platform === 'netease') {
         // 调用网易云API删除评论
         const response = await fetch('http://localhost:3001/api/netease/comment/delete', {
@@ -1152,8 +1527,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         const result = await response.json()
 
         if (response.ok && result.code === 200) {
-          // 删除成功，立即从列表中移除
-          setAllComments(previous => previous.filter(c => c.commentId !== commentId))
+          removeComment(commentId)
           setPendingDeleteComment(null)
         } else {
           setActionError('删除评论失败：' + (result.message || result.error || '未知错误'))
@@ -1174,8 +1548,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         const result = await response.json()
 
         if (isQQCommentMutationSuccessful(result)) {
-          // 删除成功，立即从列表中移除
-          setAllComments(previous => previous.filter(c => c.commentId !== commentId))
+          removeComment(commentId)
           setPendingDeleteComment(null)
         } else {
           setActionError('删除评论失败：' + (result.error || result.message || '未知错误'))
@@ -1189,13 +1562,27 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     }
   }
 
-  const finishCommentMutation = (message: string) => {
+  const finishCommentMutation = (message: string, postedContent?: string) => {
+    if (postedContent) {
+      // 自己刚发的评论立刻以「我」的弹幕上屏（总览页签里描边高亮），等刷新流程接上真实数据
+      const optimistic: Comment = {
+        commentId: `local-${Date.now()}`,
+        content: postedContent,
+        user: { nickname: '我', avatarUrl: '' },
+        time: Date.now(),
+        likedCount: 0,
+        replyCount: 0,
+        replies: [],
+        isOwn: true,
+      }
+      setMyPostedComments(previous => [optimistic, ...previous].slice(0, 3))
+    }
     setNewComment('')
     setReplyingTo(null)
-    setShowCommentInput(false)
     setActionError(null)
     setActionSuccess(message)
-    setViewMode('latest')
+    // 新评论落在「最新评论」里，直接切过去让用户看到结果
+    setTab('latest')
     window.requestAnimationFrame(() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' }))
     // 等平台完成评论索引后，再由最新视图自己的闭包刷新，避免旧的“精彩评论”请求覆盖列表。
     window.setTimeout(() => setCommentRefreshKey(value => value + 1), 900)
@@ -1204,7 +1591,8 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
 
   // 发布评论
   const handleSubmitComment = async () => {
-    if (!newComment.trim()) return
+    const content = newComment.trim()
+    if (!content) return
 
     if (!isLoggedIn) {
       setActionError('请先登录后再发表评论')
@@ -1216,25 +1604,21 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     setIsSubmitting(true)
     try {
       const platform = resourcePlatform
-      
+
       if (platform === 'soda') {
         // 汽水发表评论：成功后乐观插入首条，再静默刷新第一页与服务端对齐
         if (isPlaylistResource) {
           setActionError('汽水歌单暂不支持发表评价')
           return
         }
-        if (!isLoggedIn) {
-          setActionError('登录汽水音乐后参与评论')
-          return
-        }
-        const ok = await createSodaComment(String(resourceId), newComment)
+        const ok = await createSodaComment(String(resourceId), content)
         if (!ok) {
           setActionError('评论发布失败，请检查登录状态后重试')
           return
         }
         const optimistic: Comment = {
           commentId: `soda-local-${Date.now()}`,
-          content: newComment.trim(),
+          content,
           user: { nickname: '我', avatarUrl: '' },
           time: Date.now(),
           likedCount: 0,
@@ -1242,18 +1626,18 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           replies: []
         }
         setNewComment('')
-        setShowCommentInput(false)
         setReplyingTo(null)
         setActionError(null)
         setActionSuccess('评论发表成功')
         setAllComments(prev => [optimistic, ...prev])
+        setTab('latest')
         window.requestAnimationFrame(() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' }))
         window.setTimeout(() => setActionSuccess(null), 3500)
         sodaCursorRef.current = undefined
         window.setTimeout(() => { void loadComments(true) }, 800)
         return
       }
-      
+
       if (platform === 'netease') {
         // 调用网易云API发布评论
         const response = await fetch('http://localhost:3001/api/netease/comment/add', {
@@ -1264,7 +1648,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           body: JSON.stringify({
             id: resourceId,
             type: commentType,
-            content: newComment,
+            content,
             cookie: userCookie
           })
         })
@@ -1272,7 +1656,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         const result = await response.json()
 
         if (response.ok && result.code === 200) {
-          finishCommentMutation('评论发表成功，已切换到最新评论')
+          finishCommentMutation('评论发表成功，已切换到最新评论', content)
         } else {
           setActionError('评论发布失败：' + (result.message || result.error || '未知错误'))
         }
@@ -1285,7 +1669,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           },
           body: JSON.stringify({
             id: resourceId,
-            content: newComment,
+            content,
             biztype: qqCommentBizType,
             cookie: userCookie
           })
@@ -1294,7 +1678,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         const result = await response.json()
 
         if (isQQCommentMutationSuccessful(result)) {
-          finishCommentMutation('评论发表成功，已切换到最新评论')
+          finishCommentMutation('评论发表成功，已切换到最新评论', content)
         } else {
           setActionError('评论发布失败：' + (result.error || result.message || '未知错误'))
         }
@@ -1307,8 +1691,9 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     }
   }
 
-  // 回复评论
-  const handleReply = async (commentId: string) => {
+  // 回复评论（或楼中楼里的某条回复）
+  const handleReply = async (target: ReplyTarget | string) => {
+    const replyTarget: ReplyTarget = typeof target === 'string' ? { commentId: target, username: '' } : target
     if (!newComment.trim()) return
 
     if (!isLoggedIn) {
@@ -1321,7 +1706,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
     setIsSubmitting(true)
     try {
       const platform = resourcePlatform
-      
+
       if (platform === 'netease') {
         // 调用网易云API回复评论
         const response = await fetch('http://localhost:3001/api/netease/comment/reply', {
@@ -1333,7 +1718,7 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
             id: resourceId,
             type: commentType,
             content: newComment,
-            commentId: commentId,
+            commentId: replyTarget.rootId ?? replyTarget.commentId,
             cookie: userCookie
           })
         })
@@ -1346,7 +1731,8 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           setActionError('回复发布失败：' + (result.message || result.error || '未知错误'))
         }
       } else {
-        // QQ 回复与顶级评论共用接口，但必须携带根评论和父评论 ID 才能形成楼中楼。
+        // QQ 回复与顶级评论共用接口，但必须携带根评论和父评论 ID 才能形成楼中楼；
+        // 回复「评论的评论」时 parentCommentId 指向被回复的那条回复
         const response = await fetch('http://localhost:3001/api/qq/comment/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1354,8 +1740,8 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
             id: resourceId,
             content: newComment,
             biztype: qqCommentBizType,
-            rootCommentId: commentId,
-            parentCommentId: commentId,
+            rootCommentId: replyTarget.rootId ?? replyTarget.commentId,
+            parentCommentId: replyTarget.commentId,
             cookie: userCookie
           })
         })
@@ -1382,7 +1768,56 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
       return next
     })
 
-    if (!willExpand || resourcePlatform !== 'netease' || (comment.replies?.length || 0) >= comment.replyCount) return
+    if (!willExpand) return
+
+    // QQ：楼中楼全量走新版接口 GetReplyCommentList（RootCmId 定位楼层）
+    if (resourcePlatform === 'qq') {
+      // QQ 列表接口的 ReplyCnt 恒为 0：只要还没有展开拉取过，就允许拉全量
+      if (comment.replyCount > 0 && (comment.replies?.length || 0) >= comment.replyCount) return
+      try {
+        const response = await fetch('http://localhost:3001/api/qq/comment/musicu', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            module: 'music.globalComment.CommentRead',
+            method: 'GetReplyCommentList',
+            param: {
+              RootCmId: comment.commentId,
+              LastCommentSeqNo: '', LastRankScore: '',
+              PageSize: Math.min(comment.replyCount, 50), RankType: 0,
+              PicEnable: 1, LastRspVer: '', PageNum: 0, SelfSeeEnable: 1, AudioEnable: 0,
+            },
+            cookie: userCookie,
+          }),
+        })
+        const result = await response.json()
+        const rd = result?.req
+        if (!response.ok || rd?.code !== 0) throw new Error(rd?.data?.Msg || result?.error || '加载回复失败')
+        const rawReplies = rd.data?.CommentList?.Comments || rd.data?.Comments || []
+        if (!rawReplies.length) return
+        const replies: Reply[] = rawReplies
+          .map((raw: any) => {
+            const mapped = mapQQCommentV2(raw)
+            return {
+              replyId: mapped.commentId,
+              content: mapped.content,
+              user: mapped.user,
+              time: mapped.time,
+              beRepliedUser: (raw.ParentComment?.Nick && String(raw.ParentComment.Nick)) || undefined,
+              hasImage: raw.Pic ? true : undefined,
+            } as Reply
+          })
+          // 同主列表：过滤空 id/空正文，防 React key 碰撞
+          .filter((r: Reply) => r.replyId && r.content)
+        patchComment(comment.commentId, item => ({ ...item, replies }))
+        return
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : '加载回复失败，请重试')
+        return
+      }
+    }
+
+    if (resourcePlatform !== 'netease' || (comment.replies?.length || 0) >= comment.replyCount) return
 
     try {
       const response = await fetch(
@@ -1401,15 +1836,233 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         time: Number(reply.time || 0),
         beRepliedUser: reply.beReplied?.[0]?.user?.nickname
       }))
-      setAllComments(previous => previous.map(item => (
-        item.commentId === comment.commentId ? { ...item, replies } : item
-      )))
+      patchComment(comment.commentId, item => ({ ...item, replies }))
     } catch (error) {
       setActionError(error instanceof Error ? error.message : '加载回复失败，请重试')
     }
   }
 
+  /** 左侧评论框获得焦点，并把回复对象带进去（可为评论或楼中楼里的一条回复） */
+  // 评论用户主页弹窗（网易云：官方 user/detail + user_playlist；QQ 无网页主页）
+  const [profileUser, setProfileUser] = useState<Comment | null>(null)
+  // 弹幕外观设置（字号/不透明度/昵称开关，localStorage 持久化）+ 设置面板开关
+  const [danmakuStyle, setDanmakuStyle] = useState<DanmakuStyleSettings>(readDanmakuStyle)
+  const [showStylePanel, setShowStylePanel] = useState(false)
+  useEffect(() => {
+    try { localStorage.setItem(DANMAKU_STYLE_STORAGE_KEY, JSON.stringify(danmakuStyle)) } catch { /* 隐私模式忽略 */ }
+  }, [danmakuStyle])
+
+  const [profileData, setProfileData] = useState<{ loading: boolean; error: string; profile: any; playlists: any[] }>({ loading: false, error: '', profile: null, playlists: [] })
+  const neteaseCookie = localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
+
+  const handleOpenCommentUser = useCallback((comment: Comment) => {
+    if (resourcePlatform === 'netease' && comment.user.userId) {
+      setProfileUser(comment)
+      return
+    }
+    setActionError('该平台用户主页需在客户端内查看')
+  }, [resourcePlatform])
+
+  useEffect(() => {
+    if (!profileUser || resourcePlatform !== 'netease' || !profileUser.user.userId) return
+    const controller = new AbortController()
+    setProfileData({ loading: true, error: '', profile: null, playlists: [] })
+    Promise.all([
+      fetch(`http://localhost:3001/api/netease/user/detail?uid=${profileUser.user.userId}&cookie=${encodeURIComponent(neteaseCookie)}`, { signal: controller.signal }).then(res => res.json()),
+      fetch(`http://localhost:3001/api/netease/user/playlist?uid=${profileUser.user.userId}&limit=30&cookie=${encodeURIComponent(neteaseCookie)}`, { signal: controller.signal }).then(res => res.json()),
+    ]).then(([detail, playlist]) => {
+      if (controller.signal.aborted) return
+      setProfileData({ loading: false, error: '', profile: detail?.profile || null, playlists: Array.isArray(playlist?.playlist) ? playlist.playlist : [] })
+    }).catch(error => {
+      if (!controller.signal.aborted) setProfileData({ loading: false, error: error instanceof Error ? error.message : '用户主页加载失败', profile: null, playlists: [] })
+    })
+    return () => controller.abort()
+  }, [profileUser, resourcePlatform, neteaseCookie])
+
+  const beginReply = useCallback((target: ReplyTarget) => {
+    setReplyingTo(target)
+    // 官方同款：回复自动带上 @对方（避免忘记称呼）
+    setNewComment(previous => (previous.startsWith(`@${target.username} `) ? previous : `@${target.username} ${previous}`))
+    window.setTimeout(() => inputRef.current?.focus(), 60)
+  }, [])
+
+  const submitComposer = () => {
+    if (replyingTo) void handleReply(replyingTo)
+    else void handleSubmitComment()
+  }
+
+  // 弹幕池：精彩评论优先，并始终并入已加载的全部评论（去重）。
+  // 之前只在精彩评论少于 12 条时才补，热门歌的弹幕池永远只有热评那 15-20 条，
+  // 用户会看到「弹幕翻来覆去就 20 个」；现在加载的评论越多，幕布上的弹幕越多。
+  const danmakuPool = useMemo<Comment[]>(() => {
+    const seen = new Set<string>()
+    const pool: Comment[] = []
+    const push = (comment: Comment) => {
+      if (!comment.commentId || seen.has(comment.commentId) || !comment.content.trim()) return
+      seen.add(comment.commentId)
+      pool.push(comment)
+    }
+    myPostedComments.forEach(push)
+    // 精选热评打上 hot 标记：弹幕气泡带描边和「热」角标
+    hotComments.forEach(comment => push({ ...comment, hot: true }))
+    for (const comment of allComments) {
+      if (pool.length >= DANMAKU_POOL_CAP) break
+      push(comment)
+    }
+    return pool.slice(0, DANMAKU_POOL_CAP)
+  }, [myPostedComments, hotComments, allComments])
+
+  // ===== 列表虚拟化：扁平行数组 + 动态行高 =====
+  // 列表页签：QQ 的「推荐」展示精选热评（hotComments），其余页签展示各自排序加载的全量列表
+  const listComments = tab === 'recommend' && resourcePlatform === 'qq' ? hotComments : allComments
+  // QQ「推荐」是接口给的一批固定精选集合，不做续页；其余列表页签（含网易云推荐/最热的 offset 分页）都可加载更多
+  const isFixedBatchTab = tab === 'recommend' && resourcePlatform === 'qq'
+  // 金银铜排名徽章：最热评论列表，以及 QQ 推荐页签（精彩评论）
+  const showRankForTab = tab === 'hot' || isFixedBatchTab
+  const commentRows = useMemo<CommentRow[]>(() => {
+    const rows: CommentRow[] = listComments.map((comment, index) => ({ kind: 'comment', comment, index }))
+    if (!isFixedBatchTab) {
+      if (hasMoreComments && !loading) rows.push({ kind: 'load-more' })
+      else if (!hasMoreComments && listComments.length > 0) rows.push({ kind: 'no-more' })
+    }
+    return rows
+  }, [listComments, isFixedBatchTab, hasMoreComments, loading])
+
+  // 变高行：ResizeObserver 实测每行高度；估算值用于首帧定位
+  const dynamicRowHeight = useDynamicRowHeight({ defaultRowHeight: 96 })
+  // 评论列表虚拟化后 List 外层 div 即滚动容器，同步给 scrollContainerRef
+  // （供续页判断与 ScrollToTop 使用）
+  const commentListRef = useRef<ListImperativeAPI | null>(null)
+  const commentOuterRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (isOpen && !loading && !error) {
+      const listEl = commentListRef.current?.element ?? null
+      if (listEl) scrollContainerRef.current = listEl
+    }
+    return () => {
+      scrollContainerRef.current = commentOuterRef.current
+    }
+  }, [isOpen, loading, error, commentRows.length])
+
+  // 桌面端惯例：ESC 关闭弹窗（弹幕钉住时由弹幕层先行消费）
+  useEffect(() => {
+    if (!isOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [isOpen, onClose])
+
+  const changeSpeed = (value: number) => {
+    setDanmakuSpeed(value)
+    try {
+      window.localStorage.setItem(DANMAKU_SPEED_STORAGE_KEY, String(value))
+    } catch {
+      // 隐私模式下 localStorage 可能不可写：速度仅本次会话生效
+    }
+  }
+
   if (!isOpen) return null
+
+  // 主题令牌：深浅两套都建立在封面上，避免「全黑一片」
+  const textPrimary = isDark ? 'text-white' : 'text-[rgba(16,16,20,0.92)]'
+  const textSecondary = isDark ? 'text-white/55' : 'text-black/50'
+  const textTertiary = isDark ? 'text-white/40' : 'text-black/38'
+  const railSurface = isDark ? 'rgba(12,12,18,0.42)' : 'rgba(255,255,255,0.5)'
+  const divider = isDark ? 'border-white/10' : 'border-black/8'
+  const chipClass = isDark ? 'border-white/12 bg-white/8 text-white/70' : 'border-black/8 bg-black/4 text-black/55'
+  const tabBase = 'rounded-full px-3.5 py-1.5 text-[13px] transition-colors'
+  const tabClass = (active: boolean) => active
+    ? `${tabBase} font-medium`
+    : `${tabBase} ${isDark ? 'text-white/55 hover:bg-white/8 hover:text-white/85' : 'text-black/50 hover:bg-black/5 hover:text-black/75'}`
+
+  // 页签定义：总览（弹幕幕布）为所有平台常驻；推荐页签网易云/QQ 提供（QQ 的推荐即精彩评论）；
+  // 汽水无推荐排序，保持 总览/最热/最新
+  const showRecommendTab = resourcePlatform === 'netease' || resourcePlatform === 'qq'
+  const tabs: { key: CommentTab; label: string; badge?: number }[] = [
+    { key: 'overview', label: '总览', badge: totalComments > 0 ? Number(totalComments) : danmakuPool.length },
+    ...(showRecommendTab
+      ? [{ key: 'recommend' as CommentTab, label: '推荐', badge: resourcePlatform === 'qq' ? hotComments.length : undefined }]
+      : []),
+    { key: 'hot', label: isPlaylistResource ? '热门评价' : '最热评论' },
+    { key: 'latest', label: isPlaylistResource ? '最新评价' : '最新评论' },
+  ]
+
+  const listBody = () => {
+    if (loading) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3">
+          <span className="h-7 w-7 animate-spin rounded-full border-2 border-current border-t-transparent" style={{ color: accent }} />
+          <p className={`text-[13px] ${textSecondary}`}>加载评论中…</p>
+        </div>
+      )
+    }
+    if (error) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3">
+          <p className={`text-[13px] ${textSecondary}`}>{error}</p>
+          <button
+            type="button"
+            onClick={() => void loadComments(true)}
+            className={`rounded-full border px-4 py-1.5 text-[13px] transition-colors ${chipClass}`}
+          >
+            重试
+          </button>
+        </div>
+      )
+    }
+    if (listComments.length === 0) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-1.5">
+          <p className={`text-[13px] ${textSecondary}`}>
+            {tab === 'hot' || isFixedBatchTab
+              ? '这首歌还没有精彩评论'
+              : (isPlaylistResource ? '暂无评价，快来发表第一条评价吧' : '暂无评论，快来发表第一条评论吧')}
+          </p>
+          {(tab === 'hot' || isFixedBatchTab) && (
+            <button
+              type="button"
+              onClick={() => setTab('latest')}
+              className="text-[12px] transition-opacity hover:opacity-80"
+              style={{ color: accent }}
+            >
+              去看最新评论
+            </button>
+          )}
+        </div>
+      )
+    }
+    return (
+      <List<CommentRowData>
+        listRef={commentListRef}
+        className="custom-scrollbar"
+        style={{ height: '100%', width: '100%' }}
+        onScroll={handleScroll}
+        rowCount={commentRows.length}
+        rowHeight={dynamicRowHeight}
+        overscanCount={6}
+        rowComponent={CommentVirtualRow}
+        rowProps={{
+          rows: commentRows,
+          expandedReplies,
+          isLoggedIn,
+          canInteract,
+          currentUserId,
+          isDark,
+          accent,
+          showRank: showRankForTab,
+          onLike: (target) => void handleLike(target),
+          onReply: (target) => beginReply(target),
+          onDelete: (target) => setPendingDeleteComment(target),
+          onToggleReplies: (target) => void toggleReplies(target),
+          onOpenUser: (target) => handleOpenCommentUser(target),
+          isLoadingMore,
+          onLoadMore: () => void loadComments(false),
+        }}
+      />
+    )
+  }
 
   return (
     <AnimatePresence>
@@ -1417,269 +2070,449 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60"
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-6"
         data-tv-scope
         onClick={onClose}
       >
         <motion.div
-          initial={{ scale: 0.9, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          exit={{ scale: 0.9, opacity: 0 }}
-          transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-          className="relative w-[92vw] max-w-3xl max-h-[88vh] rounded-2xl shadow-2xl overflow-hidden border border-white/10 flex flex-col"
+          initial={{ scale: 0.96, opacity: 0, y: 12 }}
+          animate={{ scale: 1, opacity: 1, y: 0 }}
+          exit={{ scale: 0.96, opacity: 0, y: 12 }}
+          transition={{ type: 'spring', damping: 26, stiffness: 320 }}
+          // 横向大矩形（PC）：左栏歌曲信息与评论框，右栏页签内容；最小高度避免小窗退化回竖向卡片
+          className={`relative flex h-[min(820px,90vh)] min-h-[540px] w-[min(1320px,95vw)] overflow-hidden rounded-[26px] border shadow-2xl ${
+            isDark ? 'border-white/12' : 'border-black/10'
+          }`}
           onClick={(e) => e.stopPropagation()}
           style={{
             // 全不透明底色：弹窗常盖在播放中的 MV 视频/动态页面上，半透明底 +
             // 滤镜层会制造多层合成边界，诱发 Chromium 光栅化闪烁
-            background: '#0a0a0c',
+            background: isDark ? '#0b0b10' : '#f6f6f3',
           }}
         >
-          {/* 内部模糊封面层：用元素自身 filter 预先把封面糊化（内容静态，合成器只算一次）。
+          {/* 封面背景层：用元素自身 filter 预先把封面糊化（内容静态，合成器只算一次）。
               不要改回 backdrop-filter——弹窗盖在持续动画的播放页（摩登动态封面/逐字歌词）上时，
               backdrop-filter 每帧重采样背景会触发 Chromium 合成器出陈旧帧，评论区肉眼可见地闪。 */}
           {resourceCoverUrl && (
-            <div className="absolute inset-0 -z-10 overflow-hidden" aria-hidden="true">
+            <div className="absolute inset-0 overflow-hidden" aria-hidden="true">
               <div
-                className="absolute -inset-20"
+                className="absolute -inset-24"
                 style={{
                   backgroundImage: `url(${resourceBackgroundUrl})`,
                   backgroundSize: 'cover',
                   backgroundPosition: 'center',
-                  filter: 'blur(80px)',
+                  filter: isDark ? 'blur(72px) saturate(1.5) brightness(0.68)' : 'blur(72px) saturate(1.35) brightness(1.12)',
                 }}
               />
-              <div className="absolute inset-0" style={{ background: 'linear-gradient(rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.86))' }} />
             </div>
           )}
-          
-          {/* 头部 */}
-          <div className="flex-shrink-0 bg-black/40 border-b border-white/10 px-6 py-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                {resourceCoverUrl && (
-                  <CachedImage
-                    src={resourceCoverUrl}
-                    alt={resourceName}
-                    className="w-12 h-12 rounded-lg object-cover shadow-lg"
-                    role="compact"
-                    size={128}
-                    priority="critical"
-                    lazy={false}
-                  />
-                )}
-                <div>
-                  <h2 className="text-lg font-semibold text-white">{resourceName}</h2>
-                  <p className="text-sm text-gray-300">{resourceSubtitle}</p>
-                </div>
-              </div>
-              
-              <div className="flex items-center space-x-2">
-                {/* 发表评论按钮 - 登录后显示；汽水未登录也展示入口（输入框置灰提示登录） */}
-                {(isLoggedIn || resourcePlatform === 'soda') && (
-                  <button
-                    onClick={() => {
-                      setShowCommentInput(!showCommentInput)
-                      setReplyingTo(null)
-                      setTimeout(() => inputRef.current?.focus(), 100)
-                    }}
-                    className="px-4 py-1.5 bg-gradient-to-r from-pink-500 to-orange-500 hover:from-pink-600 hover:to-orange-600 text-white text-sm rounded-full transition-all flex items-center space-x-1"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span>{isPlaylistResource ? '发表评价' : '发表评论'}</span>
-                  </button>
-                )}
-                
-                {/* 关闭按钮 */}
-                <button
-                  onClick={onClose}
-                  className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 transition-colors"
-                >
-                  <svg className="w-5 h-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            </div>
+          <div
+            className="absolute inset-0"
+            aria-hidden="true"
+            style={{
+              background: isDark
+                ? 'linear-gradient(135deg, rgba(10,10,16,0.7) 0%, rgba(6,6,11,0.82) 55%, rgba(12,12,19,0.74) 100%)'
+                : 'linear-gradient(135deg, rgba(255,255,255,0.8) 0%, rgba(248,248,246,0.88) 55%, rgba(240,240,238,0.84) 100%)',
+            }}
+          />
+          {/* 封面色氛围光：让界面颜色跟着这首歌走，而不是一片死黑 */}
+          <div
+            className="absolute inset-0"
+            aria-hidden="true"
+            style={{ background: `radial-gradient(58% 52% at 10% 6%, ${accent}2e 0%, transparent 68%)` }}
+          />
 
-            {isPlaylistResource && playlist && (
-              <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-4 space-y-3 text-sm text-white/75">
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                  {playlist.creator?.avatarUrl && (
-                    <CachedImage src={playlist.creator.avatarUrl} alt={playlist.creator.nickname || '创建者'} className="w-7 h-7 rounded-full object-cover" role="row" size={64} priority="visible" />
+          {/* ===== 左栏：资源信息 + 常驻评论框 ===== */}
+          <aside
+            className={`relative z-10 flex w-[300px] shrink-0 flex-col border-r xl:w-[336px] ${divider}`}
+            style={{ background: railSurface }}
+          >
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar px-6 pb-4 pt-6">
+              <div className="flex items-start justify-between gap-3">
+                <div className="h-[152px] w-[152px] shrink-0 overflow-hidden rounded-2xl shadow-2xl xl:h-[168px] xl:w-[168px]">
+                  {resourceCoverUrl ? (
+                    <CachedImage
+                      src={resourceCoverUrl}
+                      alt={resourceName}
+                      className="h-full w-full object-cover"
+                      role="compact"
+                      size={336}
+                      priority="critical"
+                      lazy={false}
+                    />
+                  ) : (
+                    <div className={`flex h-full w-full items-center justify-center ${isDark ? 'bg-white/5' : 'bg-black/5'}`}>
+                      <Gauge className={`h-8 w-8 ${textTertiary}`} />
+                    </div>
                   )}
-                  <span>创建者：{playlist.creator?.nickname || '未知用户'}</span>
-                  {playlist.createTime && <span>创建日期：{new Date(playlist.createTime).toLocaleDateString('zh-CN')}</span>}
-                  {typeof playlist.commentCount === 'number' && <span>评价：{playlist.commentCount}</span>}
                 </div>
-                <div className="whitespace-pre-wrap leading-6 text-white/70">
-                  {playlistDescription}
-                </div>
-                {Array.isArray(playlist.tags) && playlist.tags.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {playlist.tags.map(tag => (
-                      <span key={tag} className="px-2.5 py-1 rounded-full bg-white/10 text-xs text-white/75">{tag}</span>
-                    ))}
-                  </div>
+              </div>
+
+              <h2 className={`mt-4 line-clamp-2 text-[19px] font-bold leading-7 ${textPrimary}`} title={resourceName}>
+                {resourceName}
+              </h2>
+              {resourceSubtitle && (
+                <p className={`mt-1 truncate text-[13px] ${textSecondary}`} title={resourceSubtitle}>
+                  {resourceSubtitle}
+                </p>
+              )}
+              {resourceAlbumName && (
+                <p className={`mt-0.5 truncate text-[12px] ${textTertiary}`} title={resourceAlbumName}>
+                  专辑 · {resourceAlbumName}
+                </p>
+              )}
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className={`rounded-full border px-2.5 py-0.5 text-[11px] ${chipClass}`}>
+                  {platformLabel(resourcePlatform)}
+                </span>
+                {totalComments > 0 && (
+                  <span className={`rounded-full border px-2.5 py-0.5 text-[11px] ${chipClass}`}>
+                    共 {totalComments.toLocaleString('zh-CN')} 条评论
+                  </span>
+                )}
+                {isPlaylistResource && typeof playlist?.commentCount === 'number' && playlist.commentCount > 0 && (
+                  <span className={`rounded-full border px-2.5 py-0.5 text-[11px] ${chipClass}`}>
+                    评价 {playlist.commentCount}
+                  </span>
+                )}
+                {shareCount > 0 && (
+                  <span className={`rounded-full border px-2.5 py-0.5 text-[11px] ${chipClass}`}>
+                    {shareCount} 次分享
+                  </span>
                 )}
               </div>
-            )}
 
-            {/* 视图切换按钮 */}
-            <div className="flex items-center space-x-2 mt-3">
-              <button
-                onClick={() => setViewMode('hot')}
-                className={`px-4 py-1.5 rounded-full text-sm transition-all ${
-                  viewMode === 'hot'
-                    ? 'bg-white/20 text-white font-medium'
-                    : 'text-gray-400 hover:text-white hover:bg-white/10'
-                }`}
-              >
-                {isPlaylistResource ? '热门评价' : '精彩评论'}
-              </button>
-              <button
-                onClick={() => setViewMode('latest')}
-                className={`px-4 py-1.5 rounded-full text-sm transition-all ${
-                  viewMode === 'latest'
-                    ? 'bg-white/20 text-white font-medium'
-                    : 'text-gray-400 hover:text-white hover:bg-white/10'
-                }`}
-              >
-                {isPlaylistResource ? '最新评价' : '最新评论'}
-              </button>
-            </div>
-            {actionError && (
-              <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-                <span>{actionError}</span>
-                <button onClick={() => setActionError(null)} className="text-red-200/70 hover:text-white" aria-label="关闭错误提示">×</button>
-              </div>
-            )}
-            {actionSuccess && (
-              <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">
-                <span>{actionSuccess}</span>
-                <button onClick={() => setActionSuccess(null)} className="text-emerald-200/70 hover:text-white" aria-label="关闭成功提示">×</button>
-              </div>
-            )}
-          </div>
-
-          {/* 发表评论输入框 */}
-          <AnimatePresence>
-            {showCommentInput && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                className="flex-shrink-0 bg-black/30 border-b border-white/10 px-6 py-4 overflow-hidden"
-              >
-                {replyingTo && (
-                  <div className="mb-2 flex items-center justify-between text-xs text-blue-400 bg-blue-500/10 px-3 py-2 rounded-lg">
-                    <span>回复 @{replyingTo.username}</span>
-                    <button
-                      onClick={() => {
-                        setReplyingTo(null)
-                        setShowCommentInput(false)
-                        setNewComment('')
-                      }}
-                      className="text-gray-400 hover:text-white"
-                    >
-                      取消
-                    </button>
+              {isPlaylistResource && playlist && (
+                <div className={`mt-4 rounded-2xl border p-3.5 text-[12px] leading-5 ${divider} ${isDark ? 'bg-white/4' : 'bg-white/50'}`}>
+                  <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 ${textSecondary}`}>
+                    {playlist.creator?.avatarUrl && (
+                      <CachedImage src={playlist.creator.avatarUrl} alt={playlist.creator.nickname || '创建者'} className="h-6 w-6 rounded-full object-cover" role="row" size={48} priority="visible" />
+                    )}
+                    <span>创建者：{playlist.creator?.nickname || '未知用户'}</span>
+                    {playlist.createTime && <span>创建于 {new Date(playlist.createTime).toLocaleDateString('zh-CN')}</span>}
                   </div>
-                )}
-                <div className="flex items-end space-x-2">
-                  <textarea
-                    ref={inputRef}
-                    value={newComment}
-                    onChange={(e) => setNewComment(e.target.value)}
-                    placeholder={replyingTo
-                      ? `回复 @${replyingTo.username}`
-                      : (sodaInputLocked ? '登录汽水音乐后参与评论' : (isPlaylistResource ? '发表歌单评价...' : '发表评论...'))}
-                    disabled={sodaInputLocked}
-                    className="flex-1 bg-white/10 border border-white/20 rounded-lg px-4 py-2 text-sm text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent resize-none disabled:opacity-50 disabled:cursor-not-allowed"
-                    rows={2}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        if (replyingTo) {
-                          handleReply(replyingTo.commentId)
-                        } else {
-                          handleSubmitComment()
-                        }
-                      }
-                    }}
-                  />
+                  <div className={`mt-2 whitespace-pre-wrap ${isDark ? 'text-white/70' : 'text-black/65'}`}>{playlistDescription}</div>
+                  {Array.isArray(playlist.tags) && playlist.tags.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {playlist.tags.map(tag => (
+                        <span key={tag} className={`rounded-full border px-2 py-0.5 text-[11px] ${chipClass}`}>{tag}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 热评速览：堆叠卡组（最热 3 条），点一下直接去弹幕幕布 */}
+              {hotComments[0] && !isPlaylistResource && (
+                <div className="mt-4">
                   <button
-                    onClick={() => {
-                      if (replyingTo) {
-                        handleReply(replyingTo.commentId)
-                      } else {
-                        handleSubmitComment()
-                      }
-                    }}
-                    disabled={sodaInputLocked || !newComment.trim() || isSubmitting}
-                    className="px-4 py-2 bg-gradient-to-r from-pink-500 to-orange-500 hover:from-pink-600 hover:to-orange-600 disabled:from-gray-600 disabled:to-gray-600 text-white rounded-lg transition-all flex items-center space-x-1 disabled:cursor-not-allowed"
+                    type="button"
+                    onClick={() => setTab('overview')}
+                    className={`relative z-10 w-full rounded-2xl border p-3.5 text-left transition-colors ${divider} ${
+                      isDark ? 'bg-white/4 hover:bg-white/8' : 'bg-white/55 hover:bg-white/80'
+                    }`}
                   >
-                    <Send className="w-4 h-4" />
-                    <span>{isSubmitting ? '发送中…' : '发送'}</span>
+                    <div className="flex items-center justify-between">
+                      <span className={`text-[11px] ${textTertiary}`}>最热评论</span>
+                      <span className="text-[11px]" style={{ color: accent }}>去弹幕看 →</span>
+                    </div>
+                    <div className={`mt-1.5 line-clamp-3 text-[12.5px] leading-5 ${isDark ? 'text-white/80' : 'text-black/70'}`}>
+                      {hotComments[0].content}
+                    </div>
+                    <div className={`mt-1.5 flex items-center gap-2 text-[11px] ${textTertiary}`}>
+                      <span className="truncate">{hotComments[0].user.nickname}</span>
+                      <span className="flex shrink-0 items-center gap-1">
+                        <ThumbsUp className="h-3 w-3" />
+                        {hotComments[0].likedCount}
+                      </span>
+                    </div>
+                  </button>
+                  {/* 下方补充：第二、三条热评的紧凑预览，填补留白 */}
+                  {hotComments.slice(1, 3).map((hot, hotIndex) => (
+                    <button
+                      key={hot.commentId}
+                      type="button"
+                      onClick={() => setTab('overview')}
+                      className={`mt-2 w-full rounded-xl border px-3 py-2 text-left transition-colors ${divider} ${
+                        isDark ? 'bg-white/[0.025] hover:bg-white/[0.06]' : 'bg-white/40 hover:bg-white/70'
+                      }`}
+                    >
+                      <div className={`line-clamp-1 text-[12px] leading-5 ${isDark ? 'text-white/65' : 'text-black/60'}`}>{hot.content}</div>
+                      <div className={`mt-0.5 flex items-center gap-2 text-[10.5px] ${textTertiary}`}>
+                        <span className="truncate">{hot.user.nickname}</span>
+                        <span className="flex shrink-0 items-center gap-1">
+                          <ThumbsUp className="h-2.5 w-2.5" />
+                          {hot.likedCount}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 发表评论：PC 端常驻输入区，不再藏在「发表评论」按钮后面 */}
+            <div className={`shrink-0 border-t px-5 py-4 ${divider}`}>
+              {showEmojiPanel && (
+                <div className={`mb-2 flex flex-wrap gap-1 rounded-xl border p-2 ${divider} ${isDark ? 'bg-black/25' : 'bg-white/60'}`}>
+                  {COMPOSER_EMOJIS.map(emoji => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => setNewComment(value => value + emoji)}
+                      className={`rounded-lg px-1.5 py-0.5 text-[16px] leading-6 transition-colors ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/6'}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {replyingTo && (
+                <div
+                  className="mb-2 flex items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-[11px]"
+                  style={{ background: `${accent}1f`, color: accent }}
+                >
+                  <span className="truncate">回复 @{replyingTo.username}</span>
+                  <button type="button" onClick={() => setReplyingTo(null)} className="shrink-0 opacity-70 hover:opacity-100">
+                    取消
                   </button>
                 </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* 评论列表 */}
-          <div ref={(el) => { commentOuterRef.current = el }} onScroll={handleScroll} className="flex-1 overflow-y-auto custom-scrollbar">
-            {loading ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <div className="w-8 h-8 border-4 border-pink-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-                <p className="text-gray-300">加载评论中...</p>
-              </div>
-            ) : error ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <svg className="w-16 h-16 text-gray-500 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-                <p className="text-gray-300">{error}</p>
-              </div>
-            ) : displayComments.length === 0 && hotComments.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <svg className="w-16 h-16 text-gray-500 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-                <p className="text-gray-300">
-                  {isPlaylistResource ? '暂无评价，快来发表第一条评价吧' : '暂无评论，快来发表第一条评论吧'}
-                </p>
-              </div>
-            ) : (
-              <List<CommentRowData>
-                listRef={commentListRef}
-                className="custom-scrollbar"
-                style={{ height: '100%', width: '100%' }}
-                onScroll={handleScroll}
-                rowCount={commentRows.length}
-                rowHeight={dynamicRowHeight}
-                overscanCount={6}
-                rowComponent={CommentVirtualRow}
-                rowProps={{
-                  rows: commentRows,
-                  expandedReplies,
-                  // 汽水评论无点赞/回复接口，行内按钮按未登录方式静态展示
-                  isLoggedIn: isLoggedIn && !sodaRowsStatic,
-                  currentUserId,
-                  isPlaylistResource,
-                  onLike: (target) => void handleLike(target.commentId),
-                  onReply: (target) => {
-                    setReplyingTo({ commentId: target.commentId, username: target.user.nickname })
-                    setShowCommentInput(true)
-                    setTimeout(() => inputRef.current?.focus(), 100)
-                  },
-                  onDelete: (target) => setPendingDeleteComment(target),
-                  onToggleReplies: (target) => void toggleReplies(target),
-                  isLoadingMore,
-                  onLoadMore: () => loadComments(false),
+              )}
+              <textarea
+                ref={inputRef}
+                value={newComment}
+                onChange={(e) => setNewComment(e.target.value)}
+                placeholder={composerPlaceholder}
+                disabled={composerLocked}
+                className={`custom-scrollbar h-[76px] w-full resize-none rounded-xl border px-3.5 py-3 text-[13px] leading-5 transition-colors focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
+                  isDark
+                    ? 'border-white/12 bg-black/25 text-white placeholder:text-white/35'
+                    : 'border-black/8 bg-white/70 text-[rgba(16,16,20,0.9)] placeholder:text-black/35'
+                }`}
+                style={{ boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.06)' }}
+                onFocus={(e) => { e.currentTarget.style.borderColor = accent }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = '' }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    submitComposer()
+                  }
                 }}
               />
-            )}
-          </div>
+              <div className="mt-2 flex items-center justify-between gap-3">
+                <span className={`flex items-center gap-2 text-[11px] ${textTertiary}`}>
+                  {!composerLocked && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setNewComment(value => `${value}@`)}
+                        aria-label="提及用户"
+                        title="插入 @"
+                        className={`flex h-6 w-6 items-center justify-center rounded-full text-[13px] font-medium transition-colors ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/6'}`}
+                      >
+                        @
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowEmojiPanel(value => !value)}
+                        aria-label="表情"
+                        className={`flex h-6 w-6 items-center justify-center rounded-full transition-colors ${isDark ? 'hover:bg-white/10' : 'hover:bg-black/6'}`}
+                        style={showEmojiPanel ? { color: accent } : undefined}
+                      >
+                        <Smile className="h-4 w-4" />
+                      </button>
+                    </>
+                  )}
+                  {composerLocked ? '登录后可参与评论' : 'Enter 发送 · Shift+Enter 换行'}
+                </span>
+                <button
+                  type="button"
+                  onClick={submitComposer}
+                  disabled={composerLocked || !newComment.trim() || isSubmitting}
+                  className="flex items-center gap-1.5 rounded-full px-4 py-1.5 text-[13px] font-medium text-white transition-all disabled:cursor-not-allowed disabled:opacity-45"
+                  style={{ background: accent }}
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  <span>{isSubmitting ? '发送中…' : '发送'}</span>
+                </button>
+              </div>
+              <AnimatePresence>
+                {actionError && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-2 flex items-start justify-between gap-2 rounded-lg border border-red-400/30 bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-300">
+                      <span className="min-w-0 break-words">{actionError}</span>
+                      <button type="button" onClick={() => setActionError(null)} className="shrink-0 opacity-70 hover:opacity-100">×</button>
+                    </div>
+                  </motion.div>
+                )}
+                {actionSuccess && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-2 flex items-start justify-between gap-2 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] text-emerald-300">
+                      <span className="min-w-0 break-words">{actionSuccess}</span>
+                      <button type="button" onClick={() => setActionSuccess(null)} className="shrink-0 opacity-70 hover:opacity-100">×</button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </aside>
+
+          {/* ===== 右栏：页签 + 内容 ===== */}
+          <section className="relative z-10 flex min-w-0 flex-1 flex-col">
+            <header className={`flex h-[64px] shrink-0 items-center gap-3 border-b px-5 ${divider}`}>
+              <div className={`flex items-center gap-1 rounded-full border p-1 ${divider} ${isDark ? 'bg-black/25' : 'bg-white/60'}`}>
+                {tabs.map(item => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setTab(item.key)}
+                    className={tabClass(tab === item.key)}
+                    style={tab === item.key ? { background: `${accent}26`, color: accent } : undefined}
+                  >
+                    {item.label}
+                    {typeof item.badge === 'number' && item.badge > 0 && (
+                      <span className={`ml-1.5 text-[11px] ${tab === item.key ? '' : textTertiary}`}>
+                        {item.badge >= 100000000 ? `${(item.badge / 100000000).toFixed(1)}亿` : item.badge >= 10000 ? `${(item.badge / 10000).toFixed(1)}万` : item.badge}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              <div className="ml-auto flex items-center gap-3">
+                {tab === 'overview' && (
+                  <div className="relative flex items-center gap-2">
+                    <Gauge className="h-4 w-4" style={{ color: accent }} />
+                    <div className={`flex items-center gap-0.5 rounded-full border p-0.5 ${divider} ${isDark ? 'bg-black/25' : 'bg-white/60'}`}>
+                      {DANMAKU_SPEEDS.map(value => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => changeSpeed(value)}
+                          className={`rounded-full px-2.5 py-1 text-[12px] transition-colors ${
+                            danmakuSpeed === value
+                              ? 'font-medium text-white'
+                              : isDark ? 'text-white/50 hover:text-white/80' : 'text-black/45 hover:text-black/75'
+                          }`}
+                          style={danmakuSpeed === value ? { background: accent } : undefined}
+                        >
+                          {value}x
+                        </button>
+                      ))}
+                    </div>
+                    {/* 弹幕外观设置 */}
+                    <button
+                      type="button"
+                      onClick={() => setShowStylePanel(value => !value)}
+                      aria-label="弹幕样式设置"
+                      title="弹幕样式设置"
+                      className={`flex h-8 w-8 items-center justify-center rounded-full border transition-colors ${divider} ${
+                        isDark ? 'bg-black/25 text-white/55 hover:text-white' : 'bg-white/60 text-black/50 hover:text-black/80'
+                      }`}
+                      style={showStylePanel ? { borderColor: accent, color: accent } : undefined}
+                    >
+                      <Settings2 className="h-4 w-4" />
+                    </button>
+                    {showStylePanel && (
+                      <div
+                        className={`absolute right-0 top-10 z-30 w-64 rounded-2xl border p-3.5 ${divider} ${
+                          isDark ? 'border-white/12 bg-[#101319] shadow-2xl' : 'border-black/8 bg-white shadow-xl'
+                        }`}
+                        onClick={event => event.stopPropagation()}
+                      >
+                        <p className={`mb-2 text-[11px] font-medium ${textTertiary}`}>字号</p>
+                        <div className="mb-3 flex gap-1.5">
+                          {DANMAKU_FONT_SCALES.map(scale => (
+                            <button
+                              key={scale}
+                              type="button"
+                              onClick={() => setDanmakuStyle(previous => ({ ...previous, fontScale: scale }))}
+                              className={`flex-1 rounded-full px-2 py-1 text-[12px] transition-colors ${divider} border ${
+                                danmakuStyle.fontScale === scale ? 'font-medium' : isDark ? 'text-white/55' : 'text-black/50'
+                              }`}
+                              style={danmakuStyle.fontScale === scale ? { background: `${accent}26`, color: accent, borderColor: accent } : undefined}
+                            >
+                              {scale === 0.85 ? '小' : scale === 1 ? '标准' : '大'}
+                            </button>
+                          ))}
+                        </div>
+                        <p className={`mb-2 text-[11px] font-medium ${textTertiary}`}>不透明度</p>
+                        <div className="mb-3 flex gap-1.5">
+                          {DANMAKU_OPACITIES.map(opacity => (
+                            <button
+                              key={opacity}
+                              type="button"
+                              onClick={() => setDanmakuStyle(previous => ({ ...previous, opacity }))}
+                              className={`flex-1 rounded-full px-2 py-1 text-[12px] transition-colors ${divider} border ${
+                                danmakuStyle.opacity === opacity ? 'font-medium' : isDark ? 'text-white/55' : 'text-black/50'
+                              }`}
+                              style={danmakuStyle.opacity === opacity ? { background: `${accent}26`, color: accent, borderColor: accent } : undefined}
+                            >
+                              {opacity === 0.65 ? '淡' : opacity === 0.85 ? '适中' : '浓'}
+                            </button>
+                          ))}
+                        </div>
+                        <label className="flex cursor-pointer items-center justify-between text-[12px]">
+                          <span className={isDark ? 'text-white/70' : 'text-black/60'}>显示昵称</span>
+                          <input
+                            type="checkbox"
+                            checked={danmakuStyle.showNickname}
+                            onChange={event => setDanmakuStyle(previous => ({ ...previous, showNickname: event.target.checked }))}
+                            className="h-4 w-4"
+                            style={{ accentColor: accent }}
+                          />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={onClose}
+                  aria-label="关闭评论"
+                  className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+                    isDark ? 'text-white/60 hover:bg-white/10 hover:text-white' : 'text-black/50 hover:bg-black/5 hover:text-black/80'
+                  }`}
+                >
+                  <X className="h-4.5 w-4.5" />
+                </button>
+              </div>
+            </header>
+
+            <div className="relative min-h-0 flex-1">
+              {tab === 'overview' ? (
+                <CommentDanmaku
+                  comments={danmakuPool}
+                  coverUrl={resourceBackgroundUrl || resourceCoverUrl}
+                  playerTheme={playerTheme}
+                  accentColor={accentColor}
+                  speed={danmakuSpeed}
+                  style={danmakuStyle}
+                  isLoggedIn={isLoggedIn}
+                  canInteract={canInteract}
+                  onLike={(comment) => void handleLike(comment)}
+                  onReply={(comment) => beginReply({ commentId: comment.commentId, username: comment.user.nickname })}
+                  onDelete={(comment) => setPendingDeleteComment(comment as Comment)}
+                />
+              ) : (
+                <div ref={(el) => { commentOuterRef.current = el }} className="h-full">
+                  {listBody()}
+                </div>
+              )}
+            </div>
+          </section>
         </motion.div>
       </motion.div>
 
@@ -1690,47 +2523,111 @@ export default function CommentModal({ isOpen, onClose, song = null, playlist = 
           if (!deleteLoading) setPendingDeleteComment(null)
         }}
         onConfirm={() => {
-          if (pendingDeleteComment) void handleDelete(pendingDeleteComment.commentId)
+          if (pendingDeleteComment) void handleDelete(pendingDeleteComment)
         }}
       />
 
       {/* 回到顶部按钮 - 相对于评论弹窗定位 */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[110] flex items-center justify-center"
-        style={{ pointerEvents: 'none' }}
-      >
-        <div className="relative w-[92vw] max-w-3xl max-h-[88vh]" style={{ pointerEvents: 'none' }}>
-          <div className="absolute -right-16 bottom-0" style={{ pointerEvents: 'auto' }}>
-            <ScrollToTop 
-              containerRef={scrollContainerRef} 
-              threshold={200}
-              playerTheme="dark"
-              position="absolute"
-              offsetRight={0}
-              offsetBottom={0}
-            />
+      {tab !== 'overview' && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[110] flex items-center justify-center p-6"
+          style={{ pointerEvents: 'none' }}
+        >
+          <div className="relative h-[min(820px,90vh)] w-[min(1320px,95vw)]" style={{ pointerEvents: 'none' }}>
+            <div className="absolute bottom-6 right-6" style={{ pointerEvents: 'auto' }}>
+              <ScrollToTop
+                containerRef={scrollContainerRef}
+                threshold={200}
+                playerTheme={playerTheme}
+                position="absolute"
+                offsetRight={0}
+                offsetBottom={0}
+              />
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* 评论用户主页弹窗（网易云） */}
+      {profileUser && resourcePlatform === 'netease' && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/70 p-5 backdrop-blur-md" role="dialog" aria-modal="true" aria-label="用户主页" onMouseDown={event => { if (event.target === event.currentTarget) setProfileUser(null) }}>
+          <div className="max-h-[82vh] w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-[#101319] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/[0.08] px-5 py-4">
+              <h3 className="text-lg font-semibold text-white">用户主页</h3>
+              <button type="button" onClick={() => setProfileUser(null)} className="flex h-8 w-8 items-center justify-center rounded-full text-white/45 hover:bg-white/[0.07] hover:text-white" aria-label="关闭">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-[68vh] overflow-y-auto p-5">
+              {profileData.loading ? (
+                <div className="flex min-h-40 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-white/50" /></div>
+              ) : profileData.error ? (
+                <p className="py-6 text-center text-sm text-rose-200/80">{profileData.error}</p>
+              ) : profileData.profile ? (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-4">
+                    {profileData.profile.avatarUrl && (
+                      <img src={profileData.profile.avatarUrl} alt="" className="h-16 w-16 rounded-full object-cover" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-lg font-semibold text-white">{profileUser.user.nickname}</p>
+                      {profileData.profile.signature && <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-white/45">{profileData.profile.signature}</p>}
+                      <p className="mt-1 flex gap-3 text-[11px] text-white/40">
+                        <span>动态 {profileData.profile.eventCount ?? 0}</span>
+                        <span>关注 {profileData.profile.follows ?? 0}</span>
+                        <span>粉丝 {profileData.profile.followeds ?? 0}</span>
+                        {typeof profileData.profile.level === 'number' && <span>Lv.{profileData.profile.level}</span>}
+                      </p>
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="mb-2 text-sm font-semibold text-white/85">TA 的歌单</h4>
+                    {profileData.playlists.length === 0 ? (
+                      <p className="py-4 text-center text-sm text-white/40">暂无公开歌单</p>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                        {profileData.playlists.map((playlist: any) => (
+                          <button
+                            key={String(playlist.id)}
+                            type="button"
+                            onClick={() => { onOpenPlaylistProp?.({ id: String(playlist.id), name: String(playlist.name || ''), coverUrl: String(playlist.coverImgUrl || ''), platform: 'netease' }); setProfileUser(null) }}
+                            className="group w-full text-left"
+                          >
+                            <span className="relative block aspect-square overflow-hidden rounded-lg bg-white/[0.05]">
+                              {playlist.coverImgUrl && <img src={playlist.coverImgUrl} alt="" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" loading="lazy" />}
+                            </span>
+                            <span className="mt-1.5 block line-clamp-1 text-xs text-white/80">{playlist.name}</span>
+                            <span className="block text-[10px] text-white/35">{Number(playlist.playCount || 0) >= 10000 ? `${(Number(playlist.playCount) / 10000).toFixed(1)}万次播放` : `${playlist.playCount || 0}次播放`}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
-      </motion.div>
+      )}
 
       {/* 自定义滚动条样式 */}
       <style>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 8px;
+          height: 8px;
         }
         .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(255, 255, 255, 0.05);
-          border-radius: 4px;
+          background: transparent;
         }
         .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(255, 255, 255, 0.2);
+          background: ${isDark ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.16)'};
           border-radius: 4px;
         }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(255, 255, 255, 0.3);
+          background: ${isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.26)'};
         }
       `}</style>
     </AnimatePresence>
