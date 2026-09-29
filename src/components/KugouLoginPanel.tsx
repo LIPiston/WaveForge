@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Music, ExternalLink, Copy, Check, QrCode, Loader2 } from 'lucide-react'
+import { X, Music, Copy, Check, QrCode, Loader2 } from 'lucide-react'
 import { useTvBack } from '../tv/tvCore'
 
 interface KugouLoginPanelProps {
@@ -55,9 +55,8 @@ export default function KugouLoginPanel({ onClose, onLoginSuccess }: KugouLoginP
     }
   }
 
-  const handleOpenKugou = () => {
-    window.open('https://www.kugou.com', '_blank')
-  }
+  // TV/纯浏览器上 window.open 无反应（主 WebView 无 onCreateWindow）；
+  // 无残留调用方后保留空实现没有意义，直接移除。桌面按钮分支已改提示文案。
 
   const copyInstructions = async () => {
     const instructions = `1. 打开 www.kugou.com 并登录
@@ -148,14 +147,8 @@ export default function KugouLoginPanel({ onClose, onLoginSuccess }: KugouLoginP
                     {loading ? '正在打开登录窗口…' : '在弹出窗口登录酷狗'}
                   </button>
                 ) : (
-                  <button
-                    onClick={handleOpenKugou}
-                    className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors"
-                    style={{ backgroundColor: accent }}
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    打开 www.kugou.com
-                  </button>
+                  // TV/纯浏览器：window.open 在 TV WebView 无反应，隐藏死按钮改提示
+                  <p className="text-white/50 text-sm">电视端无法打开网页窗口，请在手机/电脑浏览器完成第 2 步后粘贴 Cookie（连接手机遥控器后可在手机上输入）</p>
                 )}
               </div>
             </div>
@@ -168,7 +161,7 @@ export default function KugouLoginPanel({ onClose, onLoginSuccess }: KugouLoginP
               <div className="flex-1">
                 <h3 className="text-white font-medium mb-2">手动粘贴 Cookie（备用）</h3>
                 <div className="bg-white/5 rounded-lg p-4 space-y-2 text-white/80 text-sm">
-                  <p>1. 打开 <button onClick={handleOpenKugou} className={`${accentText} hover:underline`}>www.kugou.com</button> 并登录</p>
+                  <p>1. 在手机/电脑浏览器打开 <strong className={accentText}>www.kugou.com</strong> 并登录</p>
                   <p>2. 按 <kbd className="px-2 py-1 bg-white/10 rounded">F12</kbd> 打开开发者工具</p>
                   <p>3. 在 <strong>Console</strong> 输入 <span className={`${accentText} font-mono`}>document.cookie</span> 回车</p>
                   <p>4. 复制输出的内容（需包含 KuGoo 或 kg_token）</p>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Music, Loader2, Check, ExternalLink } from 'lucide-react'
+import { X, Music, Loader2, Check } from 'lucide-react'
 import { useTvBack } from '../tv/tvCore'
 
 interface SpotifyLoginPanelProps {
@@ -154,14 +154,11 @@ export default function SpotifyLoginPanel({ onClose, onLoginSuccess }: SpotifyLo
                     {loading ? '正在打开授权窗口…' : '使用 Spotify 账号授权登录'}
                   </button>
                 ) : (
-                  <button
-                    onClick={() => window.open('https://accounts.spotify.com/authorize', '_blank')}
-                    className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors"
-                    style={{ backgroundColor: accent }}
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    打开 Spotify 授权页
-                  </button>
+                  // TV/纯浏览器：OAuth 回调依赖桌面端 loopback 监听（127.0.0.1:8000），
+                  // TV 上既打不开授权页也没有 token 落地点——死路，隐藏按钮改为明确提示
+                  <p className="text-white/50 text-sm">
+                    Spotify 登录依赖桌面端的 OAuth 授权窗口与本地回调，电视端暂不支持。请在桌面版 WaveForge 中登录 Spotify。
+                  </p>
                 )}
               </div>
             </div>
@@ -190,16 +187,18 @@ export default function SpotifyLoginPanel({ onClose, onLoginSuccess }: SpotifyLo
               onClick={onClose}
               className="flex-1 px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-medium transition-colors"
             >
-              取消
+              {hasNativeLogin ? '取消' : '知道了'}
             </button>
-            <button
-              onClick={() => void handleAuth()}
-              disabled={loading}
-              className="flex-1 px-6 py-3 text-white rounded-xl font-medium transition-colors disabled:opacity-60"
-              style={{ backgroundColor: accent }}
-            >
-              {loading ? '正在打开…' : '授权登录'}
-            </button>
+            {hasNativeLogin && (
+              <button
+                onClick={() => void handleAuth()}
+                disabled={loading}
+                className="flex-1 px-6 py-3 text-white rounded-xl font-medium transition-colors disabled:opacity-60"
+                style={{ backgroundColor: accent }}
+              >
+                {loading ? '正在打开…' : '授权登录'}
+              </button>
+            )}
           </div>
         </motion.div>
       </motion.div>

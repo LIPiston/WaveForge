@@ -22,6 +22,7 @@ import type { LocationOption } from '../services/locationHierarchy'
 import { MirroredGlobalSettings, makeSkin } from './MirroredGlobalSettings'
 import type { MirrorActionId } from '../services/globalSettingsRegistry'
 import { useTvBack } from '../tv/tvCore'
+import { isTvModeActive } from '../platform'
 
 // 全局设置镜像里的共享弹窗（按需加载，与简约 / 传统 / 探索模式同一组件）
 const LazyAudioQualityModal = lazy(() => import('./AudioQualitySettingsModal'))
@@ -135,9 +136,10 @@ export default function DesktopSettingsModal({
   const [error, setError] = useState<string>('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Wallpaper Engine 手动选择的壁纸
+  // Wallpaper Engine 手动选择的壁纸（实际写入键是 DesktopView 的 selectedWeWallpaper，
+  // 此前读的 selectedWallpaperEngineId 全仓无人写，文案永远显示未选择）
   const [selectedWallpaperEngineId] = useState<string | null>(() => {
-    const saved = localStorage.getItem('selectedWallpaperEngineId')
+    const saved = localStorage.getItem('selectedWeWallpaper')
     return saved || null
   })
 
@@ -512,6 +514,7 @@ export default function DesktopSettingsModal({
 
           {/* 设置弹窗 */}
           <motion.div
+            data-tv-scope
             initial={{ opacity: 0, scale: 0.9, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.9, y: 20 }}
@@ -610,7 +613,8 @@ export default function DesktopSettingsModal({
                         </div>
                       </button>
 
-                      {/* Wallpaper Engine 联动 */}
+                      {/* Wallpaper Engine 联动：WE 是 Windows 桌面程序，TV 后端扫描必失败——隐藏 */}
+                      {!isTvModeActive() && (
                       <div>
                         <div className="flex items-center gap-3 mb-3">
                           <div className="w-10 h-10 rounded-xl bg-purple-500/20 flex items-center justify-center">
@@ -663,8 +667,10 @@ export default function DesktopSettingsModal({
                           )}
                         </div>
                       </div>
+                      )}
 
                       {/* WallpaperEngine 卡片 */}
+                      {!isTvModeActive() && (
                       <button
                         onClick={() => enterSubmenu('wallpaper-engine')}
                         className="w-full bg-white/5 hover:bg-white/10 rounded-xl p-4 border border-white/10 transition-all text-left"
@@ -689,6 +695,7 @@ export default function DesktopSettingsModal({
                           <ChevronRight className={`w-5 h-5 ${wallpaperSyncEnabled ? 'text-white/20' : 'text-white/40'}`} />
                         </div>
                       </button>
+                      )}
 
                       {/* 歌单显示设置 */}
                       <div>
@@ -1258,13 +1265,13 @@ export default function DesktopSettingsModal({
                                     <div className="aspect-video bg-zinc-800">
                                       {wallpaper.type === 'image' ? (
                                         <img
-                                          src={wallpaper.dataUrl}
+                                          src={wallpaper.mediaUrl || wallpaper.dataUrl}
                                           alt={wallpaper.name}
                                           className="w-full h-full object-cover"
                                         />
                                       ) : (
                                         <video
-                                          src={wallpaper.dataUrl}
+                                          src={wallpaper.mediaUrl || wallpaper.dataUrl}
                                           className="w-full h-full object-cover"
                                           muted
                                         />

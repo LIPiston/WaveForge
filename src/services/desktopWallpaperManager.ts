@@ -2,7 +2,12 @@
 export interface DesktopWallpaperFile {
   id: string
   type: 'image' | 'video'
-  dataUrl: string
+  /** 旧数据：base64 dataURL（撑爆 localStorage 配额的根源，新上传不再使用）；磁盘方案下省略 */
+  dataUrl?: string
+  /** 磁盘方案：文件在 userData/waveforge-wallpapers 下的绝对路径 */
+  path?: string
+  /** waveforge-media 协议 URL（主进程内存白名单，重启后由 registerMediaFiles 重新登记） */
+  mediaUrl?: string
   format: string
   size: number
   name: string
@@ -128,6 +133,26 @@ class DesktopWallpaperManager {
   }
   private switchTimer: number | null = null
 
+  /** 重启后 waveforge-media 白名单是空的：把磁盘壁纸路径重新登记并刷新 mediaUrl（每路径每会话一次） */
+  private mediaUrlRefreshedPaths = new Set<string>()
+  private async ensureMediaUrls() {
+    const pending = this.wallpapers.filter(w => w.path && !w.mediaUrl && !this.mediaUrlRefreshedPaths.has(w.path))
+    if (!pending.length) return
+    const electronApi = (window as any).electron?.wallpaper
+    if (typeof electronApi?.registerMediaFiles !== 'function') return
+    try {
+      const urls = await electronApi.registerMediaFiles(pending.map(w => w.path as string))
+      for (const wallpaper of pending) {
+        const url = urls?.[wallpaper.path as string]
+        if (url) {
+          wallpaper.mediaUrl = url
+          this.mediaUrlRefreshedPaths.add(wallpaper.path as string)
+        }
+      }
+      this.saveToStorage()
+    } catch { /* 登记失败下次进桌面模式再试 */ }
+  }
+
   constructor() {
     this.loadFromStorage()
   }
@@ -180,17 +205,38 @@ class DesktopWallpaperManager {
 
     try {
       const dataUrl = await this.fileToDataUrl(file)
-      const wallpaper: DesktopWallpaperFile = {
+      const base: DesktopWallpaperFile = {
         id: `desktop_wp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         type: isImage ? 'image' : 'video',
-        dataUrl,
         format: file.type.split('/')[1] || 'unknown',
         size: file.size,
         name: file.name,
         addedAt: Date.now()
       }
 
+      // 优先走 Electron 落盘：文件写入 userData/waveforge-wallpapers，
+      // localStorage 只存路径（base64 存 localStorage 会撑爆 ~5MB 配额 → setItem 静默失败 → 重启丢壁纸）
+      const electronApi = (window as any).electron?.wallpaper
+      if (typeof electronApi?.saveCustomWallpaper === 'function') {
+        const saved = await electronApi.saveCustomWallpaper({
+          name: file.name,
+          type: isImage ? 'image' : 'video',
+          dataBase64: dataUrl.split(',')[1] || '',
+        })
+        if (saved?.success && saved.path) {
+          const wallpaper: DesktopWallpaperFile = { ...base, path: saved.path, mediaUrl: saved.mediaUrl }
+          this.wallpapers.push(wallpaper)
+          this.settings.lastWallpaperSource = 'custom-upload'
+          this.settings.currentIndex = this.wallpapers.length - 1
+          this.saveToStorage()
+          return { success: true }
+        }
+        console.warn('自定义壁纸落盘失败，回退到 dataURL（可能超出 localStorage 配额）:', saved?.error)
+      }
+
+      const wallpaper: DesktopWallpaperFile = { ...base, dataUrl }
       this.wallpapers.push(wallpaper)
+      this.settings.lastWallpaperSource = 'custom-upload'
       this.saveToStorage()
       return { success: true }
     } catch (error) {
@@ -241,6 +287,8 @@ class DesktopWallpaperManager {
   }
 
   async getCurrentWallpaper(): Promise<DesktopWallpaperFile | DesktopLiveWallpaperSource | string | null> {
+    // 磁盘壁纸路径重登记（重启后白名单为空）
+    await this.ensureMediaUrls()
     // 第一优先级：Wallpaper Engine 实时联动（同步功能）
     // 只要同步开启，就无视其他所有壁纸设置
     if (this.settings.wallpaperEngineEnabled) {

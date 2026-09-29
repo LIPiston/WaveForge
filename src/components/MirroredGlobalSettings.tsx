@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Reorder } from 'framer-motion'
-import { Check, ChevronRight, Eye, EyeOff, GripVertical, Loader2, Music, RefreshCw } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, ChevronUp, Eye, EyeOff, GripVertical, Loader2, Music, RefreshCw } from 'lucide-react'
 import FontPicker from './FontPicker'
 import VmpStatusCard from './VmpStatusCard'
 import {
@@ -545,6 +545,16 @@ export function PlatformOrderEditor({ skin, className }: { skin: MirrorSkin; cla
     setPlatformHidden(platform, !isHidden)
   }
 
+  // 上移/下移：拖拽的按钮替代路径（TV 遥控器无法拖拽 Reorder.Item）
+  const movePlatform = (platform: MusicPlatform, delta: -1 | 1) => {
+    const index = order.indexOf(platform)
+    const target = index + delta
+    if (index < 0 || target < 0 || target >= order.length) return
+    const next = [...order]
+    ;[next[index], next[target]] = [next[target], next[index]]
+    setPlatformOrder(next)
+  }
+
   return (
     <div className={className}>
       <Reorder.Group axis="y" values={order} onReorder={setPlatformOrder} className="space-y-2">
@@ -588,9 +598,30 @@ export function PlatformOrderEditor({ skin, className }: { skin: MirrorSkin; cla
                   {PLATFORM_LABELS[platform]}
                 </span>
                 <span className="block text-[11px]" style={{ color: skin.muted }}>
-                  {isHidden ? '已隐藏 · 其他模式同样不可见' : '按住拖动调整各模式的平台顺序'}
+                  {isHidden ? '已隐藏 · 其他模式同样不可见' : '拖动或用上下按钮调整各模式的平台顺序'}
                 </span>
               </span>
+              {/* 上移/下移：遥控器/键盘用户无法拖拽 Reorder.Item，提供按钮等效路径 */}
+              <button
+                type="button"
+                onClick={() => movePlatform(platform, -1)}
+                disabled={order.indexOf(platform) <= 0}
+                className="rounded-lg p-1.5 transition-colors hover:bg-white/10 disabled:opacity-30"
+                aria-label={`上移${PLATFORM_LABELS[platform]}`}
+                title="上移"
+              >
+                <ChevronUp className="h-4 w-4" style={{ color: skin.sub }} />
+              </button>
+              <button
+                type="button"
+                onClick={() => movePlatform(platform, 1)}
+                disabled={order.indexOf(platform) >= order.length - 1}
+                className="rounded-lg p-1.5 transition-colors hover:bg-white/10 disabled:opacity-30"
+                aria-label={`下移${PLATFORM_LABELS[platform]}`}
+                title="下移"
+              >
+                <ChevronDown className="h-4 w-4" style={{ color: skin.sub }} />
+              </button>
               <button
                 type="button"
                 onClick={() => toggleVisibility(platform)}

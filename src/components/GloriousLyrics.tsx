@@ -1,4 +1,6 @@
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { isTvModeActive } from '../platform'
+import { isPerfModeEnhanced } from '../tv/perfMode'
 import { useEffect, useMemo, useRef } from 'react'
 import type { LyricLine } from '../services/musicApi'
 import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
@@ -133,7 +135,8 @@ export default function GloriousLyrics({
   isTransitioning = false,
   onSeek,
 }: GloriousLyricsProps) {
-  const prefersReducedMotion = Boolean(useReducedMotion())
+  // 系统减弱动效，或 TV 非增强档（无限 JS 驱动动画 tv.css 杀不掉，走同一静态分支）
+  const prefersReducedMotion = Boolean(useReducedMotion()) || (isTvModeActive() && !isPerfModeEnhanced())
   const active = findVisibleLine(lyrics, Math.max(0, currentIndex), currentIndex < 0 ? 1 : -1)
     || findVisibleLine(lyrics, 0, 1)
   const activeIndex = active?.index ?? -1
@@ -168,7 +171,13 @@ export default function GloriousLyrics({
   return (
     <div
       className="relative h-full min-h-[440px] w-full overflow-hidden text-white"
-      style={{ opacity: isTransitioning ? 0 : 1, transition: 'opacity 380ms ease', backgroundColor: palette.surface }}
+      style={{
+        opacity: isTransitioning ? 0.12 : 1,
+        transform: isTransitioning ? 'translateY(-10px) scale(0.988)' : 'none',
+        transition: isTransitioning ? 'opacity 900ms ease, transform 900ms ease' : 'opacity 550ms cubic-bezier(0.22,0.61,0.36,1), transform 550ms cubic-bezier(0.22,0.61,0.36,1)',
+        willChange: isTransitioning ? 'opacity, transform' : undefined,
+        backgroundColor: palette.surface,
+      }}
     >
       <style>{`
         @keyframes glorious-drift {

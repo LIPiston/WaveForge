@@ -4,7 +4,7 @@
  */
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Music, Loader2, QrCode, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react'
+import { X, Music, Loader2, QrCode, ChevronDown, ChevronUp } from 'lucide-react'
 import { useTvBack } from '../tv/tvCore'
 
 interface SodaLoginPanelProps {
@@ -127,10 +127,12 @@ export default function SodaLoginPanel({ onClose, onLoginSuccess }: SodaLoginPan
             </button>
           </div>
 
-          {/* 说明 */}
+          {/* 说明：TV（无扫码窗口）与桌面端文案分支，TV 上"弹出窗口"不存在会误导 */}
           <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 mb-6">
             <p className="text-yellow-200 text-sm">
-              弹出窗口展示汽水官方二维码，使用「汽水音乐」App 扫码确认后自动完成登录
+              {hasNativeLogin
+                ? '弹出窗口展示汽水官方二维码，使用「汽水音乐」App 扫码确认后自动完成登录'
+                : '电视端无法弹出登录窗口：请在手机/电脑浏览器登录汽水网页版后复制 Cookie，在下方粘贴登录（连接手机遥控器后可在手机上直接粘贴输入）'}
             </p>
           </div>
 
@@ -141,8 +143,8 @@ export default function SodaLoginPanel({ onClose, onLoginSuccess }: SodaLoginPan
                 1
               </div>
               <div className="flex-1">
-                <h3 className="text-white font-medium mb-2">弹出窗口扫码（汽水音乐 App）</h3>
-                {hasNativeLogin ? (
+                <h3 className="text-white font-medium mb-2">{hasNativeLogin ? '弹出窗口扫码（汽水音乐 App）' : '获取 Cookie（手机/电脑浏览器）'}</h3>
+                {hasNativeLogin && (
                   <button
                     onClick={() => void handleLogin()}
                     disabled={loading}
@@ -152,15 +154,10 @@ export default function SodaLoginPanel({ onClose, onLoginSuccess }: SodaLoginPan
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <QrCode className="w-4 h-4" />}
                     {loading ? '正在打开登录窗口…' : '在弹出窗口扫码登录（抖音 App）'}
                   </button>
-                ) : (
-                  <button
-                    onClick={() => window.open('https://www.qishui.com/', '_blank')}
-                    className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors"
-                    style={{ backgroundColor: accent }}
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    打开汽水音乐网页版
-                  </button>
+                )}
+                {/* TV/纯浏览器：window.open 在 TV WebView 无反应，隐藏死按钮改提示 */}
+                {!hasNativeLogin && (
+                  <p className="text-white/50 text-sm">电视端不支持打开网页窗口，请按下方手动 Cookie 步骤操作</p>
                 )}
               </div>
             </div>

@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useModeParked } from '../utils/modeLayer'
 import { Check, ChevronDown, RefreshCw, Search } from 'lucide-react'
 
 // queryLocalFonts 的类型尚未进入项目使用的 TS DOM lib，这里补声明
@@ -62,6 +63,7 @@ export interface FontPickerProps {
 interface FontOption { value: string; label: string; hint?: string; builtin?: boolean }
 
 export default function FontPicker({ value, onChange, dark, accent, buttonWidth, disabled }: FontPickerProps) {
+  const parked = useModeParked()
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const [deviceFonts, setDeviceFonts] = useState<{ status: 'idle' | 'loading' | 'ready' | 'denied' | 'unsupported'; families: string[] }>({ status: 'idle', families: [] })
@@ -194,7 +196,7 @@ export default function FontPicker({ value, onChange, dark, accent, buttonWidth,
         <ChevronDown className="h-3.5 w-3.5 flex-shrink-0" style={{ color: textSub, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .18s' }} />
       </button>
 
-      {open && rect && createPortal(
+      {open && rect && !parked && createPortal(
         <div
           ref={panelRef}
           className="waveforge-font-picker"

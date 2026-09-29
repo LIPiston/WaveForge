@@ -62,7 +62,12 @@ export default function MultidimensionalLyrics({
     <div
       // MV 背景激活时外层透明，让下层 MV 视频可见；否则保持原深色底
       className={`relative h-full min-h-[440px] w-full overflow-hidden text-white ${mvBackgroundActive ? 'bg-transparent' : 'bg-[#05060c]'}`}
-      style={{ opacity: isTransitioning ? 0 : 1, transition: 'opacity 320ms ease' }}
+      style={{
+        opacity: isTransitioning ? 0.12 : 1,
+        transform: isTransitioning ? 'translateY(-10px) scale(0.988)' : 'none',
+        transition: isTransitioning ? 'opacity 900ms ease, transform 900ms ease' : 'opacity 550ms cubic-bezier(0.22,0.61,0.36,1), transform 550ms cubic-bezier(0.22,0.61,0.36,1)',
+        willChange: isTransitioning ? 'opacity, transform' : undefined,
+      }}
     >
       {active && (
         <FoliaDioramaLyrics

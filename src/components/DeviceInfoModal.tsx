@@ -68,7 +68,9 @@ export default function DeviceInfoModal({ show, onClose, playerTheme = 'dark' }:
   const textSecondary = isDark ? 'text-white/60' : 'text-black/60'
   const textTertiary = isDark ? 'text-white/40' : 'text-black/40'
   const borderColor = isDark ? 'border-white/10' : 'border-black/10'
-  const accent = localStorage.getItem('accentColor') || '#3B82F6'
+  // 主题色：弹窗常驻挂载，render 里直读 localStorage 既走同步 IO，也不会响应换色事件（显示过期色）。
+  // 改为打开时读取一次（弹窗打开期间不会换色，语义等价）。
+  const [accent, setAccent] = useState(() => localStorage.getItem('accentColor') || '#3B82F6')
 
   // TV 遥控器 BACK 关闭弹窗（带 show 守卫：本组件经 SettingsPanel 常驻挂载，无守卫会吞掉全场景 BACK 键）
   useTvBack(() => {
@@ -84,6 +86,7 @@ export default function DeviceInfoModal({ show, onClose, playerTheme = 'dark' }:
 
   useEffect(() => {
     if (!show) return
+    setAccent(localStorage.getItem('accentColor') || '#3B82F6')
     setPerfModeState(getPerfMode())
     const native = (window as any).WaveForgeNative
     if (native?.getDeviceInfo) {

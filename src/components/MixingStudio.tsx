@@ -8,6 +8,7 @@ import {
   type EqMode,
   SIMPLE_EQ_BANDS,
 } from '../services/audioEffects/AudioEffectsEngine'
+import { useTvBack } from '../tv/tvCore'
 
 interface MixingStudioProps {
   engine: AudioEffectsEngine
@@ -68,6 +69,11 @@ const EFFECT_META: Record<EffectKey, { name: string; desc: string; intro: string
 }
 
 export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, sourceDuration, anchorRect, engineVersion = 'v1', onSwitchEngine, availableEngines }: MixingStudioProps) {
+  // TV 遥控器 BACK：关闭调音室（同 V2，否则遥控器进得来出不去）
+  useTvBack(() => {
+    onClose()
+    return true
+  }, [onClose])
   const [activeTab, setActiveTab] = useState<Tab>('effects')
   const [settings, setSettings] = useState<AudioEffectsSettings>(engine.getSettings())
   const [presets, setPresets] = useState<EqPreset[]>(loadPresets)
@@ -118,8 +124,12 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
   const glassCardBlur = 'blur(18px) saturate(160%)'
   const textPrimary = dark ? 'text-white' : 'text-black'
   const textSecondary = dark ? 'text-white/65' : 'text-black/65'
-  const textTertiary = dark ? 'text-white/40' : 'text-black/45'
+  const textTertiary = dark ? 'text-white/40' : 'text-black/60'
   const inputBg = dark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.5)'
+  // 亮色下纯白 thumb 会和浅色轨道糊成一片，所以 thumb 颜色跟随主题
+  const rangeThumbBg = dark ? 'rgba(255, 255, 255, 0.92)' : 'rgba(17, 24, 39, 0.92)'
+  const rangeThumbBorder = dark ? 'rgba(255, 255, 255, 0.6)' : 'rgba(255, 255, 255, 0.9)'
+  const rangeThumbHighlight = dark ? 'rgba(255, 255, 255, 0.8)' : 'rgba(255, 255, 255, 0.3)'
 
   const update = useCallback((patch: DeepPartial<AudioEffectsSettings>) => {
     engine.updateSettings(patch)
@@ -335,33 +345,38 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
             width: 18px;
             height: 18px;
             border-radius: 50%;
-            background: rgba(255, 255, 255, 0.92);
-            border: 2px solid rgba(255, 255, 255, 0.6);
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), 0 0 0 3px ${accentColor}44, inset 0 1px 2px rgba(255, 255, 255, 0.8);
+            background: ${rangeThumbBg};
+            border: 2px solid ${rangeThumbBorder};
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), 0 0 0 3px ${accentColor}44, inset 0 1px 2px ${rangeThumbHighlight};
             cursor: pointer;
             transition: transform 0.15s ease, box-shadow 0.15s ease;
           }
           .wf-glass-range::-webkit-slider-thumb:hover {
             transform: scale(1.2);
-            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3), 0 0 0 5px ${accentColor}55, inset 0 1px 2px rgba(255, 255, 255, 0.8);
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3), 0 0 0 5px ${accentColor}55, inset 0 1px 2px ${rangeThumbHighlight};
           }
           .wf-glass-range::-webkit-slider-thumb:active {
             transform: scale(1.05);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25), 0 0 0 4px ${accentColor}66, inset 0 1px 2px rgba(255, 255, 255, 0.8);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25), 0 0 0 4px ${accentColor}66, inset 0 1px 2px ${rangeThumbHighlight};
           }
           .wf-glass-range::-moz-range-thumb {
             width: 18px;
             height: 18px;
             border-radius: 50%;
-            background: rgba(255, 255, 255, 0.92);
-            border: 2px solid rgba(255, 255, 255, 0.6);
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), 0 0 0 3px ${accentColor}44, inset 0 1px 2px rgba(255, 255, 255, 0.8);
+            background: ${rangeThumbBg};
+            border: 2px solid ${rangeThumbBorder};
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), 0 0 0 3px ${accentColor}44, inset 0 1px 2px ${rangeThumbHighlight};
             cursor: pointer;
             transition: transform 0.15s ease, box-shadow 0.15s ease;
           }
           .wf-glass-range::-moz-range-thumb:hover {
             transform: scale(1.2);
-            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3), 0 0 0 5px ${accentColor}55, inset 0 1px 2px rgba(255, 255, 255, 0.8);
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3), 0 0 0 5px ${accentColor}55, inset 0 1px 2px ${rangeThumbHighlight};
+          }
+          /* 键盘焦点环：焦点色是运行时主题色，Tailwind 预生成的对不上，只能在这里注入 */
+          .wf-mix-focus :is(button, input, textarea):focus-visible {
+            outline: 2px solid ${accentColor};
+            outline-offset: 2px;
           }
         `}
       </style>
@@ -370,7 +385,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[70] flex items-center justify-center p-4 sm:p-8"
+        className="wf-mix-focus fixed inset-0 z-[70] flex items-center justify-center p-4 sm:p-8"
         style={{
           backgroundColor: dark ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.18)',
           backdropFilter: 'blur(6px) saturate(140%)',
@@ -461,7 +476,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                   className={`px-4 py-2.5 flex items-center justify-center gap-1.5 text-sm rounded-t-xl transition-all ${
                     active
                       ? `${textPrimary} font-medium`
-                      : `${textSecondary} hover:${textPrimary}`
+                      : `${textSecondary} ${dark ? 'hover:text-white' : 'hover:text-black/85'}`
                   }`}
                   style={active ? {
                     background: dark ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.5)',
@@ -480,7 +495,8 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
           </div>
 
           {/* 内容 */}
-          <div className="relative p-4 sm:p-5 overflow-y-auto" style={{ height: 'calc(88vh - 140px)' }}>
+          {/* 高度只由面板的 max-h 决定；内容区自己参与 flex 分配，避免两处高度来源互相打架 */}
+          <div className="relative p-4 sm:p-5 flex-1 min-h-0 overflow-y-auto">
             <AnimatePresence mode="wait">
               {activeTab === 'effects' && (
                 <motion.div key="effects" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="space-y-3">
@@ -488,27 +504,25 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                   {glassCardShell(
                     <div className="flex items-center justify-between">
                       <div>
-                        <div className={`${textPrimary} font-medium`}>{activeEffectKey ? `当前音效：${EFFECT_META[activeEffectKey].name}` : '开启音效'}</div>
-                        <div className={`${textSecondary} text-xs mt-0.5`}>{activeEffectKey ? '可尝试自定义选择当前音效自定义配置' : '选择下方音效卡片，点击即可开启'}</div>
+                        <div className={`${textPrimary} text-[15px] font-medium`}>{activeEffectKey ? `当前音效：${EFFECT_META[activeEffectKey].name}` : '开启音效'}</div>
+                        <div className={`${textSecondary} text-xs mt-0.5`}>{activeEffectKey ? '切换到某个音效后，可在此微调它的参数' : '选择下方音效卡片，点击即可开启'}</div>
                       </div>
                       {renderToggle(activeEffectKey !== null, toggleMasterEffect)}
                     </div>
                   )}
 
-                  {/* 效果卡片（一行 4 个，点击卡片打开配置弹窗） */}
-                  <div className="grid grid-cols-4 gap-2.5">
+                  {/* 窄窗降列数，否则 5 张卡会被压到 ~80px 挤成一团 */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
                     {EFFECT_KEYS.map((key) => {
                       const meta = EFFECT_META[key]
                       const enabled = settings.effects[key].enabled
                       const Icon = meta.icon
                       return (
+                        // 卡身与底部动作是两个**真按钮**：原先卡身是 div 假按钮（role/tabIndex）里再套一个真按钮，
+                        // 既有嵌套交互又有第三个没有视觉焦点的 Tab 停靠点。卡身 = 打开配置，底部 = 一键启用/关闭。
                         <div
                           key={key}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => setEffectModal(key)}
-                          onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) setEffectModal(key) }}
-                          className="relative cursor-pointer rounded-2xl p-3 flex flex-col items-center gap-2 transition-all hover:brightness-110"
+                          className="relative rounded-2xl p-3 flex flex-col items-center gap-2 transition-all"
                           style={{
                             background: enabled ? `${accentColor}26` : glassCard,
                             backdropFilter: glassCardBlur,
@@ -517,14 +531,20 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                             boxShadow: enabled ? `0 0 16px ${accentColor}44` : '0 4px 14px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.12)',
                           }}
                         >
-                          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: `${accentColor}22`, color: accentColor }}>
-                            <Icon className="w-4.5 h-4.5" />
-                          </div>
-                          <div className={`text-xs font-medium ${textPrimary} text-center leading-tight`}>{meta.name}</div>
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); activateEffect(enabled ? null : key) }}
-                            className="w-full py-1.5 rounded-lg text-xs font-medium transition-colors"
+                            onClick={() => setEffectModal(key)}
+                            className="flex w-full cursor-pointer flex-col items-center gap-2 rounded-xl transition-all hover:brightness-110"
+                          >
+                            <span className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: `${accentColor}22`, color: accentColor }}>
+                              <Icon className="w-4.5 h-4.5" />
+                            </span>
+                            <span className={`text-[13px] font-medium ${textPrimary} text-center leading-tight`}>{meta.name}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => activateEffect(enabled ? null : key)}
+                            className="w-full py-1.5 rounded-lg text-xs font-medium text-center cursor-pointer transition-all hover:brightness-110"
                             style={enabled
                               ? { backgroundColor: accentColor, color: '#fff', boxShadow: `0 0 10px ${accentColor}55` }
                               : { backgroundColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', color: dark ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.7)' }}
@@ -545,7 +565,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                     <>
                       <div className="flex items-center justify-between">
                         <div>
-                          <div className={`${textPrimary} font-medium`}>均衡器</div>
+                          <div className={`${textPrimary} text-[15px] font-medium`}>均衡器</div>
                           <div className={`${textSecondary} text-xs`}>调整各频段的增益</div>
                         </div>
                         {renderToggle(settings.eq.enabled, (v) => patchEq({ enabled: v }))}
@@ -647,7 +667,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                   {/* 预设 */}
                   {glassCardShell(
                     <>
-                      <div className={`${textPrimary} font-medium mb-2`}>预设（{presets.length}/8）</div>
+                      <div className={`${textPrimary} text-[15px] font-medium mb-2`}>预设（{presets.length}/8）</div>
                       <div className="flex gap-2 mb-3">
                         <input
                           value={presetName}
@@ -660,7 +680,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                           type="button"
                           onClick={handleSavePreset}
                           disabled={presets.length >= 8}
-                          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-sm text-white disabled:opacity-40 transition-all hover:brightness-110 active:scale-95`}
+                          className={`flex items-center gap-1 px-3 py-2 rounded-lg text-sm text-white disabled:opacity-40 disabled:hover:brightness-100 transition-all hover:brightness-110 active:scale-95`}
                           style={{ backgroundColor: accentColor, boxShadow: `0 4px 14px ${accentColor}44` }}
                         >
                           <Save className="w-4 h-4" /> 保存
@@ -678,7 +698,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                               >
                                 {preset.name}
                               </button>
-                              <button type="button" onClick={() => handleDeletePreset(preset.id)} className={`p-1 ${textTertiary} hover:${textPrimary}`}>
+                              <button type="button" onClick={() => handleDeletePreset(preset.id)} className={`p-1 ${textTertiary} ${dark ? 'hover:text-white' : 'hover:text-black/85'}`}>
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
@@ -691,7 +711,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                   {/* 导入导出 */}
                   {glassCardShell(
                     <>
-                      <div className={`${textPrimary} font-medium mb-2`}>导入 / 导出</div>
+                      <div className={`${textPrimary} text-[15px] font-medium mb-2`}>导入 / 导出</div>
                       <div className="flex gap-2 mb-2">
                         <button type="button" onClick={handleCopyExport} className={`flex items-center gap-1 px-3 py-2 rounded-lg text-sm text-white transition-all hover:brightness-110 active:scale-95`} style={{ backgroundColor: accentColor, boxShadow: `0 4px 14px ${accentColor}44` }}>
                           <Copy className="w-4 h-4" /> 复制我的设置
@@ -729,7 +749,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                 <motion.div key="tuner" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="space-y-3">
                   {glassCardShell(
                     <>
-                      <div className={`${textPrimary} font-medium mb-3`}>人声 / 伴奏比例</div>
+                      <div className={`${textPrimary} text-[15px] font-medium mb-3`}>人声 / 伴奏比例</div>
                       {renderRange('人声 ↔ 伴奏', settings.pitch.voiceBalance, -1, 1, 0.05, (v) => patchPitch({ voiceBalance: v }), settings.pitch.voiceBalance === 0 ? '原声' : settings.pitch.voiceBalance > 0 ? `人声 +${Math.round(settings.pitch.voiceBalance * 100)}%` : `伴奏 +${Math.round(-settings.pitch.voiceBalance * 100)}%`)}
                       <div className={`${textTertiary} text-xs flex items-center gap-1`}>
                         <Info className="w-3.5 h-3.5" /> 基于中/侧声道分离，会同时影响居中的低频，效果为卡拉OK级。
@@ -739,7 +759,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
 
                   {glassCardShell(
                     <>
-                      <div className={`${textPrimary} font-medium mb-3`}>变调 / 变速</div>
+                      <div className={`${textPrimary} text-[15px] font-medium mb-3`}>变调 / 变速</div>
                       {renderRange('变调', settings.pitch.semitones, -10, 10, 0.5, (v) => patchPitch({ semitones: v }), `${settings.pitch.semitones > 0 ? '+' : ''}${settings.pitch.semitones} 半音`)}
                       {renderRange('倍速', settings.pitch.rate, 0.25, 3, 0.05, (v) => patchPitch({ rate: v }), `${settings.pitch.rate.toFixed(2)}x`)}
                       <div className={`${textTertiary} text-xs flex items-center gap-1`}>
@@ -750,13 +770,13 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
 
                   {glassCardShell(
                     <>
-                      <div className={`${textPrimary} font-medium mb-1`}>导出处理后的音乐</div>
+                      <div className={`${textPrimary} text-[15px] font-medium mb-1`}>导出处理后的音乐</div>
                       <div className={`${textSecondary} text-xs mb-3`}>把当前音效与均衡器离线渲染成 WAV 文件下载（个人处理用途，涉及版权曲目请勿分发）</div>
                       <button
                         type="button"
                         onClick={() => void handleExportWav()}
                         disabled={exporting || !sourceUrl}
-                        className="w-full py-2.5 rounded-lg text-sm font-medium text-white disabled:opacity-40 transition-all hover:brightness-110 active:scale-[0.98] flex items-center justify-center gap-2"
+                        className="w-full py-2.5 rounded-lg text-sm font-medium text-white disabled:opacity-40 disabled:hover:brightness-100 transition-all hover:brightness-110 active:scale-[0.98] flex items-center justify-center gap-2"
                         style={{ backgroundColor: accentColor, boxShadow: `0 6px 18px ${accentColor}44` }}
                       >
                         <FileAudio className="w-4 h-4" />
@@ -783,7 +803,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[90] flex items-center justify-center p-4"
+              className="wf-mix-focus fixed inset-0 z-[90] flex items-center justify-center p-4"
               style={{ backgroundColor: dark ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.2)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
               onClick={() => setEffectModal(null)}
             >
@@ -836,9 +856,9 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                         <div className="absolute left-1/2 top-1/2 w-1.5 h-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ background: accentColor }} />
                         <div className="absolute top-1/2 w-3 h-3 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ left: `${50 - hallSpread / 2}%`, background: accentColor, boxShadow: `0 0 12px ${accentColor}aa` }} />
                         <div className="absolute top-1/2 w-3 h-3 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ left: `${50 + hallSpread / 2}%`, background: accentColor, boxShadow: `0 0 12px ${accentColor}aa` }} />
-                        <span className="absolute top-1.5 left-2 text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)' }}>声场宽度</span>
-                        <span className="absolute top-1.5 right-2 text-[10px] font-semibold" style={{ color: accentColor }}>{settings.effects.hall.level} 级</span>
-                        <span className="absolute bottom-1 inset-x-0 text-center text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)' }}>← 左右拖动调整声场宽度 →</span>
+                        <span className="absolute top-1.5 left-2 text-[11px]" style={{ color: dark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.6)' }}>声场宽度</span>
+                        <span className="absolute top-1.5 right-2 text-[11px] font-semibold" style={{ color: accentColor }}>{settings.effects.hall.level} 级</span>
+                        <span className="absolute bottom-1 inset-x-0 text-center text-[11px]" style={{ color: dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.5)' }}>← 左右拖动调整声场宽度 →</span>
                       </div>
                       {renderRange('混响程度', settings.effects.hall.reverb, 0, 10, 1, (v) => patchEffects({ hall: { ...settings.effects.hall, reverb: v } }), `${settings.effects.hall.reverb}`)}
                     </>
@@ -851,8 +871,8 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                         className="relative h-48 rounded-xl mb-3 touch-none overflow-hidden select-none"
                         style={{ background: dark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)', border: `1px solid ${glassBorder}` }}
                       >
-                        <span className="absolute top-1.5 left-2 text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)' }}>角度 {settings.effects.surround3d.angle}°</span>
-                        <span className="absolute top-1.5 right-2 text-[10px] font-semibold" style={{ color: accentColor }}>距离 {settings.effects.surround3d.distance}</span>
+                        <span className="absolute top-1.5 left-2 text-[11px]" style={{ color: dark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.6)' }}>角度 {settings.effects.surround3d.angle}°</span>
+                        <span className="absolute top-1.5 right-2 text-[11px] font-semibold" style={{ color: accentColor }}>距离 {settings.effects.surround3d.distance}</span>
                         <div
                           className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-36 h-36 cursor-pointer touch-none"
                           onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setSurroundFromPointer(e) }}
@@ -866,7 +886,7 @@ export default function MixingStudio({ engine, onClose, playerTheme, sourceUrl, 
                           <div className="absolute left-1/2 top-1/2 w-2.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ background: dark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.5)' }} />
                           <div className="absolute w-4 h-4 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ left: `${surroundDotX}%`, top: `${surroundDotY}%`, background: accentColor, boxShadow: `0 0 14px ${accentColor}aa` }} />
                         </div>
-                        <span className="absolute bottom-1 inset-x-0 text-center text-[10px]" style={{ color: dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)' }}>拖动圆点调整角度与距离</span>
+                        <span className="absolute bottom-1 inset-x-0 text-center text-[11px]" style={{ color: dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.5)' }}>拖动圆点调整角度与距离</span>
                       </div>
                       {renderRange('环绕近远', settings.effects.surround3d.distance, 1, 10, 1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, distance: v } }))}
                       {renderRange('旋转角度', settings.effects.surround3d.angle, 0, 360, 1, (v) => patchEffects({ surround3d: { ...settings.effects.surround3d, angle: v } }), `${settings.effects.surround3d.angle}°`)}

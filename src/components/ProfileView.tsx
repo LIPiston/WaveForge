@@ -1,8 +1,8 @@
 import { getQQUserDisplayName } from '../utils/qqUser'
 import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion } from 'framer-motion'
-import { X, Music, Heart, List, User, Crown, Calendar, MapPin, RefreshCw, LogOut, Plus, MoreHorizontal, Play, History, Disc3, Radio, Mic2, Users, TrendingUp, ArrowLeft, Film, Cloud, Eye, EyeOff, ShieldCheck, ChevronDown, ChevronUp } from 'lucide-react'
-import { Song, isSameSong, resolveSongAlbumIdentifier, getUserFollows, getUserFolloweds, getUserRecordRank, getQQFollows, getQQFans, getQQUserProfile, getQQUserFavs, subscribeQQUser, subscribeNeteaseUser, getSubscribedAlbums, getSubscribedArtists, getQQSubscribedAlbums, getQQSubscribedArtists, getNeteaseMvSublist, subscribeNeteaseMV, getNeteaseFollowingEvents, getNeteaseNotices, getNeteaseCommentMessages, getNeteaseCloudSongs } from '../services/musicApi'
+import { X, Music, Heart, List, User, Crown, Calendar, MapPin, RefreshCw, LogOut, Plus, MoreHorizontal, Play, History, Disc3, Radio, Mic2, Users, TrendingUp, ArrowLeft, Film, Eye, EyeOff, ShieldCheck, ChevronDown, ChevronUp } from 'lucide-react'
+import { Song, isSameSong, resolveSongAlbumIdentifier, getUserFollows, getUserFolloweds, getUserRecordRank, getQQFollows, getQQFans, getQQUserProfile, getQQUserFavs, subscribeQQUser, subscribeNeteaseUser, getSubscribedAlbums, getSubscribedArtists, getQQSubscribedAlbums, getQQSubscribedArtists, getNeteaseMvSublist, subscribeNeteaseMV, getNeteaseFollowingEvents, getNeteaseNotices, getNeteaseCommentMessages } from '../services/musicApi'
 import PlaylistDetailPanel from './PlaylistDetailPanel'
 import CachedImage from './CachedImage'
 import PlaylistContextMenu from './PlaylistContextMenu'
@@ -22,6 +22,7 @@ import {
 } from '../services/playlistService'
 import type { MusicPlatform } from '../services/platforms'
 import { getPlatformCapabilities, getPlatformCookie, platformLabel } from '../services/platforms'
+import { buildPlaylistShareUrl } from '../services/playlistShare'
 import { getAppleAuthState } from '../services/appleAuth'
 import { getPlatformRemainingDays } from '../services/loginExpiry'
 import { getAppleLibraryPlaylists, getAppleFavoriteSongs, getAppleRecentPlayed, appleLibraryTrackToSong, createApplePlaylist, deleteApplePlaylist, updateApplePlaylist, getApplePlaylistTracks, getAppleCatalogPlaylistTracks, getAppleLibrarySongs, appleSongToSong, getLastAppleMutationResult, removeAppleTracksFromPlaylist, APPLE_FAVORITES_ID, APPLE_LIBRARY_ID, enrichApplePlaylistTrackCounts } from '../services/appleCatalog'
@@ -45,7 +46,6 @@ const profileSocialCache = createTtlCache<{ items?: any[]; events?: any[]; notic
 const profileQqSocialCache = createTtlCache<any[]>({ ttlMs: PROFILE_CACHE_TTL, maxEntries: 16 })
 const profileCollectionsCache = createTtlCache<{ albums: any[]; artists: any[]; mvs: any[] }>({ ttlMs: PROFILE_CACHE_TTL, maxEntries: 12 })
 const profileRankCache = createTtlCache<Song[]>({ ttlMs: PROFILE_CACHE_TTL, maxEntries: 16 })
-const profileCloudCache = createTtlCache<any[]>({ ttlMs: PROFILE_CACHE_TTL, maxEntries: 8 })
 const profileQqFavCache = createTtlCache<any[]>({ ttlMs: PROFILE_CACHE_TTL, maxEntries: 8 })
 const profileSodaLikedCache = createTtlCache<Song[]>({ ttlMs: PROFILE_CACHE_TTL, maxEntries: 8 })
 
@@ -57,7 +57,6 @@ const clearProfileDataCaches = () => {
   profileQqSocialCache.clear()
   profileCollectionsCache.clear()
   profileRankCache.clear()
-  profileCloudCache.clear()
   profileQqFavCache.clear()
   profileSodaLikedCache.clear()
 }
@@ -636,10 +635,6 @@ function ProfileView({
   // 网易云通知/评论消息
   const [socialNotices, setSocialNotices] = useState<any[]>([])
   const [socialComments, setSocialComments] = useState<any[]>([])
-  // 网易云云盘
-  const [cloudSongs, setCloudSongs] = useState<any[]>([])
-  const [cloudLoading, setCloudLoading] = useState(false)
-  const [cloudError, setCloudError] = useState('')
   // QQ 社交状态（关注用户/粉丝列表）
   const [qqSocialType, setQqSocialType] = useState<'follows' | 'fans'>('follows')
   const [qqSocialItems, setQqSocialItems] = useState<{ encUin: string; mid: string; name: string; desc: string; avatarUrl: string; isFollow: boolean; isSelf: boolean }[]>([])
@@ -988,10 +983,16 @@ function ProfileView({
     }
   }
 
+  // 歌单右键菜单的开关一律来自能力表（默认全 true，漏传就会在酷狗/汽水上露出点了会失败的项）
+  const playlistMenuCapabilities = getPlatformCapabilities(platform)
+
   const handleSharePlaylist = (playlist: Playlist) => {
-    const url = platform === 'qq'
-      ? `https://y.qq.com/n/ryqq/playlist/${playlist.id}`
-      : `https://music.163.com/#/playlist?id=${playlist.id}`
+    // 平台链接统一由 playlistShare 生成（原来只区分 qq/netease，其它平台复制出错误链接）
+    const url = buildPlaylistShareUrl(playlist, (playlist?.platform || platform) as MusicPlatform)
+    if (!url) {
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '该平台暂不支持分享歌单链接', type: 'info' } }))
+      return
+    }
     try {
       navigator.clipboard.writeText(url).catch(() => {
         // Electron 中 clipboard API 可能被 CSP 限制，回退到 textarea 选择复制
@@ -1748,32 +1749,6 @@ function ProfileView({
     setActiveTab('created')
   }
 
-  // 网易云云盘歌曲列表
-  useEffect(() => {
-    if (activeTab !== 'cloud' || platform !== 'netease' || viewTarget) return
-    let cancelled = false
-    const cloudKey = `${activeUserId}:cloud`
-    const cachedCloud = profileCloudCache.get(cloudKey)
-    if (cachedCloud) {
-      setCloudSongs(cachedCloud)
-      setCloudLoading(false)
-      return
-    }
-    setCloudLoading(true)
-    setCloudError('')
-    getNeteaseCloudSongs({ cookie }).then((data) => {
-      if (cancelled) return
-      const songs = Array.isArray(data?.data) ? data.data : []
-      setCloudSongs(songs)
-      if (songs.length) profileCloudCache.set(cloudKey, songs)
-      setCloudLoading(false)
-    }).catch(() => {
-      if (cancelled) return
-      setCloudError('获取云盘失败，请确认已登录网易云')
-      setCloudLoading(false)
-    })
-    return () => { cancelled = true }
-  }, [activeTab, platform, viewTarget, cookie])
 
   // QQ 他人“我喜欢”数据获取（music.favor_system_read/get_favor_list_byid）
   useEffect(() => {
@@ -2676,18 +2651,6 @@ function ProfileView({
                 听歌排行
               </button>
             )}
-            {currentPlatform === 'netease' && !viewTarget && (
-              <button
-                onClick={() => setActiveTab('cloud')}
-                className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
-                  activeTab === 'cloud' ? 'text-white bg-white/10' : 'text-white/60 hover:text-white hover:bg-white/5'
-                }`}
-                style={activeTab === 'cloud' ? { borderBottom: `2px solid ${accentColor}` } : {}}
-              >
-                <Cloud className="w-5 h-5" />
-                云盘
-              </button>
-            )}
             <button
               onClick={() => setActiveTab('detail')}
               className={`relative flex-1 px-6 py-4 text-center font-medium transition-all flex items-center justify-center gap-2 ${
@@ -3178,51 +3141,6 @@ function ProfileView({
                               onContextMenu={openRecentSongContextMenu}
                             />
                           ))}
-                        </div>
-                      )}
-                  </div>
-                )}
-                {activeTab === 'cloud' && currentPlatform === 'netease' && (
-                  <div className="space-y-5">
-                    <h3 className="text-xl font-semibold text-white">我的云盘</h3>
-                    {cloudError && <div className="text-sm text-red-300 bg-red-400/10 border border-red-300/20 rounded-lg p-3">{cloudError}</div>}
-                    {cloudLoading ? <div className="py-16 text-center text-white/55">正在加载云盘…</div>
-                      : cloudSongs.length === 0 ? <div className="py-16 text-center text-white/45">云盘暂无歌曲</div>
-                      : (
-                        <div className="space-y-1">
-                          {cloudSongs.map((item, index) => {
-                            const song = item.simpleSong || item.song || item
-                            const songName = song.name || song.fileName || '未知歌曲'
-                            const artists = (song.ar || song.artists || []).map((a: any) => a.name).filter(Boolean).join(' / ')
-                            const cover = song.al?.picUrl || song.album?.picUrl || ''
-                            return (
-                              <div
-                                key={`${song.id || song.songId || index}-${index}`}
-                                className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-white/5 transition-colors group cursor-pointer"
-                                onClick={() => {
-                                  const playable: Song = {
-                                    id: song.id,
-                                    name: songName,
-                                    artists: (song.ar || song.artists || []).map((a: any) => ({ name: a.name })),
-                                    album: { name: song.al?.name || '', picUrl: cover },
-                                    duration: song.dt || 0,
-                                    platform: 'netease',
-                                  }
-                                  handleSongSelection(playable)
-                                }}
-                              >
-                                <span className="w-5 text-center text-xs text-white/40">{index + 1}</span>
-                                <div className="w-9 h-9 rounded-md overflow-hidden shrink-0" style={{ background: 'rgba(255,255,255,0.08)' }}>
-                                  {cover ? <CachedImage src={cover} alt="" className="w-full h-full object-cover" role="row" priority="visible" /> : <Music className="w-4 h-4 m-auto mt-2.5 text-white/30" />}
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <p className="text-white text-sm truncate">{songName}</p>
-                                  <p className="text-white/40 text-xs truncate">{artists || '云盘歌曲'}</p>
-                                </div>
-                                <Play className="w-3.5 h-3.5 text-white/40 opacity-0 group-hover:opacity-100 transition-opacity" fill="currentColor" />
-                              </div>
-                            )
-                          })}
                         </div>
                       )}
                   </div>
@@ -3722,8 +3640,11 @@ function ProfileView({
           : playlistContextMenu.playlist?.userId?.toString() === userId.toString()}
         isSubscribed={Boolean(playlistContextMenu.playlist?.isCollected || playlistContextMenu.playlist?.subscribed)}
         isSpecialPlaylist={Boolean(playlistContextMenu.playlist?.isLike || playlistContextMenu.playlist?.id === APPLE_LIBRARY_ID)}
-        canEdit={platform === 'netease' || platform === 'apple'}
-        canShare={platform !== 'apple' || String(playlistContextMenu.playlist?.id || '').startsWith('pl.')}
+        canEdit={playlistMenuCapabilities.updatePlaylist}
+        canDelete={playlistMenuCapabilities.deletePlaylist}
+        canSubscribe={playlistMenuCapabilities.subscribePlaylist}
+        canShare={playlistMenuCapabilities.sharePlaylist
+          && (platform !== 'apple' || String(playlistContextMenu.playlist?.id || '').startsWith('pl.'))}
       />
 
       {recentSongContextMenu.song && (

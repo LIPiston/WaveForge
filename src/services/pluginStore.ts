@@ -36,6 +36,27 @@ export function setDGLabWidgetVisible(visible: boolean) {
   window.dispatchEvent(new CustomEvent(DGLAB_WIDGET_EVENT))
 }
 
+/* ------------------------- DG_LAB 连接引导（OOBE）标记 ------------------------- */
+
+/** 首次启用插件后自动弹一次连接引导；标记写入后只在手动点「连接引导」时出现。 */
+const OOBE_KEY = 'waveforge:dglab-oobe-shown'
+
+export function isDGLabOobeShown(): boolean {
+  try {
+    return localStorage.getItem(OOBE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function markDGLabOobeShown(): void {
+  try {
+    localStorage.setItem(OOBE_KEY, '1')
+  } catch {
+    /* ignore */
+  }
+}
+
 /* ---------------------------------- 通用小工具 ---------------------------------- */
 
 const safeGet = (key: string): string | null => {

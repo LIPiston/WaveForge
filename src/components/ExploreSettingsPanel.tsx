@@ -22,7 +22,7 @@ export type ExploreDensity = 'comfortable' | 'compact'
 export type ExploreContentAmount = 'curated' | 'expanded'
 export type ExploreBackgroundIntensity = 'calm' | 'vivid'
 export type ExploreBackgroundMode = 'gradient' | 'coverWall'
-export type ExploreCoverWallStyle = 'tiled' | 'sparse'
+export type ExploreCoverWallStyle = 'tiled' | 'sparse' | 'mosaic'
 export type ExploreCardOpacity = 'solid' | 'frosted' | 'glass' | 'custom'
 
 /** 探索页背景：全页共用一份，不再按平台各自设置。 */
@@ -30,15 +30,19 @@ export interface ExploreBackgroundPrefs {
   // gradient=平台主题色渐变 / coverWall=歌曲封面墙
   mode: ExploreBackgroundMode
   // 封面墙样式：tiled=紧贴（随机大小无缝铺满）/ sparse=稀疏（小封面多张留缝）
+  // mosaic=完整错落（每张封面完整不裁切，按列错位拼贴，参考图2 的排列）
   coverWallStyle: ExploreCoverWallStyle
   // 封面墙动画（缓慢漂移）开关
   coverWallAnimated: boolean
-  // 封面墙模糊遮罩强度（custom=自定义，用 coverWallBlurCustom 的像素值）
-  coverWallBlur: 'soft' | 'medium' | 'strong' | 'custom'
+  // 封面墙模糊遮罩强度（none=不模糊，封面清晰；custom=自定义，用 coverWallBlurCustom 的像素值）
+  coverWallBlur: 'none' | 'soft' | 'medium' | 'strong' | 'custom'
   // 封面墙自定义模糊像素（0-80），coverWallBlur === 'custom' 时生效
   coverWallBlurCustom: number
   // 渐变模式的氛围强度（封面墙模式不适用）
   intensity: ExploreBackgroundIntensity
+  // 一次性迁移标记：「完整错落 + 无模糊」上线后把旧的 紧贴/稀疏 + 模糊 偏好切到新样式，
+  // 让用户不用手动改设置就能看到新效果；标记落库后用户自己改的设置不再被覆盖。
+  coverWallMosaicMigrated?: boolean
 }
 
 export interface ExplorePlatformPreferences {
@@ -105,9 +109,10 @@ const DEFAULT_PLATFORM_PREFS = {
 
 export const DEFAULT_EXPLORE_BACKGROUND: ExploreBackgroundPrefs = {
   mode: 'gradient',
-  coverWallStyle: 'tiled',
+  // 默认给「完整错落」+ 不模糊：封面完整可见（用户要的效果），想要柔化可在设置里加模糊
+  coverWallStyle: 'mosaic',
   coverWallAnimated: true,
-  coverWallBlur: 'medium',
+  coverWallBlur: 'none',
   coverWallBlurCustom: 40,
   intensity: 'vivid',
 }
@@ -153,22 +158,33 @@ export function normalizeExplorePreferences(input: unknown): ExplorePreferences 
     mode: rawBackground.mode === 'coverWall' || rawBackground.mode === 'gradient'
       ? rawBackground.mode
       : legacyBackground ? 'coverWall' : DEFAULT_EXPLORE_BACKGROUND.mode,
-    coverWallStyle: rawBackground.coverWallStyle === 'sparse' || rawBackground.coverWallStyle === 'tiled'
+    coverWallStyle: rawBackground.coverWallStyle === 'sparse' || rawBackground.coverWallStyle === 'tiled' || rawBackground.coverWallStyle === 'mosaic'
       ? rawBackground.coverWallStyle
       : legacyBackground ? legacyStyle : DEFAULT_EXPLORE_BACKGROUND.coverWallStyle,
     coverWallAnimated: rawBackground.coverWallAnimated !== undefined
       ? rawBackground.coverWallAnimated !== false
       : legacyBackground ? legacyBackground.coverWallAnimated !== false : true,
-    coverWallBlur: rawBackground.coverWallBlur === 'soft' || rawBackground.coverWallBlur === 'strong' || rawBackground.coverWallBlur === 'custom' || rawBackground.coverWallBlur === 'medium'
+    coverWallBlur: rawBackground.coverWallBlur === 'soft' || rawBackground.coverWallBlur === 'strong' || rawBackground.coverWallBlur === 'custom' || rawBackground.coverWallBlur === 'medium' || rawBackground.coverWallBlur === 'none'
       ? rawBackground.coverWallBlur
       : typeof legacyBackground?.coverWallBlur === 'string' &&
-          ['soft', 'medium', 'strong', 'custom'].includes(legacyBackground.coverWallBlur)
+          ['soft', 'medium', 'strong', 'custom', 'none'].includes(legacyBackground.coverWallBlur)
         ? legacyBackground.coverWallBlur as ExploreBackgroundPrefs['coverWallBlur']
         : DEFAULT_EXPLORE_BACKGROUND.coverWallBlur,
     coverWallBlurCustom: Math.max(0, Math.min(80, Number(rawBackground.coverWallBlurCustom ?? legacyBackground?.coverWallBlurCustom) || 40)),
     intensity: rawBackground.intensity === 'calm' || rawBackground.intensity === 'vivid'
       ? rawBackground.intensity
       : legacyBackground ? legacyIntensity : DEFAULT_EXPLORE_BACKGROUND.intensity,
+  }
+  // ── 一次性迁移：旧偏好 → 「完整错落 + 无模糊」──────────────────────────
+  // 需求（2026-09-27）：背景墙要的是"完整封面错落拼贴"（不裁切、不糊），旧默认是
+  // 随机跨度裁切 + 32px 模糊遮罩，视觉完全不是这个效果；这里只迁移一次，
+  // 之后用户在设置里怎么调都不会再被覆盖。
+  if (rawBackground.coverWallMosaicMigrated !== true) {
+    defaults.background.coverWallStyle = 'mosaic'
+    defaults.background.coverWallBlur = 'none'
+    defaults.background.coverWallMosaicMigrated = true
+  } else {
+    defaults.background.coverWallMosaicMigrated = true
   }
 
   for (const platform of Object.keys(PLATFORM_ORDER) as ExplorePlatform[]) {
@@ -389,9 +405,9 @@ export default function ExploreSettingsPanel({
                   <>
                     <SettingChoice
                       label="封面墙样式"
-                      description="紧贴=大小错落的无缝拼贴铺满全背景；稀疏=小封面留缝、更清爽。"
+                      description="完整错落=每张封面完整不裁切、按列错位拼贴；紧贴=随机大小无缝铺满（会裁切封面）；稀疏=小封面留缝、更清爽。"
                       value={background.coverWallStyle}
-                      options={[['tiled', '紧贴'], ['sparse', '稀疏']]}
+                      options={[['mosaic', '完整错落'], ['tiled', '紧贴'], ['sparse', '稀疏']]}
                       accent={accent}
                       isDark={isDark}
                       onChange={value => updateBackground({ coverWallStyle: value as ExploreCoverWallStyle })}
@@ -400,10 +416,10 @@ export default function ExploreSettingsPanel({
                       label="封面墙模糊"
                       description="遮罩越强，前景内容越清晰；选择「自定义」可精确调节像素。"
                       value={background.coverWallBlur}
-                      options={[['soft', '轻微'], ['medium', '适中'], ['strong', '强烈'], ['custom', '自定义']]}
+                      options={[['none', '无'], ['soft', '轻微'], ['medium', '适中'], ['strong', '强烈'], ['custom', '自定义']]}
                       accent={accent}
                       isDark={isDark}
-                      onChange={value => updateBackground({ coverWallBlur: value as 'soft' | 'medium' | 'strong' | 'custom' })}
+                      onChange={value => updateBackground({ coverWallBlur: value as 'none' | 'soft' | 'medium' | 'strong' | 'custom' })}
                     >
                       {background.coverWallBlur === 'custom' && (
                         <div className={`mt-3 flex items-center gap-3 rounded-2xl border p-3 ${borderSoft}`}>

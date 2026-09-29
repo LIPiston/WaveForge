@@ -20,7 +20,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import React, { memo, useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence, Reorder } from 'framer-motion'
-import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, ChevronLeft, Trash2, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Headphones, MonitorSmartphone, Gamepad2, Eye, EyeOff, FileText, Music, FolderHeart, Trash, AlertTriangle, ListMusic } from 'lucide-react'
+import { X, Settings as SettingsIcon, User, Palette, Sparkles, Info, ExternalLink, Github, ChevronRight, ChevronLeft, ChevronUp, ChevronDown, Trash2, Heart, Copy, ClipboardPaste, KeyRound, Code2, Users, BadgeCheck, CheckCircle2, Headphones, MonitorSmartphone, Gamepad2, Eye, EyeOff, FileText, Music, FolderHeart, Trash, AlertTriangle, ListMusic } from 'lucide-react'
 import LoginButton from './LoginButton'
 import type { AppleUserInfo } from '../services/appleAuth'
 import type { StemModelProgress, RenderBackend } from '../electron'
@@ -36,6 +36,8 @@ import {
   type MusicPlatform,
 } from '../services/platforms'
 import HomeCustomizeModal from './HomeCustomizeModal'
+import AutoMixTierDemoModal from './AutoMixTierDemoModal'
+import { AUTOMIX_TIERS, getAutoMixTier } from '../audio/autoMixTiers'
 import PlaybackRadialMenuCustomizeModal from './PlaybackRadialMenuCustomizeModal'
 import DeviceInfoModal from './DeviceInfoModal'
 import AudioQualitySettingsModal from './AudioQualitySettingsModal'
@@ -56,7 +58,7 @@ import {
   savePlaybackShortcutSettings,
   type PlaybackShortcutSettings,
 } from '../services/playbackShortcutSettings'
-import type { DesktopLyricsColorMode, DesktopLyricsSettings, TaskbarWidgetSettings } from '../electron'
+import type { DesktopLyricsColorMode, DesktopLyricsSettings, LyricsIslandSettings, TaskbarWidgetSettings } from '../electron'
 import { parseStoredBoolean } from '../utils/storage'
 import {
   AUDIO_QUALITY_SETTINGS_EVENT,
@@ -64,6 +66,15 @@ import {
   type AudioQualityPreference,
 } from '../services/audioQualitySettings'
 import { getPlaybackRadialActions } from '../services/playbackRadialMenuSettings'
+import {
+  getModeTransitionStyle,
+  setModeTransitionStyle,
+  isModeTransitionSoundEnabled,
+  setModeTransitionSoundEnabled,
+  MODE_TRANSITION_STYLE_EVENT,
+  MODE_TRANSITION_SOUND_EVENT,
+  type ModeTransitionStyle,
+} from '../services/modeTransitionSettings'
 import {
   getAppleMusicSettings,
   type AppleMusicSettings,
@@ -440,6 +451,20 @@ function SettingsPanel({
   const [showAudioQuality, setShowAudioQuality] = useState(false)
   const [audioQualitySettings, setAudioQualitySettings] = useState(loadAudioQualitySettings)
 
+  // 转场动画（设置 → 个性化；与 globalSettingsRegistry 的 'transition' 组同键同事件，多端同步）
+  const [modeTransitionStyle, setModeTransitionStyleState] = useState<ModeTransitionStyle>(() => getModeTransitionStyle())
+  const [modeTransitionSound, setModeTransitionSoundState] = useState(() => isModeTransitionSoundEnabled())
+  useEffect(() => {
+    const syncStyle = () => setModeTransitionStyleState(getModeTransitionStyle())
+    const syncSound = () => setModeTransitionSoundState(isModeTransitionSoundEnabled())
+    window.addEventListener(MODE_TRANSITION_STYLE_EVENT, syncStyle)
+    window.addEventListener(MODE_TRANSITION_SOUND_EVENT, syncSound)
+    return () => {
+      window.removeEventListener(MODE_TRANSITION_STYLE_EVENT, syncStyle)
+      window.removeEventListener(MODE_TRANSITION_SOUND_EVENT, syncSound)
+    }
+  }, [])
+
   useEffect(() => {
     const handleAudioQualityChange = () => setAudioQualitySettings(loadAudioQualitySettings())
     window.addEventListener(AUDIO_QUALITY_SETTINGS_EVENT, handleAudioQualityChange)
@@ -532,6 +557,14 @@ function SettingsPanel({
       setTaskbarWidgetSettings(settings)
       setTaskbarWidgetEnabledState(settings.enabled)
     }).catch(() => undefined)
+    // 托盘菜单改动开关后同步（经 App.tsx 转成 DOM 事件）
+    const syncEnabled = (event: Event) => {
+      const enabled = Boolean((event as CustomEvent<boolean>).detail)
+      setTaskbarWidgetEnabledState(enabled)
+      setTaskbarWidgetSettings(previous => ({ ...previous, enabled }))
+    }
+    window.addEventListener('taskbarWidgetEnabledChanged', syncEnabled)
+    return () => window.removeEventListener('taskbarWidgetEnabledChanged', syncEnabled)
   }, [])
 
   const handleTaskbarWidgetToggle = async (enabled: boolean) => {
@@ -558,6 +591,96 @@ function SettingsPanel({
     } catch {
       // 保留当前选择
     }
+  }
+
+  // 歌词岛：独立「药丸」逐字歌词窗口（性能优先）
+  const [lyricsIslandSettings, setLyricsIslandSettings] = useState<LyricsIslandSettings>({
+    enabled: false,
+    scale: 1,
+    locked: false,
+  })
+
+  useEffect(() => {
+    const api = window.electron?.lyricsIsland
+    if (!api) return
+    void api.getSettings().then(setLyricsIslandSettings).catch(() => undefined)
+    const syncEnabled = (event: Event) => {
+      setLyricsIslandSettings(previous => ({
+        ...previous,
+        enabled: Boolean((event as CustomEvent<boolean>).detail),
+      }))
+    }
+    window.addEventListener('lyricsIslandEnabledChanged', syncEnabled)
+    return () => window.removeEventListener('lyricsIslandEnabledChanged', syncEnabled)
+  }, [])
+
+  const handleLyricsIslandToggle = async (enabled: boolean) => {
+    setLyricsIslandSettings(previous => ({ ...previous, enabled }))
+    const api = window.electron?.lyricsIsland
+    if (!api) return
+    try {
+      const result = await api.setEnabled(enabled)
+      if (result) setLyricsIslandSettings(previous => ({ ...previous, enabled: result.enabled }))
+    } catch {
+      setLyricsIslandSettings(previous => ({ ...previous, enabled: false }))
+    }
+  }
+
+  const handleLyricsIslandUpdate = async (partial: Partial<LyricsIslandSettings>) => {
+    setLyricsIslandSettings(previous => ({ ...previous, ...partial }))
+    const api = window.electron?.lyricsIsland
+    if (!api) return
+    try {
+      const result = await api.updateSettings(partial)
+      setLyricsIslandSettings(result)
+    } catch {
+      // 保留当前选择
+    }
+  }
+
+  // 游戏模式：会话级开关（重启软件自动回到标准模式），托盘菜单与高级设置共用同一状态
+  const [gameModeEnabledState, setGameModeEnabledState] = useState(false)
+
+  useEffect(() => {
+    const api = window.electron?.gameMode
+    if (!api) return
+    void api.get().then((status) => setGameModeEnabledState(Boolean(status?.enabled))).catch(() => undefined)
+    return api.onChange?.((enabled) => {
+      if (enabled !== undefined) setGameModeEnabledState(Boolean(enabled))
+    })
+  }, [])
+
+  const handleGameModeToggle = async (enabled: boolean) => {
+    setGameModeEnabledState(enabled)
+    const api = window.electron?.gameMode
+    if (!api) return
+    try {
+      const result = await api.set(enabled)
+      setGameModeEnabledState(Boolean(result?.enabled))
+    } catch {
+      setGameModeEnabledState(false)
+    }
+  }
+
+  // AutoMix 过渡提示：播放页封面下方的时间节点徽标 + 进度条介入/过渡提示（个性化开关）
+  const AUTOMIX_HUD_STORAGE_KEY = 'automixTransitionHudEnabled'
+  const [automixHudEnabledState, setAutomixHudEnabledState] = useState(() => {
+    try {
+      const saved = localStorage.getItem(AUTOMIX_HUD_STORAGE_KEY)
+      return saved === null ? true : JSON.parse(saved) === true
+    } catch {
+      return true
+    }
+  })
+
+  const handleAutomixHudToggle = (enabled: boolean) => {
+    setAutomixHudEnabledState(enabled)
+    try {
+      localStorage.setItem(AUTOMIX_HUD_STORAGE_KEY, JSON.stringify(enabled))
+    } catch {
+      // 忽略
+    }
+    window.dispatchEvent(new CustomEvent('automixTransitionHudChanged', { detail: enabled }))
   }
 
   useEffect(() => {
@@ -1560,6 +1683,20 @@ function SettingsPanel({
     const saved = localStorage.getItem('autoMixEnhanced')
     return parseStoredBoolean(saved, false)
   })
+  // 过渡引擎三选一：标准 AutoMix（v1）/ AutoMix Pro（原"增强版" v2）/ AutoMix Enhanced（三档）
+  // 兼容旧键：老版本只有 autoMixEnhanced 布尔值，映射为 'pro' / 'standard'。
+  const [autoMixEngine, setAutoMixEngine] = useState<'standard' | 'pro' | 'enhanced'>(() => {
+    const saved = localStorage.getItem('autoMixEngine')
+    if (saved === 'standard' || saved === 'pro' || saved === 'enhanced') return saved
+    return parseStoredBoolean(localStorage.getItem('autoMixEnhanced'), false) ? 'pro' : 'standard'
+  })
+  // AutoMix Enhanced 档位：Lite（自研本地进阶方案）/ Advanced（QQ官方·基础渐变）/ Extreme（QQ官方·进阶交融）
+  const [autoMixEnhancedTier, setAutoMixEnhancedTier] = useState<'lite' | 'advanced' | 'extreme'>(() => {
+    const saved = localStorage.getItem('autoMixEnhancedTier')
+    return saved === 'advanced' || saved === 'extreme' ? saved : 'lite'
+  })
+  // 档位试听弹窗（展示三档真实产物差异）
+  const [showAutoMixTierDemo, setShowAutoMixTierDemo] = useState(false)
   const [autoMixTransitionIntensity, setAutoMixTransitionIntensity] = useState<'subtle' | 'standard' | 'strong'>(() => {
     const saved = localStorage.getItem('autoMixTransitionIntensity')
     return saved === 'subtle' || saved === 'strong' ? saved : 'standard'
@@ -1619,7 +1756,7 @@ function SettingsPanel({
   const [showAiModelDownloadDialog, setShowAiModelDownloadDialog] = useState(false)
   const [showAiModelDeleteDialog, setShowAiModelDeleteDialog] = useState(false)
 
-  // AutoMix Enhanced 核心的可选 HTDemucs 分轨模型。未安装时增强版仍使用现有 v2 DSP。
+  // AutoMix Pro（原增强版）核心的可选 HTDemucs 分轨模型。未安装时 Pro 仍使用现有 v2 DSP。
   const [stemModelStatus, setStemModelStatus] = useState<{
     installed: boolean
     modelReady: boolean
@@ -1651,7 +1788,7 @@ function SettingsPanel({
       if (progress.status === 'done') {
         void probeStemModelStatus()
         window.dispatchEvent(new CustomEvent('showToast', {
-          detail: { message: 'HTDemucs 分轨模型安装完成，增强版将自动使用分轨混音', type: 'success' },
+          detail: { message: 'HTDemucs 分轨模型安装完成，AutoMix Pro 将自动使用分轨混音', type: 'success' },
         }))
       }
     })
@@ -1671,7 +1808,7 @@ function SettingsPanel({
       if (result?.ok) {
         setStemModelProgress(null)
         void probeStemModelStatus()
-        window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '已删除 HTDemucs 模型，增强版继续使用 DSP 兼容模式', type: 'success' } }))
+        window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '已删除 HTDemucs 模型，AutoMix Pro 继续使用 DSP 兼容模式', type: 'success' } }))
       }
     })
   }
@@ -1949,11 +2086,21 @@ function SettingsPanel({
     localStorage.setItem('autoMixMaxDuration', newDuration.toString())
     window.dispatchEvent(new Event('autoMixSettingsChanged'))
   }
-  const handleAutoMixEnhancedChange = (enabled: boolean) => {
-    setAutoMixEnhanced(enabled)
-    localStorage.setItem('autoMixEnhanced', JSON.stringify(enabled))
+  const handleAutoMixEngineChange = (engine: 'standard' | 'pro' | 'enhanced') => {
+    setAutoMixEngine(engine)
+    localStorage.setItem('autoMixEngine', engine)
+    // 旧键镜像：Pro / Enhanced 都算"增强渲染"，供历史消费方（播放页徽标、v2 计划）读取
+    const enhancedFlag = engine !== 'standard'
+    setAutoMixEnhanced(enhancedFlag)
+    localStorage.setItem('autoMixEnhanced', JSON.stringify(enhancedFlag))
     window.dispatchEvent(new Event('autoMixSettingsChanged'))
-    window.electron?.automixLog?.('settings-toggle', `autoMixEnhanced=${enabled}`).catch(() => undefined)
+    window.electron?.automixLog?.('settings-toggle', `autoMixEngine=${engine}`).catch(() => undefined)
+  }
+  const handleAutoMixTierChange = (tier: 'lite' | 'advanced' | 'extreme') => {
+    setAutoMixEnhancedTier(tier)
+    localStorage.setItem('autoMixEnhancedTier', tier)
+    window.dispatchEvent(new Event('autoMixSettingsChanged'))
+    window.electron?.automixLog?.('settings-toggle', `autoMixEnhancedTier=${tier}`).catch(() => undefined)
   }
   const handleAutoMixIntensityChange = (intensity: 'subtle' | 'standard' | 'strong') => {
     setAutoMixTransitionIntensity(intensity)
@@ -2427,7 +2574,7 @@ function SettingsPanel({
                       登录后可以播放VIP歌曲、获取个人歌单
                     </p>
                     <p className={`${textTertiary} text-xs mb-6`}>
-                      可拖拽平台卡片对平台进行显示排序
+                      拖拽平台卡片或使用卡片右上角的上下按钮调整显示排序
                     </p>
 
                     <div className="space-y-4">
@@ -2436,8 +2583,7 @@ function SettingsPanel({
                       const valid = next.filter((p, i, arr) => MUSIC_PLATFORMS.includes(p) && arr.indexOf(p) === i)
                       setPlatformOrder(valid)
                       setPlatformOrderState(valid)
-                    }} className="space-y-4">
-                      {platformOrder.map(p => {
+                    }} className="space-y-4">                      {platformOrder.map(p => {
                         const hidden = hiddenPlatforms.includes(p)
                         const isNetease = p === 'netease'
                         const isQQ = p === 'qq'
@@ -2461,6 +2607,41 @@ function SettingsPanel({
                               transition={{ duration: 0.25 }}
                               className={`${bgCard} rounded-xl p-4 border ${borderColor} relative cursor-grab active:cursor-grabbing`}
                             >
+                              {/* 上移/下移：拖拽的按钮替代路径（TV 遥控器/键盘用户无法拖拽 Reorder 卡片） */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const index = platformOrder.indexOf(p)
+                                  if (index <= 0) return
+                                  const next = [...platformOrder]
+                                  ;[next[index - 1], next[index]] = [next[index], next[index - 1]]
+                                  setPlatformOrder(next)
+                                  setPlatformOrderState(next)
+                                }}
+                                disabled={platformOrder.indexOf(p) <= 0}
+                                className="absolute top-3 right-11 p-1.5 rounded-lg transition-colors hover:bg-white/10 disabled:opacity-30"
+                                aria-label={`上移${label}`}
+                                title="上移"
+                              >
+                                <ChevronUp className="w-4 h-4 text-white/40" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const index = platformOrder.indexOf(p)
+                                  if (index < 0 || index >= platformOrder.length - 1) return
+                                  const next = [...platformOrder]
+                                  ;[next[index + 1], next[index]] = [next[index], next[index + 1]]
+                                  setPlatformOrder(next)
+                                  setPlatformOrderState(next)
+                                }}
+                                disabled={platformOrder.indexOf(p) >= platformOrder.length - 1}
+                                className="absolute top-3 right-[76px] p-1.5 rounded-lg transition-colors hover:bg-white/10 disabled:opacity-30"
+                                aria-label={`下移${label}`}
+                                title="下移"
+                              >
+                                <ChevronDown className="w-4 h-4 text-white/40" />
+                              </button>
                               {/* 隐藏平台小眼睛（右上角） */}
                               <button
                                 type="button"
@@ -2622,6 +2803,57 @@ function SettingsPanel({
                       </div>
                       <ChevronRight className={`w-5 h-5 ${textTertiary} group-hover:translate-x-1 transition-transform`} />
                     </button>
+                  </div>
+
+                  {/* 转场动画（复杂=Steam 风格描边动画 / 简易=原版徽章；同步镜像到其他模式设置页） */}
+                  <div>
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>转场动画</h3>
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor} space-y-4`}>
+                      <div className="flex items-center justify-between gap-6">
+                        <div className="min-w-0">
+                          <div className={`${textPrimary} font-medium mb-1`}>动画风格</div>
+                          <div className={`${textSecondary} text-sm`}>切换探索 / 简约 / 传统 / 桌面 / 共振时的过渡效果</div>
+                        </div>
+                        <div className={`flex flex-shrink-0 rounded-lg p-1 gap-1 ${playerTheme === 'dark' ? 'bg-white/10' : 'bg-black/10'}`}>
+                          {([
+                            ['complex', '复杂'],
+                            ['simple', '简易'],
+                          ] as Array<[ModeTransitionStyle, string]>).map(([value, label]) => (
+                            <button
+                              key={value}
+                              type="button"
+                              onClick={() => { setModeTransitionStyle(value); setModeTransitionStyleState(value) }}
+                              className="px-4 py-1.5 text-sm rounded-md transition-all font-medium"
+                              style={
+                                modeTransitionStyle === value
+                                  ? { backgroundColor: accentColor, color: '#fff' }
+                                  : { color: playerTheme === 'dark' ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.6)' }
+                              }
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {modeTransitionStyle === 'complex' && (
+                        <div className="flex items-center justify-between gap-6 pt-1">
+                          <div className="min-w-0">
+                            <div className={`${textPrimary} text-sm font-medium mb-1`}>转场音效</div>
+                            <div className={`${textTertiary} text-xs`}>每个模式一段专属合成提示音（Steam 风格"嗖—嗡"），关闭后只有动画</div>
+                          </div>
+                          <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                            <input
+                              type="checkbox"
+                              checked={modeTransitionSound}
+                              onChange={(event) => { setModeTransitionSoundEnabled(event.target.checked); setModeTransitionSoundState(event.target.checked) }}
+                              className="sr-only peer"
+                            />
+                            <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)]`} style={{ backgroundColor: modeTransitionSound ? accentColor : '' }} />
+                          </label>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {/* 右键轮盘 */}
@@ -3232,6 +3464,104 @@ function SettingsPanel({
                     </div>
                   </div>
 
+                  {/* 歌词岛（玻璃药丸逐字歌词） */}
+                  <div data-tv-hide="desktop">
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>歌词岛</h3>
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                      <div className="flex items-center justify-between gap-6">
+                        <div>
+                          <div className={`${textPrimary} font-medium mb-1`}>启用歌词岛</div>
+                          <div className={`${textSecondary} text-sm`}>
+                            桌面上的一枚独立玻璃「药丸」，逐字点亮当前歌词；药丸长度随歌词内容自动伸缩。单击可唤出上一曲/暂停/下一曲，3 秒无操作自动回到歌词。为极致性能设计，游戏模式下也能轻松常驻。
+                          </div>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={lyricsIslandSettings.enabled}
+                            onChange={(event) => void handleLyricsIslandToggle(event.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)] after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: lyricsIslandSettings.enabled ? accentColor : '' }} />
+                        </label>
+                      </div>
+
+                      {lyricsIslandSettings.enabled && (
+                        <div className="mt-4 pt-4 border-t space-y-5" style={{ borderColor: playerTheme === 'dark' ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.1)' }}>
+                          <div>
+                            <div className={`${textPrimary} text-sm font-medium mb-3`}>歌词大小</div>
+                            <div className="grid grid-cols-5 gap-3">
+                              {([
+                                [0.75, '特小'],
+                                [0.9, '偏小'],
+                                [1, '标准'],
+                                [1.15, '偏大'],
+                                [1.3, '特大'],
+                              ] as Array<[number, string]>).map(([value, label]) => (
+                                <button
+                                  key={value}
+                                  type="button"
+                                  onClick={() => void handleLyricsIslandUpdate({ scale: value })}
+                                  className="rounded-xl border px-3 py-2.5 text-xs transition-colors"
+                                  style={{
+                                    color: lyricsIslandSettings.scale === value ? accentColor : playerTheme === 'dark' ? 'rgba(255,255,255,.45)' : 'rgba(0,0,0,.45)',
+                                    borderColor: lyricsIslandSettings.scale === value ? `${accentColor}99` : playerTheme === 'dark' ? 'rgba(255,255,255,.1)' : 'rgba(0,0,0,.1)',
+                                    background: lyricsIslandSettings.scale === value ? `${accentColor}18` : 'transparent',
+                                  }}
+                                >{label}</button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className={`${textPrimary} text-sm font-medium mb-1`}>锁定位置（鼠标穿透）</div>
+                              <div className={`${textSecondary} text-xs`}>开启后歌词岛不再响应点击与拖动，不遮挡下方窗口</div>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                              <input
+                                type="checkbox"
+                                checked={lyricsIslandSettings.locked}
+                                onChange={(event) => void handleLyricsIslandUpdate({ locked: event.target.checked })}
+                                className="sr-only peer"
+                              />
+                              <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)] after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: lyricsIslandSettings.locked ? accentColor : '' }} />
+                            </label>
+                          </div>
+
+                          <p className={`${textTertiary} text-xs leading-5`}>拖动药丸可移动位置。歌词岛性能开销极低，适合搭配「高级 → 游戏模式」在打游戏时使用。</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* AutoMix 过渡提示 */}
+                  <div data-tv-hide="desktop">
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>过渡提示</h3>
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                      <div className="flex items-center justify-between gap-6">
+                        <div>
+                          <div className={`${textPrimary} font-medium mb-1`}>AutoMix 过渡提示</div>
+                          <div className={`${textSecondary} text-sm`}>
+                            播放页封面下方显示「即将在 xx:xx 开始智能混音」的时间节点（本曲播放满 5 秒提示一次，显示 8 秒后自动收起；计划算得慢时算完立刻提示）；进度条上方显示本次过渡的引擎名，按实际档位分别是 AutoMix / AutoMix Pro / AutoMix Enhanced / Gapless（无缝衔接）。
+                          </div>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={automixHudEnabledState}
+                            onChange={(event) => handleAutomixHudToggle(event.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)] after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: automixHudEnabledState ? accentColor : '' }} />
+                        </label>
+                      </div>
+                      <p className={`${textTertiary} text-xs mt-3 leading-5`}>
+                        需要开启「高级 → 智能混音 (AutoMix)」后生效；徽标上的「关闭」只隐藏当前这首的提示。
+                      </p>
+                    </div>
+                  </div>
+
                   {/* 全屏窗口模式设置（TV 端常驻全屏，无需设置） */}
                   <div data-tv-hide="desktop">
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>窗口设置</h3>
@@ -3518,6 +3848,35 @@ function SettingsPanel({
               {/* 高级标签页 */}
               {activeTab === 'advanced' && (
                 <div className="space-y-6">
+                  {/* 游戏模式：依赖桌面托盘/窗口冻结 IPC，TV 无意义 */}
+                  {!isTvModeActive() && (
+                  <div>
+                    <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>游戏模式</h3>
+                    <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
+                      <div className="flex items-center justify-between gap-6">
+                        <div>
+                          <div className={`${textPrimary} font-medium mb-1`}>启动游戏模式</div>
+                          <div className={`${textSecondary} text-sm`}>
+                            冻结大部分功能，大幅降低 CPU、内存和显卡占用，打游戏挂机听歌更流畅。最小化到托盘后自动生效，回到主窗口即恢复；退出软件后自动回到标准模式。
+                          </div>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={gameModeEnabledState}
+                            onChange={(event) => void handleGameModeToggle(event.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} rounded-full peer peer-checked:after:translate-x-full after:bg-white after:shadow-[0_1px_3px_rgba(0,0,0,0.35)] after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: gameModeEnabledState ? accentColor : '' }} />
+                        </label>
+                      </div>
+                      <p className={`${textTertiary} text-xs mt-3 leading-5`}>
+                        也可以在系统托盘图标右键的面板里快速开关，开启后面板会实时显示当前占用。
+                      </p>
+                    </div>
+                  </div>
+                  )}
+
                   {/* 播放过渡效果 */}
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>播放过渡</h3>
@@ -3613,7 +3972,9 @@ function SettingsPanel({
                       )}
                     </div>
 
-                    {/* AutoMix 智能混音 */}
+                    {/* AutoMix 智能混音：TV 上无节拍/响度分析服务与桌面渲染桥，智能混音无法工作
+                        （只会静默降级为固定交叉淡化）——隐藏全部配置，显示说明 */}
+                    {!isTvModeActive() ? (
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mt-4`}>
                       <div className="flex items-center justify-between mb-3">
                         <div>
@@ -3640,49 +4001,86 @@ function SettingsPanel({
 
                       {autoMixEnabled && (
                         <div className="mt-4 pt-4 border-t border-white/10 space-y-4">
-                          {/* 过渡引擎：标准 AutoMix（v1）/ AutoMix 增强版（v2） */}
+                          {/* 过渡引擎：标准 AutoMix（v1）/ AutoMix Pro（原增强版 v2）/ AutoMix Enhanced（三档） */}
                           <div>
                             <div className={`${textPrimary} text-sm font-medium mb-2`}>过渡引擎</div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <button
-                                onClick={() => handleAutoMixEnhancedChange(false)}
-                                className={`px-3 py-2 rounded-lg text-sm transition-all ${textPrimary} ${
-                                  !autoMixEnhanced ? 'border-current' : 'border-transparent'
-                                }`}
-                                style={{
-                                  borderColor: !autoMixEnhanced ? accentColor : 'transparent',
-                                  backgroundColor: !autoMixEnhanced
-                                    ? `${accentColor}20`
-                                    : playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)',
-                                  color: !autoMixEnhanced ? accentColor : undefined,
-                                }}
-                              >
-                                标准 AutoMix
-                              </button>
-                              <button
-                                onClick={() => handleAutoMixEnhancedChange(true)}
-                                className={`px-3 py-2 rounded-lg text-sm transition-all ${textPrimary} ${
-                                  autoMixEnhanced ? 'border-current' : 'border-transparent'
-                                }`}
-                                style={{
-                                  borderColor: autoMixEnhanced ? accentColor : 'transparent',
-                                  backgroundColor: autoMixEnhanced
-                                    ? `${accentColor}20`
-                                    : playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)',
-                                  color: autoMixEnhanced ? accentColor : undefined,
-                                }}
-                              >
-                                AutoMix 增强版
-                              </button>
+                            <div className="grid grid-cols-3 gap-2">
+                              {([['standard', '标准 AutoMix'], ['pro', 'AutoMix Pro'], ['enhanced', 'AutoMix Enhanced']] as const).map(([key, label]) => (
+                                <button
+                                  key={key}
+                                  onClick={() => handleAutoMixEngineChange(key)}
+                                  className={`px-3 py-2 rounded-lg text-sm transition-all ${textPrimary} ${
+                                    autoMixEngine === key ? 'border-current' : 'border-transparent'
+                                  }`}
+                                  style={{
+                                    borderColor: autoMixEngine === key ? accentColor : 'transparent',
+                                    backgroundColor: autoMixEngine === key
+                                      ? `${accentColor}20`
+                                      : playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)',
+                                    color: autoMixEngine === key ? accentColor : undefined,
+                                  }}
+                                >
+                                  {label}
+                                </button>
+                              ))}
                             </div>
                             <div className={`${textSecondary} text-xs mt-1`}>
-                              {autoMixEnhanced
-                                ? '调性匹配、乐句对齐、能量曲线与更丰富的过渡特效（鼓点/加速/混响虚化）'
-                                : '节拍对齐 + 基础 DJ 效果（当前方案，保持稳定）'}
+                              {autoMixEngine === 'standard'
+                                ? '节拍对齐 + 基础 DJ 效果（当前方案，保持稳定）'
+                                : autoMixEngine === 'pro'
+                                  ? '调性匹配、乐句对齐、能量曲线与更丰富的过渡特效（鼓点/加速/混响虚化）'
+                                  : '三档递进的智能混音：Lite 纯本地方案，Advanced / Extreme 云端智能混音'}
                             </div>
                           </div>
 
-                          {autoMixEnhanced && (
+                          {autoMixEngine === 'enhanced' && (
+                            <div>
+                              <div className="flex items-center justify-between gap-2 mb-2">
+                                <div className={`${textPrimary} text-sm font-medium`}>档位</div>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowAutoMixTierDemo(true)}
+                                  className="rounded-lg px-3 py-1 text-xs font-medium transition-all hover:brightness-110"
+                                  style={{ color: accentColor, background: `${accentColor}1A`, border: `1px solid ${accentColor}44` }}
+                                >
+                                  不知道哪个合适？进来试试
+                                </button>
+                              </div>
+                              <div className="grid grid-cols-3 gap-2">
+                                {AUTOMIX_TIERS.map(tier => (
+                                  <button
+                                    key={tier.key}
+                                    onClick={() => handleAutoMixTierChange(tier.key)}
+                                    className={`px-3 py-2 rounded-lg text-sm transition-all ${textPrimary} ${
+                                      autoMixEnhancedTier === tier.key ? 'border-current' : 'border-transparent'
+                                    }`}
+                                    style={{
+                                      borderColor: autoMixEnhancedTier === tier.key ? accentColor : 'transparent',
+                                      backgroundColor: autoMixEnhancedTier === tier.key
+                                        ? `${accentColor}20`
+                                        : playerTheme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)',
+                                      color: autoMixEnhancedTier === tier.key ? accentColor : undefined,
+                                    }}
+                                  >
+                                    {tier.label}
+                                  </button>
+                                ))}
+                              </div>
+                              <div className={`${textSecondary} text-xs mt-1`}>
+                                {`${getAutoMixTier(autoMixEnhancedTier).title} · ${getAutoMixTier(autoMixEnhancedTier).techniques}`}
+                              </div>
+                              {getAutoMixTier(autoMixEnhancedTier).requiresCloudLogin && (
+                                <div className={`${textSecondary} text-xs mt-1`}>
+                                  云端档需要登录后使用：未登录自动用 Lite；播放其他平台的歌时会自动跨库匹配对应曲目，匹配不到或云端不可用同样回退 Lite。
+                                </div>
+                              )}
+                              <div className={`${textSecondary} text-xs mt-1`}>
+                                三档渲染链路均已接入，播放中的自动交接按所选档位执行。
+                              </div>
+                            </div>
+                          )}
+
+                          {autoMixEngine === 'pro' && (
                             <>
                               {/* v2 特效强度档位 */}
                               <div>
@@ -3711,7 +4109,7 @@ function SettingsPanel({
                               <div className={`rounded-xl border p-3 ${playerTheme === 'dark' ? 'border-white/10 bg-white/[0.03]' : 'border-black/10 bg-black/[0.02]'}`}>
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="min-w-0">
-                                    <div className={`${textPrimary} text-sm font-medium mb-0.5`}>增强版分轨引擎（HTDemucs）</div>
+                                    <div className={`${textPrimary} text-sm font-medium mb-0.5`}>Pro 分轨引擎（HTDemucs）</div>
                                     <div className={`${textSecondary} text-xs leading-relaxed`}>
                                       {stemModelStatus?.installed
                                         ? '已安装：过渡会分离人声、鼓、贝斯与其他乐器并分别交接'
@@ -3721,7 +4119,7 @@ function SettingsPanel({
                                             ? '下载已暂停，可断点继续'
                                             : stemModelProgress?.status === 'error'
                                               ? `下载失败：${stemModelProgress.error || '未知错误'}`
-                                              : '未安装时仍可使用增强版 DSP；安装后自动升级为分轨混音'}
+                                              : '未安装时仍可使用 Pro DSP；安装后自动升级为分轨混音'}
                                     </div>
                                   </div>
                                   <div className="flex flex-shrink-0 items-center gap-1.5">
@@ -3760,7 +4158,7 @@ function SettingsPanel({
                                     {aiMixAvailable === true
                                       ? '可选使用学习式推子/EQ；60 秒长混音资源占用较高，默认关闭。关闭时不会启动 Torch worker'
                                       : aiMixAvailable === false
-                                        ? '未安装，不影响增强版的 HTDemucs 分轨与 DSP 过渡'
+                                        ? '未安装，不影响 Pro 的 HTDemucs 分轨与 DSP 过渡'
                                         : '正在检测可选扩展…'}
                                   </div>
                                 </div>
@@ -3867,40 +4265,45 @@ function SettingsPanel({
                             </>
                           )}
 
-                          <div className="flex items-center justify-between gap-4">
-                            <div>
-                              <div className={`${textPrimary} text-sm font-medium mb-1`}>节拍匹配</div>
-                              <div className={`${textSecondary} text-xs`}>对齐重拍，并使用保留音高的渐进变速</div>
-                            </div>
-                            <label className="relative inline-flex flex-shrink-0 items-center cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={autoMixBeatMatching}
-                                onChange={(event) => handleAutoMixBeatMatchingToggle(event.target.checked)}
-                                className="sr-only peer"
-                              />
-                              <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: autoMixBeatMatching ? accentColor : '' }}></div>
-                            </label>
-                          </div>
+                          {/* 节拍匹配 / 跳过首尾静音：本地 DSP 档位的偏好；Enhanced 的切点与时长由云端决定，这两项不参与该档位 */}
+                          {autoMixEngine !== 'enhanced' && (
+                            <>
+                              <div className="flex items-center justify-between gap-4">
+                                <div>
+                                  <div className={`${textPrimary} text-sm font-medium mb-1`}>节拍匹配</div>
+                                  <div className={`${textSecondary} text-xs`}>对齐重拍，并使用保留音高的渐进变速</div>
+                                </div>
+                                <label className="relative inline-flex flex-shrink-0 items-center cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={autoMixBeatMatching}
+                                    onChange={(event) => handleAutoMixBeatMatchingToggle(event.target.checked)}
+                                    className="sr-only peer"
+                                  />
+                                  <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: autoMixBeatMatching ? accentColor : '' }}></div>
+                                </label>
+                              </div>
 
-                          <div className="flex items-center justify-between gap-4">
-                            <div>
-                              <div className={`${textPrimary} text-sm font-medium mb-1`}>跳过首尾静音</div>
-                              <div className={`${textSecondary} text-xs`}>选择混音点时避开前奏与尾部的静音区</div>
-                            </div>
-                            <label className="relative inline-flex flex-shrink-0 items-center cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={autoMixSkipSilence}
-                                onChange={(event) => handleAutoMixSkipSilenceToggle(event.target.checked)}
-                                className="sr-only peer"
-                              />
-                              <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: autoMixSkipSilence ? accentColor : '' }}></div>
-                            </label>
-                          </div>
+                              <div className="flex items-center justify-between gap-4">
+                                <div>
+                                  <div className={`${textPrimary} text-sm font-medium mb-1`}>跳过首尾静音</div>
+                                  <div className={`${textSecondary} text-xs`}>选择混音点时避开前奏与尾部的静音区</div>
+                                </div>
+                                <label className="relative inline-flex flex-shrink-0 items-center cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={autoMixSkipSilence}
+                                    onChange={(event) => handleAutoMixSkipSilenceToggle(event.target.checked)}
+                                    className="sr-only peer"
+                                  />
+                                  <div className={`w-11 h-6 ${playerTheme === 'dark' ? 'bg-white/20' : 'bg-black/20'} peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all`} style={{ backgroundColor: autoMixSkipSilence ? accentColor : '' }}></div>
+                                </label>
+                              </div>
+                            </>
+                          )}
 
-                          {/* 过渡时长范围：仅标准版（v1）可调；增强版（v2）由算法按 BPM 智能决定 */}
-                          {!autoMixEnhanced && (
+                          {/* 过渡时长范围：仅标准版（v1）可调；Pro / Enhanced 由算法或云端决定 */}
+                          {autoMixEngine === 'standard' && (
                             <div>
                               <div className="flex items-center justify-between mb-2">
                                 <div className={`${textPrimary} text-sm font-medium`}>过渡时长范围</div>
@@ -3937,9 +4340,14 @@ function SettingsPanel({
                               <div className={`${textSecondary} text-xs mt-2`}>实际时长会吸附到完整的 8 / 16 / 24 / 32 拍。</div>
                             </div>
                           )}
-                          {autoMixEnhanced && (
+                          {autoMixEngine === 'pro' && (
                             <div className={`${textSecondary} text-xs`}>
-                              增强版过渡时长由算法根据两首歌曲的 BPM 与能量自动决定，无需手动调整。
+                              Pro 过渡时长由算法根据两首歌曲的 BPM 与能量自动决定，无需手动调整。
+                            </div>
+                          )}
+                          {autoMixEngine === 'enhanced' && (
+                            <div className={`${textSecondary} text-xs`}>
+                              Enhanced 的切点与过渡时长由云端按所选档位决定，节拍匹配等本地偏好不参与该档位。
                             </div>
                           )}
 
@@ -3957,6 +4365,19 @@ function SettingsPanel({
                         </div>
                       )}
                     </div>
+                    ) : (
+                      <div className={`${bgCard} rounded-xl p-4 border ${borderColor} mt-4`}>
+                        <div className="flex items-start gap-2">
+                          <Info className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: accentColor }} />
+                          <div className="text-xs">
+                            <p className={`${textPrimary} font-medium mb-1`}>智能混音 (AutoMix) 为桌面端专属</p>
+                            <p className={`${textSecondary}`}>
+                              智能混音需要桌面端的节拍/响度分析与渲染服务，电视端不可用。无缝衔接与渐入渐出（交叉淡化）不受影响，可正常使用。
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* 网易云不可用歌曲补全 */}
@@ -4565,7 +4986,8 @@ function SettingsPanel({
                     </div>
                   </div>
 
-                  {/* 代理自动配置：模型下载 / 应用更新走本地代理 */}
+                  {/* 代理自动配置：模型下载 / 应用更新走本地代理（依赖桌面 proxyManager 桥，TV 不可用） */}
+                  {!isTvModeActive() && (
                   <div>
                     <h3 className={`text-lg font-semibold ${textPrimary} mb-4`}>网络与代理</h3>
                     <div className={`${bgCard} rounded-xl p-4 border ${borderColor}`}>
@@ -4683,6 +5105,7 @@ function SettingsPanel({
                       )}
                     </div>
                   </div>
+                  )}
 
                   {/* 开发者选项 */}
                   <div>
@@ -5272,6 +5695,19 @@ function SettingsPanel({
 
       <DeviceInfoModal show={showDeviceInfo} onClose={() => setShowDeviceInfo(false)} playerTheme={playerTheme} />
 
+      {/* AutoMix Enhanced 三档试听对比（Lite / Advanced / Extreme） */}
+      <AutoMixTierDemoModal
+        open={showAutoMixTierDemo}
+        onClose={() => setShowAutoMixTierDemo(false)}
+        selectedTier={autoMixEnhancedTier}
+        onSelectTier={(tier) => {
+          handleAutoMixTierChange(tier)
+          setShowAutoMixTierDemo(false)
+        }}
+        playerTheme={playerTheme}
+        accentColor={accentColor}
+      />
+
       {/* 哔哩哔哩「看歌」扫码登录弹窗 */}
       {showBiliProfile && (
         <BilibiliProfileModal onClose={() => setShowBiliProfile(false)} playerTheme={playerTheme} />
@@ -5779,9 +6215,9 @@ function SettingsPanel({
                   <AlertTriangle className="w-5 h-5 text-amber-400" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h3 className="text-base font-semibold text-white">下载增强版分轨引擎</h3>
+                  <h3 className="text-base font-semibold text-white">下载 Pro 分轨引擎</h3>
                   <p className="text-white/70 text-sm mt-1 leading-relaxed">
-                    将下载 HTDemucs 模型与运行环境（约 138MB）。安装后 AutoMix 增强版会自动使用人声、鼓和贝斯分轨混音。
+                    将下载 HTDemucs 模型与运行环境（约 138MB）。安装后 AutoMix Pro 会自动使用人声、鼓和贝斯分轨混音。
                   </p>
                   <p className="text-white/40 text-xs mt-1.5">暂不下载也可继续使用 DSP 兼容模式。</p>
                 </div>
@@ -5831,9 +6267,9 @@ function SettingsPanel({
                   <AlertTriangle className="w-5 h-5 text-red-400" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h3 className="text-base font-semibold text-white">删除增强版分轨引擎</h3>
+                  <h3 className="text-base font-semibold text-white">删除 Pro 分轨引擎</h3>
                   <p className="text-white/60 text-sm mt-1">确定要删除 HTDemucs 模型与运行环境吗？</p>
-                  <p className="text-white/40 text-xs mt-1.5">删除后增强版会继续使用 DSP 兼容模式，标准 AutoMix 不受影响。</p>
+                  <p className="text-white/40 text-xs mt-1.5">删除后 AutoMix Pro 会继续使用 DSP 兼容模式，标准 AutoMix 不受影响。</p>
                 </div>
                 <button type="button" onClick={() => setShowStemModelDeleteDialog(false)} className="p-2 rounded-full transition-colors hover:bg-white/15 -m-1">
                   <X className="w-5 h-5 text-white/60" />

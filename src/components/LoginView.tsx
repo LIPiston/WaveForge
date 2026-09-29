@@ -4,6 +4,7 @@ import { X, Music, RefreshCw, ExternalLink } from 'lucide-react'
 import type { MusicPlatform } from '../services/platforms'
 import { isTvModeActive } from '../platform'
 import { isPerfModeEnhanced } from '../tv/perfMode'
+import { useTvBack } from '../tv/tvCore'
 import GlobalToast from './GlobalToast'
 
 // 新平台登录面板（组件外声明，避免条件内 lazy 造成重挂载）
@@ -27,6 +28,12 @@ export default function LoginView({ platform, onCancel, onLoginSuccess }: LoginV
   const pollControllerRef = useRef<AbortController | null>(null)
   // TV 弱 GPU：装饰性光晕（40vw 大圆 filter:blur(80px) + 12s 无限动画）非增强档静态化
   const glowAnimated = !isTvModeActive() || isPerfModeEnhanced()
+  // TV BACK：关闭登录页（此前未注册，TV 上按 BACK 会穿透到原生层直接退出应用）
+  useTvBack(() => {
+    if (!isTvModeActive()) return false
+    onCancel()
+    return true
+  })
   const websiteTimerRef = useRef<number | null>(null)
   const toastTimerRef = useRef<number | null>(null)
   const generationRef = useRef(0)

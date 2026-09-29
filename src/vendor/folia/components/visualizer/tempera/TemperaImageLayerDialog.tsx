@@ -1,5 +1,7 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+// [WaveForge 本地适配] 挂起层内的 portal 浮层：所属模式层被隐藏时一并收起（原版 folia 无此概念）
+import { useModeParked } from '../../../../../utils/modeLayer';
 import { ImagePlus, Trash2, Upload } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import type { TemperaLayerImage, TemperaLayerImageAlign } from '../../../types';
@@ -96,6 +98,8 @@ const TemperaImageLayerDialog: React.FC<TemperaImageLayerDialogProps> = ({
     onFrequencyChange,
 }) => {
     const inputRef = useRef<HTMLInputElement>(null);
+    // [WaveForge 本地适配] 所属模式层（简约层）挂起时不渲染这个 portal 对话框
+    const parked = useModeParked();
     const [dragging, setDragging] = useState(false);
     const full = images.length >= maxImages;
 
@@ -116,6 +120,8 @@ const TemperaImageLayerDialog: React.FC<TemperaImageLayerDialogProps> = ({
     // VisPlayground and the settings modal - animate a transformed ancestor, and a transformed
     // ancestor is what a `position: fixed` overlay is measured against instead of the viewport.
     if (typeof document === 'undefined') return null;
+
+    if (parked) return null;
 
     return createPortal((
         <ThemedDialog

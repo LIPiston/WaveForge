@@ -16,6 +16,8 @@ import type { LyricLine } from '../../services/musicApi'
 import type { PlaybackTimeStore } from '../../audio/playbackTimeStore'
 import type { TrackAnalysis } from '../../audio/types'
 import { PVEngine } from '../../vendor/pv/core/engine'
+import { isTvModeActive } from '../../platform'
+import { isPerfModeEnhanced } from '../../tv/perfMode'
 import { templates } from '../../vendor/pv/templates'
 import { autoMixAnalysisService } from '../../services/autoMixAnalysisService'
 import { toPvLyrics, buildBeats } from './pvBridge'
@@ -44,6 +46,12 @@ export interface PvLyricsPageProps {
   mvBackgroundActive?: boolean
   /** 封面取色主色（自动模板推荐用） */
   dominantColor?: string
+  /** AutoMix/Gapless 过渡进行中：歌词/信息层柔和退场，commit 后反向入场（过渡适配 2026-09-28） */
+  isTransitioning?: boolean
+  /** 过渡新曲信息（标题/艺人，过渡期叠加淡入展示） */
+  transitionToTitle?: string
+  transitionToArtist?: string
+  transitionProgress?: number
 }
 
 const JAPANESE_RE = /[\u3040-\u30ff\u4e00-\u9fff]/
@@ -76,6 +84,10 @@ export const PvLyricsPage = memo(function PvLyricsPage({
   mvBackgroundActive,
   dominantColor,
   accentColor,
+  isTransitioning = false,
+  transitionToTitle,
+  transitionToArtist,
+  transitionProgress = 0,
 }: PvLyricsPageProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const engineRef = useRef<PVEngine | null>(null)
@@ -98,6 +110,8 @@ export const PvLyricsPage = memo(function PvLyricsPage({
     let cancelled = false
     initPromiseRef.current = engine.init(el).then(() => {
       if (cancelled) return
+      // TV 弱机降档：非增强档把 Pixi ticker 钳到 30fps（桌面端/增强档保持 60）
+      if (isTvModeActive() && !isPerfModeEnhanced()) engine.setMaxFps(30)
       engine.seek(Math.max(0, playbackTimeStore.getSnapshot().currentTime + timeOffset))
       setReady(true)
     }).catch((err: unknown) => {
@@ -343,7 +357,29 @@ export const PvLyricsPage = memo(function PvLyricsPage({
 
   return (
     <div className="relative w-full h-full min-h-[280px] overflow-hidden">
-      <div ref={containerRef} className="w-full h-full min-h-[280px]" />
+      <div
+        ref={containerRef}
+        className="w-full h-full min-h-[280px]"
+        style={{
+          // 过渡编排：旧曲 PV/歌词柔和退场，commit 后新曲反向入场（Pixi 层为合成器纹理，transform/opacity 零重绘成本）
+          opacity: isTransitioning ? 0.1 : 1,
+          transform: isTransitioning ? 'scale(1.02)' : 'none',
+          transition: isTransitioning ? 'opacity 900ms ease, transform 900ms ease' : 'opacity 600ms cubic-bezier(0.22,0.61,0.36,1), transform 600ms cubic-bezier(0.22,0.61,0.36,1)',
+          willChange: isTransitioning ? 'opacity, transform' : undefined,
+        }}
+      />
+      {/* 过渡期新曲信息提示：旧场景淡出的同时给出下一首的落点 */}
+      {isTransitioning && transitionProgress > 0 && transitionToTitle && (
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-[12%] flex flex-col items-center gap-1 text-center"
+          style={{ opacity: Math.max(0, Math.min(1, transitionProgress)) , transition: 'opacity 300ms linear' }}
+        >
+          <div className="text-lg font-semibold text-white drop-shadow-lg">{transitionToTitle}</div>
+          {transitionToArtist && (
+            <div className="text-sm text-white/70 drop-shadow-md">{transitionToArtist}</div>
+          )}
+        </div>
+      )}
       {!ready && (
         <div className="absolute inset-0 flex items-center justify-center text-white/70 text-sm">
           PV 引擎初始化中…

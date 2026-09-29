@@ -16,6 +16,7 @@
  * 仍由各自的偏好存储管理；简约模式专属的"自定义首页显示内容"也不镜像。
  */
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
+import { isTvModeActive } from '../platform'
 import { parseStoredBoolean } from '../utils/storage'
 import { readResonanceSettings, setResonanceSetting, type ResonanceSettings } from '../features/resonance/settings'
 import { RESONANCE_PARTY_QUOTA_CHOICES, RESONANCE_PUSH_LIMIT_CHOICES } from '../features/resonance/model'
@@ -26,6 +27,7 @@ import {
   type PlaybackShortcutSettings,
 } from './playbackShortcutSettings'
 import { getVersionDisplay } from './versionInfo'
+import { getModeTransitionStyle, setModeTransitionStyle, isModeTransitionSoundEnabled, setModeTransitionSoundEnabled } from './modeTransitionSettings'
 import packageInfo from '../../package.json'
 import type { DesktopLyricsColorMode, DesktopLyricsSettings, TaskbarWidgetSettings } from '../electron'
 
@@ -36,6 +38,7 @@ export type SettingValue = boolean | string | number
 export type GlobalSettingsGroupId =
   | 'general'      // 常规（主题 / 主题色 / 更新）
   | 'playback'     // 播放与过渡
+  | 'transition'   // 转场动画（模式切换动画风格 / 音效）
   | 'lyrics'       // 歌词
   | 'shortcuts'    // 快捷键与播放提示
   | 'desktop'      // 桌面集成（桌面歌词 / 播放器 / 任务栏 / 窗口）
@@ -210,10 +213,15 @@ if (typeof window !== 'undefined') {
   })
 }
 
-const hasDesktopLyricsBridge = () => typeof window !== 'undefined' && typeof electron()?.desktopLyrics?.getSettings === 'function'
-const hasDesktopPlayerBridge = () => typeof window !== 'undefined' && typeof electron()?.desktopPlayer?.getInitialState === 'function'
+// 真 Electron 桥：排除 Android/浏览器端的 electronShim 桩（桩里的桌面方法是 no-op，
+// 只为防 ?.then 崩溃，不代表能力存在——桌面歌词/桌面播放器/GPU 加速等在 TV 上必须视为不可用）
+const hasRealDesktopBridge = () => typeof window !== 'undefined' && !!electron() && !electron().isShim
+// TV/遥控器端永远不显示的条目（桌面专属硬件/交互能力）
+const notTv = () => !isTvModeActive()
+const hasDesktopLyricsBridge = () => hasRealDesktopBridge() && typeof electron()?.desktopLyrics?.getSettings === 'function'
+const hasDesktopPlayerBridge = () => hasRealDesktopBridge() && typeof electron()?.desktopPlayer?.getInitialState === 'function'
 const hasTaskbarBridge = () => typeof window !== 'undefined' && !!electron()?.taskbarWidget
-const hasSystemBridge = () => typeof window !== 'undefined' && !!electron()?.system?.getHardwareAcceleration
+const hasSystemBridge = () => hasRealDesktopBridge() && !!electron()?.system?.getHardwareAcceleration
 const hasDisplayBridge = () => typeof window !== 'undefined' && !!electron()?.display?.getInfo
 const hasProxyBridge = () => typeof window !== 'undefined' && !!electron()?.proxyManager
 
@@ -407,6 +415,37 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
     ],
   },
   {
+    id: 'transition',
+    label: '转场动画',
+    description: '界面模式切换时的过渡动画，对所有模式生效',
+    entries: [
+      {
+        id: 'modeTransitionStyle',
+        label: '转场动画风格',
+        description: '复杂：Steam 风格描边绘制动画 + 模式专属配色与音效；简易：原版轻量加载徽章',
+        control: {
+          kind: 'choice',
+          options: [
+            { value: 'complex', label: '复杂（Steam 风格）', hint: '描边绘制 + 光环扫过 + 点阵粒子 + 专属音效' },
+            { value: 'simple', label: '简易', hint: '原版轻量加载徽章，切换更快' },
+          ],
+        },
+        read: () => getModeTransitionStyle(),
+        write: (value) => setModeTransitionStyle(value === 'simple' ? 'simple' : 'complex'),
+      },
+      {
+        id: 'modeTransitionSound',
+        label: '转场音效',
+        description: '复杂转场时播放的模式专属提示音（WebAudio 合成，无音频下载）',
+        control: { kind: 'toggle' },
+        read: () => isModeTransitionSoundEnabled(),
+        write: (value) => setModeTransitionSoundEnabled(Boolean(value)),
+        // 简易转场没有音效，开关只在复杂风格下出现
+        visibleIf: () => getModeTransitionStyle() === 'complex',
+      },
+    ],
+  },
+  {
     id: 'playback',
     label: '播放',
     description: '歌曲衔接与视频行为，对所有模式的播放生效',
@@ -459,6 +498,8 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
         control: { kind: 'toggle' },
         read: () => readBool('autoMixEnabled', false),
         write: (value) => setTransitionModeExclusive('autoMix', Boolean(value)),
+        // TV 无节拍/响度分析服务（3002/3003），智能混音只会有固定交叉淡化的效果——隐藏并强制走无缝/交叉
+        available: notTv,
       },
       {
         id: 'autoMixBeatMatching',
@@ -468,6 +509,7 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
         read: () => readBool('autoMixBeatMatching', true),
         write: (value) => { writeBool('autoMixBeatMatching', Boolean(value)); window.dispatchEvent(new Event('autoMixSettingsChanged')); notifyGlobalSettingChanged() },
         visibleIf: () => readBool('autoMixEnabled', false),
+        available: notTv,
       },
       {
         id: 'autoMixSkipSilence',
@@ -476,6 +518,7 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
         read: () => readBool('autoMixSkipSilence', true),
         write: (value) => { writeBool('autoMixSkipSilence', Boolean(value)); window.dispatchEvent(new Event('autoMixSettingsChanged')); notifyGlobalSettingChanged() },
         visibleIf: () => readBool('autoMixEnabled', false),
+        available: notTv,
       },
       {
         id: 'autoMixTransitionIntensity',
@@ -496,10 +539,11 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
           notifyGlobalSettingChanged()
         },
         visibleIf: () => readBool('autoMixEnabled', false),
+        available: notTv,
       },
       {
         id: 'autoMixEnhanced',
-        label: 'AutoMix 增强版',
+        label: 'AutoMix Pro',
         description: '使用分轨混音（HTDemucs 可选）与增强 DSP；模型未安装时自动使用 DSP 兼容模式',
         control: { kind: 'toggle' },
         read: () => readBool('autoMixEnhanced', false),
@@ -514,7 +558,7 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
       {
         id: 'autoMixAiMix',
         label: 'DJTransGAN 实验扩展',
-        description: '可选学习式推子/EQ与60秒长混音；关闭时不会启动 Torch，AutoMix 增强版仍正常工作',
+        description: '可选学习式推子/EQ与60秒长混音；关闭时不会启动 Torch，AutoMix Pro 仍正常工作',
         control: { kind: 'toggle' },
         read: () => readBool('autoMixAiMix', false),
         write: (value) => {
@@ -535,6 +579,66 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
           }).catch(() => undefined)
         },
         visibleIf: () => readBool('autoMixEnabled', false) && readBool('autoMixEnhanced', false),
+        available: notTv,
+      },
+      {
+        id: 'autoMixEngine',
+        label: '过渡引擎',
+        description: '标准 AutoMix / AutoMix Pro（分轨与增强 DSP）/ AutoMix Enhanced（三档智能混音）',
+        control: {
+          kind: 'choice',
+          options: [
+            { value: 'standard', label: '标准 AutoMix' },
+            { value: 'pro', label: 'AutoMix Pro' },
+            { value: 'enhanced', label: 'AutoMix Enhanced' },
+          ],
+        },
+        read: () => {
+          const saved = readStr('autoMixEngine', '')
+          if (saved === 'standard' || saved === 'pro' || saved === 'enhanced') return saved
+          return readBool('autoMixEnhanced', false) ? 'pro' : 'standard'
+        },
+        write: (value) => {
+          const engine = value === 'pro' || value === 'enhanced' ? value : 'standard'
+          localStorage.setItem('autoMixEngine', engine)
+          // 旧键镜像：Pro / Enhanced 都算增强渲染（历史消费方读取 autoMixEnhanced）
+          writeBool('autoMixEnhanced', engine !== 'standard')
+          window.dispatchEvent(new Event('autoMixSettingsChanged'))
+          electron()?.automixLog?.('settings-toggle', `autoMixEngine=${engine}`).catch?.(() => undefined)
+          notifyGlobalSettingChanged()
+        },
+        visibleIf: () => readBool('autoMixEnabled', false),
+        available: notTv,
+      },
+      {
+        id: 'autoMixEnhancedTier',
+        label: 'Enhanced 档位',
+        description: 'Lite（自研本地进阶方案）/ Advanced（QQ官方·基础渐变）/ Extreme（QQ官方·进阶交融）',
+        control: {
+          kind: 'choice',
+          options: [
+            { value: 'lite', label: 'Lite' },
+            { value: 'advanced', label: 'Advanced' },
+            { value: 'extreme', label: 'Extreme' },
+          ],
+        },
+        read: () => {
+          const saved = readStr('autoMixEnhancedTier', '')
+          return saved === 'advanced' || saved === 'extreme' ? saved : 'lite'
+        },
+        write: (value) => {
+          const tier = value === 'advanced' || value === 'extreme' ? value : 'lite'
+          localStorage.setItem('autoMixEnhancedTier', tier)
+          window.dispatchEvent(new Event('autoMixSettingsChanged'))
+          electron()?.automixLog?.('settings-toggle', `autoMixEnhancedTier=${tier}`).catch?.(() => undefined)
+          notifyGlobalSettingChanged()
+        },
+        visibleIf: () => {
+          const saved = readStr('autoMixEngine', '')
+          const engine = saved || (readBool('autoMixEnhanced', false) ? 'pro' : 'standard')
+          return readBool('autoMixEnabled', false) && engine === 'enhanced'
+        },
+        available: notTv,
       },
       {
         id: 'videoEndBehavior',
@@ -696,6 +800,8 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
         control: { kind: 'toggle' },
         read: () => shortcutSettings().playbackPageEnabled,
         write: (value) => writeShortcuts({ playbackPageEnabled: Boolean(value) }),
+        // TV 无物理键盘，快捷键组无意义
+        available: notTv,
       },
       {
         id: 'spacePlayPauseEnabled',
@@ -704,6 +810,7 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
         read: () => shortcutSettings().spacePlayPauseEnabled,
         write: (value) => writeShortcuts({ spacePlayPauseEnabled: Boolean(value) }),
         visibleIf: () => shortcutSettings().playbackPageEnabled,
+        available: notTv,
       },
       {
         id: 'seekForwardSeconds',
@@ -712,6 +819,7 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
         read: () => shortcutSettings().seekForwardSeconds,
         write: (value) => writeShortcuts({ seekForwardSeconds: Math.round(Number(value)) }),
         visibleIf: () => shortcutSettings().playbackPageEnabled,
+        available: notTv,
       },
       {
         id: 'seekBackwardSeconds',
@@ -720,6 +828,7 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
         read: () => shortcutSettings().seekBackwardSeconds,
         write: (value) => writeShortcuts({ seekBackwardSeconds: Math.round(Number(value)) }),
         visibleIf: () => shortcutSettings().playbackPageEnabled,
+        available: notTv,
       },
       {
         id: 'mediaKeysEnabled',
@@ -728,6 +837,7 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
         control: { kind: 'toggle' },
         read: () => shortcutSettings().mediaKeysEnabled,
         write: (value) => writeShortcuts({ mediaKeysEnabled: Boolean(value) }),
+        available: notTv,
       },
       {
         id: 'upNextEnabled',
@@ -941,6 +1051,8 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
           })()
           notifyGlobalSettingChanged()
         },
+        // TV 常驻全屏输出，无窗口化概念
+        available: notTv,
       },
       {
         id: 'remoteSettings',
@@ -1225,6 +1337,8 @@ export const GLOBAL_SETTINGS_GROUPS: GlobalSettingsGroup[] = [
           const port = Number(value)
           if (Number.isFinite(port) && port >= 1024 && port <= 65535) setResonanceSetting('port', Math.round(port))
         },
+        // TV 不支持房主中转（需要桌面端 resonance 桥），端口配置无意义
+        available: notTv,
       },
       {
         id: 'resonanceNicknameSource',

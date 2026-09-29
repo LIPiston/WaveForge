@@ -1,6 +1,6 @@
 import { useState, useEffect, type CSSProperties } from 'react'
 import { motion, AnimatePresence, Reorder } from 'framer-motion'
-import { X, GripVertical, Check, Plus } from 'lucide-react'
+import { X, GripVertical, Check, Plus, ChevronUp, ChevronDown } from 'lucide-react'
 import type { MusicPlatform } from '../services/platforms'
 import {
   getDefaultHomeModules,
@@ -155,8 +155,20 @@ export default function ModuleCustomizeModal({ show, onClose, playerTheme = 'dar
   const handleRemoveModule = (moduleId: HomeModuleType, platform: MusicPlatform) => {
     const modules = getModules(platform)
     const setModules = getSetModules(platform)
-    
+
     setModules(modules.filter(id => id !== moduleId))
+  }
+
+  // 上移/下移：拖拽的按钮替代路径（TV 遥控器/键盘用户无法拖拽排序）
+  const handleMoveModule = (moduleId: HomeModuleType, platform: MusicPlatform, delta: -1 | 1) => {
+    const modules = getModules(platform)
+    const setModules = getSetModules(platform)
+    const index = modules.indexOf(moduleId)
+    const target = index + delta
+    if (index < 0 || target < 0 || target >= modules.length) return
+    const next = [...modules]
+    ;[next[index], next[target]] = [next[target], next[index]]
+    setModules(next)
   }
   
   // 可选模块（排除已选的）
@@ -291,6 +303,25 @@ export default function ModuleCustomizeModal({ show, onClose, playerTheme = 'dar
                                   )}
                                   <p className={`${textTertiary} mt-1 text-xs leading-4`}>{module.description}</p>
                                 </div>
+                                {/* 上移/下移：拖拽的按钮替代路径 */}
+                                <button
+                                  onClick={() => handleMoveModule(moduleId, 'netease', -1)}
+                                  disabled={index <= 0}
+                                  className="p-1 hover:bg-white/10 rounded transition-colors disabled:opacity-30"
+                                  aria-label={`上移${module.name}`}
+                                  title="上移"
+                                >
+                                  <ChevronUp className="w-4 h-4" style={{ color: accentColor }} />
+                                </button>
+                                <button
+                                  onClick={() => handleMoveModule(moduleId, 'netease', 1)}
+                                  disabled={index >= neteaseModules.length - 1}
+                                  className="p-1 hover:bg-white/10 rounded transition-colors disabled:opacity-30"
+                                  aria-label={`下移${module.name}`}
+                                  title="下移"
+                                >
+                                  <ChevronDown className="w-4 h-4" style={{ color: accentColor }} />
+                                </button>
                                 <button
                                   onClick={() => handleRemoveModule(moduleId, 'netease')}
                                   className="p-1 hover:bg-white/10 rounded transition-colors"
@@ -466,6 +497,25 @@ export default function ModuleCustomizeModal({ show, onClose, playerTheme = 'dar
                                   )}
                                   <p className={`${textTertiary} mt-1 text-xs leading-4`}>{module.description}</p>
                                 </div>
+                                {/* 上移/下移：拖拽的按钮替代路径 */}
+                                <button
+                                  onClick={() => handleMoveModule(moduleId, 'qq', -1)}
+                                  disabled={index <= 0}
+                                  className="p-1 hover:bg-white/10 rounded transition-colors disabled:opacity-30"
+                                  aria-label={`上移${module.name}`}
+                                  title="上移"
+                                >
+                                  <ChevronUp className="w-4 h-4" style={{ color: accentColor }} />
+                                </button>
+                                <button
+                                  onClick={() => handleMoveModule(moduleId, 'qq', 1)}
+                                  disabled={index >= qqModules.length - 1}
+                                  className="p-1 hover:bg-white/10 rounded transition-colors disabled:opacity-30"
+                                  aria-label={`下移${module.name}`}
+                                  title="下移"
+                                >
+                                  <ChevronDown className="w-4 h-4" style={{ color: accentColor }} />
+                                </button>
                                 <button
                                   onClick={() => handleRemoveModule(moduleId, 'qq')}
                                   className="p-1 hover:bg-white/10 rounded transition-colors"

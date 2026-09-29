@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, Blocks, Download, Lock } from 'lucide-react'
 import { useEffect, useMemo, useReducer } from 'react'
 import { useTvBack } from '../tv/tvCore'
-import { getAllPluginManifests } from '../plugins/registry'
+import { getAllPluginManifests, isDesktopPluginEnvironment } from '../plugins/registry'
 import { openDetailGated, requestTogglePlugin } from '../plugins/toggle'
 import { usePluginHostState, openPluginImport, closePluginCenter, PLUGIN_STATE_EVENT } from '../services/pluginStore'
 import { isPluginEnabled, hasViewedDetail } from '../services/pluginStore'
@@ -83,7 +83,11 @@ export default function PluginCenterModal() {
     return () => window.removeEventListener(PLUGIN_STATE_EVENT, handler)
   }, [])
 
-  const plugins = useMemo(() => getAllPluginManifests(), [centerOpen, version])
+  // 桌面专属插件（Razer Chroma / SignalRGB 等依赖系统级设备桥）：TV/纯浏览器上隐藏（启用也是纯空转）
+  const plugins = useMemo(
+    () => getAllPluginManifests().filter(p => !p.desktopOnly || isDesktopPluginEnvironment()),
+    [centerOpen, version]
+  )
   const enabledCount = plugins.filter(p => isPluginEnabled(p.id)).length
 
   return (
