@@ -17,6 +17,9 @@ const DEFAULT_CHUNK_SECONDS = 5
 const DEFAULT_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000
 const DEFAULT_CACHE_MAX_BYTES = 4 * 1024 * 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
+/** worker 启动（python + onnxruntime + 模型加载）的独立超时：本机实测 8–15s，
+ *  初始化挂住时不能让它永远悬着（此时推理超时计时器还没建，首条请求会无限等待）。 */
+const WORKER_START_TIMEOUT_MS = 60 * 1000
 const STEM_NAMES = ['drums', 'bass', 'vocals', 'other']
 
 function existingFile(candidate) {
@@ -152,29 +155,35 @@ class TrackStemRuntime {
     }
     if (this.active && match(this.active)) {
       this.active.cancelled = true
-      try { this.worker?.kill() } catch { /* worker may already be exiting */ }
+      this._killWorker(new Error('Track stem request cancelled'))
       cancelled = true
     }
     return cancelled
   }
 
-  getCacheStats() {
-    let count = 0
-    let size = 0
-    for (const entry of fs.readdirSync(this.cacheDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name === '.tmp') continue
-      count += 1
-      try { size += directorySize(path.join(this.cacheDir, entry.name)) } catch { /* concurrent cleanup */ }
-    }
-    return { count, size, maxBytes: this.cacheMaxBytes, cachePath: this.cacheDir }
+  /**
+   * 杀掉当前 worker 并**同步**清空引用。
+   * kill() 返回到子进程真正 exit 之间，exitCode 仍是 null（进程还没退），只判 worker/exitCode
+   * 会把这次调用当"worker 还活着"、返回已 resolve 的旧 workerReady，于是新请求被写进垂死进程的
+   * stdin，随后随旧进程 exit 一起 reject（或挂到超时）。用户实测表现：拖动人声滑块/重试时
+   * 分离任务静默失败——而每次 enable 都会换 generation 并 kill 上一次的 worker，正好步步踩中。
+   */
+  _killWorker(reason) {
+    const worker = this.worker
+    this.worker = null
+    this.workerReady = null
+    if (!worker) return
+    try { worker.kill() } catch { /* worker may already be exiting */ }
+    this._rejectWorkerPending(reason instanceof Error ? reason : new Error(String(reason || 'Track stem worker stopped')))
   }
 
+  // getCacheStats 只保留一份（此前定义两次，后者静默覆盖前者；这份字段是超集且带 try/catch）
   getCacheStats() {
     let count = 0
     let size = 0
     for (const entry of fs.readdirSync(this.cacheDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name === '.tmp') continue
-      try { count++; size += directorySize(path.join(this.cacheDir, entry.name)) } catch {}
+      try { count++; size += directorySize(path.join(this.cacheDir, entry.name)) } catch { /* concurrent cleanup */ }
     }
     return { count, size, totalSize: size, maxBytes: this.cacheMaxBytes, cachePath: this.cacheDir }
   }
@@ -242,6 +251,26 @@ class TrackStemRuntime {
     return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
   }
 
+  /**
+   * 闲置回收：停掉常驻 worker，但保留 runtime 可再次按需拉起（与 shutdown 的区别是不置 closed）。
+   * 用途：游戏模式冻结 / 长时间无分离任务——HTDemucs worker 常驻 torch + 模型权重是本软件
+   * 最大的单块内存，而它只在需要分轨时才工作；下次任务由 _ensureWorker 自动重启。
+   * 有在途任务或排队任务时不动（原则：还在被调用就不能停）。
+   */
+  stopIdleWorker() {
+    if (this.closed) return false
+    if (this.active || this.queue.length > 0) return false
+    const worker = this.worker
+    if (!worker) return false
+    this.worker = null
+    this.workerReady = null
+    try { worker.stdin.write(JSON.stringify({ type: 'shutdown' }) + '\n') } catch { /* exited */ }
+    const timer = setTimeout(() => { if (!worker.killed) worker.kill() }, 1000)
+    timer.unref?.()
+    this._rejectWorkerPending(new Error('Track stem worker stopped while idle'))
+    return true
+  }
+
   shutdown() {
     if (this.closed) return
     this.closed = true
@@ -252,6 +281,7 @@ class TrackStemRuntime {
     if (this.active) this.active.cancelled = true
     const worker = this.worker
     this.worker = null
+    this.workerReady = null
     if (worker) {
       try { worker.stdin.write(JSON.stringify({ type: 'shutdown' }) + '\n') } catch { /* exited */ }
       const timer = setTimeout(() => { if (!worker.killed) worker.kill() }, 1000)
@@ -312,7 +342,7 @@ class TrackStemRuntime {
     }
     if (this.active?.trackId === trackId && this.active.generationToken !== generationToken) {
       this.active.cancelled = true
-      try { this.worker?.kill() } catch { /* worker may already be exiting */ }
+      this._killWorker(new Error('Track stem generation changed'))
     }
   }
 
@@ -479,7 +509,9 @@ class TrackStemRuntime {
   }
 
   async _ensureWorker() {
-    if (this.worker && this.workerReady) return this.workerReady
+    // killed 与 exitCode === null 都要判：kill() 之后到子进程真正 exit 之间 exitCode 仍是 null，
+    // 单判 exitCode 会把垂死进程当存活、返回已 resolve 的旧 workerReady（见 _killWorker 注释）
+    if (this.worker && this.worker.exitCode === null && !this.worker.killed && this.workerReady) return this.workerReady
     if (this.closed) throw new Error('Track stem runtime is shut down')
     this.paths = resolveTrackStemPaths(this.options)
     if (!this.paths.modelPath) throw new Error('HTDemucs model not found')
@@ -496,8 +528,8 @@ class TrackStemRuntime {
     this.workerReady = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject })
     child.stdout.on('data', data => this._handleWorkerData(data, readyResolve, readyReject))
     child.stderr.on('data', data => { this.lastWorkerError = data.toString().trim() })
-    child.once('error', error => this._workerExited(error, readyReject))
-    child.once('exit', code => this._workerExited(new Error(`Track stem worker exited (${code}): ${this.lastWorkerError || 'no error output'}`), readyReject))
+    child.once('error', error => this._workerExited(child, error, readyReject))
+    child.once('exit', code => this._workerExited(child, new Error(`Track stem worker exited (${code}): ${this.lastWorkerError || 'no error output'}`), readyReject))
     return this.workerReady
   }
 
@@ -526,8 +558,11 @@ class TrackStemRuntime {
     }
   }
 
-  _workerExited(error, readyReject) {
+  _workerExited(child, error, readyReject) {
     readyReject?.(error)
+    // 只清理"当前 worker"的状态：旧 worker 被 kill 后可能已经拉起新 worker，
+    // 无脑清空会把新 worker 的引用一起抹掉，随后 _ensureWorker 又会把请求写进已死进程
+    if (this.worker !== child) return
     this.worker = null
     this.workerReady = null
     this._rejectWorkerPending(error)
@@ -542,13 +577,29 @@ class TrackStemRuntime {
   }
 
   async _workerRequest(payload) {
-    await this._ensureWorker()
+    // 启动超时单独计时：原先的推理超时在 await _ensureWorker() 之后才创建，
+    // worker 拉不起来（onnxruntime 初始化挂住/模型损坏）时首条请求会永远悬着，界面卡在"正在准备分轨"
+    let startTimer = null
+    try {
+      await Promise.race([
+        this._ensureWorker(),
+        new Promise((_, reject) => {
+          startTimer = setTimeout(() => {
+            this._killWorker(new Error(`Track stem worker did not start within ${WORKER_START_TIMEOUT_MS}ms`))
+            reject(new Error(`Track stem worker did not start within ${WORKER_START_TIMEOUT_MS}ms`))
+          }, WORKER_START_TIMEOUT_MS)
+          startTimer.unref?.()
+        }),
+      ])
+    } finally {
+      if (startTimer) clearTimeout(startTimer)
+    }
     const id = `track-stem-${++this.sequence}`
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.workerPending.delete(id)
         reject(new Error(`Track stem inference timed out after ${this.timeoutMs}ms`))
-        this.worker?.kill()
+        this._killWorker(new Error('Track stem inference timed out'))
       }, this.timeoutMs)
       timer.unref?.()
       this.workerPending.set(id, { resolve, reject, timer })

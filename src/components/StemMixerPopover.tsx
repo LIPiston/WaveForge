@@ -2,6 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { AudioLines, Drum, MicVocal, Music2, RotateCcw, Waves } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { TrackStemGains, TrackStemName } from '../audio/trackStemMixer'
+import { useTvBack } from '../tv/tvCore'
 
 export type StemControlStatus = 'unavailable' | 'idle' | 'separating' | 'partial' | 'ready' | 'failed'
 
@@ -47,6 +48,11 @@ export function StemMixerPopover({
 }: StemMixerPopoverProps) {
   const [open, setOpen] = useState(false)
   const [custom, setCustom] = useState(false)
+  /** 启用失败时的可见提示：onEnable 返回 false 的多数路径只写 status/reason，
+   *  静默返回 false 的路径（换 generation / 预载重跑）界面上原本毫无反馈，用户只看到滑块弹回。 */
+  const [enableHint, setEnableHint] = useState('')
+  const enableInFlightRef = useRef<Promise<boolean> | null>(null)
+  const pendingActionRef = useRef<(() => void) | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const reducedMotion = useReducedMotion()
   const dark = theme === 'dark'
@@ -68,18 +74,52 @@ export function StemMixerPopover({
     }
   }, [open])
 
+  // TV BACK：先关分轨调音 popover，不要穿透到外层（退出播放页）
+  useTvBack(() => {
+    if (open) {
+      setOpen(false)
+      return true
+    }
+    return false
+  }, [open])
+
   const openOrEnable = () => {
     if (control.locked) return
     setOpen(value => !value)
   }
+  /**
+   * 首次启用要等模型加载 + 首个窗口分离（约 10–20s）。原实现每次 onChange 都直接调 onEnable()：
+   * 拖动会连发多次，每次都会换 generation 并 kill 上一次的 worker，等于自己把刚启动的分离任务踩死
+   * （用户实测"拖了没反应、重试更不可能成功"）。这里改成：准备期间只记录**最新一次**目标增益，
+   * 复用同一个 in-flight enable，完成后统一应用。
+   */
   const enableThen = (action: () => void) => {
     if (control.active) {
       action()
       return
     }
-    void Promise.resolve(control.onEnable()).then(result => {
-      if (result !== false) action()
-    })
+    pendingActionRef.current = action
+    if (enableInFlightRef.current) return
+    setEnableHint('')
+    const attempt = Promise.resolve(control.onEnable())
+      .then((result): boolean => {
+        if (result === false) {
+          setEnableHint(control.reason || '分轨准备失败，请重试')
+          return false
+        }
+        const pending = pendingActionRef.current
+        pendingActionRef.current = null
+        pending?.()
+        return true
+      })
+      .catch(() => {
+        setEnableHint('分轨准备失败，请重试')
+        return false
+      })
+      .finally(() => {
+        enableInFlightRef.current = null
+      })
+    enableInFlightRef.current = attempt
   }
 
   const surface = dark ? 'rgba(17,19,27,.88)' : 'rgba(255,255,255,.9)'
@@ -133,6 +173,7 @@ export function StemMixerPopover({
         {open && (
           <motion.div
             data-testid="stem-mixer-popover"
+            data-tv-scope={open ? '' : undefined}
             initial={reducedMotion ? { opacity: 0 } : placement === 'above' ? { opacity: 0, y: 8, scale: 0.96 } : { opacity: 0, x: placement === 'left' ? 8 : -8, scale: 0.96 }}
             animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
             exit={reducedMotion ? { opacity: 0 } : placement === 'above' ? { opacity: 0, y: 8, scale: 0.96 } : { opacity: 0, x: placement === 'left' ? 8 : -8, scale: 0.96 }}
@@ -148,7 +189,11 @@ export function StemMixerPopover({
               <div>
                 <div className="text-sm font-semibold">人声分离</div>
                 <div className="text-[10px]" style={{ color: muted }}>
-                  {control.status === 'separating' ? `正在准备分轨 ${Math.round((control.progress || 0) * 100)}%` : control.status === 'unavailable' ? (control.reason || '当前音源暂不支持分轨') : control.status === 'failed' ? '分轨失败，当前保持原声' : control.locked ? '过渡进行中，已冻结当前增益' : '拖动时保持乐器不变，仅调节人声'}
+                  {enableHint
+                    ? enableHint
+                    : control.status === 'separating'
+                      ? `正在准备分轨 ${Math.round((control.progress || 0) * 100)}%（首次需加载模型，约 10–20 秒）`
+                      : control.status === 'unavailable' ? (control.reason || '当前音源暂不支持分轨') : control.status === 'failed' ? '分轨失败，当前保持原声' : control.locked ? '过渡进行中，已冻结当前增益' : '拖动时保持乐器不变，仅调节人声'}
                 </div>
               </div>
               <button type="button" onClick={() => setCustom(value => !value)} className="rounded-lg px-2 py-1 text-xs font-medium" style={{ color: accentColor, background: `${accentColor}18` }}>
@@ -157,7 +202,17 @@ export function StemMixerPopover({
             </div>
 
             {(control.status === 'unavailable' || control.status === 'failed') && (
-              <button type="button" onClick={() => { void control.onEnable() }} className="mb-3 w-full rounded-lg py-1.5 text-xs font-medium" style={{ color: accentColor, background: `${accentColor}18` }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setEnableHint('')
+                  void Promise.resolve(control.onEnable()).then(result => {
+                    if (result === false) setEnableHint(control.reason || '仍然不可用，请在设置里确认分轨模型已安装')
+                  })
+                }}
+                className="mb-3 w-full rounded-lg py-1.5 text-xs font-medium"
+                style={{ color: accentColor, background: `${accentColor}18` }}
+              >
                 重新检测并准备分轨
               </button>
             )}

@@ -1,6 +1,7 @@
 'use strict'
 
 const assert = require('assert')
+const { EventEmitter } = require('node:events')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
@@ -184,5 +185,95 @@ test('new generation rejects stale work without publishing its manifest', async 
   await assert.rejects(stale, /stale|cancelled/)
   const manifest = await current
   assert.deepEqual(manifest.chunks.map(chunk => chunk.startSeconds), [20])
+  runtime.shutdown()
+})
+
+// ── worker 生命周期：kill 到 exit 之间的"垂死进程"不能被当成存活 ──
+// 用户实测的"人声分离完全不可用"：每次 enable 都换 generation 并 kill 上一次的 worker，
+// 而 _ensureWorker 只判 exitCode === null（kill 后、exit 前仍是 null）会返回已 resolve 的
+// 旧 workerReady，新请求被写进垂死 stdin，随后随旧进程 exit 一起失败。
+
+class FakeWorkerProcess extends EventEmitter {
+  constructor() {
+    super()
+    this.stdin = {
+      writes: [],
+      write: (line) => { this.stdin.writes.push(line); return true },
+      end: () => {},
+    }
+    this.stdout = new EventEmitter()
+    this.stderr = new EventEmitter()
+    this.exitCode = null
+    this.killed = false
+  }
+
+  kill() { this.killed = true }
+
+  /** 真实子进程的 'exit' 是异步的：kill() 之后还要过一个事件循环周期才到 */
+  emitExit(code = 0) {
+    this.exitCode = code
+    this.emit('exit', code)
+  }
+
+  emitReady() {
+    this.stdout.emit('data', `${JSON.stringify({ type: 'ready', runnerVersion: 'fake' })}\n`)
+  }
+
+  answerLastRequest(result = { ok: true }) {
+    const line = this.stdin.writes.at(-1) || ''
+    const id = JSON.parse(line).id
+    this.stdout.emit('data', `${JSON.stringify({ id, type: 'result', result })}\n`)
+    return id
+  }
+}
+
+const flushTicks = () => new Promise(resolve => setImmediate(resolve))
+
+test('kill 之后再请求：拉起新 worker，不复用垂死进程的 ready promise', async t => {
+  const data = fixture(t)
+  const children = []
+  const runtime = new TrackStemRuntime({
+    ...data,
+    cachePath: path.join(data.root, 'cache'),
+    appInfo: {},
+    isInputAllowed: () => true,
+    spawn: () => {
+      const child = new FakeWorkerProcess()
+      children.push(child)
+      return child
+    },
+  })
+
+  const first = runtime._workerRequest({ type: 'separate', coreStart: 0 })
+  await flushTicks()
+  children[0].emitReady()
+  await flushTicks()
+  children[0].answerLastRequest()
+  assert.deepEqual(await first, { ok: true })
+  assert.equal(children.length, 1)
+
+  // cancel 路径：kill 当前 worker（真实场景 = 换 generation / 用户取消）
+  runtime._killWorker(new Error('cancelled'))
+  assert.equal(children[0].killed, true)
+  assert.equal(runtime.worker, null, 'kill 后必须同步清引用，否则下一次 _ensureWorker 会复用垂死进程')
+  assert.equal(runtime.workerReady, null)
+
+  // 紧接着的下一次请求：必须重新拉起 worker，且不向已 kill 的进程写入
+  const writesBefore = children[0].stdin.writes.length
+  const second = runtime._workerRequest({ type: 'separate', coreStart: 20 })
+  await flushTicks()
+  assert.equal(children.length, 2, '必须重新 spawn，而不是复用被 kill 的 worker')
+  children[1].emitReady()
+  await flushTicks()
+  children[1].answerLastRequest({ ok: 'second' })
+  assert.deepEqual(await second, { ok: 'second' })
+  assert.equal(children[0].stdin.writes.length, writesBefore, '不得向已 kill 的进程继续写入')
+
+  // 旧 worker 随后才真正退出：不能把新 worker 的引用/ready 一起清掉
+  children[0].emitExit(0)
+  await flushTicks()
+  assert.equal(runtime.worker, children[1], '旧进程的 exit 不能清掉新 worker 的引用')
+  assert.ok(runtime.workerReady)
+
   runtime.shutdown()
 })
