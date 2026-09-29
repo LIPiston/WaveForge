@@ -1,49 +1,350 @@
 /* ── DG-LAB 连接引导（OOBE）专属样式 ───────────────────────────
  * 金黑配色，对齐 DG-LAB 控制台（#FFE89C 金 / #0b0b0e 黑）。
- * 动画克制：框选用 CSS 脉冲 + 一次性扫描光，不触发大区域每帧重绘。
+ * 两种形态：
+ *   dialog    独立弹窗——居中、与控制台弹窗同宽高（max-w-7xl / min(92vh,780px)），自带遮罩；
+ *   contained 嵌在控制台弹窗内——铺满父面板（absolute inset-0），由父级圆角裁切。
+ * 面板内部不产生滚动条：左「手机截图」+ 右「步骤内容」两栏，超窄屏时滚动条隐藏兜底。
  */
 
 .dglab-oobe-root {
+  color: #fff;
+}
+
+/* 独立弹窗：遮罩 + 居中（尺寸与控制台弹窗一致） */
+.dglab-oobe-root[data-mode='dialog'] {
   position: fixed;
   inset: 0;
   z-index: 12000;
-  background:
-    radial-gradient(120% 90% at 50% -10%, rgba(255, 232, 156, 0.10), transparent 60%),
-    #08080b;
-  color: #fff;
-  overflow-y: auto;
-  overflow-x: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background-color: rgba(2, 2, 4, 0.82);
+  backdrop-filter: blur(16px);
 }
 
-/* 极光背景（缓慢位移，无滤镜） */
+/* 嵌在控制台弹窗内：铺满父面板 */
+.dglab-oobe-root[data-mode='contained'] {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  background: linear-gradient(160deg, #0b0b0e 0%, #0d0c09 55%, #17120a 100%);
+}
+
+.dglab-oobe-panel {
+  position: relative;
+  width: 100%;
+  max-width: 80rem; /* max-w-7xl：与控制台弹窗同宽 */
+  height: min(92vh, 780px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 28px;
+  border: 1px solid rgba(255, 232, 156, 0.25);
+  background: linear-gradient(160deg, #0b0b0e 0%, #0d0c09 55%, #17120a 100%);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.7), 0 0 60px rgba(255, 232, 156, 0.07);
+}
+.dglab-oobe-root[data-mode='contained'] .dglab-oobe-panel {
+  max-width: none;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 极光背景（缓慢位移，无滤镜）。
+ * 必须由裁剪层包住：极光外扩/缩放会撑出可滚动区域，
+ * 面板是 overflow:hidden 仍会被「焦点滚动」推动，整块内容随之偏移。 */
+.dglab-oobe-aurora-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
 .dglab-oobe-aurora {
   position: absolute;
   inset: -15%;
-  pointer-events: none;
   background:
-    radial-gradient(34% 30% at 22% 18%, rgba(255, 232, 156, 0.18), transparent 62%),
-    radial-gradient(30% 28% at 80% 22%, rgba(217, 189, 110, 0.16), transparent 62%),
-    radial-gradient(36% 32% at 66% 82%, rgba(255, 232, 156, 0.10), transparent 62%),
-    radial-gradient(26% 26% at 26% 76%, rgba(56, 189, 248, 0.10), transparent 60%);
+    radial-gradient(30% 34% at 16% 6%, rgba(255, 232, 156, 0.16), transparent 62%),
+    radial-gradient(34% 30% at 88% 4%, rgba(217, 189, 110, 0.14), transparent 62%),
+    radial-gradient(40% 34% at 72% 96%, rgba(255, 232, 156, 0.08), transparent 64%),
+    radial-gradient(26% 26% at 6% 88%, rgba(56, 189, 248, 0.07), transparent 60%);
   animation: dglab-oobe-aurora 26s ease-in-out infinite;
 }
 
 @keyframes dglab-oobe-aurora {
   0%, 100% { transform: translate(0, 0) scale(1); }
-  50%      { transform: translate(-3%, 2.5%) scale(1.06); }
+  50%      { transform: translate(-2.5%, 2%) scale(1.05); }
+}
+
+/* ── 顶栏 ───────────────────────────────────────────────────── */
+.dglab-oobe-header {
+  position: relative;
+  z-index: 20;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(255, 232, 156, 0.12);
+  background: rgba(255, 232, 156, 0.02);
+}
+
+.dglab-oobe-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  color: #0b0b0e;
+  background: linear-gradient(135deg, #FFE89C, #d9bd6e);
+  box-shadow: 0 6px 18px rgba(255, 232, 156, 0.25);
+}
+
+/* 步骤进度点（可点回看已完成步骤） */
+.dglab-oobe-dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.22);
+  transition: all 0.35s ease;
+}
+.dglab-oobe-dot.done {
+  background: rgba(255, 232, 156, 0.5);
+  cursor: pointer;
+}
+.dglab-oobe-dot.done:hover {
+  background: #FFE89C;
+}
+.dglab-oobe-dot.active {
+  width: 22px;
+  background: #FFE89C;
+  box-shadow: 0 0 10px rgba(255, 232, 156, 0.6);
+}
+
+/* ── 主体三栏：左截图 / 中步骤 / 右步骤轨迹 ────────────────── */
+.dglab-oobe-body {
+  position: relative;
+  z-index: 10;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(210px, 284px) minmax(0, 1fr) 196px;
+  gap: 20px;
+  padding: 20px;
+  overflow: hidden; /* 面板内部不出滚动条 */
+}
+
+/* 右：步骤轨迹（可点回看已完成步骤） */
+.dglab-oobe-rail {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: safe center;
+  gap: 2px;
+  padding-left: 14px;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+}
+.dglab-oobe-rail::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+.dglab-oobe-rail-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.32);
+  transition: color 0.2s ease, background 0.2s ease;
+}
+.dglab-oobe-rail-item.done {
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+}
+.dglab-oobe-rail-item.done:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+.dglab-oobe-rail-item.active {
+  color: #FFE89C;
+  background: rgba(255, 232, 156, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 232, 156, 0.22);
+}
+.dglab-oobe-rail-item .idx {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+}
+.dglab-oobe-rail-item.active .idx {
+  background: linear-gradient(135deg, #FFE89C, #d9bd6e);
+  color: #0b0b0e;
+}
+.dglab-oobe-rail-item.done .idx {
+  background: rgba(255, 232, 156, 0.18);
+  color: #FFE89C;
+}
+
+/* 顶栏进度点：宽屏有轨迹栏时隐藏，窄屏接手 */
+.dglab-oobe-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (min-width: 1100px) {
+  .dglab-oobe-dots { display: none; }
+}
+
+/* 左：手机截图舞台 */
+.dglab-oobe-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 0;
+}
+.dglab-oobe-stage::before {
+  content: '';
+  position: absolute;
+  inset: 12% 6%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 232, 156, 0.14), transparent);
+  filter: blur(6px);
+  pointer-events: none;
+}
+
+/* 前言步骤的「安全海报」（与手机截图同为 1206×2622 比例，保持左右构图稳定） */
+.dglab-oobe-poster {
+  position: relative;
+  height: 100%;
+  max-height: 100%;
+  aspect-ratio: 1206 / 2622;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 22px 16px;
+  border-radius: 22px;
+  text-align: center;
+  border: 1px solid rgba(255, 232, 156, 0.22);
+  background:
+    radial-gradient(85% 38% at 50% 0%, rgba(255, 232, 156, 0.16), transparent 72%),
+    linear-gradient(180deg, rgba(255, 232, 156, 0.07), rgba(255, 255, 255, 0.02) 62%, transparent);
+  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+.dglab-oobe-poster-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 62px;
+  height: 62px;
+  border-radius: 20px;
+  color: #0b0b0e;
+  background: linear-gradient(135deg, #FFE89C, #d9bd6e);
+  animation: dglab-oobe-poster-glow 3.2s ease-in-out infinite;
+}
+@keyframes dglab-oobe-poster-glow {
+  0%, 100% { box-shadow: 0 10px 26px rgba(255, 232, 156, 0.22); }
+  50%      { box-shadow: 0 14px 38px rgba(255, 232, 156, 0.45); }
+}
+.dglab-oobe-poster-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #FFE89C;
+}
+.dglab-oobe-poster-sub {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+.dglab-oobe-poster-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+  margin-top: 4px;
+}
+.dglab-oobe-poster-list li {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 12px;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* 手机截图容器：箭头要溢出到手机外侧，不能被 phone 的 overflow:hidden 裁掉 */
+.dglab-oobe-phone-wrap {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  max-width: 100%;
+}
+.dglab-oobe-phone-wrap .dglab-oobe-phone {
+  height: 100%;
+}
+
+/* 截图外的指引箭头（viewBox 0 0 100 200，1:1 映射；从手机右上角空白处指向框选位置） */
+.dglab-oobe-callout {
+  position: absolute;
+  top: 0;
+  left: 100%;
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 0 6px rgba(255, 232, 156, 0.5));
+  animation: dglab-oobe-callout-pulse 1.9s ease-in-out infinite;
+}
+@keyframes dglab-oobe-callout-pulse {
+  0%, 100% { opacity: 0.7; }
+  50%      { opacity: 1; }
 }
 
 /* 手机截图框（与源图同比例 1206×2622，SVG 高亮层 1:1 对齐） */
 .dglab-oobe-phone {
   position: relative;
-  width: auto;
+  height: 100%;
+  max-height: 100%;
   aspect-ratio: 1206 / 2622;
-  height: min(56vh, 540px);
   max-width: 100%;
-  border-radius: 28px;
+  border-radius: 22px;
   overflow: hidden;
   background: #000;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 232, 156, 0.18), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+.dglab-oobe-phone.preview {
+  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  opacity: 0.85;
 }
 .dglab-oobe-phone img {
   position: absolute;
@@ -59,6 +360,12 @@
   inset: 0;
   width: 100%;
   height: 100%;
+}
+.dglab-oobe-stage-caption {
+  flex-shrink: 0;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.38);
 }
 
 /* 高亮框脉冲（描边 + 外发光呼吸） */
@@ -91,18 +398,47 @@
   100% { transform: translateY(108%); opacity: 0; }
 }
 
-/* 步骤进度小圆点 */
-.dglab-oobe-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.22);
-  transition: all 0.35s ease;
+/* 中：步骤内容（整组垂直居中；超窄屏可滚但滚动条始终隐藏） */
+.dglab-oobe-content {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: safe center;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
-.dglab-oobe-dot.active {
-  background: #FFE89C;
-  width: 20px;
+.dglab-oobe-content::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* 步骤内容进入动画（key 重挂载即重放，无退出动画 → 连续切步不会卡住） */
+.dglab-oobe-step {
+  animation: dglab-oobe-step-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes dglab-oobe-step-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 步骤徽章 */
+.dglab-oobe-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
   border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #FFE89C;
+  border: 1px solid rgba(255, 232, 156, 0.28);
+  background: rgba(255, 232, 156, 0.08);
 }
 
 /* 版本选择卡 */
@@ -111,8 +447,52 @@
 }
 .dglab-oobe-version.active {
   border-color: #FFE89C;
-  box-shadow: 0 0 0 2px #FFE89C, 0 14px 36px rgba(255, 232, 156, 0.22);
+  box-shadow: 0 0 0 1px #FFE89C, 0 14px 36px rgba(255, 232, 156, 0.18);
   background: rgba(255, 232, 156, 0.08);
+}
+
+/* 提示条 */
+.dglab-oobe-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 232, 156, 0.18);
+  background: rgba(255, 232, 156, 0.07);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: rgba(255, 238, 221, 0.8);
+}
+.dglab-oobe-tip.accent-cyan {
+  border-color: rgba(34, 211, 238, 0.28);
+  background: rgba(34, 211, 238, 0.08);
+  color: rgba(207, 250, 254, 0.85);
+}
+/* 警示版提示条（例如中继未启动） */
+.dglab-oobe-tip.accent-warn {
+  border-color: rgba(252, 211, 77, 0.32);
+  background: rgba(252, 211, 77, 0.1);
+  color: rgba(254, 243, 199, 0.9);
+}
+.dglab-oobe-tip.accent-warn .dglab-oobe-tip-detail {
+  border-top-color: rgba(252, 211, 77, 0.22);
+  color: rgba(254, 243, 199, 0.6);
+}
+
+/* 提示条的第二段（操作步骤等补充说明，弱化显示） */
+.dglab-oobe-tip-detail {
+  display: block;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px dashed rgba(255, 232, 156, 0.18);
+  font-size: 11px;
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.48);
+}
+.dglab-oobe-tip.accent-cyan .dglab-oobe-tip-detail {
+  border-top-color: rgba(34, 211, 238, 0.2);
+  color: rgba(207, 250, 254, 0.55);
 }
 
 /* 实时二维码卡片 */
@@ -122,8 +502,59 @@
   background: #f5c84c;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 16px 40px rgba(245, 200, 76, 0.25);
 }
+.dglab-oobe-qr.waiting {
+  animation: dglab-oobe-qr-breathe 2.4s ease-in-out infinite;
+}
+@keyframes dglab-oobe-qr-breathe {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 16px 40px rgba(245, 200, 76, 0.25); }
+  50%      { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16), 0 18px 48px rgba(245, 200, 76, 0.45); }
+}
 
-/* 滚动条 */
-.dglab-oobe-scroll::-webkit-scrollbar { width: 6px; }
-.dglab-oobe-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 9999px; }
-.dglab-oobe-scroll::-webkit-scrollbar-track { background: transparent; }
+/* 小卡片 / 要点行 */
+.dglab-oobe-card {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.045);
+  padding: 12px 14px;
+}
+
+/* ── 底栏 ───────────────────────────────────────────────────── */
+.dglab-oobe-footer {
+  position: relative;
+  z-index: 20;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid rgba(255, 232, 156, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+/* 中屏：收起轨迹栏（顶栏进度点接手），回到两栏 */
+@media (max-width: 1099px) {
+  .dglab-oobe-body {
+    grid-template-columns: minmax(200px, 262px) minmax(0, 1fr);
+  }
+  .dglab-oobe-rail {
+    display: none;
+  }
+}
+
+/* 窄屏兜底：单栏（截图缩到顶部，仍不出现滚动条） */
+@media (max-width: 860px) {
+  .dglab-oobe-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 40%) minmax(0, 1fr);
+    gap: 14px;
+  }
+  .dglab-oobe-phone {
+    border-radius: 16px;
+  }
+}
+@media (max-height: 560px) {
+  .dglab-oobe-body {
+    padding: 12px 16px;
+  }
+}

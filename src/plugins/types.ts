@@ -53,6 +53,8 @@ export interface PluginManifest {
   code?: string
   /** 启用后需要保持实时音频分析器运行。 */
   needsAudio?: boolean
+  /** 依赖桌面端 Electron 桥（如 Razer Chroma / SignalRGB 的系统级设备访问）；无桌面桥的环境（TV/纯浏览器）隐藏。 */
+  desktopOnly?: boolean
   source: PluginSource
   installedAt?: number
 }

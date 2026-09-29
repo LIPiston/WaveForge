@@ -88,9 +88,35 @@ export default function DGLabWidget() {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     const dpr = Math.min(2, window.devicePixelRatio || 1)
+    // 与实时波形画布一致：按目标帧率重绘（原来每个 vsync 都画一遍，
+    // 高刷屏上是纯粹的白耗电）；跳过的帧继续采样，鼓点不会漏
+    const frameMs = 1000 / 24
+    let nextPaint = 0
+    let peakALane = 0
+    let peakBLane = 0
     let raf = 0
-    const draw = () => {
-      raf = 0
+
+    /** 取一次时域峰值（绝对幅度）；无分析器返回 0，由调用方回退到强度值。 */
+    const samplePeak = (analyser: AnalyserNode | null): number => {
+      if (!analyser || !timeBufRef.current) return 0
+      analyser.getByteTimeDomainData(timeBufRef.current)
+      let peak = 0
+      const buf = timeBufRef.current
+      for (let i = 0; i < buf.length; i += 1) {
+        const v = Math.abs(buf[i] - 128) / 128
+        if (v > peak) peak = v
+      }
+      return peak
+    }
+
+    const loop = (ts: number) => {
+      raf = requestAnimationFrame(loop)
+      // 窗口隐藏时只保留 rAF 链、不重绘
+      if (document.hidden) {
+        nextPaint = 0
+        return
+      }
+      const now = typeof ts === 'number' && ts > 0 ? ts : performance.now()
       const cw = canvas.clientWidth || 140
       const ch = canvas.clientHeight || 56
       const targetW = Math.round(cw * dpr)
@@ -100,32 +126,31 @@ export default function DGLabWidget() {
         canvas.height = targetH
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       }
-      ctx.clearRect(0, 0, cw, ch)
-      ctx.fillStyle = 'rgba(0,0,0,0.35)'
-      ctx.fillRect(0, 0, cw, ch)
 
       const out = statusRef.current.out
       const { left, right } = getGlobalAudioAnalysers()
       if (left && !timeBufRef.current) timeBufRef.current = new Uint8Array(left.frequencyBinCount)
-
-      // 每帧一次峰值 → 右→左滚动包络（低-平-高），性能友好
-      const samplePeak = (analyser: AnalyserNode | null): number => {
-        if (analyser && timeBufRef.current) {
-          analyser.getByteTimeDomainData(timeBufRef.current)
-          let peak = 0
-          const buf = timeBufRef.current
-          for (let i = 0; i < buf.length; i += 1) {
-            const v = Math.abs(buf[i] - 128) / 128
-            if (v > peak) peak = v
-          }
-          return peak
-        }
-        return 0
+      if (now < nextPaint) {
+        peakALane = Math.max(peakALane, samplePeak(left))
+        peakBLane = Math.max(peakBLane, samplePeak(right))
+        return
       }
-      const drawWave = (analyser: AnalyserNode | null, env: number[], getInt: () => number, color: string) => {
+      nextPaint = Math.max(now, nextPaint) + frameMs
+      ctx.clearRect(0, 0, cw, ch)
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'
+      ctx.fillRect(0, 0, cw, ch)
+
+      // 每次重绘取一次峰值（区间峰值由 loop 累计）→ 右→左滚动包络（低-平-高）
+      const drawWave = (env: number[], peak: number, getInt: () => number, color: string) => {
         const baseline = ch / 2
-        env.push(Math.max(samplePeak(analyser), getInt() / 200))
+        const value = Math.max(peak, getInt() / 200)
         const cols = Math.max(1, Math.floor(cw / 2))
+        if (env.length === 0) {
+          // 首次绘制（刚开启常驻）：用当前值铺满，避免只画出一小段、看着像空的
+          for (let i = 0; i < cols; i += 1) env.push(value)
+        } else {
+          env.push(value)
+        }
         while (env.length > cols) env.shift()
         const step = cw / Math.max(1, cols - 1)
         ctx.beginPath()
@@ -141,11 +166,12 @@ export default function DGLabWidget() {
         ctx.stroke()
         ctx.shadowBlur = 0
       }
-      drawWave(left, envARef.current, () => out?.A ?? 0, GOLD)
-      drawWave(right, envBRef.current, () => out?.B ?? 0, CYAN)
-      raf = requestAnimationFrame(draw)
+      drawWave(envARef.current, peakALane, () => out?.A ?? 0, GOLD)
+      drawWave(envBRef.current, peakBLane, () => out?.B ?? 0, CYAN)
+      peakALane = 0
+      peakBLane = 0
     }
-    raf = requestAnimationFrame(draw)
+    raf = requestAnimationFrame(loop)
     return () => {
       if (raf) cancelAnimationFrame(raf)
       envARef.current = []

@@ -86,6 +86,8 @@ export interface DGLabSettings {
   /** 整机监听：直接捕获系统扬声器声音映射成波形（不局限于本软件播放）。 */
   systemCapture: boolean
   caps: { A: number; B: number }
+  /** A/B 上限联动：开启后调一路另一路同步。纯界面偏好，不下发中继。 */
+  linkCaps: boolean
   driveMode: 'energy' | 'onset'
   pulseEnabled: boolean
   waveId: string
@@ -116,6 +118,7 @@ export const DEFAULT_DGLAB_SETTINGS: DGLabSettings = {
   outputEnabled: true,
   systemCapture: false,
   caps: { A: 60, B: 60 },
+  linkCaps: false,
   driveMode: 'energy',
   pulseEnabled: true,
   waveId: 'beat',
@@ -147,6 +150,10 @@ export interface DGLabOutput {
 export interface DGLabNetIf {
   address: string
   name: string
+  /** 虚拟网卡（VMware / Hyper-V / Tailscale / ZeroTier…）：手机通常不可达，仅作备选 */
+  virtual?: boolean
+  /** 网卡类型：wireless 无线 / wired 实体有线 / other 其它 */
+  kind?: 'wireless' | 'wired' | 'other'
 }
 
 export interface DGLabStatus {
@@ -399,7 +406,39 @@ function createClient() {
     listeners.forEach(l => l())
   }
 
+  /**
+   * 本地侧日志（渲染进程自己产生的行）。
+   * 中继日志只能经中继的 ctrl WS 推过来；中继没起来时那条通道根本不存在，
+   * 「日志」面板会一直空着，用户完全看不到失败原因——所以本地失败也要留痕。
+   */
+  const pushLocalLog = (message: string) => {
+    const line = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] [本地] ${message}`
+    set({ logs: [...snapshot.logs.slice(-120), line] })
+    console.warn(`[DG-LAB] ${message}`)
+  }
+
+  /** 统一的用户可见报错：日志 + 系统 toast（两处都要，缺一个用户就摸不着头脑）。 */
+  let lastErrorToast: { message: string; at: number } | null = null
+  const reportError = (message: string, raw?: unknown) => {
+    set({ lastError: message })
+    pushLocalLog(`错误：${message}${raw ? `（${String(raw)}）` : ''}`)
+    // 同一条错误 30s 内只弹一次：自动重试（轮询拉起中继）失败时不要刷屏
+    const now = Date.now()
+    if (lastErrorToast && lastErrorToast.message === message && now - lastErrorToast.at < 30000) return
+    lastErrorToast = { message, at: now }
+    window.dispatchEvent(new CustomEvent('showToast', {
+      detail: { message: `DG-LAB：${message}`, type: 'error', duration: 5200 },
+    }))
+  }
+
   let controlToken = ''
+  /**
+   * 用户是否手动点过「停止中继」。
+   * 中继默认是开的：应用启动/插件启用/打开控制台与连接引导都会把它拉起来；
+   * 只有「用户手动停止」和「停用插件」两种情况保持关闭——手动停过之后就不再自动拉起，
+   * 直到用户自己点「启动中继」或重新启用插件。
+   */
+  let relayManuallyStopped = false
   /**
    * 激活代次 + 控制指令串行队列。
    *
@@ -426,6 +465,14 @@ function createClient() {
     const seq = ++fetchSeq
     try {
       const res = await fetch(`${dglabApiBase()}/status`, { signal: AbortSignal.timeout(2500) })
+      if (!res.ok) {
+        // 403/500 的 body 不是状态：以前直接当合法状态解析，UI 会显示成
+        // 「中继没跑但服务可用」，于是点「启动中继」失败也看不出来。
+        if (seq === fetchSeq) {
+          set({ available: false, lastError: `本地服务返回 HTTP ${res.status}` })
+        }
+        return null
+      }
       const json = await res.json()
       if (typeof json.controlToken === 'string') controlToken = json.controlToken
       if (seq !== fetchSeq) return json
@@ -533,6 +580,31 @@ function createClient() {
       reconnectTimer = null
       if (active) connect()
     }, 1200)
+  }
+
+  /**
+   * 状态轮询（只在激活期间、且还没连上中继时跑）：
+   * 1) 本地服务/中继在插件启用之后才就绪（冷启动竞态）时，界面能自己恢复，
+   *    而不是要用户去开关一次插件；
+   * 2) 中继被别处启停时，running 不会一直停留在旧值。
+   */
+  let statusPollTimer: number | null = null
+  const stopStatusPoll = () => {
+    if (statusPollTimer === null) return
+    window.clearInterval(statusPollTimer)
+    statusPollTimer = null
+  }
+  const startStatusPoll = () => {
+    if (statusPollTimer !== null) return
+    statusPollTimer = window.setInterval(() => {
+      if (!active || (snapshot.connected && snapshot.running)) return
+      void fetchStatus().then(() => {
+        // 已经能取到令牌但 ctrl WS 还没建起来（例如中继刚被启动）→ 补连一次
+        if (active && !snapshot.connected && controlToken) connect()
+        // 中继没跑就自动拉起（内部 15s 限频，且尊重「用户手动停止」）
+        if (!snapshot.running) void ensureRelayRunning()
+      })
+    }, 5000)
   }
 
   const disconnect = () => {
@@ -802,18 +874,72 @@ function createClient() {
 
   /** 中继控制：启动/停止/重启监听（可附带设置同步；devMode 为运行时透传字段）。 */
   const control = async (action: 'start' | 'stop' | 'restart', settings?: Partial<DGLabSettings> & { devMode?: boolean }) => {
+    const label = { start: '启动', stop: '停止', restart: '重启' }[action]
+    const post = () => fetch(`${dglabApiBase()}/control`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-dglab-control-token': controlToken },
+      body: JSON.stringify({ action, ...(settings ? { settings } : {}) }),
+    })
     try {
-      // /control 现在要求控制令牌（与 WS 控制通道同源校验）：没令牌时先取一次
+      // /control 要求控制令牌（与 WS 控制通道同源校验）：没令牌时先取一次
       if (!controlToken) await fetchStatus()
-      await fetch(`${dglabApiBase()}/control`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-dglab-control-token': controlToken },
-        body: JSON.stringify({ action, ...(settings ? { settings } : {}) }),
-      })
-      void fetchStatus()
-    } catch {
-      set({ lastError: '本地服务不可用' })
+      let res = await post()
+      // 令牌随本地服务进程更换：403 时丢掉旧令牌重取再试一次，
+      // 否则「启用插件/点启动中继」会静默失败，用户只看到按钮没反应
+      if (res.status === 403) {
+        controlToken = ''
+        await fetchStatus()
+        if (controlToken) res = await post()
+      }
+      if (!res.ok) {
+        reportError(`${label}中继失败：本地服务返回 HTTP ${res.status}`)
+        return
+      }
+      pushLocalLog(`已请求${label}中继`)
+      await fetchStatus()
+      // 启动/重启后再核实一次：中继可能因端口占用、防火墙等起不来，不能只报「请求已发出」
+      if (action !== 'stop') {
+        window.setTimeout(() => {
+          void fetchStatus().then((status) => {
+            if (!status || status.running) return
+            pushLocalLog('中继仍未启动，请查看上方日志（常见原因：端口占用、防火墙拦截）')
+          })
+        }, 1500)
+      }
+    } catch (error) {
+      reportError('本地服务不可用，请使用桌面版', error)
     }
+  }
+
+  /**
+   * 保证中继在运行（默认开）：插件启用、打开控制台/连接引导时调用。
+   * 用户手动停过就尊重其选择（relayManuallyStopped），不再自动拉起。
+   */
+  let lastEnsureAt = 0
+  const ensureRelayRunning = async () => {
+    if (!active || relayManuallyStopped) return
+    if (Date.now() - lastEnsureAt < 15000) return
+    lastEnsureAt = Date.now()
+    await enqueueControl(async () => {
+      const settings = loadDGLabSettings()
+      const status = await fetchStatus()
+      if (!status || status.running || relayManuallyStopped) return
+      await control('start', { port: settings.port, version: settings.version, address: settings.address, devMode: isDeveloperMode() })
+    })
+  }
+
+  /** 用户手动启停中继：与自动启停区分开，手动停止后不再被自动拉起。 */
+  const manualControl = async (action: 'start' | 'stop') => {
+    relayManuallyStopped = action === 'stop'
+    pushLocalLog(action === 'stop'
+      ? '已手动停止中继（需重新启用插件或手动启动才会开启）'
+      : '已手动启动中继')
+    const settings = loadDGLabSettings()
+    await enqueueControl(() => control(action, {
+      port: settings.port, version: settings.version, address: settings.address, devMode: isDeveloperMode(),
+    }))
+    // 手动启动后允许后续自动保活重新计时，避免刚点完就被 15s 限频挡住
+    if (action === 'start') lastEnsureAt = 0
   }
 
   // 开发者模式切换 → 只下发 devMode 补丁（完整设置走 sendSettings，但那里不含 devMode）
@@ -831,6 +957,8 @@ function createClient() {
     },
     activate: () => {
       active = true
+      // 重新启用插件 = 回到默认（中继开着）：清掉上次的手动停止意图
+      relayManuallyStopped = false
       const gen = ++activationGen
       /**
        * 整段激活流程都排进控制队列，而不是只把 restart 排进去。
@@ -857,11 +985,13 @@ function createClient() {
         connect()
       })
       ensureStream()
+      startStatusPoll()
     },
     deactivate: () => {
       active = false
       // 作废进行中的激活，避免它的 restart/connect 覆盖本次停用
       activationGen += 1
+      stopStatusPoll()
       disconnect()
       ensureStream()
       void enqueueControl(() => control('stop'))
@@ -904,6 +1034,10 @@ function createClient() {
       }
     },
     control,
+    /** 保证中继在跑（默认开；尊重用户手动停止） */
+    ensureRelayRunning,
+    /** 用户手动启停中继（手动停止后不再自动拉起） */
+    manualControl,
   }
 }
 

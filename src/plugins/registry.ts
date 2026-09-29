@@ -8,6 +8,15 @@
 
 import type { PluginContext, PluginManifest, PluginRuntime } from './types'
 import { getImportedPluginManifests } from '../services/pluginStore'
+import { isDesktop } from '../platform'
+
+/**
+ * 当前环境是否可运行桌面专属插件（desktopOnly）：
+ * 需要真 Electron 桥（排除 Android/浏览器端的 electronShim 桩）。
+ */
+export function isDesktopPluginEnvironment(): boolean {
+  return isDesktop()
+}
 
 /** 内置插件注册表（id -> manifest + runtime）。 */
 const builtinPlugins = new Map<string, { manifest: PluginManifest; runtime?: PluginRuntime }>()

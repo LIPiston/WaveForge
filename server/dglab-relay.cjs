@@ -42,29 +42,65 @@ const QR_V3 = (wsUrl) => `https://www.dungeon-lab.com/app-download.php#DGLAB-SOC
 
 /* ---------------------------------- 工具 ---------------------------------- */
 
-/** 网卡列表（含名称），私网段优先、跳过链路本地；供控制台选择「用哪个网卡给手机扫码」。 */
-function networkInterfaces() {
+/**
+ * 虚拟网卡关键词（小写子串匹配，天然大小写不敏感）。
+ * VMware / Hyper-V / Tailscale / ZeroTier 这类网卡的地址手机基本不可达，
+ * 不能拿来当默认扫码地址（排序垫底，控制台里仍可手动选中）。
+ */
+const VIRTUAL_IF_KEYWORDS = [
+  'vmware', 'vmnet', 'virtualbox', 'vbox', 'hyper-v', 'vethernet',
+  'tailscale', 'zerotier', 'wireguard', 'openvpn', 'tap-', 'tun', 'wintun',
+  'docker', 'wsl', 'bluetooth', 'radmin', 'hamachi', 'npcap', 'vpn', 'virtual', 'loopback',
+]
+/** 无线网卡：手机连同一个 WiFi 时首选 */
+const WIRELESS_IF_KEYWORDS = ['wlan', 'wi-fi', 'wifi', 'wireless', '无线', 'wlp']
+/** 实体有线网卡：次选 */
+const WIRED_IF_KEYWORDS = ['ethernet', '以太网', 'eth', 'en0', 'lan']
+
+/** 网卡打分：无线 > 实体有线 > 其它；私网段加分，虚拟网卡垫底。 */
+function scoreInterface(name, address) {
+  const lower = String(name).toLowerCase()
+  const virtual = VIRTUAL_IF_KEYWORDS.some(k => lower.includes(k))
+  const wireless = WIRELESS_IF_KEYWORDS.some(k => lower.includes(k))
+  const wired = WIRED_IF_KEYWORDS.some(k => lower.includes(k))
+  const parts = String(address).split('.').map(Number)
+  const [a, b] = parts
+  const isPrivate = a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+  // 100.64.0.0/10 是运营商级 NAT 段，Tailscale 等虚拟组网就用它——手机连不上
+  const isCgnat = a === 100 && b >= 64 && b <= 127
+  let score = 0
+  if (wireless) score += 100
+  else if (wired) score += 80
+  if (isPrivate) score += 40
+  if (isCgnat) score -= 50
+  if (virtual) score -= 200
+  return { score, virtual, kind: wireless ? 'wireless' : wired ? 'wired' : 'other' }
+}
+
+/** 网卡列表（含名称），按「手机可达性」排序：默认地址取第一个，虚拟网卡排最后。 */
+function rankInterfaces(nets) {
   const list = []
-  const isPrivate = (addr) => {
-    const parts = String(addr).split('.').map(Number)
-    if (parts.length !== 4) return false
-    return parts[0] === 10
-      || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
-      || (parts[0] === 192 && parts[1] === 168)
-  }
-  try {
-    const nets = os.networkInterfaces()
-    for (const key of Object.keys(nets)) {
-      for (const item of nets[key] || []) {
-        if (!item.internal && item.family === 'IPv4' && item.address && !item.address.startsWith('169.254.')) {
-          list.push({ address: item.address, name: `${key}${isPrivate(item.address) ? '' : ''}` })
-        }
-      }
+  for (const key of Object.keys(nets || {})) {
+    for (const item of nets[key] || []) {
+      if (item.internal || item.family !== 'IPv4' || !item.address) continue
+      if (item.address.startsWith('169.254.')) continue // 链路本地：没拿到 DHCP 地址
+      const { score, virtual, kind } = scoreInterface(key, item.address)
+      list.push({ address: item.address, name: key, virtual, kind, score })
     }
+  }
+  list.sort((x, y) => y.score - x.score || x.address.localeCompare(y.address))
+  if (!list.length) return [{ address: '127.0.0.1', name: 'localhost', virtual: false, kind: 'other' }]
+  return list.map(({ score, ...rest }) => rest)
+}
+
+function networkInterfaces() {
+  let nets = null
+  try {
+    nets = os.networkInterfaces()
   } catch {
     /* ignore */
   }
-  return list.length ? list : [{ address: '127.0.0.1', name: 'localhost' }]
+  return rankInterfaces(nets)
 }
 
 function lanAddresses() {
@@ -1219,6 +1255,12 @@ const sendV3Pulse = (channel, frames) => {
       ws.close(4000, 'tid mismatch')
       return
     }
+    // 同 tid 重连：先关掉旧 socket 再登记新 socket。否则旧 TCP 半开稍后触发 close 时
+    // 会把 Map 里「新」socket 的条目删掉，造成 App 在线却被判断链（bound=false + safetyStop）
+    const previous = state.app.v4.get(tid)
+    if (previous && previous !== ws && previous.readyState === 1) {
+      try { previous.close(4001, 'replaced by new connection') } catch { /* ignore */ }
+    }
     state.app.v4.set(tid, ws)
     state.bound = true
     log(`V4 App 已连接（${remote}，tid=${tid}）`)
@@ -1266,7 +1308,10 @@ const sendV3Pulse = (channel, frames) => {
       }
     })
     ws.on('close', (code, reason) => {
-      state.app.v4.delete(tid)
+      // 只有 Map 里登记的仍是「本连接」时才清理：重连后旧连接的 close 不能误删新连接
+      if (state.app.v4.get(tid) === ws) {
+        state.app.v4.delete(tid)
+      }
       if (state.app.v4.size === 0) {
         state.bound = false
         state.devices = []
@@ -1325,7 +1370,15 @@ const sendV3Pulse = (channel, frames) => {
   /* ------------------------------ 监听器管理 ------------------------------ */
 
   const startListener = () => {
-    if (state.server) return
+    // 已真正在监听才算启动过；server 对象还在但已不监听（端口被抢/半死）要先清掉重建，
+    // 否则 start/restart 会静默变成空操作——控制台点「启动中继」看起来「没反应」。
+    if (state.server) {
+      if (state.server.listening) return
+      try { state.server.close() } catch { /* ignore */ }
+      state.server = null
+      state.wss = null
+      state.running = false
+    }
     const bind = '0.0.0.0' // 手机局域网扫码需要：恒监听所有网卡
     const port = state.settings.port || DEFAULT_PORT
     const server = http.createServer((req, res) => {
@@ -1347,6 +1400,8 @@ const sendV3Pulse = (channel, frames) => {
         const delay = 1500 * state.listenRetries
         log(`端口 ${port} 被占用，${delay / 1000}s 后自动重试（${state.listenRetries}/5）…`)
         setTimeout(startListener, delay)
+      } else if (error?.code === 'EADDRINUSE') {
+        log(`端口 ${port} 一直被占用：可能有上一次没退干净的 WaveForge 实例。请结束残留进程后，在控制台重新点「启动中继」。`)
       }
     })
     const wss = new WebSocketServer({ noServer: true })
@@ -1362,8 +1417,9 @@ const sendV3Pulse = (channel, frames) => {
       wss.handleUpgrade(req, socket, head, (client) => {
         wss.emit('connection', client, req, target)
       })
-      wss.on('error', () => undefined)
     })
+    // error 监听只注册一次：写在 upgrade 回调里会随每个连接累积（10 次后 MaxListeners 告警）
+    wss.on('error', () => undefined)
     wss.on('connection', (ws, req, target) => {
       if (target === 'ctrl') handleCtrlConnection(ws, req)
       else if (target === 'v3') handleV3App(ws, req)
@@ -1474,4 +1530,4 @@ const sendV3Pulse = (channel, frames) => {
 
 /* ---------------------------------- 映射预设 ---------------------------------- */
 
-module.exports = { createDGLabRelay, DEFAULT_PORT, generateBuiltinWave, frameToHex }
+module.exports = { createDGLabRelay, DEFAULT_PORT, generateBuiltinWave, frameToHex, rankInterfaces }

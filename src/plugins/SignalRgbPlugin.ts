@@ -23,6 +23,7 @@ const manifest: PluginManifest = {
   ],
   source: "builtin",
   needsAudio: true,
+  desktopOnly: true,
 };
 
 const runtime: PluginRuntime = {

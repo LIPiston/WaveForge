@@ -26,7 +26,7 @@ import {
 } from '../plugins/clients/DGLabClient'
 import {
   getWaveLibrary, removeWave, exportWavesAsTxt, DGLAB_WAVES_EVENT, usePluginHostState, closeDGLabConsole,
-  isDGLabWidgetVisible, setDGLabWidgetVisible, DGLAB_WIDGET_EVENT,
+  isDGLabWidgetVisible, setDGLabWidgetVisible, DGLAB_WIDGET_EVENT, markDGLabOobeShown,
 } from '../services/pluginStore'
 import { parseCombinedTxt, parsePulseFile, resampleDesignerWave, importWaves } from '../plugins/clients/waveImport'
 import { OFFICIAL_BUILTIN_WAVES } from '../plugins/clients/officialWaves'
@@ -34,6 +34,7 @@ import { showToast } from '../plugins/toggle'
 import type { WaveDef } from '../plugins/types'
 import DGLabVizCanvas, { type DGLabVizModeId } from './DGLabVizCanvas'
 import DGLabGuideModal from './DGLabGuideModal'
+import DglabOobeGuide from './oobe/DglabOobeGuide'
 import { HelpInfo } from './DGLabHelp'
 
 const DGLAB_LOGO = 'https://www.dungeon-lab.cn/img/logo-new.png'
@@ -210,7 +211,7 @@ function IpSelect({ ips, selected, onSelect }: {
               >
                 <span className="min-w-0">
                   <span className={`block text-xs ${!selected ? 'font-medium' : 'text-white/80'}`} style={!selected ? { color: GOLD } : undefined}>自动选择</span>
-                  <span className="block text-[10px] text-white/40 truncate">优先私网段</span>
+                  <span className="block text-[10px] text-white/40 truncate">优先无线与实体网卡，自动跳过虚拟网卡</span>
                 </span>
                 {!selected && <Check className="w-3.5 h-3.5 shrink-0" style={{ color: GOLD }} />}
               </button>
@@ -225,7 +226,12 @@ function IpSelect({ ips, selected, onSelect }: {
                     style={{ background: active ? 'rgba(255,232,156,0.08)' : 'transparent' }}
                   >
                     <span className="min-w-0">
-                      <span className={`block text-xs truncate ${active ? 'font-medium' : 'text-white/85'}`} style={active ? { color: GOLD } : undefined}>{ip.address}</span>
+                      <span className={`flex items-center gap-1.5 text-xs truncate ${active ? 'font-medium' : 'text-white/85'}`} style={active ? { color: GOLD } : undefined}>
+                        {ip.address}
+                        {ip.virtual && (
+                          <span className="shrink-0 rounded px-1 py-[1px] text-[9px] text-amber-200/80 bg-amber-300/10 border border-amber-300/25">虚拟网卡</span>
+                        )}
+                      </span>
                       <span className="block text-[10px] text-white/40 truncate">{ip.name || '未知网卡'}</span>
                     </span>
                     {active && <Check className="w-3.5 h-3.5 shrink-0" style={{ color: GOLD }} />}
@@ -469,19 +475,35 @@ export default function DGLabConsoleModal() {
   const [guideOpen, setGuideOpen] = useState(false)
   const [connExpanded, setConnExpanded] = useState(false)
   const [wavePanelOpen, setWavePanelOpen] = useState(false)
-  const [lockCaps, setLockCaps] = useState(false)
+  // A/B 上限联动：默认关闭，用户的选择持久化（开了一次就一直开，关了就一直关）
+  const lockCaps = settings.linkCaps
   const [widgetVisible, setWidgetVisible] = useState(() => isDGLabWidgetVisible())
   const [capWarnOpen, setCapWarnOpen] = useState(false)
   const [vizMode, setVizMode] = useState<DGLabVizModeId>('envelope')
+  // 连接引导（OOBE）在控制台弹窗内部整屏呈现，与控制台弹窗同尺寸，不再另开全屏页
+  const [oobeOpen, setOobeOpen] = useState(false)
 
   useTvBack(() => {
+    if (oobeOpen) { closeOobe(); return true } // 兜底：引导自身通常已消费返回（先退回上一步）
     if (capWarnOpen) { setCapWarnOpen(false); return true }
     if (guideOpen) { setGuideOpen(false); return true }
     if (qrZoomOpen) { setQrZoomOpen(false); return true }
     if (logModalOpen) { setLogModalOpen(false); return true }
     if (dglabConsoleOpen) { closeDGLabConsole(); return true }
     return false
-  }, [dglabConsoleOpen, qrZoomOpen, logModalOpen, guideOpen, capWarnOpen])
+  }, [dglabConsoleOpen, qrZoomOpen, logModalOpen, guideOpen, capWarnOpen, oobeOpen])
+
+  // 外部触发连接引导：首次启用自动弹（PluginOverlay 派发）+ 调试脚本手动派发
+  useEffect(() => {
+    const open = () => setOobeOpen(true)
+    window.addEventListener('waveforge:dglab-oobe-open', open)
+    return () => window.removeEventListener('waveforge:dglab-oobe-open', open)
+  }, [])
+
+  const closeOobe = () => {
+    setOobeOpen(false)
+    markDGLabOobeShown()
+  }
 
   // 波形库变化刷新
   useEffect(() => {
@@ -506,11 +528,14 @@ export default function DGLabConsoleModal() {
 
   // 设置变化 → 持久化 + 通知中继
   const update = (patch: Partial<DGLabSettings>) => {
+    const prevCaps = settings.caps
     const next = saveDGLabSettings(patch)
     setSettings(next)
     client.setSettings(patch)
-    // 上限 >100 警告（当前软件一次启动仅弹一次）
-    if ((next.caps.A > 100 || next.caps.B > 100) && !capWarningShownThisSession) {
+    // 上限 >100 警告：只在「由 ≤100 调到 >100」这一步提醒，且当前客户端（本次启动）只弹一次。
+    // 启动时若本身已 >100（用户早已知情并接受），不会补弹；调回 ≤100 后再调高才重新具备提醒资格。
+    const crossedUp = (prevCaps.A <= 100 && next.caps.A > 100) || (prevCaps.B <= 100 && next.caps.B > 100)
+    if (crossedUp && !capWarningShownThisSession) {
       capWarningShownThisSession = true
       setCapWarnOpen(true)
     }
@@ -561,15 +586,23 @@ export default function DGLabConsoleModal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.waveId, settings.waveFreq, waves])
 
-  // 打开控制台时把记住的设置同步给中继
+  // 打开控制台时把记住的设置同步给中继；中继默认开着，没跑就顺手拉起来
   useEffect(() => {
-    if (dglabConsoleOpen) client.updateSettings()
+    if (dglabConsoleOpen) {
+      client.updateSettings()
+      void client.ensureRelayRunning()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dglabConsoleOpen])
 
   if (!dglabConsoleOpen) return null
 
   const address = settings.version === 'v3' ? status.urlV3 : status.urlV4
+  // 实际用于扫码的网卡：用户手选的（仍在列表里）优先，否则取中继默认首选
+  // （中继已按可达性排序：无线 > 实体有线 > 其它，虚拟网卡垫底）
+  const effectiveIf = (settings.address ? status.ips.find(i => i.address === settings.address) : undefined)
+    ?? status.ips[0]
+    ?? null
   const badge = {
     idle: { text: '待启动', color: '#64748b' },
     waiting: { text: '等待扫码', color: GOLD },
@@ -657,9 +690,9 @@ export default function DGLabConsoleModal() {
                 <BookOpen className="w-3.5 h-3.5" />说明
               </button>
               <button
-                onClick={() => window.dispatchEvent(new CustomEvent('waveforge:dglab-oobe-open'))}
+                onClick={() => setOobeOpen(true)}
                 className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-amber-200/80 hover:bg-amber-200/15 transition-colors"
-                title="连接引导：一步步演示手机如何连上当前插件"
+                title="连接引导：手机与插件连接步骤演示"
               >
                 <QrCode className="w-3.5 h-3.5" />连接引导
               </button>
@@ -806,13 +839,14 @@ export default function DGLabConsoleModal() {
                             )}
                           </button>
                           <button
-                            onClick={() => void client.control(status.running ? 'stop' : 'start')}
+                            onClick={() => void client.manualControl(status.running ? 'stop' : 'start')}
                             className="w-full flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium border transition-colors"
                             style={{
                               background: status.running ? 'rgba(239,68,68,0.12)' : 'rgba(255,232,156,0.12)',
                               borderColor: status.running ? 'rgba(239,68,68,0.35)' : 'rgba(255,232,156,0.35)',
                               color: status.running ? '#f87171' : GOLD,
                             }}
+                            title={status.running ? '手动停止中继（需重新启用插件或手动启动才会开启）' : '启动中继'}
                           >
                             {status.running ? <Power className="w-3 h-3" /> : <PlugZap className="w-3 h-3" />}
                             {status.running ? '停止中继' : '启动中继'}
@@ -844,6 +878,16 @@ export default function DGLabConsoleModal() {
                               style={{ borderColor: 'rgba(255,232,156,0.25)' }}
                             />
                           </div>
+                          {!status.running && (
+                            <p className="rounded-lg border px-2.5 py-1.5 text-[10.5px] leading-snug border-amber-300/30 bg-amber-300/10 text-amber-100/85">
+                              中继未启动，当前二维码无法连接；请点击左侧「启动中继」。
+                            </p>
+                          )}
+                          {status.running && effectiveIf?.virtual && (
+                            <p className="rounded-lg border px-2.5 py-1.5 text-[10.5px] leading-snug border-amber-300/30 bg-amber-300/10 text-amber-100/85">
+                              当前扫码地址来自虚拟网卡（{effectiveIf.name}），手机可能无法访问；建议在「网卡」中改用 WLAN 或以太网。
+                            </p>
+                          )}
                           <p className="text-[10px] text-white/30 leading-snug">① 手机 App 蓝牙连好设备、连同一 WiFi<br />② App「Socket 控制/扫码连接」扫上方码</p>
                         </div>
                       </div>
@@ -948,23 +992,25 @@ export default function DGLabConsoleModal() {
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-white/45">强度上限（0-200，App 硬上限会自动钳位）</span>
-                    <button
-                      type="button"
-                      onClick={() => setLockCaps(v => !v)}
-                      title={lockCaps ? '联动已开启：调 A 时 B 同步设置' : '点击开启联动：调 A 时 B 同步设置'}
-                      className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] border transition-colors ${
-                        lockCaps ? 'text-black border-transparent' : 'bg-white/[0.06] border-white/10 text-white/55 hover:bg-white/[0.12]'
-                      }`}
-                      style={lockCaps ? { background: `linear-gradient(135deg,${GOLD},${GOLD_DEEP})` } : undefined}
-                    >
-                      <Link2 className="w-3.5 h-3.5" />
-                      {lockCaps ? '已联动' : '联动设置'}
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
+                  <span className="text-xs text-white/45">强度上限（0-200，App 硬上限会自动钳位）</span>
+                  {/* 联动开关放在 A/B 中间：位置本身说明它联动的是这两路 */}
+                  <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2">
                     <SliderRow label="A 上限" value={settings.caps.A} min={0} max={200} step={1} onChange={(v) => updateCaps('A', v)} helpId="capsA" />
+                    <div className="flex flex-col items-center gap-0.5 pt-[3px]">
+                      <button
+                        type="button"
+                        onClick={() => update({ linkCaps: !lockCaps })}
+                        aria-pressed={lockCaps}
+                        title={lockCaps ? '联动已开启：调 A 时 B 同步设置（点击关闭）' : '点击开启联动：调 A 时 B 同步设置'}
+                        className={`flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${
+                          lockCaps ? 'text-black border-transparent' : 'bg-white/[0.06] border-white/10 text-white/50 hover:bg-white/[0.12]'
+                        }`}
+                        style={lockCaps ? { background: `linear-gradient(135deg,${GOLD},${GOLD_DEEP})` } : undefined}
+                      >
+                        <Link2 className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="text-[9.5px] leading-none" style={{ color: lockCaps ? GOLD : 'rgba(255,255,255,0.38)' }}>{lockCaps ? '联动' : '未联动'}</span>
+                    </div>
                     <SliderRow label="B 上限" value={settings.caps.B} min={0} max={200} step={1} onChange={(v) => updateCaps('B', v)} helpId="capsB" />
                   </div>
                   <ToggleRow label="节拍脉冲" desc="重音/鼓点叠加短促脉冲" checked={settings.pulseEnabled} onChange={(v) => update({ pulseEnabled: v })} />
@@ -984,6 +1030,16 @@ export default function DGLabConsoleModal() {
               <b style={{ color: GOLD }}>严禁</b>将贴片或其他配件用于上半身的任何地方（耻骨区之上）。谨慎设置强度上限；如有不适立即暂停（播放页「波形输出」按钮可一键停）。本插件仅供娱乐，一切风险与后果需自行承担。
             </p>
           </div>
+
+          {/* 连接引导（OOBE）：铺满控制台弹窗面板，弹窗内做引导，不另开全屏页 */}
+          {oobeOpen && (
+            <DglabOobeGuide
+              contained
+              closable
+              onComplete={closeOobe}
+              onSkip={closeOobe}
+            />
+          )}
         </motion.div>
 
         {/* 二维码放大 */}
@@ -1102,7 +1158,7 @@ export default function DGLabConsoleModal() {
                 <p className="mt-2.5 text-[13px] leading-relaxed text-white/65">
                   请根据<b className="text-white">自身体质</b>进行调整（「强度差」选弱体质更柔和），<b style={{ color: GOLD }}>切勿拉满至上限</b>。
                 </p>
-                <p className="mt-2 text-[11px] text-white/40">本提醒在当前软件启动期间只提示一次，重启软件后可再次提示。</p>
+                <p className="mt-2 text-[11px] text-white/40">把上限从 100 以内调高到 100 以上时提醒；当前软件启动期间只提示一次，重启后可再次提示。</p>
                 <div className="mt-5 flex items-center justify-end gap-3">
                   <button onClick={() => setCapWarnOpen(false)} className="rounded-xl px-5 py-2 text-sm font-semibold text-black" style={{ background: `linear-gradient(135deg,${GOLD},${GOLD_DEEP})` }}>
                     我知道了
