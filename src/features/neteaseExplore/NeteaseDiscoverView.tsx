@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, ChevronDown, ChevronUp, Compass, Headphones, Loader2, RefreshCw } from 'lucide-react'
+import { useTvBack } from '../../tv/tvCore'
+import { AlertCircle, ChevronDown, ChevronRight, ChevronUp, Compass, Headphones, Loader2, RefreshCw, User, Disc3, ListMusic, Gem } from 'lucide-react'
 import type { NeteaseNativeBlock, NeteaseNativeResource } from './model'
 import { normalizeNeteaseLinkPage, normalizeNeteaseResource } from './model'
 import type { Song } from '../../services/musicApi'
 import { NeteaseNativeBlockView, type ResourceCallbacks } from './NeteaseResourceView'
+import NeteaseBannerCarousel from './NeteaseBannerCarousel'
 import {
   fetchNeteaseCubePage,
   fetchNeteaseLinkPage,
@@ -23,6 +25,8 @@ import {
 } from './discover'
 import { fetchNeteaseRoam } from './api'
 import NeteasePodcastPages, { type NeteasePodcastView } from './NeteasePodcastPages'
+import { NeteaseArtistBrowsePage, NeteaseMusicZonePage, NeteaseReportPanel, NeteaseTreasureLibraryPage } from './NeteaseExploreMorePages'
+import { getUserRecordRank } from '../../services/musicApi'
 import NeteaseCubePageView from './NeteaseCubePageView'
 import NeteaseVipView from './NeteaseVipView'
 
@@ -48,6 +52,8 @@ interface NeteaseDiscoverViewProps {
   jump?: { tab: NeteaseDiscoverTab; channelCode?: string; token: number }
   /** 站内打开单个 cube 页（如「宝藏音乐人」） */
   cubePage?: { pageId: string; title: string; token: number }
+  /** 宿主面板是否可见：false 时本页不消费 TV 返回键（冻结隐藏页吞键防护） */
+  active?: boolean
 }
 
 interface ChannelContent {
@@ -71,7 +77,7 @@ const PLAYLIST_CHANNEL = 'playlist'
 const VIP_CHANNEL = 'vip'
 const SQUARE_PAGE_SIZE = 20
 
-export default function NeteaseDiscoverView({ accent, callbacks, initialChannelCode, accountUserId, tab, onTabChange, jump, cubePage }: NeteaseDiscoverViewProps) {
+export default function NeteaseDiscoverView({ accent, callbacks, initialChannelCode, accountUserId, tab, onTabChange, jump, cubePage, active = true }: NeteaseDiscoverViewProps) {
   const [channels, setChannels] = useState<NeteaseMusicChannel[]>([])
   const [channelsError, setChannelsError] = useState('')
   const [channelsLoading, setChannelsLoading] = useState(true)
@@ -93,6 +99,11 @@ export default function NeteaseDiscoverView({ accent, callbacks, initialChannelC
   const [podcastViewVisible, setPodcastViewVisible] = useState(false)
   const [openCube, setOpenCube] = useState<{ pageId: string; title: string } | null>(null)
   const [openCubeVisible, setOpenCubeVisible] = useState(false)
+  // 「探索更多」二级页（按歌手浏览/音乐专区/宝藏曲库/听歌报告）
+  const [exploreMoreView, setExploreMoreView] = useState<'artist' | 'zone' | 'treasure' | 'report' | null>(null)
+  const [exploreMoreVisible, setExploreMoreVisible] = useState(false)
+  // 听歌报告摘要（官方「听歌排行」数据，用于精选页底部的简要卡）
+  const [reportSummary, setReportSummary] = useState<{ uniqueSongs: number; totalPlays: number; favorite: { name: string; artist: string } | null } | null>(null)
   // 层级导航：进入下一级回到顶部，返回时还原上一级的滚动位置，并触发过渡动画
   const [navKey, setNavKey] = useState(0)
   const scrollStackRef = useRef<number[]>([])
@@ -167,6 +178,25 @@ export default function NeteaseDiscoverView({ accent, callbacks, initialChannelC
       .finally(() => { if (!controller.signal.aborted) setChannelsLoading(false) })
     return () => controller.abort()
   }, [refreshRevision])
+
+  // 听歌报告摘要：本周听歌排行 top1 + 条数（登录且有账号 id 时）
+  useEffect(() => {
+    if (!accountUserId) { setReportSummary(null); return }
+    const controller = new AbortController()
+    getUserRecordRank(accountUserId, 1)
+      .then((data: any) => {
+        if (controller.signal.aborted) return
+        const raw = data?.weekData || []
+        const songs = (Array.isArray(raw) ? raw : []).map((item: any) => {
+          const track = item?.song && typeof item.song === 'object' ? item.song : item
+          return { id: Number(track?.id ?? 0), name: String(track?.name || ''), playCount: Number(track?.playCount ?? item?.playCount ?? 0) }
+        }).filter(song => song.id && song.name)
+        if (!songs.length) { setReportSummary(null); return }
+        setReportSummary({ uniqueSongs: songs.length, totalPlays: songs.reduce((sum, song) => sum + song.playCount, 0), favorite: { name: songs[0].name, artist: '' } })
+      })
+      .catch(() => { if (!controller.signal.aborted) setReportSummary(null) })
+    return () => controller.abort()
+  }, [accountUserId])
 
   const loadChannel = useCallback(async (channel: NeteaseMusicChannel, signal: AbortSignal, force = false) => {
     // 已经加载好的频道直接复用：在频道 chip 之间来回点（A→B→A）不该每次都清空重拉一遍。
@@ -293,6 +323,10 @@ export default function NeteaseDiscoverView({ accent, callbacks, initialChannelC
   const cubeTabs = musicContent.cubeTabs
   const showCubeTabs = cubeTabs.length > 1
   const visibleBlocks = showCubeTabs ? (cubeTabs[activeCubeTab]?.blocks || []) : musicContent.blocks
+  // 官方客户端同款：banner 块从区块流中抽出，渲染成精选页顶部的大图轮播
+  const bannerBlocks = visibleBlocks.filter(block => /banner/i.test(block.blockCode) || /banner/i.test(block.showType))
+  const contentBlocks = visibleBlocks.filter(block => !bannerBlocks.includes(block))
+  const bannerResources = bannerBlocks.flatMap(block => block.resources)
 
   const fmRequestedRef = useRef(new Set<string>())
   useEffect(() => {
@@ -320,6 +354,15 @@ export default function NeteaseDiscoverView({ accent, callbacks, initialChannelC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
+  // TV 返回键：二级层逐级退出（探索更多 → cube 页 → 播客二级页），返回时还原进入前滚动位置
+  useTvBack(() => {
+    if (active === false) return false
+    if (exploreMoreView) { navigate('restore'); setExploreMoreVisible(false); setExploreMoreView(null); return true }
+    if (openCube) { navigate('restore'); setOpenCubeVisible(false); setOpenCube(null); return true }
+    if (podcastView) { navigate('restore-home'); setPodcastViewVisible(false); setPodcastView(null); return true }
+    return false
+  }, [active, exploreMoreView, openCube, podcastView])
+
   const loadMoreFm = useCallback(async () => {
     if (!activeChannel) return
     const code = activeChannel.code
@@ -340,9 +383,11 @@ export default function NeteaseDiscoverView({ accent, callbacks, initialChannelC
   }, [activeChannel, fmExtra])
 
   // 音乐 / 播客两个半边都常驻挂载，Tab 切换只切显示（display:none），不再卸载重建、也不重拉数据
-  const musicHalfVisible = tab === MUSIC_TAB && !openCubeVisible
-  const podcastHomeVisible = tab === PODCAST_TAB && !openCubeVisible && !podcastViewVisible
+  const exploreMoreVisibleFlag = exploreMoreView != null
+  const musicHalfVisible = tab === MUSIC_TAB && !openCubeVisible && !exploreMoreVisibleFlag
+  const podcastHomeVisible = tab === PODCAST_TAB && !openCubeVisible && !podcastViewVisible && !exploreMoreVisibleFlag
   const podcastPageVisible = tab === PODCAST_TAB && !openCubeVisible && podcastViewVisible
+  const exploreMorePageVisible = tab === MUSIC_TAB && exploreMoreVisibleFlag
 
   const activeFm = activeChannel ? fmExtra[activeChannel.code] : undefined
   const fmBlock = activeFm && activeFm.songs.length > 0
@@ -437,7 +482,10 @@ export default function NeteaseDiscoverView({ accent, callbacks, initialChannelC
           ? <div className="space-y-8"><div className="h-6 w-40 animate-pulse rounded bg-white/[0.06]" /><div className="flex gap-4 overflow-hidden">{Array.from({ length: 6 }).map((_, index) => <div key={index} className="aspect-square w-44 shrink-0 animate-pulse rounded-md bg-white/[0.055]" />)}</div></div>
           : (
             <div className="space-y-12">
-              {visibleBlocks.map((block, index) => (
+              {bannerResources.length > 0 && (
+                <NeteaseBannerCarousel resources={bannerResources} callbacks={callbacks} />
+              )}
+              {contentBlocks.map((block, index) => (
                 <NeteaseNativeBlockView key={`${block.blockCode}-${block.id}-${index}`} block={block} callbacks={callbacks} />
               ))}
               {!musicContent.error && visibleBlocks.length === 0 && (
@@ -473,6 +521,63 @@ export default function NeteaseDiscoverView({ accent, callbacks, initialChannelC
                     </button>
                   </div>
                 </div>
+              )}
+
+              {/* 探索更多（官方 App 发现页底部同款四入口） */}
+              {activeCode === FEATURE_CHANNEL && (
+                <div>
+                  <h3 className="mb-2 text-base font-semibold text-white/90">探索更多</h3>
+                  <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.03]">
+                    {([
+                      { key: 'artist', label: '按歌手浏览', desc: '按地区与性别分类找歌手', Icon: User },
+                      { key: 'zone', label: '音乐专区', desc: '新歌速递 · 新碟上架', Icon: Disc3 },
+                      { key: 'playlist-square', label: '歌单广场', desc: '按分类逛海量歌单', Icon: ListMusic },
+                      { key: 'treasure', label: '宝藏曲库', desc: '精品歌单墙', Icon: Gem },
+                    ] as const).map(({ key, label, desc, Icon }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => {
+                          if (key === 'playlist-square') {
+                            setActiveCode(PLAYLIST_CHANNEL)
+                            navigate('top')
+                            return
+                          }
+                          navigate('push')
+                          setExploreMoreView(key as 'artist' | 'zone' | 'treasure')
+                          setExploreMoreVisible(true)
+                        }}
+                        className="flex w-full items-center gap-3 border-b border-white/[0.05] px-4 py-3.5 text-left transition last:border-b-0 hover:bg-white/[0.05]"
+                      >
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.07]" style={{ color: accent }}>
+                          <Icon className="h-4 w-4" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-medium text-white/88">{label}</span>
+                          <span className="block text-xs text-white/40">{desc}</span>
+                        </span>
+                        <ChevronRight className="h-4 w-4 shrink-0 text-white/30" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 听歌报告简要卡（官方「听歌排行」数据，点击深入） */}
+              {reportSummary && (
+                <button
+                  type="button"
+                  onClick={() => { navigate('push'); setExploreMoreView('report'); setExploreMoreVisible(true) }}
+                  className="group flex w-full items-center gap-4 rounded-[20px] border border-white/[0.08] bg-white/[0.035] p-5 text-left transition hover:bg-white/[0.07]"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-base font-semibold text-white/92">听歌报告</span>
+                    <span className="mt-0.5 block truncate text-xs text-white/40">
+                      本周已听 {reportSummary.uniqueSongs} 首 · 总播放 {reportSummary.totalPlays.toLocaleString()} 次{reportSummary.favorite ? ` · 最爱《${reportSummary.favorite.name}》` : ''}
+                    </span>
+                  </span>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-white/30 transition group-hover:text-white/70" />
+                </button>
               )}
             </div>
           )}
@@ -548,6 +653,23 @@ export default function NeteaseDiscoverView({ accent, callbacks, initialChannelC
       {openCube && (
         <div className={openCubeVisible ? 'contents' : 'hidden'} aria-hidden={!openCubeVisible}>
           <NeteaseCubePageView pageId={openCube.pageId} title={openCube.title} callbacks={callbacks} onBack={() => { navigate('restore'); setOpenCubeVisible(false) }} />
+        </div>
+      )}
+
+      {exploreMoreView && (
+        <div className={exploreMorePageVisible ? 'contents' : 'hidden'} aria-hidden={!exploreMorePageVisible}>
+          {exploreMoreView === 'artist' && (
+            <NeteaseArtistBrowsePage accent={accent} callbacks={callbacks} onBack={() => { navigate('restore'); setExploreMoreVisible(false); setExploreMoreView(null) }} />
+          )}
+          {exploreMoreView === 'zone' && (
+            <NeteaseMusicZonePage accent={accent} callbacks={callbacks} onBack={() => { navigate('restore'); setExploreMoreVisible(false); setExploreMoreView(null) }} />
+          )}
+          {exploreMoreView === 'treasure' && (
+            <NeteaseTreasureLibraryPage accent={accent} callbacks={callbacks} onBack={() => { navigate('restore'); setExploreMoreVisible(false); setExploreMoreView(null) }} />
+          )}
+          {exploreMoreView === 'report' && (
+            <NeteaseReportPanel accent={accent} accountUserId={accountUserId} onBack={() => { navigate('restore'); setExploreMoreVisible(false); setExploreMoreView(null) }} />
+          )}
         </div>
       )}
 

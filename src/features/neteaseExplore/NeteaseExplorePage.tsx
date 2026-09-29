@@ -73,6 +73,8 @@ interface NeteaseExplorePageProps {
   onPlaylistContextMenu: (event: React.MouseEvent, playlist: ExplorePlaylist) => void
   onAddToFavorites?: (song: Song) => void | Promise<boolean>
   onRemoveFromFavorites?: (song: Song) => void | Promise<boolean>
+  /** 宿主面板是否可见：false 时本页不消费 TV 返回键（冻结隐藏页吞键防护） */
+  active?: boolean
 }
 
 interface SimilarPanelState {
@@ -146,6 +148,8 @@ export default function NeteaseExplorePage({
   onPlaylistContextMenu,
   onAddToFavorites,
   onRemoveFromFavorites,
+  /** 宿主面板是否可见（传统模式冻结的历史页传 false）：隐藏时不消费 TV 返回键 */
+  active = true,
 }: NeteaseExplorePageProps) {
   const [home, setHome] = useState<NeteaseNativeHome | null>(null)
   const [linkHome, setLinkHome] = useState<NeteaseNativeHome | null>(null)
@@ -190,6 +194,16 @@ export default function NeteaseExplorePage({
   /** 电台/播客节目详情（二级入口） */
   const [radioDetail, setRadioDetail] = useState<NeteaseRadioDetailTarget | null>(null)
   const [radioDetailVisible, setRadioDetailVisible] = useState(false)
+  // TV 返回键：二级面板逐级退出（网页面板 → 电台详情 → 用户主页 → 相似推荐 → 每日推荐）
+  useTvBack(() => {
+    if (active === false) return false
+    if (webTarget) { setWebTarget(null); return true }
+    if (radioDetail && radioDetailVisible) { setRadioDetailVisible(false); setRadioDetail(null); return true }
+    if (profile && profileVisible) { setProfileVisible(false); setProfile(null); return true }
+    if (similar && similarVisible) { setSimilarVisible(false); setSimilar(null); return true }
+    if (dailySongs && dailyVisible) { setDailyVisible(false); return true }
+    return false
+  }, [active, webTarget, radioDetail, radioDetailVisible, profile, profileVisible, similar, similarVisible, dailySongs, dailyVisible])
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set())
   const [favoritesReady, setFavoritesReady] = useState(false)
   const [favoriteRefreshRevision, setFavoriteRefreshRevision] = useState(0)
@@ -1068,7 +1082,7 @@ export default function NeteaseExplorePage({
 
       {(discoverVisited || activeTab === 'discover') && (
         <div className={activeTab === 'discover' ? 'contents' : 'hidden'}>
-          <NeteaseDiscoverView accent={accent} callbacks={discoverCallbacks} accountUserId={accountUserId} tab={discoverTab} onTabChange={setDiscoverTab} jump={discoverJump || undefined} cubePage={cubePageRequest || undefined} />
+          <NeteaseDiscoverView accent={accent} callbacks={discoverCallbacks} accountUserId={accountUserId} tab={discoverTab} onTabChange={setDiscoverTab} jump={discoverJump || undefined} cubePage={cubePageRequest || undefined} active={active} />
         </div>
       )}
 
@@ -1098,3 +1112,4 @@ export default function NeteaseExplorePage({
     </div>
   )
 }
+import { useTvBack } from '../../tv/tvCore'

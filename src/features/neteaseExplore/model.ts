@@ -847,6 +847,10 @@ export function normalizeNeteaseFlow(payload: any): NeteaseNativeFlow {
  */
 export const NETEASE_EXCLUDED_POSITIONS = new Set([
   'INFINITE_PODCAST_HOMEPAGE_VOICEBOOK_TAB',
+  // 「云村出品」整条是运营活动/周边推广位（官方 App 同位置），按广告处理整块隐藏
+  'PAGE_DISCOVERY_CLOUD_VILLAGE_PUBLISH_LOCATION',
+  // 「数字专辑」卡 = 付费内容推广（与 QQ 乐馆数字专辑同规则），不展示
+  'PAGE_DISCOVERY_DIGITAL_ALBUM_CARD',
 ])
 
 export function isNeteaseExcludedPosition(code: string): boolean {
@@ -855,10 +859,15 @@ export function isNeteaseExcludedPosition(code: string): boolean {
 
 // 商业推广/广告插卡：按投放标记与「鲍比」主题关键字双重过滤
 const AD_TITLE_PATTERN = /鲍比|BOBBY|跨时空对话/
+// 官方 banner 角标 typeTitle 里的纯活动推广（出道周年/星火计划/会员权益解锁等）按广告排除；
+// 「新歌首发/热歌推荐/歌单推荐/新碟首发/数字专辑」是官方内容，保留
+const AD_SUPERTITLE_PATTERN = /活动|星火计划|会员权益|福利|解锁/
 export function isNeteaseAdResource(resource: NeteaseNativeResource): boolean {
   const raw = resource.raw || {}
   const semantic = `${resource.title} ${resource.subtitle} ${raw.typeTitle || ''} ${raw.bannerBizType || ''} ${resource.actionUrl}`
   if (AD_TITLE_PATTERN.test(semantic)) return true
+  const superTitle = raw.uiElement?.superscript?.title || raw.superscript?.title || raw.extInfo?.superscript?.title || raw.typeTitle || ''
+  if (typeof superTitle === 'string' && AD_SUPERTITLE_PATTERN.test(superTitle)) return true
   const adInfo = raw.adInfo || raw.extInfo?.adInfo || raw.bannerInfo?.adInfo
   if (adInfo && (adInfo.adId || adInfo.creativeId || adInfo.bidType)) return true
   if (raw.fromAd === true || raw.bindAd === true) return true

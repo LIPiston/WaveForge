@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ExternalLink, Loader2, RotateCw, X } from 'lucide-react'
+import { openExternalLink } from '../../utils/externalLink'
 
 // src/features/neteaseExplore/NeteaseWebPanel.tsx
 // 站内网页面板：网易云的 H5 / 专辑商城 / 编辑部专题等页面在应用内打开，
@@ -26,7 +27,7 @@ interface ElectronBridge {
 function externalOpen(url: string) {
   const bridge = (window as unknown as { electron?: ElectronBridge }).electron
   if (bridge?.openExternal) void bridge.openExternal(url)
-  else window.open(url, '_blank', 'noopener,noreferrer')
+  else openExternalLink(url)
 }
 
 export default function NeteaseWebPanel({ target, onClose }: NeteaseWebPanelProps) {

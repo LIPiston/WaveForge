@@ -1,4 +1,4 @@
-import { Ban, ChevronRight, Crown, Disc3, ExternalLink, Film, Heart, Info, MessageSquareText, Play, Radio, UserRound } from 'lucide-react'
+import { Ban, ChevronRight, Crown, Disc3, ExternalLink, Film, Heart, Info, MessageSquareText, Play, Radio, UserRound , Headphones} from 'lucide-react'
 import { HorizontalShelf } from '../../components/apple-explore/HorizontalShelf'
 import CachedImage from '../../components/CachedImage'
 import type { ExplorePlaylist } from '../../services/exploreApi'
@@ -90,6 +90,18 @@ function ResourceMetaChips({ resource }: { resource: NeteaseNativeResource }) {
     <span className="flex shrink-0 items-center gap-1">
       {badge && <span className={`rounded border px-1 text-[10px] leading-4 ${badgeTone}`}>{badge}</span>}
       {reason && <span className="rounded bg-[#ff4d67]/12 px-1 text-[10px] leading-4 text-[#ff8b9c]">{reason}</span>}
+    </span>
+  )
+}
+
+/** 官方歌单/音乐人卡片左上角的「耳机 + 播放量」角标（甄选歌单/宝藏音乐人等） */
+function PlayCountBadge({ resource }: { resource: NeteaseNativeResource }) {
+  const count = resource.playCount
+  if (!count || count <= 0) return null
+  return (
+    <span className="absolute left-2 top-2 flex h-6 items-center gap-1 rounded-full bg-black/55 px-2 text-[11px] text-white/92 backdrop-blur">
+      <Headphones className="h-3 w-3" />
+      {formatNeteaseCount(count)}
     </span>
   )
 }
@@ -201,6 +213,7 @@ function CoverShelf({ resources, callbacks, title }: { resources: NeteaseNativeR
           >
             <span className="relative block">
               <ResourceImage resource={resource} className="aspect-square rounded-md" />
+              <PlayCountBadge resource={resource} />
               {resource.action.type !== 'none' && <span className="absolute bottom-3 right-3 flex h-9 w-9 translate-y-1 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-lg transition group-hover:translate-y-0 group-hover:opacity-100"><Icon className="h-4 w-4" /></span>}
               {hasDetail && (
                 <span
@@ -248,7 +261,7 @@ function MixedGrid({ resources, callbacks }: { resources: NeteaseNativeResource[
             else if (resource.song) callbacks.onSongContextMenu(event, resource.song, songs)
           }} className={`group flex h-[108px] min-w-0 items-center gap-3 overflow-hidden rounded-md border border-white/[0.075] bg-white/[0.035] p-3 text-left transition hover:bg-white/[0.075] disabled:cursor-not-allowed disabled:opacity-50 ${CARD_FOCUS}`}>
             <ResourceImage resource={resource} className="h-16 w-16 shrink-0 rounded-md" />
-            <span className="min-w-0 flex-1"><span className="flex min-w-0 items-start gap-1.5"><span className="min-w-0 flex-1 line-clamp-2 text-sm font-medium text-white/86">{resource.title}</span>{resource.song && <SongRestrictionBadges song={resource.song} entitlement={callbacks.entitlement} />}</span><span className="mt-1 line-clamp-2 text-xs leading-relaxed text-white/38">{resource.subtitle || resourceKindLabel(resource)}</span></span>
+            <span className="min-w-0 flex-1"><span className="flex min-w-0 items-start gap-1.5"><span className="min-w-0 flex-1 line-clamp-2 text-sm font-medium text-white/86">{resource.title}</span>{resource.song && <SongRestrictionBadges song={resource.song} entitlement={callbacks.entitlement} />}</span><span className="mt-1 flex items-center gap-2 text-xs leading-relaxed text-white/38"><span className="line-clamp-2">{resource.subtitle || resourceKindLabel(resource)}</span>{typeof resource.playCount === 'number' && resource.playCount > 0 && <span className="flex shrink-0 items-center gap-1"><Headphones className="h-3 w-3" />{formatNeteaseCount(resource.playCount)}</span>}</span></span>
             {resource.action.type !== 'none' && <Icon className="h-4 w-4 shrink-0 text-white/25 transition group-hover:text-white/70" />}
           </button>
         )
