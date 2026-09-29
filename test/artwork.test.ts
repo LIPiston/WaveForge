@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getArtworkRoleSize, getArtworkSizeBucket, resizeArtworkSource, resolveArtworkUrl, unwrapArtworkSource } from '../src/services/artwork'
+import { fallbackArtworkSources, getArtworkRoleSize, getArtworkSizeBucket, resizeArtworkSource, resolveArtworkUrl, stripArtworkRendition, unwrapArtworkSource } from '../src/services/artwork'
 import { getArtworkCacheKey, getColorThiefArtworkKey } from '../src/services/artworkLoader'
 
 describe('artwork resolver', () => {
@@ -56,8 +56,9 @@ describe('artwork resolver', () => {
       .toContain('param=64y64')
     expect(resizeArtworkSource('https://y.gtimg.cn/music/photo_new/T002R300x300M000abc.jpg', 128))
       .toContain('T002R300x300')
+    // QQ 图床实测 R300/R500/R800 可用（R1000+ 404），512 桶请求兜底到平台上限 800
     expect(resizeArtworkSource('https://y.gtimg.cn/music/photo_new/T002R300x300M000abc.jpg', 512))
-      .toContain('T002R500x500')
+      .toContain('T002R800x800')
     expect(resizeArtworkSource('https://is1-ssl.mzstatic.com/image/thumb/{w}x{h}bb.jpg', 256))
       .toContain('/256x256bb.jpg')
     const signed = 'https://cdn.example.com/image.jpg?signature=a%2Bb&expires=1'
@@ -83,6 +84,46 @@ describe('artwork resolver', () => {
       expect(getArtworkCacheKey(source, { role: 'player', size: 512 }))
         .not.toBe(getArtworkCacheKey(resolved, { role: 'player', size: 512 }))
     }
+  })
+
+  /**
+   * 档位 404 降档兜底（2026-09-28 播放页背景黑屏回归）：
+   * 背景 blur=0 时请求 1024 档，网易 CDN 对部分封面 404；QQ 部分专辑未生成 R800。
+   * 加载失败时 artworkLoader 会按 fallbackArtworkSources 逐级降档重试。
+   */
+  it('stripArtworkRendition 移除网易 param 档位得到原始尺寸地址', () => {
+    expect(stripArtworkRendition('https://p1.music.126.net/a.jpg?param=1024y1024'))
+      .toBe('https://p1.music.126.net/a.jpg')
+    // param 不在首位：移除后其余参数保留且不残留 ?/&
+    expect(stripArtworkRendition('https://p1.music.126.net/a.jpg?param=1024y1024&other=1'))
+      .toBe('https://p1.music.126.net/a.jpg?other=1')
+    expect(stripArtworkRendition('https://p1.music.126.net/a.jpg?other=1&param=1024y1024'))
+      .toBe('https://p1.music.126.net/a.jpg?other=1')
+    // 无 param：原样返回
+    expect(stripArtworkRendition('https://p1.music.126.net/a.jpg')).toBe('https://p1.music.126.net/a.jpg')
+    expect(stripArtworkRendition('https://p1.music.126.net/a.jpg?enlarge=1')).toBe('https://p1.music.126.net/a.jpg?enlarge=1')
+    // 非网易 URL 不受影响（QQ 档位在 pathname 里，不属于 param 体系）
+    expect(stripArtworkRendition('https://y.gtimg.cn/music/photo_new/T002R300x300M000abc.jpg'))
+      .toBe('https://y.gtimg.cn/music/photo_new/T002R300x300M000abc.jpg')
+  })
+
+  it('fallbackArtworkSources 按平台给出降档候选', () => {
+    // 网易：唯一候选 = 原始尺寸
+    expect(fallbackArtworkSources('https://p1.music.126.net/a.jpg?param=1024y1024'))
+      .toEqual(['https://p1.music.126.net/a.jpg'])
+    // 网易无 param：无候选（当前档即原图）
+    expect(fallbackArtworkSources('https://p1.music.126.net/a.jpg')).toEqual([])
+    // QQ：R800 失败 → R500 → R300 逐级降档
+    expect(fallbackArtworkSources('https://y.gtimg.cn/music/photo_new/T002R800x800M000abc.jpg'))
+      .toEqual([
+        'https://y.gtimg.cn/music/photo_new/T002R500x500M000abc.jpg',
+        'https://y.gtimg.cn/music/photo_new/T002R300x300M000abc.jpg',
+      ])
+    // QQ R300 已是最低档：只给更低……无 → 空候选（R300 失败交给直连兜底）
+    expect(fallbackArtworkSources('https://y.gtimg.cn/music/photo_new/T002R300x300M000abc.jpg'))
+      .toEqual([])
+    // 其他平台：无候选，维持原行为
+    expect(fallbackArtworkSources('https://is1-ssl.mzstatic.com/image/thumb/256x256bb.jpg')).toEqual([])
   })
 
   /** 解析后地址已经是代理包装，重复解析必须幂等，否则每次渲染都会生成新键。 */

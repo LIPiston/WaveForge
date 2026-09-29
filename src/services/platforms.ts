@@ -76,6 +76,13 @@ export interface PlatformCapabilities {
   likedSongs: boolean
   /** 单曲喜欢/取消喜欢 */
   likeSong: boolean
+  /**
+   * 单曲「取消喜欢」。与 likeSong 分开是因为**上游能力不对等**：
+   * 酷狗只有加歌端点（/v6/add_song），取消喜欢只回执不落库 —— 若沿用一个位，
+   * 播放页径向菜单会在已喜欢时给出"从喜欢歌单中移除"并 toast 成功，实为假成功
+   * （2026-09-27 审计：右键菜单已特判隐藏，径向菜单漏了）。
+   */
+  unlikeSong: boolean
   /** 探索页 */
   explore: boolean
   /** 探索页可用的区块（按能力增减） */
@@ -97,8 +104,6 @@ export interface PlatformCapabilities {
   social: boolean
   /** 听歌排行 */
   rank: boolean
-  /** 云盘 */
-  cloudDisk: boolean
   recentPlayed: boolean
   artistDetail: boolean
   albumDetail: boolean
@@ -124,6 +129,7 @@ const NETEASE_CAPABILITIES: PlatformCapabilities = {
   subscribePlaylist: true,
   likedSongs: true,
   likeSong: true,
+  unlikeSong: true,
   explore: true,
   exploreSections: ['discover', 'journey', 'playlists', 'charts', 'newSongs', 'albums', 'channels'],
   search: true,
@@ -139,7 +145,6 @@ const NETEASE_CAPABILITIES: PlatformCapabilities = {
   signin: false,
   social: true,
   rank: true,
-  cloudDisk: true,
   recentPlayed: true,
   artistDetail: true,
   albumDetail: true,
@@ -152,11 +157,13 @@ const NETEASE_CAPABILITIES: PlatformCapabilities = {
 const QQ_CAPABILITIES: PlatformCapabilities = {
   ...NETEASE_CAPABILITIES,
   updatePlaylist: false,
+  // 显式声明取消喜欢（QQ 走 music.musicasset.SongFavWrite 真删）；
+  // 不写就会随网易云能力变化被牵连（2026-09-27 复查建议）
+  unlikeSong: true,
   signin: false,
   social: true,
   // QQ 无听歌排行 / 云盘
   rank: false,
-  cloudDisk: false,
 }
 
 const APPLE_CAPABILITIES: PlatformCapabilities = {
@@ -174,6 +181,7 @@ const APPLE_CAPABILITIES: PlatformCapabilities = {
   subscribePlaylist: false,
   likedSongs: true,
   likeSong: true,
+  unlikeSong: true,
   explore: true,
   // 探索页区块：无旅程 / 无声音频道（Apple 无公开的 FM/分类频道接口）
   exploreSections: ['discover', 'playlists', 'charts', 'newSongs', 'albums'],
@@ -190,7 +198,6 @@ const APPLE_CAPABILITIES: PlatformCapabilities = {
   signin: false,
   social: false,
   rank: false,
-  cloudDisk: false,
   recentPlayed: true,
   artistDetail: true,
   albumDetail: true,
@@ -214,6 +221,7 @@ const SPOTIFY_CAPABILITIES: PlatformCapabilities = {
   subscribePlaylist: true, // follow/unfollow
   likedSongs: true,
   likeSong: true,
+  unlikeSong: true,
   explore: true,
   // Spotify 官方 API：new releases / featured playlists / categories / 榜单
   exploreSections: ['discover', 'playlists', 'charts', 'newSongs', 'albums'],
@@ -230,7 +238,6 @@ const SPOTIFY_CAPABILITIES: PlatformCapabilities = {
   signin: false,
   social: false,
   rank: false,
-  cloudDisk: false,
   recentPlayed: true,
   artistDetail: true,
   albumDetail: true,
@@ -254,6 +261,7 @@ const KUGOU_CAPABILITIES: PlatformCapabilities = {
   subscribePlaylist: false,
   likedSongs: true, // "我喜欢"歌单
   likeSong: true, // /v6/add_song
+  unlikeSong: false, // 上游无移除端点（只回执不落库）
   explore: true,
   exploreSections: ['discover', 'playlists', 'charts', 'newSongs', 'albums'],
   search: true,
@@ -269,7 +277,6 @@ const KUGOU_CAPABILITIES: PlatformCapabilities = {
   signin: false,
   social: false,
   rank: false,
-  cloudDisk: false,
   recentPlayed: false,
   artistDetail: true, // mobilecdn /api/v3/singer/info + singer/song
   albumDetail: true,
@@ -293,6 +300,7 @@ const SODA_CAPABILITIES: PlatformCapabilities = {
   subscribePlaylist: true, // collection 收藏/取消收藏歌单
   likedSongs: true, // "我喜欢"虚拟歌单 qishui-liked
   likeSong: true, // collection/media 喜欢写入
+  unlikeSong: true,
   explore: true,
   // 探索页区块：无旅程/频道；albums = 新碟派生聚合区块（payload.albums 由曲目字段聚拢，游客模式为空自动隐藏）
   exploreSections: ['discover', 'playlists', 'charts', 'newSongs', 'albums'],
@@ -309,7 +317,6 @@ const SODA_CAPABILITIES: PlatformCapabilities = {
   signin: false,
   social: false,
   rank: false,
-  cloudDisk: false,
   recentPlayed: true, // 登录态 recent 接口
   artistDetail: true, // 按歌手名检索热门歌曲（无独立艺人 ID）
   albumDetail: true,

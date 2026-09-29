@@ -15,8 +15,10 @@
 
 import type { Song, LyricLine } from './musicApi'
 import { getPlatformCookie } from './platforms'
+import { getApiBase } from './apiConfig'
 
-const KG_API = 'http://localhost:3001/api/kugou'
+// 统一走 apiConfig：用户设置远程网关（waveforge:apiBase）后仍打 localhost 会拿不到登录态
+const KG_API = `${getApiBase()}/kugou`
 
 // 酷狗请求统一加超时：这些调用原本只带 cache: 'no-store'、没有 AbortSignal，
 // 上游挂起时前端会无限转圈（同仓库汽水 10s、Apple 5-6s、B站 12s 都有上限）。
@@ -206,12 +208,23 @@ export async function fetchKugouPlaylistDetail(specialid: string, limit = 50): P
 export async function fetchKugouUserInfo(cookie?: string): Promise<KugouUserInfo | null> {
   const kgCookie = cookie || getPlatformCookie('kugou')
   if (!kgCookie) return null
+  // VIP 身份落盘（audioQualitySettings.getPlatformVipState('kugou') 读 kugou_vip，
+  // 此前无人写入导致酷狗 VIP 音质选项永远不可用）
+  const persistVip = (info: unknown) => {
+    try {
+      const d = (info || {}) as Record<string, unknown>
+      const raw = d.vip_level ?? d.is_vip ?? d.vip
+      const vip = (typeof raw === 'number' && raw > 0) || raw === true || raw === 1
+      localStorage.setItem('kugou_vip', vip ? 'true' : 'false')
+    } catch { /* ignore */ }
+  }
   // 桥接：真实 Chromium 页面内同源 fetch（www.kugou.com 对服务端 node fetch 有 TLS 指纹风控）
   const bridge = (window as any).electron?.kugouScrape
   if (bridge?.userInfo) {
     try {
       const result = await bridge.userInfo()
       if (result?.success && result.info && (result.info.nickname || result.info.user_id)) {
+        persistVip(result.info)
         return result.info
       }
     } catch { /* 桥失败回退代理 */ }
@@ -221,6 +234,7 @@ export async function fetchKugouUserInfo(cookie?: string): Promise<KugouUserInfo
     if (!resp.ok) return null
     const json = await resp.json()
     if (!json || json.error || (!json.nickname && !json.user_id)) return null
+    persistVip(json)
     return json
   } catch (e) {
     console.warn('[Kugou] 用户信息获取失败:', e)
@@ -255,12 +269,15 @@ export async function fetchKugouUserPlaylists(cookie?: string): Promise<KugouPla
     try {
       const result = await bridge.userPlaylists()
       if (result?.success && Array.isArray(result.playlists)) {
+        // 桥抓的是登录用户自己的 getplaylist 页（自建歌单），逐条标 isMine=true：
+        // 漏标会让「添加到歌单」候选在桥接回退路径下全空（addablePlaylists 按 isMine 过滤）
         return result.playlists.map((p: { specialid: string; name: string; img?: string; songcount?: number; playcount?: number }) => ({
           specialid: p.specialid,
           name: p.name,
           coverUrl: resolveKugouCover(p.img || ''),
           songcount: p.songcount,
           playcount: p.playcount,
+          isMine: true,
         }))
       }
     } catch { /* 桥失败 */ }

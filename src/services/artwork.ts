@@ -27,6 +27,20 @@ export function getArtworkSizeBucket(requested: number): number {
   return SIZE_BUCKETS.find(size => size >= safe) || SIZE_BUCKETS[SIZE_BUCKETS.length - 1]
 }
 
+/**
+ * 背景层源图档位：与「实际模糊半径」挂钩。
+ * 原先 background 固定 128（为省全屏高斯模糊成本），但模糊半径可被用户调到 0，
+ * 此时 128 源图铺满 1920px 会糊成一片（像素块肉眼可见）。
+ * 规则：模糊越大越不需要细节；blur<16（含 0）直接给 1024，QQ 封面由
+ * resizeArtworkSource 兜底到平台上限 800。
+ */
+export function getBackgroundArtworkSize(blurPx: number): number {
+  const blur = Number.isFinite(blurPx) ? Math.max(0, blurPx) : 0
+  if (blur >= 32) return 256
+  if (blur >= 16) return 512
+  return 1024
+}
+
 export function getArtworkRoleSize(role: ArtworkRole, cssPixels?: number, dpr?: number): number {
   const pixelRatio = Number.isFinite(dpr) && Number(dpr) > 0
     ? Math.min(3, Number(dpr))
@@ -64,6 +78,53 @@ export function unwrapArtworkSource(input: string): string {
   return current
 }
 
+/**
+ * 移除网易 query 型尺寸档位（param=NyN），得到「原始尺寸」地址。
+ * 平台档位可能大于原图：网易 CDN 对部分封面 param=1024y1024 直接 404
+ * （原图不足 1024px 时按档位放大请求会被拒，2026-09-28 实测），此时兜底
+ * 加载原始尺寸。QQ/Apple/酷狗的档位在 pathname 里且缺省即原图，无需处理。
+ */
+export function stripArtworkRendition(sourceUrl: string): string {
+  const queryStart = sourceUrl.indexOf('?')
+  if (queryStart === -1) return sourceUrl
+  const base = sourceUrl.slice(0, queryStart)
+  const query = sourceUrl.slice(queryStart + 1)
+  // 纯字符串拆分过滤，不做 URL 编解码往返（与 resizeArtworkSource 同样的考虑）
+  const kept = query.split('&').filter(pair => !/^param=\d+y\d+$/i.test(pair))
+  if (kept.length === query.split('&').length) return sourceUrl
+  return kept.length ? `${base}?${kept.join('&')}` : base
+}
+
+/**
+ * 档位 404 时的逐级降档候选（按优先级排序，调用方依次尝试）。
+ * 背景：新档位请求（如背景层 1024 / QQ R800）在部分封面上游会 404——
+ * 网易是 param 大于原图；QQ 是部分专辑未生成 R800 缩略图。降档总有一个档可用，
+ * 比直接 404 黑块好。已失效封面（所有尺寸所有节点都 404）不在此解法范围内，
+ * 由调用方的失败重试与占位符兜底。
+ */
+export function fallbackArtworkSources(sourceUrl: string): string[] {
+  const candidates: string[] = []
+  try {
+    const host = new URL(sourceUrl).hostname
+    if (NETEASE_IMAGE_HOST.test(host)) {
+      const bare = stripArtworkRendition(sourceUrl)
+      if (bare !== sourceUrl) candidates.push(bare)
+    } else if (QQ_IMAGE_HOST.test(host)) {
+      // 只降不升：解析当前档位，仅生成比它小的候选（R300 失败时降无可降 → 空候选）
+      const current = /T002R(\d+)x\d+/i.exec(sourceUrl)
+      const currentSize = current ? Number.parseInt(current[1], 10) : Number.MAX_SAFE_INTEGER
+      for (const size of [500, 300]) {
+        if (size >= currentSize) continue
+        const downgraded = sourceUrl.replace(/T002R\d+x\d+/i, `T002R${size}x${size}`)
+        if (downgraded !== sourceUrl && !candidates.includes(downgraded)) candidates.push(downgraded)
+      }
+    }
+  } catch {
+    // 非法 URL：无降档候选，调用方维持原有行为
+  }
+  return candidates
+}
+
 export function resizeArtworkSource(sourceUrl: string, size: number): string {
   const bucket = getArtworkSizeBucket(size)
   try {
@@ -83,7 +144,9 @@ export function resizeArtworkSource(sourceUrl: string, size: number): string {
       return `${sourceUrl}${joiner}param=${bucket}y${bucket}`
     }
     if (QQ_IMAGE_HOST.test(host)) {
-      const requested = bucket > 300 ? 500 : 300
+      // QQ 图床实测档位：R300 / R500 / R800 可用，R1000 起 404（2026-09-27 复核）。
+      // 背景层需要更大源图时给到 800，播放页封面等其余档位维持原值。
+      const requested = bucket > 500 ? 800 : bucket > 300 ? 500 : 300
       url.pathname = url.pathname.replace(/T002R\d+x\d+/i, `T002R${requested}x${requested}`)
       return url.toString()
     }

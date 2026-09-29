@@ -2,6 +2,8 @@
  * 全局图片缓存管理器
  * 用于存储已经加载成功的图片 URL，避免重复加载
  */
+import { isTvModeActive } from '../platform'
+import { getCacheLimits } from '../tv/perfMode'
 
 interface ImageCacheEntry {
   proxyUrl: string // 代理后的 URL
@@ -19,7 +21,11 @@ class ImageCacheManager {
   private maxAge = 1000 * 60 * 60 * 24 * 30
   // 条目可能是 blob: URL（解码后的封面常驻内存，通常数十到数百 KB），条数上限
   // 决定渲染进程的 Blob 常驻内存；800 条 ≈ 40-160MB，收敛到 400。
-  private readonly maxEntries = 400
+  // TV 上接入 perfMode 缓存分档（效能 150 / 普通 300 / 增强 500），弱机内存吃紧。
+  private get maxEntries(): number {
+    if (!isTvModeActive()) return 400
+    return getCacheLimits().coverCount
+  }
   // cleanup() 是 O(n) 全表扫描（上限 800 条），而 set() 会随每次新封面加载被调用；
   // 图床 URL 内容寻址、条目几乎不会自然过期，逐次全扫收益极低，改为每 64 次写入摊销一次。
   private readonly cleanupEveryWrites = 64

@@ -1,9 +1,16 @@
 import type { MusicPlatform } from './platforms'
+import { getPlatformCookie as getStoredPlatformCookie } from './platforms'
 import type { EntitlementTier } from '../utils/musicEntitlements'
 import { getApiBase } from './apiConfig'
 import { resolveArtworkUrl } from './artwork'
 import { createTtlCache } from '../utils/ttlCache'
 const API_BASE = getApiBase()
+
+// 统一请求超时：此前仅歌词链路有超时，搜索/详情/歌单写操作全部裸 fetch，
+// 本地网关挂起时相关 UI 会永久卡在加载态。已自带 signal 的调用（歌词 5-8s、song URL 26s）保持原值。
+const DEFAULT_FETCH_TIMEOUT_MS = 20_000
+const fetchT = (url: string, init: RequestInit = {}): Promise<Response> =>
+  fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS) })
 
 import { parseTTML } from '../utils/ttmlParser'
 import { selectTimingVerifiedLines } from '../utils/lyricTimingBorrow'
@@ -21,11 +28,9 @@ const isYrcTimestampFragment = (value: string) => {
     && /,/u.test(trimmed)
 }
 
-const getPlatformCookie = (platform: MusicPlatform, explicitCookie?: string) => explicitCookie || (
-  platform === 'qq'
-    ? localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
-    : localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
-)
+// 平台凭据回落必须按平台区分：此前只分 qq/其它，kugou/soda/spotify 请求会误带网易云 cookie（跨平台凭据泄漏）。
+// 统一走 platforms.ts 的正确分支，这里仅保留显式 cookie 覆盖。
+const getPlatformCookie = (platform: MusicPlatform, explicitCookie?: string) => explicitCookie || getStoredPlatformCookie(platform)
 
 const SONG_URL_CACHE_TTL = 5 * 60 * 1000
 const SONG_URL_NEGATIVE_CACHE_TTL = 25 * 1000
@@ -279,13 +284,13 @@ export async function resolveSongAlbumIdentifier(song: Song, platform: MusicPlat
   try {
     if (platform === 'qq') {
       const songKey = song.mid || String(song.id)
-      const response = await fetch(`${API_BASE}/qq/song/detail?mid=${encodeURIComponent(songKey)}`)
+      const response = await fetchT(`${API_BASE}/qq/song/detail?mid=${encodeURIComponent(songKey)}`)
       const data = await response.json()
       const detailSong = data.song || data
       return getLocalAlbumIdentifier(detailSong, 'qq')
     }
 
-    const response = await fetch(`${API_BASE}/netease/song/detail?ids=${encodeURIComponent(String(song.id))}`)
+    const response = await fetchT(`${API_BASE}/netease/song/detail?ids=${encodeURIComponent(String(song.id))}`)
     const data = await response.json()
     const detailSong = data.songs?.[0]
     if (!detailSong) return null
@@ -463,7 +468,7 @@ export async function searchSongs(keywords: string, limit = 30, platform: MusicP
       return { songs, songCount: songs.length }
     }
     const endpoint = platform === 'qq' ? '/qq/search' : '/netease/search'
-    const response = await fetch(`${API_BASE}${endpoint}?keywords=${encodeURIComponent(keywords)}&limit=${limit}&devMode=${devMode}`)
+    const response = await fetchT(`${API_BASE}${endpoint}?keywords=${encodeURIComponent(keywords)}&limit=${limit}&devMode=${devMode}`)
     const data = await response.json()
     
     if (platform === 'qq') {
@@ -532,7 +537,7 @@ export async function searchSuggest(keywords: string, platform: MusicPlatform = 
       return rows.map(item => ({ keyword: item.text, type: item.type }))
     }
     if (platform === 'qq') {
-      const response = await fetch(`${API_BASE}/qq/suggest?keywords=${encodeURIComponent(keywords)}`)
+      const response = await fetchT(`${API_BASE}/qq/suggest?keywords=${encodeURIComponent(keywords)}`)
       const data = await response.json()
       const suggestions: SearchSuggestion[] = []
       
@@ -551,7 +556,7 @@ export async function searchSuggest(keywords: string, platform: MusicPlatform = 
     }
     
     // 网易云音乐
-    const response = await fetch(`${API_BASE}/netease/search/suggest?keywords=${encodeURIComponent(keywords)}`)
+    const response = await fetchT(`${API_BASE}/netease/search/suggest?keywords=${encodeURIComponent(keywords)}`)
     const data = await response.json()
     const suggestions: SearchSuggestion[] = []
     
@@ -750,7 +755,7 @@ export async function searchAlbums(keywords: string, platform: MusicPlatform = '
     }
     const devMode = localStorage.getItem('developerMode') === 'true'
     if (platform === 'qq') {
-      const response = await fetch(`${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&type=album&devMode=${devMode}`)
+      const response = await fetchT(`${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&type=album&devMode=${devMode}`)
       const data = await response.json()
       const albums = (data.albums || []).map((item: any) => {
         const album = {
@@ -766,7 +771,7 @@ export async function searchAlbums(keywords: string, platform: MusicPlatform = '
       })
       return albums
     }
-    const response = await fetch(`${API_BASE}/netease/search?keywords=${encodeURIComponent(keywords)}&type=10&devMode=${devMode}`)
+    const response = await fetchT(`${API_BASE}/netease/search?keywords=${encodeURIComponent(keywords)}&type=10&devMode=${devMode}`)
     const data = await response.json()
     const albums = (data.result?.albums || []).map((item: any) => ({
       id: item.id,
@@ -784,8 +789,9 @@ export async function searchAlbums(keywords: string, platform: MusicPlatform = '
   }
 }
 
-// 获取歌曲播放URL（支持平台）
-export async function getSongUrl(id: number | string, platform: MusicPlatform = 'netease'): Promise<string | null> {
+// 获取歌曲播放URL（支持平台）。attemptLimit：缓存代际失效后的重入上限——
+// auth/音质事件短窗口内连续 clear 会让每层重入再次过期，无上限会形成请求风暴
+export async function getSongUrl(id: number | string, platform: MusicPlatform = 'netease', attemptLimit = 2): Promise<string | null> {
   ensureSongUrlListenersRegistered()
   if (!String(id).trim()) return null
   const cacheKey = buildSongUrlCacheKey(id, platform)
@@ -837,7 +843,9 @@ export async function getSongUrl(id: number | string, platform: MusicPlatform = 
       } else {
         const cookie = localStorage.getItem('netease_cookie') || localStorage.getItem('neteaseCookie') || ''
         const fallbackSetting = localStorage.getItem('crossPlatformFallbackEnabled')
-        const crossPlatformFallback = fallbackSetting !== null ? JSON.parse(fallbackSetting) : false
+        // localStorage 脏值（非 JSON）解析会抛错进 catch → 返回 null 进负缓存，全量不可播
+        let crossPlatformFallback = false
+        try { crossPlatformFallback = fallbackSetting !== null ? JSON.parse(fallbackSetting) === true : false } catch { crossPlatformFallback = false }
         const { preference, isVip } = getAudioQualityRequest('netease')
         apiUrl = `${API_BASE}/netease/song/url?id=${encodeURIComponent(String(id))}&quality=${encodeURIComponent(preference)}&vip=${isVip ? 'true' : 'false'}&fallback=${crossPlatformFallback ? 'true' : 'false'}${cookie ? '&cookie=' + encodeURIComponent(cookie) : ''}`
         readUrl = data => data.data?.[0]?.url || null
@@ -850,7 +858,8 @@ export async function getSongUrl(id: number | string, platform: MusicPlatform = 
       }
 
       if (requestGeneration !== songUrlCacheGeneration) {
-        return getSongUrl(id, platform)
+        if (attemptLimit <= 0) return null
+        return getSongUrl(id, platform, attemptLimit - 1)
       }
       if ((songUrlInvalidationVersions.get(cacheKey) || 0) !== requestVersion) {
         return null
@@ -864,7 +873,8 @@ export async function getSongUrl(id: number | string, platform: MusicPlatform = 
       return url
     } catch (error) {
       if (requestGeneration !== songUrlCacheGeneration) {
-        return getSongUrl(id, platform)
+        if (attemptLimit <= 0) return null
+        return getSongUrl(id, platform, attemptLimit - 1)
       }
       if ((songUrlInvalidationVersions.get(cacheKey) || 0) !== requestVersion) {
         return null
@@ -907,7 +917,7 @@ export async function getSodaPlaybackInfo(id: number | string): Promise<{
 // Song details
 export async function getSongDetail(id: number): Promise<Song | null> {
   try {
-    const response = await fetch(`${API_BASE}/netease/song/detail?ids=${id}`)
+    const response = await fetchT(`${API_BASE}/netease/song/detail?ids=${id}`)
     const data = await response.json()
     
     return data.songs?.[0] || null
@@ -1344,7 +1354,7 @@ async function fetchCrossPlatformLyricFill(
       // 同一参数既可能是 songmid（字符串/数字）也可能是 songID（纯数字）：两种都传，
       // 后端 musicu 按有效字段取——只传 mid 时，songID 型 id 会被当成 songMID 查询 → 空歌词
       //（实测 rainy tone qq:233811640 只传 mid 返回空，带 songID 才有完整 LRC）
-      const res = await fetch(`${API_BASE}/qq/lyric?mid=${encodeURIComponent(String(best.mid || best.id))}&id=${best.id}`, { signal: AbortSignal.timeout(6000) })
+      const res = await fetchT(`${API_BASE}/qq/lyric?mid=${encodeURIComponent(String(best.mid || best.id))}&id=${best.id}`, { signal: AbortSignal.timeout(6000) })
       const data = await res.json()
       fills.translations = parseLyric(data.trans?.lyric || '')
       // QQ 的 roma 部分歌曲是 YRC 逐字格式、部分是普通 LRC：先按 YRC 解析（保留逐字），失败退 LRC
@@ -1368,7 +1378,7 @@ async function fetchCrossPlatformLyricFill(
       const search = await searchSongs(keywords, 5, 'netease')
       const best = pickBest(search.songs || [])
       if (best?.id) {
-        const res = await fetch(`${API_BASE}/netease/lyric?id=${best.id}`, { signal: AbortSignal.timeout(6000) })
+        const res = await fetchT(`${API_BASE}/netease/lyric?id=${best.id}`, { signal: AbortSignal.timeout(6000) })
         const data = await res.json()
         if (fills.translations.length === 0) fills.translations = parseLyric(data.tlyric?.lyric || '')
         if (fills.romans.length === 0) fills.romans = parseLyric(data.romalrc?.lyric || '')
@@ -1877,7 +1887,7 @@ async function getPlatformLyrics(id: number | string, platform: MusicPlatform, s
           const res = await searchSongs(keyword, 5, 'netease')
           const target = res.songs && res.songs[0]
           if (target && target.id) {
-            const resp = await fetch(`${API_BASE}/netease/lyric?id=${encodeURIComponent(String(target.id))}`, { signal: AbortSignal.timeout(8000) })
+            const resp = await fetchT(`${API_BASE}/netease/lyric?id=${encodeURIComponent(String(target.id))}`, { signal: AbortSignal.timeout(8000) })
             if (resp.ok) {
               const data = await resp.json().catch(() => null)
               const lrc = String(data?.lrc?.lyric || data?.lyric || '')
@@ -1955,7 +1965,7 @@ async function getPlatformLyrics(id: number | string, platform: MusicPlatform, s
       return mergeLyricsWithTranslationAndRoman(lyrics, translations, romans)
       
     } else {
-      const response = await fetch(`${API_BASE}/netease/lyric?id=${id}`, { signal: AbortSignal.timeout(5000) })
+      const response = await fetchT(`${API_BASE}/netease/lyric?id=${id}`, { signal: AbortSignal.timeout(5000) })
       
       // 检查响应状态
       if (!response.ok) {
@@ -2254,7 +2264,7 @@ export async function loadAlbumCovers(songs: Song[]): Promise<Song[]> {
     if (albumIds.length === 0) return songs
     
     const devMode = localStorage.getItem('developerMode') === 'true'
-    const response = await fetch(`${API_BASE}/netease/albums/covers?ids=${albumIds.join(',')}&devMode=${devMode}`)
+    const response = await fetchT(`${API_BASE}/netease/albums/covers?ids=${albumIds.join(',')}&devMode=${devMode}`)
     const data = await response.json()
     
     if (data.covers) {
@@ -2377,9 +2387,15 @@ async function getArtistDetailUncached(id: number | string, platform: MusicPlatf
       }
     }
     if (platform === 'qq') {
-      const response = await fetch(`${API_BASE}/qq/artist?mid=${id}`)
+      const response = await fetchT(`${API_BASE}/qq/artist?mid=${id}`)
       const data = await response.json()
       console.log(`[前端-歌手详情] 📊 QQ音乐返回数据keys:`, Object.keys(data))
+      // 网关把上游错误包成 {error:...}：不校验就构造出 name:undefined 的壳对象并被写进详情缓存，
+      // 之后 5 分钟详情页渲染空白（网易分支有校验，这里补齐）
+      if (!data || data.error || !data.singer_name) {
+        console.error(`[前端-歌手详情] ❌ QQ 返回无效数据:`, JSON.stringify(data).substring(0, 300))
+        return null
+      }
       return {
         id: data.singer_id,
         mid: data.singer_mid,
@@ -2394,7 +2410,7 @@ async function getArtistDetailUncached(id: number | string, platform: MusicPlatf
         platform: 'qq'
       }
     }
-    const response = await fetch(`${API_BASE}/netease/artist?id=${id}`)
+    const response = await fetchT(`${API_BASE}/netease/artist?id=${id}`)
     const data = await response.json()
     console.log(`[前端-歌手详情] 📊 网易云返回数据keys:`, Object.keys(data))
     
@@ -2468,7 +2484,7 @@ async function getArtistTopSongsUncached(id: number | string, platform: MusicPla
       return fetchSodaArtistSongs(String(id), 50)
     }
     if (platform === 'qq') {
-      const response = await fetch(`${API_BASE}/qq/artist/songs?mid=${id}`)
+      const response = await fetchT(`${API_BASE}/qq/artist/songs?mid=${id}`)
       const data = await response.json()
       console.log('📊 [getArtistTopSongs] QQ音乐返回数据keys:', Object.keys(data))
       
@@ -2484,7 +2500,7 @@ async function getArtistTopSongsUncached(id: number | string, platform: MusicPla
             name: item.album?.name || item.albumname || item.album?.title || '',
             picUrl: (item.album?.mid || item.albummid) ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${item.album?.mid || item.albummid}.jpg` : ''
           },
-          duration: (item.interval || item.duration) * 1000,
+          duration: Number(item.interval || item.duration || 0) * 1000,
           platform: 'qq' as const,
           vip: item.pay?.payplay === 1
         }
@@ -2494,7 +2510,7 @@ async function getArtistTopSongsUncached(id: number | string, platform: MusicPla
     }
     
     // 使用 /api/netease/artist/songs 接口（返回热门歌曲）
-    const response = await fetch(`${API_BASE}/netease/artist/songs?id=${id}`)
+    const response = await fetchT(`${API_BASE}/netease/artist/songs?id=${id}`)
     const data = await response.json()
     
     // 检查后端返回的错误标志
@@ -2593,7 +2609,7 @@ async function getAlbumDetailUncached(id: number | string, platform: MusicPlatfo
       }
     }
     if (platform === 'qq') {
-      const response = await fetch(`${API_BASE}/qq/album?mid=${id}`)
+      const response = await fetchT(`${API_BASE}/qq/album?mid=${id}`)
       const data = await response.json()
       
       console.log('[前端-专辑详情] QQ音乐专辑数据:', {
@@ -2604,7 +2620,13 @@ async function getAlbumDetailUncached(id: number | string, platform: MusicPlatfo
         lan: data.lan,
         company: data.company
       })
-      
+
+      // 同歌手详情：网关错误包 {error:...} 时不能构造壳对象进缓存
+      if (!data || data.error || !data.albumName) {
+        console.error(`[前端-专辑详情] ❌ QQ 返回无效数据:`, JSON.stringify(data).substring(0, 300))
+        return null
+      }
+
       return {
         id: data.albumID,
         mid: data.albumMID,
@@ -2622,7 +2644,7 @@ async function getAlbumDetailUncached(id: number | string, platform: MusicPlatfo
       }
     }
     
-    const response = await fetch(`${API_BASE}/netease/album?id=${id}`)
+    const response = await fetchT(`${API_BASE}/netease/album?id=${id}`)
     const data = await response.json()
     if (!response.ok || !data?.album) return null
     return {
@@ -2670,7 +2692,7 @@ async function getAlbumSongsUncached(id: number | string, platform: MusicPlatfor
       return (await fetchSodaAlbumTracks(String(id))).tracks
     }
     if (platform === 'qq') {
-      const response = await fetch(`${API_BASE}/qq/album?mid=${id}`)
+      const response = await fetchT(`${API_BASE}/qq/album?mid=${id}`)
       const data = await response.json()
       return (data.songs || []).map((item: any) => ({
         id: item.songid,
@@ -2683,7 +2705,7 @@ async function getAlbumSongsUncached(id: number | string, platform: MusicPlatfor
           name: data.albumName,
           picUrl: (data.albumMID || id) ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${data.albumMID || id}.jpg` : ''
         },
-        duration: item.interval * 1000,
+        duration: Number(item.interval || 0) * 1000,
         platform: 'qq' as const,
         vip: item.pay?.payplay === 1
       }))
@@ -2695,7 +2717,7 @@ async function getAlbumSongsUncached(id: number | string, platform: MusicPlatfor
       return detail ? detail.songs.map(kugouTrackToSong) : []
     }
     
-    const response = await fetch(`${API_BASE}/netease/album?id=${id}`)
+    const response = await fetchT(`${API_BASE}/netease/album?id=${id}`)
     const data = await response.json()
     return (data.songs || []).map((item: any) => ({
       id: item.id,
@@ -2740,7 +2762,7 @@ export async function getArtistAllSongs(id: number | string, platform: MusicPlat
       return { songs: songs.slice(offset, offset + limit), total: songs.length }
     }
     if (platform === 'qq') {
-      const response = await fetch(`${API_BASE}/qq/artist/songs?mid=${id}&limit=${limit}&offset=${offset}`)
+      const response = await fetchT(`${API_BASE}/qq/artist/songs?mid=${id}&limit=${limit}&offset=${offset}`)
       const data = await response.json()
       const songs = (data.songs || []).map((item: any) => ({
         id: item.id,
@@ -2775,7 +2797,10 @@ export async function getArtistAllSongs(id: number | string, platform: MusicPlat
         all.push(...tracks.map(kugouTrackToSong))
         if (tracks.length < pageSize) break
       }
-      return { songs: all, total: all.length }
+      // all 从「50 对齐页边界」开始，必须按页内偏移裁剪到 [offset, offset+limit)，
+      // 否则 offset=60 返回的是第 51 首起的整 50 条（分页错位 + 未截断）
+      const pageInnerOffset = offset % pageSize
+      return { songs: all.slice(pageInnerOffset, pageInnerOffset + limit), total: all.length }
     }
     
     // 网易云暂时不支持分页，返回热门歌曲
@@ -2850,7 +2875,7 @@ export async function getArtistAlbums(id: number | string, platform: MusicPlatfo
     }
     if (platform === 'qq') {
       const page = Math.floor(offset / limit) + 1
-      const response = await fetch(`${API_BASE}/qq/artist/albums?mid=${id}&page=${page}&pageSize=${limit}`)
+      const response = await fetchT(`${API_BASE}/qq/artist/albums?mid=${id}&page=${page}&pageSize=${limit}`)
       const data = await response.json()
       return (data.albumList || []).map((item: any) => ({
         id: item.albumID,
@@ -2865,7 +2890,7 @@ export async function getArtistAlbums(id: number | string, platform: MusicPlatfo
       }))
     }
     
-    const response = await fetch(`${API_BASE}/netease/artist/albums?id=${id}&limit=${limit}&offset=${offset}`)
+    const response = await fetchT(`${API_BASE}/netease/artist/albums?id=${id}&limit=${limit}&offset=${offset}`)
     const data = await response.json()
     return (data.hotAlbums || []).map((item: any) => ({
       id: item.id,
@@ -2887,7 +2912,7 @@ export async function getArtistMVs(id: number | string, platform: MusicPlatform 
   try {
     if (platform === 'qq') {
       const page = Math.floor(offset / limit) + 1
-      const response = await fetch(`${API_BASE}/qq/artist/mvs?mid=${id}&page=${page}&pageSize=${limit}`)
+      const response = await fetchT(`${API_BASE}/qq/artist/mvs?mid=${id}&page=${page}&pageSize=${limit}`)
       const data = await response.json()
       return (data.mvList || []).map((item: any) => ({
         id: item.vid,
@@ -2902,7 +2927,7 @@ export async function getArtistMVs(id: number | string, platform: MusicPlatform 
       }))
     }
     
-    const response = await fetch(`${API_BASE}/netease/artist/mvs?id=${id}&limit=${limit}&offset=${offset}`)
+    const response = await fetchT(`${API_BASE}/netease/artist/mvs?id=${id}&limit=${limit}&offset=${offset}`)
     const data = await response.json()
     return (data.mvs || []).map((item: any) => ({
       id: item.id,
@@ -2926,12 +2951,12 @@ export async function getMVUrl(mvId: number | string, quality: number = 1080, pl
   try {
     if (platform === 'qq') {
       const cookie = getPlatformCookie('qq')
-      const response = await fetch(`${API_BASE}/qq/mv/url?vid=${mvId}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`)
+      const response = await fetchT(`${API_BASE}/qq/mv/url?vid=${mvId}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`)
       const data = await response.json()
       return data.url || null
     }
     
-    const response = await fetch(`${API_BASE}/netease/mv/url?id=${mvId}&r=${quality}`)
+    const response = await fetchT(`${API_BASE}/netease/mv/url?id=${mvId}&r=${quality}`)
     const data = await response.json()
     return data.data?.url || null
   } catch (error) {
@@ -2945,11 +2970,11 @@ export async function getMVPlaybackInfo(mvId: number | string, quality: number =
   try {
     if (platform === 'qq') {
       const cookie = getPlatformCookie('qq')
-      const response = await fetch(`${API_BASE}/qq/mv/url?vid=${mvId}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`)
+      const response = await fetchT(`${API_BASE}/qq/mv/url?vid=${mvId}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`)
       const data = await response.json()
       return { url: data.url || null, error: data.error, needCookie: data.needCookie }
     }
-    const response = await fetch(`${API_BASE}/netease/mv/url?id=${mvId}&r=${quality}`)
+    const response = await fetchT(`${API_BASE}/netease/mv/url?id=${mvId}&r=${quality}`)
     const data = await response.json()
     return { url: data.data?.url || null }
   } catch (error) {
@@ -2963,7 +2988,7 @@ export async function getMVDetail(mvId: number | string, platform: MusicPlatform
   try {
     if (platform === 'qq') {
       const cookie = getPlatformCookie('qq')
-      const response = await fetch(`${API_BASE}/qq/mv/detail?vid=${mvId}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`)
+      const response = await fetchT(`${API_BASE}/qq/mv/detail?vid=${mvId}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`)
       const data = await response.json()
       return {
         id: data.vid,
@@ -2976,7 +3001,7 @@ export async function getMVDetail(mvId: number | string, platform: MusicPlatform
       }
     }
     
-    const response = await fetch(`${API_BASE}/netease/mv/detail?mvid=${mvId}`)
+    const response = await fetchT(`${API_BASE}/netease/mv/detail?mvid=${mvId}`)
     const data = await response.json()
     return {
       id: data.data?.id,
@@ -3006,7 +3031,7 @@ export async function createPlaylist(
 ): Promise<any> {
   try {
     const cookie = getPlatformCookie(platform, options.cookie)
-    const response = await fetch(`${API_BASE}/${platform}/playlist/create`, {
+    const response = await fetchT(`${API_BASE}/${platform}/playlist/create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -3035,7 +3060,7 @@ export async function deletePlaylist(
 ): Promise<any> {
   try {
     const cookie = getPlatformCookie(platform, options.cookie)
-    const response = await fetch(`${API_BASE}/${platform}/playlist/delete`, {
+    const response = await fetchT(`${API_BASE}/${platform}/playlist/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -3063,7 +3088,7 @@ export async function addTracksToPlaylist(
 ): Promise<any> {
   try {
     const cookie = getPlatformCookie(platform, options.cookie)
-    const response = await fetch(`${API_BASE}/${platform}/playlist/tracks`, {
+    const response = await fetchT(`${API_BASE}/${platform}/playlist/tracks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -3093,7 +3118,7 @@ export async function removeTracksFromPlaylist(
 ): Promise<any> {
   try {
     const cookie = getPlatformCookie(platform, options.cookie)
-    const response = await fetch(`${API_BASE}/${platform}/playlist/tracks`, {
+    const response = await fetchT(`${API_BASE}/${platform}/playlist/tracks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -3123,7 +3148,7 @@ export async function subscribePlaylist(
 ): Promise<any> {
   try {
     const cookie = getPlatformCookie(platform, options.cookie)
-    const response = await fetch(`${API_BASE}/${platform}/playlist/subscribe`, {
+    const response = await fetchT(`${API_BASE}/${platform}/playlist/subscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -3156,7 +3181,7 @@ export async function searchHot(platform: MusicPlatform = 'netease'): Promise<an
   const cached = hotSearchCache.get(platform)
   if (cached) return cached
   try {
-    const response = await fetch(`${API_BASE}/${platform}/search/hot`)
+    const response = await fetchT(`${API_BASE}/${platform}/search/hot`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取搜索热词失败')
     hotSearchCache.set(platform, data)
@@ -3170,7 +3195,7 @@ export async function searchHot(platform: MusicPlatform = 'netease'): Promise<an
 /** QQ 搜索快速联想 */
 export async function searchQuick(keywords: string): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/qq/search/quick?keywords=${encodeURIComponent(keywords)}`)
+    const response = await fetchT(`${API_BASE}/qq/search/quick?keywords=${encodeURIComponent(keywords)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取搜索联想失败')
     return data
@@ -3189,7 +3214,7 @@ export async function subscribeAlbum(
 ): Promise<any> {
   try {
     const cookie = getPlatformCookie(platform, options.cookie)
-    const response = await fetch(`${API_BASE}/${platform}/album/subscribe`, {
+    const response = await fetchT(`${API_BASE}/${platform}/album/subscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, subscribe, t: subscribe ? '1' : '2', cookie })
@@ -3207,7 +3232,7 @@ export async function subscribeAlbum(
 export async function getSubscribedAlbums(platform: 'netease' = 'netease', options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie(platform, options.cookie)
-    const response = await fetch(`${API_BASE}/${platform}/album/sublist?cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/${platform}/album/sublist?cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取收藏专辑列表失败')
     return data
@@ -3253,7 +3278,7 @@ export async function getHotComments(
 ): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/comment/hot?id=${id}&type=${type}&limit=${limit}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/comment/hot?id=${id}&type=${type}&limit=${limit}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取热门评论失败')
     return data
@@ -3329,7 +3354,7 @@ export async function subscribeArtist(
       body.mid = id
       delete body.id
     }
-    const response = await fetch(`${API_BASE}/${platform}/artist/subscribe`, {
+    const response = await fetchT(`${API_BASE}/${platform}/artist/subscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -3353,7 +3378,7 @@ export async function getSubscribedArtists(platform: MusicPlatform = 'netease', 
       return { artists }
     }
     const cookie = getPlatformCookie(platform, options.cookie)
-    const response = await fetch(`${API_BASE}/${platform}/artist/sublist?cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/${platform}/artist/sublist?cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取关注歌手列表失败')
     return data
@@ -3367,7 +3392,7 @@ export async function getSubscribedArtists(platform: MusicPlatform = 'netease', 
 export async function getQQSubscribedAlbums(options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('qq', options.cookie)
-    const response = await fetch(`${API_BASE}/qq/album/sublist?cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/qq/album/sublist?cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取收藏专辑列表失败')
     return data
@@ -3381,7 +3406,7 @@ export async function getQQSubscribedAlbums(options: { cookie?: string } = {}): 
 export async function getQQSubscribedArtists(options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('qq', options.cookie)
-    const response = await fetch(`${API_BASE}/qq/artist/sublist2?cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/qq/artist/sublist2?cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取关注歌手列表失败')
     return data
@@ -3437,7 +3462,7 @@ export async function getAllMVs(
     if (area) params.set('area', area)
     if (type) params.set('type', type)
     if (order) params.set('order', order)
-    const response = await fetch(`${API_BASE}/netease/mv/all?${params}`)
+    const response = await fetchT(`${API_BASE}/netease/mv/all?${params}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取MV列表失败')
     return data
@@ -3450,7 +3475,7 @@ export async function getAllMVs(
 /** 获取 QQ MV 分类 */
 export async function getMVCategories(): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/qq/mv/category`)
+    const response = await fetchT(`${API_BASE}/qq/mv/category`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取MV分类失败')
     return data
@@ -3463,7 +3488,7 @@ export async function getMVCategories(): Promise<any> {
 /** 获取 QQ MV 列表（按分类：version 版本/类型 + area 地区） */
 export async function getMVListByCategory(version: number = 7, area: number = 15, pageNo: number = 1, pageSize: number = 20): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/qq/mv/list?version=${version}&area=${area}&pageNo=${pageNo}&pageSize=${pageSize}`)
+    const response = await fetchT(`${API_BASE}/qq/mv/list?version=${version}&area=${area}&pageNo=${pageNo}&pageSize=${pageSize}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取MV列表失败')
     return data
@@ -3477,14 +3502,14 @@ export async function getMVListByCategory(version: number = 7, area: number = 15
 export async function searchMVs(keywords: string, platform: MusicPlatform = 'netease', limit: number = 30): Promise<any> {
   try {
     if (platform === 'qq') {
-      const response = await fetch(`${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&limit=${limit}&type=mv`)
+      const response = await fetchT(`${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&limit=${limit}&type=mv`)
       const data = await response.json()
       if (!response.ok) throw new Error(data?.error || 'MV搜索失败')
       return data
     }
     const cookie = getPlatformCookie('netease')
     const params = new URLSearchParams({ keywords, limit: String(limit), type: '1004', cookie })
-    const response = await fetch(`${API_BASE}/netease/search?${params}`)
+    const response = await fetchT(`${API_BASE}/netease/search?${params}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || 'MV搜索失败')
     return data
@@ -3544,7 +3569,7 @@ export async function searchPlaylists(keywords: string, platform: MusicPlatform 
       }
     }
     if (platform === 'qq') {
-      const response = await fetch(`${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&limit=${limit}&type=playlist`)
+      const response = await fetchT(`${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&limit=${limit}&type=playlist`)
       const data = await response.json()
       if (!response.ok) throw new Error(data?.error || '歌单搜索失败')
       const raw = Array.isArray(data?.playlists) ? data.playlists : []
@@ -3561,7 +3586,7 @@ export async function searchPlaylists(keywords: string, platform: MusicPlatform 
     }
     const cookie = getPlatformCookie('netease')
     const params = new URLSearchParams({ keywords, limit: String(limit), type: '1000', cookie })
-    const response = await fetch(`${API_BASE}/netease/search?${params}`)
+    const response = await fetchT(`${API_BASE}/netease/search?${params}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '歌单搜索失败')
     const raw = Array.isArray(data?.result?.playlists) ? data.result.playlists : []
@@ -3586,7 +3611,7 @@ export async function searchUsers(keywords: string, limit: number = 20): Promise
   try {
     const cookie = getPlatformCookie('netease')
     const params = new URLSearchParams({ keywords, limit: String(limit), type: '1002', cookie })
-    const response = await fetch(`${API_BASE}/netease/search?${params}`)
+    const response = await fetchT(`${API_BASE}/netease/search?${params}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '用户搜索失败')
     return (data?.result?.userprofiles || []).map((u: any) => ({
@@ -3606,7 +3631,7 @@ export async function getUserFollows(uid: string, options: { cookie?: string; li
     const cookie = getPlatformCookie('netease', options.cookie)
     const limit = options.limit ?? 30
     const offset = options.offset ?? 0
-    const response = await fetch(`${API_BASE}/netease/user/follows?uid=${uid}&limit=${limit}&offset=${offset}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/user/follows?uid=${uid}&limit=${limit}&offset=${offset}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取关注列表失败')
     return data
@@ -3622,7 +3647,7 @@ export async function getUserFolloweds(uid: string, options: { cookie?: string; 
     const cookie = getPlatformCookie('netease', options.cookie)
     const limit = options.limit ?? 30
     const offset = options.offset ?? 0
-    const response = await fetch(`${API_BASE}/netease/user/followeds?uid=${uid}&limit=${limit}&offset=${offset}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/user/followeds?uid=${uid}&limit=${limit}&offset=${offset}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取粉丝列表失败')
     return data
@@ -3635,7 +3660,7 @@ export async function getUserFolloweds(uid: string, options: { cookie?: string; 
 /** 网易云热门歌单 */
 export async function getNeteasePlaylistHot(cat: string = '全部', limit: number = 30): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/playlist/hot?cat=${encodeURIComponent(cat)}&limit=${limit}`)
+    const response = await fetchT(`${API_BASE}/netease/playlist/hot?cat=${encodeURIComponent(cat)}&limit=${limit}`)
     const data = await response.json()
     return data?.playlists || []
   } catch (error) {
@@ -3647,7 +3672,7 @@ export async function getNeteasePlaylistHot(cat: string = '全部', limit: numbe
 /** 网易云精品歌单 */
 export async function getNeteasePlaylistHighquality(cat: string = '全部', limit: number = 30): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/playlist/highquality?cat=${encodeURIComponent(cat)}&limit=${limit}`)
+    const response = await fetchT(`${API_BASE}/netease/playlist/highquality?cat=${encodeURIComponent(cat)}&limit=${limit}`)
     const data = await response.json()
     return data?.playlists || []
   } catch (error) {
@@ -3659,7 +3684,7 @@ export async function getNeteasePlaylistHighquality(cat: string = '全部', limi
 /** 网易云 MV 榜 */
 export async function getNeteaseTopMv(limit: number = 30): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/top/mv?limit=${limit}`)
+    const response = await fetchT(`${API_BASE}/netease/top/mv?limit=${limit}`)
     const data = await response.json()
     return data?.mvs || []
   } catch (error) {
@@ -3671,7 +3696,7 @@ export async function getNeteaseTopMv(limit: number = 30): Promise<any> {
 /** 网易云热门歌手 */
 export async function getNeteaseTopArtists(limit: number = 30): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/top/artists?limit=${limit}`)
+    const response = await fetchT(`${API_BASE}/netease/top/artists?limit=${limit}`)
     const data = await response.json()
     return data?.artists || []
   } catch (error) {
@@ -3683,7 +3708,7 @@ export async function getNeteaseTopArtists(limit: number = 30): Promise<any> {
 /** QQ 歌单分类 */
 export async function getQQSonglistCategory(): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/qq/songlist/category`)
+    const response = await fetchT(`${API_BASE}/qq/songlist/category`)
     const data = await response.json()
     return data?.data || []
   } catch (error) {
@@ -3695,7 +3720,7 @@ export async function getQQSonglistCategory(): Promise<any> {
 /** QQ 分类歌单 */
 export async function getQQSonglistList(id: number, page: number = 1, pageSize: number = 20): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/qq/songlist/list?id=${id}&page=${page}&pageSize=${pageSize}`)
+    const response = await fetchT(`${API_BASE}/qq/songlist/list?id=${id}&page=${page}&pageSize=${pageSize}`)
     const data = await response.json()
     return data?.data || null
   } catch (error) {
@@ -3707,7 +3732,7 @@ export async function getQQSonglistList(id: number, page: number = 1, pageSize: 
 /** 网易云歌曲百科 */
 export async function getNeteaseSongWiki(id: number | string): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/song/wiki?id=${encodeURIComponent(String(id))}`)
+    const response = await fetchT(`${API_BASE}/netease/song/wiki?id=${encodeURIComponent(String(id))}`)
     const data = await response.json()
     return data?.summary || null
   } catch (error) {
@@ -3716,11 +3741,48 @@ export async function getNeteaseSongWiki(id: number | string): Promise<any> {
   }
 }
 
+export interface NeteaseWikiItem {
+  text: string
+  /** 网易云端的跳转深链（orpheus://，仅表示可点击；WaveForge 内不直接使用） */
+  url?: string
+}
+export interface NeteaseWikiRow {
+  label: string
+  items: NeteaseWikiItem[]
+}
+
+/** 网易云「音乐百科」结构化行：label（曲风/语种/发行/BPM/制作...）+ 可点击值列表；乐谱板块按需求排除 */
+export async function getNeteaseSongWikiRows(id: number | string): Promise<NeteaseWikiRow[]> {
+  try {
+    const response = await fetchT(`${API_BASE}/netease/song/wiki?id=${encodeURIComponent(String(id))}`)
+    const data = await response.json()
+    const blocks = data?.data?.blocks || []
+    const basic = blocks.find((block: any) => block?.code === 'SONG_PLAY_ABOUT_SONG_BASIC')
+    if (!basic) return []
+    const rows: NeteaseWikiRow[] = []
+    for (const creative of basic.creatives || []) {
+      const label = String(creative?.uiElement?.mainTitle?.title || '').trim()
+      if (!label || label.includes('乐谱')) continue
+      const items: NeteaseWikiItem[] = (creative.resources || [])
+        .map((res: any) => ({
+          text: String(res?.uiElement?.mainTitle?.title || '').trim(),
+          url: res?.uiElement?.mainTitle?.action?.clickAction?.targetUrl || undefined,
+        }))
+        .filter((item: NeteaseWikiItem) => item.text)
+      if (items.length) rows.push({ label, items })
+    }
+    return rows
+  } catch (error) {
+    console.error('歌曲百科解析失败:', error)
+    return []
+  }
+}
+
 /** 网易云相关博客（歌曲所属专辑的博客文章，App 歌曲详情"相关博客"） */
 export async function getNeteaseSongBlog(albumId: number | string, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/song/blog?albumId=${encodeURIComponent(String(albumId))}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/song/blog?albumId=${encodeURIComponent(String(albumId))}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (data?.code !== 200) {
       console.warn('相关博客获取失败:', data?.msg || data?.error || `code ${data?.code}`)
@@ -3736,7 +3798,7 @@ export async function getNeteaseSongBlog(albumId: number | string, options: { co
 /** QQ 歌曲所在歌单 */
 export async function getQQSongPlaylist(mid: string, limit: number = 10): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/qq/song/playlist?mid=${encodeURIComponent(mid)}&limit=${limit}`)
+    const response = await fetchT(`${API_BASE}/qq/song/playlist?mid=${encodeURIComponent(mid)}&limit=${limit}`)
     const data = await response.json()
     return data?.data || null
   } catch (error) {
@@ -3748,7 +3810,7 @@ export async function getQQSongPlaylist(mid: string, limit: number = 10): Promis
 /** 网易云相似 MV */
 export async function getNeteaseSimiMv(mvid: number | string): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/simi/mv?mvid=${encodeURIComponent(String(mvid))}`)
+    const response = await fetchT(`${API_BASE}/netease/simi/mv?mvid=${encodeURIComponent(String(mvid))}`)
     const data = await response.json()
     return data?.mvs || []
   } catch (error) {
@@ -3761,7 +3823,7 @@ export async function getNeteaseSimiMv(mvid: number | string): Promise<any> {
 export async function getNeteaseMvSublist(options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/mv/sublist?cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/mv/sublist?cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data?.data || []
   } catch (error) {
@@ -3774,7 +3836,7 @@ export async function getNeteaseMvSublist(options: { cookie?: string } = {}): Pr
 export async function subscribeNeteaseMV(mvid: number | string, subscribe: boolean = true, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/mv/subscribe`, {
+    const response = await fetchT(`${API_BASE}/netease/mv/subscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mvid: String(mvid), subscribe, cookie })
@@ -3791,7 +3853,7 @@ export async function subscribeNeteaseMV(mvid: number | string, subscribe: boole
 /** 网易云全部排行榜列表 */
 export async function getNeteaseToplistDetail(): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/toplist/detail`)
+    const response = await fetchT(`${API_BASE}/netease/toplist/detail`)
     const data = await response.json()
     return data?.list || []
   } catch (error) {
@@ -3804,7 +3866,7 @@ export async function getNeteaseToplistDetail(): Promise<any> {
 export async function getNeteaseToplistSongs(id: number | string, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/toplist/songs?id=${encodeURIComponent(String(id))}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/toplist/songs?id=${encodeURIComponent(String(id))}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data
   } catch (error) {
@@ -3817,7 +3879,7 @@ export async function getNeteaseToplistSongs(id: number | string, options: { coo
 export async function neteaseFmTrash(id: number | string, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/fm/trash`, {
+    const response = await fetchT(`${API_BASE}/netease/fm/trash`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: String(id), cookie })
@@ -3835,7 +3897,7 @@ export async function neteaseFmTrash(id: number | string, options: { cookie?: st
 export async function neteaseRecommendDislike(id: number | string, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/recommend/dislike`, {
+    const response = await fetchT(`${API_BASE}/netease/recommend/dislike`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: String(id), cookie })
@@ -3853,7 +3915,7 @@ export async function neteaseRecommendDislike(id: number | string, options: { co
 export async function getNeteaseVipInfo(options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/vip/info?cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/vip/info?cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data
   } catch (error) {
@@ -3866,7 +3928,7 @@ export async function getNeteaseVipInfo(options: { cookie?: string } = {}): Prom
 export async function getNeteaseFollowingEvents(options: { cookie?: string; pagesize?: number; lasttime?: number } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/event/following?pagesize=${Number(options.pagesize) || 20}&lasttime=${Number(options.lasttime) || -1}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/event/following?pagesize=${Number(options.pagesize) || 20}&lasttime=${Number(options.lasttime) || -1}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data
   } catch (error) {
@@ -3879,7 +3941,7 @@ export async function getNeteaseFollowingEvents(options: { cookie?: string; page
 export async function getNeteaseUserEvents(uid: number | string, options: { cookie?: string; lasttime?: number; limit?: number } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/event/user?uid=${encodeURIComponent(String(uid))}&lasttime=${Number(options.lasttime) || -1}&limit=${Number(options.limit) || 30}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/event/user?uid=${encodeURIComponent(String(uid))}&lasttime=${Number(options.lasttime) || -1}&limit=${Number(options.limit) || 30}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data
   } catch (error) {
@@ -3892,7 +3954,7 @@ export async function getNeteaseUserEvents(uid: number | string, options: { cook
 export async function getNeteaseNotices(options: { cookie?: string; limit?: number; lasttime?: number } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/msg/notices?limit=${Number(options.limit) || 30}&lasttime=${Number(options.lasttime) || -1}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/msg/notices?limit=${Number(options.limit) || 30}&lasttime=${Number(options.lasttime) || -1}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data
   } catch (error) {
@@ -3905,7 +3967,7 @@ export async function getNeteaseNotices(options: { cookie?: string; limit?: numb
 export async function getNeteaseCommentMessages(uid: number | string, options: { cookie?: string; limit?: number; before?: number } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/msg/comments?uid=${encodeURIComponent(String(uid))}&limit=${Number(options.limit) || 30}&before=${Number(options.before) || -1}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/msg/comments?uid=${encodeURIComponent(String(uid))}&limit=${Number(options.limit) || 30}&before=${Number(options.before) || -1}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data
   } catch (error) {
@@ -3914,37 +3976,13 @@ export async function getNeteaseCommentMessages(uid: number | string, options: {
   }
 }
 
-/** 网易云云盘歌曲列表 */
-export async function getNeteaseCloudSongs(options: { cookie?: string; limit?: number; offset?: number } = {}): Promise<any> {
-  try {
-    const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/cloud/list?limit=${Number(options.limit) || 30}&offset=${Number(options.offset) || 0}&cookie=${encodeURIComponent(cookie)}`)
-    const data = await response.json()
-    return data
-  } catch (error) {
-    console.error('云盘列表获取失败:', error)
-    return null
-  }
-}
 
-/** 网易云云盘歌曲播放链接 */
-export async function getNeteaseCloudSongUrl(id: number | string, options: { cookie?: string } = {}): Promise<any> {
-  try {
-    const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/cloud/url?id=${encodeURIComponent(String(id))}&cookie=${encodeURIComponent(cookie)}`)
-    const data = await response.json()
-    return data
-  } catch (error) {
-    console.error('云盘歌曲链接获取失败:', error)
-    return null
-  }
-}
 
 /** 网易云订阅/取消订阅电台 */
 export async function subscribeNeteaseDj(rid: number | string, subscribe: boolean = true, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/dj/subscribe`, {
+    const response = await fetchT(`${API_BASE}/netease/dj/subscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rid: String(rid), subscribe, cookie })
@@ -3962,7 +4000,7 @@ export async function subscribeNeteaseDj(rid: number | string, subscribe: boolea
 export async function getNeteaseDjSublist(options: { cookie?: string; limit?: number; offset?: number } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/dj/sublist?limit=${Number(options.limit) || 30}&offset=${Number(options.offset) || 0}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/dj/sublist?limit=${Number(options.limit) || 30}&offset=${Number(options.offset) || 0}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data
   } catch (error) {
@@ -3974,7 +4012,7 @@ export async function getNeteaseDjSublist(options: { cookie?: string; limit?: nu
 /** QQ 歌曲关联 MV */
 export async function getQQSongMV(songId: number | string): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/qq/song/mv?id=${encodeURIComponent(String(songId))}`)
+    const response = await fetchT(`${API_BASE}/qq/song/mv?id=${encodeURIComponent(String(songId))}`)
     const data = await response.json()
     return data?.data || null
   } catch (error) {
@@ -3987,7 +4025,7 @@ export async function getQQSongMV(songId: number | string): Promise<any> {
 export async function likeQQMV(id: number | string, like: boolean = true): Promise<any> {
   try {
     const cookie = getPlatformCookie('qq')
-    const response = await fetch(`${API_BASE}/qq/mv/like?id=${encodeURIComponent(String(id))}&type=${like ? 1 : 0}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/qq/mv/like?id=${encodeURIComponent(String(id))}&type=${like ? 1 : 0}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data
   } catch (error) {
@@ -3999,7 +4037,7 @@ export async function likeQQMV(id: number | string, like: boolean = true): Promi
 /** QQ 歌手分类 */
 export async function getQQArtistCategory(): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/qq/artist/category`)
+    const response = await fetchT(`${API_BASE}/qq/artist/category`)
     const data = await response.json()
     return data?.data || null
   } catch (error) {
@@ -4013,7 +4051,7 @@ export async function getQQArtistList(params: { type?: number; area?: number; se
   try {
     const q = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => { if (v != null) q.set(k, String(v)) })
-    const response = await fetch(`${API_BASE}/qq/artist/list?${q}`)
+    const response = await fetchT(`${API_BASE}/qq/artist/list?${q}`)
     const data = await response.json()
     return data?.data || null
   } catch (error) {
@@ -4025,7 +4063,7 @@ export async function getQQArtistList(params: { type?: number; area?: number; se
 /** 网易云电台推荐 */
 export async function getNeteaseDjRecommend(): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/dj/recommend`)
+    const response = await fetchT(`${API_BASE}/netease/dj/recommend`)
     const data = await response.json()
     return data || null
   } catch (error) {
@@ -4038,7 +4076,7 @@ export async function getNeteaseDjRecommend(): Promise<any> {
 export async function getQQListenAlso(songid: number | string, singermid?: string): Promise<any> {
   try {
     const cookie = getPlatformCookie('qq')
-    const response = await fetch(`${API_BASE}/qq/song/listen-also?songid=${encodeURIComponent(String(songid))}${singermid ? `&singermid=${encodeURIComponent(singermid)}` : ''}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/qq/song/listen-also?songid=${encodeURIComponent(String(songid))}${singermid ? `&singermid=${encodeURIComponent(singermid)}` : ''}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data?.data?.songs || []
   } catch (error) {
@@ -4051,7 +4089,7 @@ export async function getQQListenAlso(songid: number | string, singermid?: strin
 export async function getQQLikeAlso(songid: number | string, offset: number = 0): Promise<any> {
   try {
     const cookie = getPlatformCookie('qq')
-    const response = await fetch(`${API_BASE}/qq/song/like-also?songid=${encodeURIComponent(String(songid))}&offset=${offset}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/qq/song/like-also?songid=${encodeURIComponent(String(songid))}&offset=${offset}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data?.data?.playlists || []
   } catch (error) {
@@ -4064,7 +4102,7 @@ export async function getQQLikeAlso(songid: number | string, offset: number = 0)
 export async function getNeteaseSimiSong(id: number | string, limit: number = 10): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease')
-    const response = await fetch(`${API_BASE}/netease/song/simi?id=${encodeURIComponent(String(id))}&limit=${limit}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/song/simi?id=${encodeURIComponent(String(id))}&limit=${limit}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data?.songs || []
   } catch (error) {
@@ -4077,7 +4115,7 @@ export async function getNeteaseSimiSong(id: number | string, limit: number = 10
 export async function getNeteaseRelatedPlaylist(id: number | string): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease')
-    const response = await fetch(`${API_BASE}/netease/song/related-playlist?id=${encodeURIComponent(String(id))}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/song/related-playlist?id=${encodeURIComponent(String(id))}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     return data?.playlists || []
   } catch (error) {
@@ -4089,7 +4127,7 @@ export async function getNeteaseRelatedPlaylist(id: number | string): Promise<an
 /** 获取网易云用户详情（公开，可查任意用户） */
 export async function getUserDetail(uid: string): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/user/detail?uid=${encodeURIComponent(uid)}`)
+    const response = await fetchT(`${API_BASE}/netease/user/detail?uid=${encodeURIComponent(uid)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取用户详情失败')
     return data
@@ -4102,7 +4140,7 @@ export async function getUserDetail(uid: string): Promise<any> {
 /** 获取网易云用户歌单（公开，可查任意用户） */
 export async function getUserPlaylistList(uid: string): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/user/playlist?uid=${encodeURIComponent(uid)}`)
+    const response = await fetchT(`${API_BASE}/netease/user/playlist?uid=${encodeURIComponent(uid)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取用户歌单失败')
     return data
@@ -4115,7 +4153,7 @@ export async function getUserPlaylistList(uid: string): Promise<any> {
 /** 网易云电台/有声书详情（二级页：DJ、简介、节目数、标签） */
 export async function getNeteaseRadioDetail(radioId: string): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/dj/detail?id=${encodeURIComponent(radioId)}`)
+    const response = await fetchT(`${API_BASE}/netease/dj/detail?id=${encodeURIComponent(radioId)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取电台详情失败')
     return data?.radio || null
@@ -4128,7 +4166,7 @@ export async function getNeteaseRadioDetail(radioId: string): Promise<any> {
 /** 网易云播客节目详情（二级页：标题、简介、所属电台、时长、互动数） */
 export async function getNeteaseProgramDetail(programId: string): Promise<any> {
   try {
-    const response = await fetch(`${API_BASE}/netease/dj/program/detail?id=${encodeURIComponent(programId)}`)
+    const response = await fetchT(`${API_BASE}/netease/dj/program/detail?id=${encodeURIComponent(programId)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取节目详情失败')
     return data?.program || null
@@ -4144,7 +4182,7 @@ export async function getQQFollows(options: { cookie?: string; start?: number; n
     const cookie = getPlatformCookie('qq', options.cookie)
     const start = options.start ?? 0
     const num = options.num ?? 30
-    const response = await fetch(`${API_BASE}/qq/user/follows?start=${start}&num=${num}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/qq/user/follows?start=${start}&num=${num}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取关注列表失败')
     return data
@@ -4160,7 +4198,7 @@ export async function getQQFans(options: { cookie?: string; start?: number; num?
     const cookie = getPlatformCookie('qq', options.cookie)
     const start = options.start ?? 0
     const num = options.num ?? 30
-    const response = await fetch(`${API_BASE}/qq/user/fans?start=${start}&num=${num}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/qq/user/fans?start=${start}&num=${num}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取粉丝列表失败')
     return data
@@ -4174,7 +4212,7 @@ export async function getQQFans(options: { cookie?: string; start?: number; num?
 export async function getQQUserProfile(encUin: string, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('qq', options.cookie)
-    const response = await fetch(`${API_BASE}/qq/user/profile?encUin=${encodeURIComponent(encUin)}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/qq/user/profile?encUin=${encodeURIComponent(encUin)}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取用户主页失败')
     return data
@@ -4188,7 +4226,7 @@ export async function getQQUserProfile(encUin: string, options: { cookie?: strin
 export async function getQQUserFavs(encUin: string, favType: number = 1, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('qq', options.cookie)
-    const response = await fetch(`${API_BASE}/qq/user/favs?encUin=${encodeURIComponent(encUin)}&favType=${favType}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/qq/user/favs?encUin=${encodeURIComponent(encUin)}&favType=${favType}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取我喜欢失败')
     return data
@@ -4202,7 +4240,7 @@ export async function getQQUserFavs(encUin: string, favType: number = 1, options
 export async function subscribeQQUser(encUin: string, subscribe: boolean, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('qq', options.cookie)
-    const response = await fetch(`${API_BASE}/qq/user/subscribe?encUin=${encodeURIComponent(encUin)}&subscribe=${subscribe}&cookie=${encodeURIComponent(cookie)}`, { method: 'POST' })
+    const response = await fetchT(`${API_BASE}/qq/user/subscribe?encUin=${encodeURIComponent(encUin)}&subscribe=${subscribe}&cookie=${encodeURIComponent(cookie)}`, { method: 'POST' })
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '关注操作失败')
     return data
@@ -4216,7 +4254,7 @@ export async function subscribeQQUser(encUin: string, subscribe: boolean, option
 export async function subscribeNeteaseUser(id: string, subscribe: boolean, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/user/subscribe?id=${encodeURIComponent(id)}&subscribe=${subscribe}&cookie=${encodeURIComponent(cookie)}`, { method: 'POST' })
+    const response = await fetchT(`${API_BASE}/netease/user/subscribe?id=${encodeURIComponent(id)}&subscribe=${subscribe}&cookie=${encodeURIComponent(cookie)}`, { method: 'POST' })
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '关注操作失败')
     return data
@@ -4230,7 +4268,7 @@ export async function subscribeNeteaseUser(id: string, subscribe: boolean, optio
 export async function getUserRecordRank(uid: string, type: 0 | 1 = 0, options: { cookie?: string } = {}): Promise<any> {
   try {
     const cookie = getPlatformCookie('netease', options.cookie)
-    const response = await fetch(`${API_BASE}/netease/record/rank/${type}?uid=${uid}&cookie=${encodeURIComponent(cookie)}`)
+    const response = await fetchT(`${API_BASE}/netease/record/rank/${type}?uid=${uid}&cookie=${encodeURIComponent(cookie)}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取听歌排行失败')
     return data

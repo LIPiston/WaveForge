@@ -1,8 +1,19 @@
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { memo, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { imageCache } from '../utils/imageCache'
 import { getArtworkEpoch, getArtworkCacheKey, getResolvedArtworkUrl, preloadArtwork, subscribeArtworkEpoch } from '../services/artworkLoader'
 import type { ArtworkPriority, ArtworkRole } from '../services/artwork'
 import type { MusicPlatform } from '../services/platforms'
+import { FrozenScope } from './frozenScope'
+
+/**
+ * 冻结态占位图：1×1 透明 GIF。
+ *
+ * 冻结的只是「已解码的大图」——把它换成 1×1 后，`<img>` 元素、DOM 结构与布局全部保留，
+ * 只有那几百 KB~几 MB 的位图被释放；面板本来就不可见，视觉零变化。
+ * 解冻时按 state 里的原 src 重新渲染，Chromium 从内存/磁盘缓存解码，不走网络。
+ */
+const FROZEN_PIXEL =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
 // 模块级共享懒加载 observer：大列表（最近播放/歌单/探索封面墙）里数百张封面
 // 若各自 new IntersectionObserver，滚动时每个 observer 都要参与交叉计算，是典型卡顿源。
@@ -92,6 +103,9 @@ function CachedImage({
   fit = 'cover',
 }: CachedImageProps) {
   const artworkEpoch = useSyncExternalStore(subscribeArtworkEpoch, getArtworkEpoch, getArtworkEpoch)
+  // 冻结：所在面板不可见（被切走的平台面板 / 被播放页覆盖的整页）。
+  // 只看这一个布尔量决定「是否释放位图」，不改动其余加载逻辑，冻结/解冻都不重建组件。
+  const frozen = useContext(FrozenScope)
   const normalizedSrc = useMemo(
     () => src?.trim() ? getResolvedArtworkUrl(src, { role, size, platform }) : '',
     [platform, role, size, src],
@@ -167,6 +181,9 @@ function CachedImage({
     const requestKey = `${artworkEpoch}:${normalizedSrc}`
     requestRef.current = requestKey
     if (!isVisible) return
+    // 冻结期间不加载、不预取：面板不可见时的下载只会占带宽与内存。
+    // frozen 进依赖：解冻后本 effect 重跑，命中 imageCache 走同步快路径恢复原图。
+    if (frozen) return
     if (!normalizedSrc || normalizedSrc.includes('M000.jpg')) {
       if (!retainPrevious) setImageSrc('')
       setLoading(false)
@@ -227,12 +244,28 @@ function CachedImage({
       setError(true)
       setLoading(false)
     })
-  }, [artworkEpoch, isVisible, lazy, normalizedSrc, cacheKey, platform, priority, retries, retainPrevious, role, size])
+  }, [artworkEpoch, frozen, isVisible, lazy, normalizedSrc, cacheKey, platform, priority, retries, retainPrevious, role, size])
 
   const handleError = (event: React.SyntheticEvent<HTMLImageElement, Event>) => {
     setError(true)
     if (!retainPrevious) setImageSrc('')
     onError?.(event)
+  }
+
+  // 冻结分支放在兜底渲染之前：只把 src 换成 1×1 透明图，释放已解码位图，
+  // DOM/布局/类名与正常分支保持一致——面板不可见，视觉无差别；
+  // 解冻后回到正常分支，用 state 里原有的 src 直接渲染（不闪占位符）。
+  if (frozen) {
+    return (
+      <div ref={containerRef} className={`${className || ''} ${wrapperPositionClass} overflow-hidden`}>
+        <img
+          src={FROZEN_PIXEL}
+          alt=""
+          aria-hidden="true"
+          className={`relative h-full w-full object-${fit}`}
+        />
+      </div>
+    )
   }
 
   if ((error || loading) && !displaySrc && fallback) return <div ref={containerRef} className={className}>{fallback}</div>

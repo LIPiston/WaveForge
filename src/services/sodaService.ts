@@ -22,13 +22,15 @@
 import type { Song, LyricLine } from './musicApi'
 import { getPlatformCookie } from './platforms'
 import { debugLog } from '../utils/debugLog'
+import { getApiBase } from './apiConfig'
 // 汽水逐字（yrc）→ 前端契约归一化：独立实现，不借用网易云解析器
 import { asSodaWordRows, sodaWordRowsToLyricLines } from './sodaLyrics'
 import type { SodaWordRowWire } from './sodaLyrics'
 
-const SODA_API = 'http://localhost:3001/api/soda'
+// 统一走 apiConfig：用户设置远程网关后仍打 localhost 会拿不到登录态
+const SODA_API = `${getApiBase()}/soda`
 /** 旧火山公开目录代理（兜底数据源） */
-const QISHUI_API = 'http://localhost:3001/api/qishui'
+const QISHUI_API = `${getApiBase()}/qishui`
 const REQUEST_TIMEOUT_MS = 10000
 
 // ────────────────────────────── 类型定义 ──────────────────────────────

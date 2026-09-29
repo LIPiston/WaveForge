@@ -70,6 +70,12 @@ class IndexedDBCache {
     if (this.db) return
     if (this.initPromise) return this.initPromise
     this.initPromise = new Promise((resolve, reject) => {
+      // indexedDB 在个别窗口/协议环境下可能不可用（用户控制台出现过 ReferenceError）：
+      // 显式守卫，降级为「不缓存」，错误信息里带上真实原因而不是裸 ReferenceError。
+      if (typeof indexedDB === 'undefined') {
+        reject(new Error('当前环境不支持 IndexedDB（缓存已停用，功能不受影响）'))
+        return
+      }
       const request = indexedDB.open(DB_NAME, DB_VERSION)
       request.onerror = () => { this.initPromise = null; reject(request.error) }
       request.onblocked = () => { this.initPromise = null; reject(new Error('IndexedDB 升级被其他窗口阻塞')) }

@@ -1,7 +1,7 @@
 import { imageCache } from '../utils/imageCache'
 import { indexedDBCache } from './indexedDBCache'
 import { getApiBase } from './apiConfig'
-import { resolveArtworkUrl, unwrapArtworkSource, getArtworkRoleSize, getArtworkSizeBucket, type ArtworkPriority, type ResolveArtworkOptions } from './artwork'
+import { resolveArtworkUrl, unwrapArtworkSource, getArtworkRoleSize, getArtworkSizeBucket, fallbackArtworkSources, type ArtworkPriority, type ResolveArtworkOptions } from './artwork'
 
 import type { MusicPlatform } from './platforms'
 
@@ -47,6 +47,35 @@ function rememberFailure(url: string): void {
     if (typeof oldest !== 'string') break
     failedLoads.delete(oldest)
   }
+  scheduleArtworkFailureRetry()
+}
+
+/**
+ * 失败自愈：任何封面加载失败后按退避 bump 一次 artwork epoch。
+ * 所有 CachedImage / epoch 订阅者会重跑加载 effect——成功条目走内存缓存短路（零成本），
+ * 失败条目在 FAILURE_TTL 过期后真正重试。没有这一步， consumers 加载失败后
+ * 若无 props 变化就永远停在占位符/黑底（实测播放页背景黑屏 1 分钟的根因之一）。
+ * 轮次上限 3；距上一轮失败超过 5 分钟视为新一轮故障波，重新给满机会。
+ */
+const FAILURE_RETRY_DELAYS_MS = [5_000, 20_000, 45_000]
+const FAILURE_RETRY_WAVE_RESET_MS = 300_000
+let failureRetryRound = 0
+let failureRetryTimer: number | null = null
+let lastFailureWaveAt = 0
+
+function scheduleArtworkFailureRetry(): void {
+  if (typeof window === 'undefined') return
+  const now = Date.now()
+  if (now - lastFailureWaveAt > FAILURE_RETRY_WAVE_RESET_MS) failureRetryRound = 0
+  lastFailureWaveAt = now
+  if (failureRetryRound >= FAILURE_RETRY_DELAYS_MS.length) return
+  if (failureRetryTimer !== null) return
+  const delay = FAILURE_RETRY_DELAYS_MS[failureRetryRound]
+  failureRetryRound += 1
+  failureRetryTimer = window.setTimeout(() => {
+    failureRetryTimer = null
+    publishArtworkEpoch()
+  }, delay)
 }
 
 function loadDecoded(url: string, priority: ArtworkPriority, signal: AbortSignal): Promise<string> {
@@ -178,14 +207,33 @@ export function preloadArtwork(src: string, options: ArtworkLoadOptions = {}): P
       // IndexedDB or object URL failures fall back to the network path.
     }
     for (let attempt = 0; attempt < attempts; attempt += 1) {
+      let loaded: string | null = null
       try {
-        let loaded: string
-        try {
-          loaded = await loadDecoded(url, priority, controller.signal)
-        } catch (proxyError) {
-          if (controller.signal.aborted || !/^https?:\/\//i.test(sourceUrl) || sourceUrl === url) throw proxyError
+        loaded = await loadDecoded(url, priority, controller.signal)
+      } catch (renditionError) {
+        if (controller.signal.aborted) throw renditionError
+        // 档位 404 降档兜底：网易 param 档位可能大于原图（部分封面 1024 档 404，
+        // 同 param 直连也一样 404）；QQ 部分专辑未生成 R800。逐级降档总有一档可用。
+        const fallbackSources = fallbackArtworkSources(sourceUrl)
+        for (const fallbackSource of fallbackSources) {
+          if (controller.signal.aborted) throw renditionError
+          const fallbackUrl = `${getApiBase()}/cover?url=${encodeURIComponent(fallbackSource)}`
+          if (fallbackUrl === url) continue
+          try {
+            loaded = await loadDecoded(fallbackUrl, priority, controller.signal)
+            break
+          } catch {
+            // 下一档候选
+          }
+        }
+        if (loaded === null) {
+          // 无降档候选或全部失败：回退到未代理的源地址（历史上存在的直连兜底）
+          if (!/^https?:\/\//i.test(sourceUrl) || sourceUrl === url) throw renditionError
           loaded = await loadDecoded(sourceUrl, priority, controller.signal)
         }
+      }
+      if (loaded === null) throw new Error('Artwork failed to load')
+      try {
         if (startedAtEpoch === artworkEpoch) {
           imageCache.set(memoryKey, loaded)
           try {
