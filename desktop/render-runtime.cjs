@@ -12,6 +12,13 @@ const automixLog = require('./automix-log.cjs')
 
 const WORKER_IDLE_TIMEOUT = 60_000 // 60 seconds
 const RENDER_TIMEOUT = 120_000 // 2 minutes for complex renders
+// AutoMix Enhanced（QQ 三档）后端契约版本：纳入 QQ 渲染缓存键，命中时校验，
+// 渲染逻辑或 cue 时间轴语义变化时递增 → 旧产物自动失效重渲（P1-9）。
+const QQ_AUTOMIX_ALGO_VERSION = 2
+const QQ_AUTOMIX_TIERS = ['lite', 'advanced', 'extreme']
+// Python worker stderr 日志转发匹配：三档链路关键字（qq-automix / fallback / cloud /
+// match / lite / folia / noise / seam）+ 既有 v2/渲染关键字（P2-23）。
+const PY_RENDER_LOG_PATTERN = /\[?v2\]?|qq-automix|fallback|cloud|match|lite|folia|noise|seam|render|stretch|transition|error|fail|complete|Beat|analysis/i
 // IPC 整文件拷贝上限：render:readAudioFile 会把 WAV 整段 Buffer 穿过主进程 IPC 堆，
 // 常规转换渲染（秒级过渡）远小于此值；超大渲染应走 render:getAudioUrl 流式 URL 路径。
 const MAX_IPC_AUDIO_FILE_BYTES = 256 * 1024 * 1024
@@ -90,6 +97,9 @@ class RenderRuntime {
     this.workerStartPromise = null
     this.pendingRequests = new Map()
     this.activeOutputPaths = new Set()
+    // 在途去重（P2-22）：同一缓存键的并发渲染共享同一个 promise，避免同曲对
+    // 重复渲染并互相覆盖输出（与 AiMixRuntime.inflightRenders 同一做法）。
+    this.inflightRenders = new Map()
     this.messageId = 0
     this.idleTimer = null
     this.cacheDir = null
@@ -204,11 +214,19 @@ class RenderRuntime {
         worker.stderr.on('data', (data) => {
           const message = data.toString().trim()
           console.log('[Render Worker]', message)
-          // Python 渲染器日志转发到 automix 日志文件（拉伸/特效/错误等关键信息）
-          if (message && /\[?v2\]?|render|stretch|transition|error|fail|complete|Beat|analysis/i.test(message)) {
-            automixLog.log('py-render-worker', message.slice(0, 300))
+          // Python 渲染器日志转发到 automix 日志文件（拉伸/特效/错误等关键信息）。
+          // P2-23：正则覆盖三档链路关键字；traceback 整段保留（不截断，否则报障拿不到
+          // 根因），普通行仍限 300 字符防日志爆炸。
+          if (!message) return
+          if (/Traceback \(most recent call last\)/.test(message)) {
+            automixLog.log('py-render-worker', message)
+          } else {
+            for (const line of message.split(/\r?\n/)) {
+              if (!line || !PY_RENDER_LOG_PATTERN.test(line)) continue
+              automixLog.log('py-render-worker', line.slice(0, 300))
+            }
           }
-          
+
           if (message.includes('Render worker ready')) {
             if (this.worker !== worker) return
             this.workerReady = true
@@ -356,9 +374,26 @@ class RenderRuntime {
   }
   
   /**
-   * Render a transition
+   * Render a transition（P2-22：同一缓存键的并发请求共享同一次渲染）
    */
   async renderTransition(plan, sourceAudioPath, targetAudioPath, progressCallback) {
+    let cacheKey = null
+    try { cacheKey = this._generateCacheKey(plan, sourceAudioPath, targetAudioPath) } catch { cacheKey = null }
+    if (cacheKey && this.inflightRenders.has(cacheKey)) {
+      automixLog.log('render:dedupe', `cacheKey=${cacheKey} 在途渲染去重`)
+      return this.inflightRenders.get(cacheKey)
+    }
+    const promise = this._renderTransitionUncached(plan, sourceAudioPath, targetAudioPath, progressCallback)
+    if (cacheKey) {
+      this.inflightRenders.set(cacheKey, promise)
+      promise.finally(() => {
+        if (this.inflightRenders.get(cacheKey) === promise) this.inflightRenders.delete(cacheKey)
+      }).catch(() => undefined)
+    }
+    return promise
+  }
+
+  async _renderTransitionUncached(plan, sourceAudioPath, targetAudioPath, progressCallback) {
     let activeOutputPath = null
     try {
       this._validateRenderInput(plan, sourceAudioPath, targetAudioPath)
@@ -475,6 +510,202 @@ class RenderRuntime {
     } finally {
       if (activeOutputPath) this.activeOutputPaths.delete(activeOutputPath)
     }
+  }
+
+  /**
+   * AutoMix Enhanced 三档渲染（Lite / Advanced / Extreme）。
+   *
+   * 与 v1/v2 不同：切点/过渡时长由档位决定（云端档来自 QQ MixPlan + MIR，Lite 用本地窗口），
+   * 因此输出不参与 plan 摘要缓存，按 (tier, 源/目标文件, 文末 mtime+size, window,
+   * cue 时间轴, 算法版本) 生成独立缓存键；同一键的并发请求在途去重（P2-22）。
+   */
+  async renderQQAutoMix(options = {}) {
+    const tier = String(options.tier || 'lite')
+    if (!QQ_AUTOMIX_TIERS.includes(tier)) {
+      throw new Error(`Unknown AutoMix Enhanced tier: ${tier}`)
+    }
+    const sourceAudioPath = options.sourceAudioPath
+    const targetAudioPath = options.targetAudioPath
+    if (!sourceAudioPath || !targetAudioPath) {
+      throw new Error('sourceAudioPath and targetAudioPath are required')
+    }
+    const statSig = (file) => {
+      try {
+        const s = fs.statSync(file)
+        return `${s.size}:${Math.round(s.mtimeMs)}`
+      } catch {
+        return 'missing'
+      }
+    }
+    // 曲目身份（mid / 歌名 / 歌手 / 平台 id）参与缓存键：跨平台匹配结果或登录态变化后
+    // 会重新渲染，避免把"未登录降级产物"当成云端档结果命中。
+    const cookie = options.cookie || this._readQQCookie()
+    const trackSig = [
+      options.sourceMid || '', options.sourceTrackId || '', options.sourceTitle || '', options.sourceArtist || '',
+      options.targetMid || '', options.targetTrackId || '', options.targetTitle || '', options.targetArtist || '',
+      cookie ? 'qq-login' : 'no-login',
+    ].join('~')
+    // P1-9：cue 时间轴（前端下传）是唯一事实。三字段齐全且时长 >0 时参与缓存键
+    // （不同时间轴不共享产物）；缺失/非法时保持既有行为（worker 自行决策时间轴）。
+    const cueStart = Number.isFinite(options.cueTransitionStartSeconds) ? options.cueTransitionStartSeconds : null
+    const cueDuration = Number.isFinite(options.cueTransitionDurationSeconds) ? options.cueTransitionDurationSeconds : null
+    const cueTargetStart = Number.isFinite(options.cueTargetStartSeconds) ? options.cueTargetStartSeconds : null
+    const cueApplied = cueStart !== null && cueDuration !== null && cueTargetStart !== null && cueDuration > 0
+    const cueTimelineSig = cueApplied ? `cue=${cueStart}~${cueDuration}~${cueTargetStart}` : 'cue=auto'
+    const windowSeconds = Number.isFinite(options.window) ? options.window : 12.0
+    const cacheKey = crypto
+      .createHash('sha1')
+      .update([
+        tier, sourceAudioPath, statSig(sourceAudioPath), targetAudioPath, statSig(targetAudioPath),
+        trackSig, `window=${windowSeconds}`, `algo=${QQ_AUTOMIX_ALGO_VERSION}`, cueTimelineSig,
+      ].join('|'))
+      .digest('hex')
+      .slice(0, 32)
+    const outputPath = path.join(this.cacheDir, `qq-${tier}-${cacheKey}.wav`)
+    const metaPath = `${outputPath}.json`
+    // 在途去重（P2-22，写法同 AiMixRuntime.inflightRenders）：同曲对的并发请求共享同一次渲染
+    const inflightKey = `qq:${cacheKey}`
+    if (this.inflightRenders.has(inflightKey)) {
+      automixLog.log('render:qq-dedupe', `tier=${tier} cacheKey=${cacheKey} 在途渲染去重`)
+      return this.inflightRenders.get(inflightKey)
+    }
+    const promise = this._doRenderQQAutoMix({
+      tier, sourceAudioPath, targetAudioPath, outputPath, metaPath, cacheKey, cookie,
+      windowSeconds, cueStart, cueDuration, cueTargetStart, cueApplied, options,
+    })
+    this.inflightRenders.set(inflightKey, promise)
+    promise.finally(() => {
+      if (this.inflightRenders.get(inflightKey) === promise) this.inflightRenders.delete(inflightKey)
+    }).catch(() => undefined)
+    return promise
+  }
+
+  async _doRenderQQAutoMix(params) {
+    const { tier, sourceAudioPath, targetAudioPath, outputPath, metaPath, cacheKey, cookie,
+            windowSeconds, cueStart, cueDuration, cueTargetStart, cueApplied, options } = params
+    this.activeOutputPaths.add(outputPath)
+    automixLog.log('render:qq-entry', `tier=${tier} cacheKey=${cacheKey}`)
+    try {
+      if (fs.existsSync(outputPath) && fs.existsSync(metaPath)) {
+        let meta = null
+        try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) } catch {}
+        // P1-9：命中需校验身份字段（对齐 v2 的 cacheIdentityMatches）——
+        // effectiveTier 合法、rendererVersion 非空、算法版本与当前一致；
+        // 任一缺失/不符即丢弃重渲（旧写入的产物不带 algoVersion，会先失效一次）。
+        const cacheIdentityMatches = meta
+          && typeof meta.effectiveTier === 'string' && QQ_AUTOMIX_TIERS.includes(meta.effectiveTier)
+          && typeof meta.rendererVersion === 'string' && meta.rendererVersion.trim().length > 0
+          && meta.algoVersion === QQ_AUTOMIX_ALGO_VERSION
+        if (cacheIdentityMatches && isValidWav(outputPath, Number.isFinite(meta?.duration) ? meta.duration : null)) {
+          const now = new Date()
+          try { fs.utimesSync(outputPath, now, now) } catch {}
+          automixLog.log('render:qq-cache-hit', `tier=${tier} effectiveTier=${meta.effectiveTier} cacheKey=${cacheKey}`)
+          return { success: true, outputPath, ...meta, cached: true }
+        }
+        if (!cacheIdentityMatches) {
+          automixLog.log('render:qq-cache-drop', `tier=${tier} cacheKey=${cacheKey} effectiveTier=${meta?.effectiveTier ?? 'missing'} rendererVersion=${meta?.rendererVersion ?? 'missing'} algoVersion=${meta?.algoVersion ?? 'missing'}`)
+        }
+        fs.rmSync(outputPath, { force: true })
+        fs.rmSync(metaPath, { force: true })
+      }
+
+      const result = await this._sendMessage('render_qq_automix', {
+        tier,
+        sourceAudioPath,
+        targetAudioPath,
+        outputPath,
+        sourceMid: options.sourceMid || '',
+        targetMid: options.targetMid || '',
+        sourceTitle: options.sourceTitle || '',
+        sourceArtist: options.sourceArtist || '',
+        sourceTrackId: options.sourceTrackId || '',
+        targetTitle: options.targetTitle || '',
+        targetArtist: options.targetArtist || '',
+        targetTrackId: options.targetTrackId || '',
+        cookie,
+        window: windowSeconds,
+        sampleRate: Number.isFinite(options.sampleRate) ? options.sampleRate : 44100,
+        ...(cueApplied
+          ? {
+            cueTransitionStartSeconds: cueStart,
+            cueTransitionDurationSeconds: cueDuration,
+            cueTargetStartSeconds: cueTargetStart,
+          }
+          : {}),
+      })
+      if (result?.success) {
+        writeJsonAtomic(metaPath, {
+          duration: result.duration,
+          tier,
+          effectiveTier: result.effectiveTier || tier,
+          fallback: result.fallback || null,
+          backend: result.backend,
+          rendererVersion: result.rendererVersion,
+          transitionStartSeconds: result.transitionStartSeconds,
+          transitionDurationSeconds: result.transitionDurationSeconds,
+          targetStartSeconds: result.targetStartSeconds,
+          sourceCutSeconds: result.sourceCutSeconds,
+          techniques: Array.isArray(result.techniques) ? result.techniques : [],
+          size: result.size,
+          // P1-9 / P2-21：算法版本 + cue 时间轴 + 写盘诊断（缓存命中校验 / 削波排查）
+          algoVersion: QQ_AUTOMIX_ALGO_VERSION,
+          windowSeconds,
+          cueTimeline: cueApplied
+            ? { transitionStartSeconds: cueStart, transitionDurationSeconds: cueDuration, targetStartSeconds: cueTargetStart }
+            : null,
+          peak: Number.isFinite(result.peak) ? result.peak : null,
+          softLimited: result.softLimited === true,
+        })
+        if (result.fallback) {
+          automixLog.log('render:qq-fallback', `tier=${tier} -> ${result.effectiveTier} reason=${result.fallback.reason || ''}`)
+        } else {
+          automixLog.log('render:qq-ok', `tier=${tier} duration=${result.duration} output=${outputPath}`)
+        }
+      } else {
+        automixLog.log('render:qq-fail', `tier=${tier} error=${result?.error || 'unknown'}`)
+      }
+      return { ...result, outputPath, cached: false }
+    } finally {
+      this.activeOutputPaths.delete(outputPath)
+    }
+  }
+
+  /** QQ 登录票据（与 local-server 同一来源：userData/qq-cookie.txt）。 */
+  _readQQCookie() {
+    try {
+      const cookiePath = path.join(app.getPath('userData'), 'qq-cookie.txt')
+      if (fs.existsSync(cookiePath)) return fs.readFileSync(cookiePath, 'utf8').trim()
+    } catch {}
+    return ''
+  }
+
+  /**
+   * AutoMix Enhanced 播放前规划：只取交接时间轴（切点 / 过渡时长 / 目标曲续播位置）。
+   * 判定与降级规则同 renderQQAutoMix（未登录 / 跨平台匹配失败 → lite）。
+   */
+  async planQQAutoMix(options = {}) {
+    const tier = ['lite', 'advanced', 'extreme'].includes(String(options.tier)) ? String(options.tier) : 'lite'
+    const result = await this._sendMessage('plan_qq_automix', {
+      tier,
+      sourceAudioPath: options.sourceAudioPath,
+      targetAudioPath: options.targetAudioPath,
+      sourceMid: options.sourceMid || '',
+      targetMid: options.targetMid || '',
+      sourceTitle: options.sourceTitle || '',
+      sourceArtist: options.sourceArtist || '',
+      sourceTrackId: options.sourceTrackId || '',
+      targetTitle: options.targetTitle || '',
+      targetArtist: options.targetArtist || '',
+      targetTrackId: options.targetTrackId || '',
+      cookie: options.cookie || this._readQQCookie(),
+      window: Number.isFinite(options.window) ? options.window : 12.0,
+    })
+    if (result?.fallback) {
+      automixLog.log('plan:qq-fallback', `tier=${tier} -> ${result.effectiveTier} reason=${result.fallback.reason || ''}`)
+    } else if (result?.success) {
+      automixLog.log('plan:qq-ok', `tier=${tier} start=${result.transition_start_s} dur=${result.transition_duration_s}`)
+    }
+    return result || { success: false, error: 'no result' }
   }
 
   _validateRenderInput(plan, sourceAudioPath, targetAudioPath) {
@@ -1099,6 +1330,18 @@ function setupRenderIPC(ipcMain, customCachePath = null, toMediaUrl = null) {
     return runtime.renderTransition(plan, sourceAudioPath, targetAudioPath)
   })
   
+  // AutoMix Enhanced 三档渲染（Lite / Advanced / Extreme）
+  ipcMain.handle('render:qqAutomix', async (event, options) => {
+    const runtime = getRenderRuntime(customCachePath)
+    return runtime.renderQQAutoMix(options || {})
+  })
+
+  // AutoMix Enhanced 播放前规划（只取交接时间轴，不渲染）
+  ipcMain.handle('render:qqAutomixCue', async (event, options) => {
+    const runtime = getRenderRuntime(customCachePath)
+    return runtime.planQQAutoMix(options || {})
+  })
+
   // Prefer handing Chromium a validated local media URL so it can stream the WAV
   // directly instead of copying the complete file through the main-process IPC heap.
   ipcMain.handle('render:getAudioUrl', async (_event, filePath) => {

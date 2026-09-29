@@ -9,6 +9,7 @@ import {
   type PlaybackShortcutSettings,
 } from '../services/playbackShortcutSettings'
 import { useTvMode, useRemoteCursorMode } from '../tv/tvCore'
+import { AUTOMIX_HUD_GOLD } from './AutomixHudBadge'
 
 interface PlayerControlsProps {
   isPlaying: boolean
@@ -33,10 +34,12 @@ interface PlayerControlsProps {
   backgroundEffect?: 'transparent' | 'blur' | 'immersive' | 'modern'
   isTransitioning?: boolean
   isAutoMixTransition?: boolean
-  /** AutoMix 增强版（v2）：过渡指示显示「AutoMix 增强版」独立样式（缺省时与历史一致） */
+  /** AutoMix Pro（v2）：过渡指示显示「AutoMix Pro」（缺省时与历史一致） */
   enhancedAutoMix?: boolean
-  /** automix 介入（armed/准备/过渡中）即显示增强版字样（不等过渡动画窗口） */
+  /** automix 介入（armed/准备/过渡中）即显示 Pro 字样（不等过渡动画窗口） */
   enhancedAutoMixActive?: boolean
+  /** 增强渲染的引擎名（'AutoMix Pro' / 'AutoMix Enhanced'）；缺省按 Pro 显示 */
+  transitionEngineLabel?: string
   transitionStartTime?: number | null
   immersiveTranslation?: string
   immersiveRoman?: string
@@ -195,6 +198,7 @@ export default function PlayerControls({
   isAutoMixTransition = false,
   enhancedAutoMix = false,
   enhancedAutoMixActive = false,
+  transitionEngineLabel,
   transitionStartTime = null,
   immersiveTranslation = '',
   immersiveRoman = '',
@@ -490,7 +494,53 @@ export default function PlayerControls({
     }, 800)
   }
 
-  const displayTime = isDragging ? dragValue : currentTime
+  /**
+   * 换轨滑行：AutoMix 的视觉轨道在过渡 90% 处把时间线从源曲切到目标曲（进度条/时间数字
+   * 本会"啪"地跳到新曲位置）。这里只在**过渡期间**（transitionStartTime != null，用户拖动
+   * 与普通 seek 不受影响）对这个大跳变做 ~420ms 的 smoothstep 滑行，让它"滑过去"而不是跳过去。
+   */
+  const glideRafRef = useRef<number | null>(null)
+  const glideRef = useRef<{ from: number; startedAt: number } | null>(null)
+  const lastTimeRef = useRef(currentTime)
+  const [glideTime, setGlideTime] = useState<number | null>(null)
+  useEffect(() => {
+    const previous = lastTimeRef.current
+    lastTimeRef.current = currentTime
+    if (isDragging || transitionStartTime === null) {
+      glideRef.current = null
+      if (glideTime !== null) setGlideTime(null)
+      return
+    }
+    const delta = currentTime - previous
+    if (!Number.isFinite(delta) || Math.abs(delta) < 1.5) return
+    glideRef.current = { from: previous, startedAt: performance.now() }
+    const step = () => {
+      const glide = glideRef.current
+      if (!glide) {
+        glideRafRef.current = null
+        return
+      }
+      const t = Math.min(1, (performance.now() - glide.startedAt) / 420)
+      const eased = t * t * (3 - 2 * t)
+      const latest = lastTimeRef.current
+      setGlideTime(glide.from + (latest - glide.from) * eased)
+      if (t < 1) glideRafRef.current = requestAnimationFrame(step)
+      else {
+        glideRef.current = null
+        glideRafRef.current = null
+        setGlideTime(null)
+      }
+    }
+    if (glideRafRef.current !== null) cancelAnimationFrame(glideRafRef.current)
+    glideRafRef.current = requestAnimationFrame(step)
+  }, [currentTime, isDragging, transitionStartTime, glideTime])
+  useEffect(() => () => { if (glideRafRef.current !== null) cancelAnimationFrame(glideRafRef.current) }, [])
+
+  // 滑行期间把显示值夹在当前曲时长内：进度条从"接近满格"平滑回卷到目标曲的百分比，
+  // 而不是先钉在 100% 再落到新位置（时长与时间数字同步变化，观感一致）。
+  const displayTime = isDragging
+    ? dragValue
+    : (glideTime !== null ? Math.min(glideTime, duration > 0 ? duration : glideTime) : currentTime)
   // 过渡期间合成 currentTime 可能超过源曲时长（AI 长混音从源曲深处起步）：
   // 显示时长自适应为 max(原时长, 当前时间)，进度条/总时长跟随，不再顶着曲尾不动。
   const effectiveDuration = Math.max(duration, displayTime)
@@ -547,14 +597,14 @@ export default function PlayerControls({
   // 后开始。AI 长混音的音频过渡远早于动画点开始，不加门控会跟着 60s 混音全程亮。
   // transitionStartTime 为 null（普通交叉淡化/gapless）时视为始终在窗口内（v1 行为不变）。
   const inAnimationWindow = transitionStartTime === null || currentTime >= transitionStartTime
-  // 检查是否即将过渡：动画窗口内（automix 动画起点）或歌曲自然结束前 5 秒
-  // 过渡指示：动画窗口内 = AutoMix Enhanced（金色）；介入中（running 未到动画窗口）= AutoMix 正在介入（白色）
+  // 过渡指示：动画窗口内 = 正在过渡；增强档已介入（混音音频在放、动画还没到点）也显示。
+  // 文案只写引擎名，且**只可能是这四个**：AutoMix / AutoMix Pro / AutoMix Enhanced / Gapless
+  //（App 用 transitionEngineDisplayName 统一映射后传进来）。既不再出现「即将介入 / 正在介入」，
+  //  也不再出现「过渡」这种没有归属的通用词——纯交叉淡化等情况直接不显示。
   const inTransitionAnimation = isTransitioning && inAnimationWindow
   const showTransitionBadge = inTransitionAnimation || enhancedAutoMixActive
-  const badgeIsEnhanced = inTransitionAnimation && enhancedAutoMix
-  const transitionLabel = inTransitionAnimation
-    ? (enhancedAutoMix ? 'AutoMix Enhanced' : isAutoMixTransition ? 'AutoMix' : '过渡')
-    : (enhancedAutoMixActive ? 'AutoMix 正在介入' : '')
+  const engineLabel = transitionEngineLabel || ''
+  const transitionLabel = showTransitionBadge ? engineLabel : ''
   
   // 进度条发光强度
 
@@ -580,7 +630,10 @@ export default function PlayerControls({
             onChange={handleSeekChange}
             onMouseUp={handleSeekMouseUp}
             onTouchEnd={handleSeekTouchEnd}
-            className={`progress-slider w-full h-1.5 hover:h-2.5 rounded-full appearance-none cursor-pointer transition-all duration-200 ${isLiveStream ? 'opacity-60' : ''}`}
+            // 只过渡高度：背景是"随播放进度变化"的 linear-gradient 字符串，
+            // transition-all 会试图逐帧插值渐变（每次 timeupdate 重绘整条滑轨）——
+            // 用户反馈的"控件动画有点卡、帧率不够"主要来自这里。
+            className={`progress-slider w-full h-1.5 hover:h-2.5 rounded-full appearance-none cursor-pointer transition-[height] duration-200 ${isLiveStream ? 'opacity-60' : ''}`}
             style={{
               background: `linear-gradient(to right, ${progressFillColor} 0%, ${progressFillColor} ${progressPercent}%, ${progressTrackColor} ${progressPercent}%, ${progressTrackColor} 100%)`,
             }}
@@ -672,34 +725,7 @@ export default function PlayerControls({
             )}
           </AnimatePresence>
 
-          {/* 过渡提示 - 药丸上方，流光效果（仅在动画窗口内显示，避免 AI 长混音全程亮） */}
-          <AnimatePresence>
-            {showTransitionBadge && (
-              <motion.div
-                key={transitionLabel}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.3 }}
-                className="pointer-events-none mb-2"
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-              >
-                <span
-                  className="text-xs font-medium"
-                  style={{
-                    color: badgeIsEnhanced ? 'rgba(255,215,0,0.98)' : 'rgba(255,255,255,0.9)',
-                    letterSpacing: '0.1em',
-                    textShadow: badgeIsEnhanced
-                      ? '0 0 20px rgba(255,200,0,0.85), 0 0 40px rgba(255,180,0,0.45), 0 2px 8px rgba(0,0,0,0.5)'
-                      : '0 0 20px rgba(255,255,255,0.6), 0 2px 8px rgba(0,0,0,0.5)',
-                    animation: 'glow 2s ease-in-out infinite',
-                  }}
-                >
-                  {transitionLabel}
-                </span>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {/* 过渡提示已上移到整列上方（绝对定位），这里不再占位 */}
 
           {/* 药丸播放控件 */}
           <AnimatePresence>
@@ -709,10 +735,31 @@ export default function PlayerControls({
                 animate={{ y: 0, opacity: 1 }}
                 exit={{ y: 100, opacity: 0 }}
                 transition={{ type: 'spring', damping: 25, stiffness: 300, mass: 0.8 }}
-                className="pointer-events-auto mb-3"
+                className="pointer-events-auto relative mb-3"
                 onMouseEnter={handleImmersivePillEnter}
                 onMouseLeave={handleImmersivePillLeave}
               >
+                {/* 过渡提示：绝对定位挂在药丸上方（不进文档流）——出现/消失不再把药丸/白条顶动；
+                    文案只随引擎名切换（不换 key），因此没有重挂载造成的"抽一下"。 */}
+                {showTransitionBadge && (
+                  <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2">
+                    <motion.span
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ duration: 0.32, ease: 'easeOut' }}
+                      className="block whitespace-nowrap text-xs font-medium"
+                      style={{
+                        // 过渡引擎名金色 + 辉光（Enhanced 档一致）
+                        color: AUTOMIX_HUD_GOLD,
+                        letterSpacing: '0.1em',
+                        textShadow: '0 0 20px rgba(245,196,68,0.55), 0 2px 8px rgba(0,0,0,0.5)',
+                        animation: 'glow 2s ease-in-out infinite',
+                      }}
+                    >
+                      {transitionLabel}
+                    </motion.span>
+                  </div>
+                )}
                 <motion.div
                   initial={{ width: tvCompact ? '480px' : '360px' }}
                   animate={{
@@ -759,7 +806,7 @@ export default function PlayerControls({
                           <SkipBack className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white' : 'text-black'}`} />
                         </motion.button>
                         <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={onPlayPause}
-                          className="p-2.5 rounded-full transition-all" style={{ backgroundColor: accentColor }}>
+                          className="p-2.5 rounded-full transition-colors" style={{ backgroundColor: accentColor }}>
                           {isPlaying ? <Pause className="w-4 h-4" style={{ color: iconColor }} /> : <Play className="w-4 h-4 ml-0.5" style={{ color: iconColor }} />}
                         </motion.button>
                         <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.95 }} onClick={onNext} disabled={!onNext}
@@ -1015,31 +1062,26 @@ export default function PlayerControls({
       {renderSeekFeedback()}
 
       <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center">
-        {/* 过渡提示 - 药丸上方，流光效果（仅在动画窗口内显示） */}
-        <AnimatePresence>
-          {isTransitioning && inAnimationWindow && (
-            <motion.div
+        {/* 过渡提示：绝对定位挂在药丸上方（不进文档流）——出现/消失不再把药丸顶动，
+            文案只随引擎名切换（不换 key），因此没有重挂载造成的"抽一下"。 */}
+        {showTransitionBadge && (
+          <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2">
+            <motion.span
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.3 }}
-              className="pointer-events-none mb-2"
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              transition={{ duration: 0.32, ease: 'easeOut' }}
+              className="block whitespace-nowrap text-xs font-medium"
+              style={{
+                color: AUTOMIX_HUD_GOLD,
+                letterSpacing: '0.1em',
+                textShadow: '0 0 20px rgba(245,196,68,0.55), 0 2px 8px rgba(0,0,0,0.5)',
+                animation: 'glow 2s ease-in-out infinite',
+              }}
             >
-              <span
-                className="text-xs font-medium"
-                style={{
-                  color: 'rgba(255,255,255,0.9)',
-                  letterSpacing: '0.1em',
-                  textShadow: '0 0 20px rgba(255,255,255,0.6), 0 2px 8px rgba(0,0,0,0.5)',
-                  animation: 'glow 2s ease-in-out infinite',
-                }}
-              >
-                {transitionLabel}
-              </span>
-            </motion.div>
-          )}
-        </AnimatePresence>
+              {transitionLabel}
+            </motion.span>
+          </div>
+        )}
 
         <motion.div
           initial={{ width: '360px' }}
@@ -1115,7 +1157,7 @@ export default function PlayerControls({
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={onPlayPause}
-                  className="p-2.5 rounded-full transition-all"
+                  className="p-2.5 rounded-full transition-colors"
                   style={{
                     backgroundColor: accentColor,
                   }}

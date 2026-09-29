@@ -147,7 +147,7 @@ describe('TransitionRenderer 渲染产物缓存内存安全', () => {
     expect(renderer.getRendered('ttl-plan')).toBeNull()
   })
 
-  it('playTransition 一次性消费：取出后缓存立即删除，buffer 引用释放', async () => {
+  it('playTransition 保留缓存条目（供重排复用）并释放 source 的 buffer 引用', async () => {
     const rendererAny = renderer as unknown as { addToCache: (p: TransitionPlan, b: AudioBuffer) => void }
     const buffer = makeFakeAudioBuffer(44100)
     rendererAny.addToCache(makePlan('one-shot', 0), buffer)
@@ -155,8 +155,9 @@ describe('TransitionRenderer 渲染产物缓存内存安全', () => {
 
     const result = await renderer.playTransition('one-shot', 0)
     expect(result).not.toBeNull()
-    // 播放后缓存条目已删除，buffer 不再被缓存引用
-    expect(renderer.getRendered('one-shot')).toBeNull()
+    // 条目保留：同一 plan 的重排（暂停/改设置后重新准备）才能直接复用，不必重解码/重渲染；
+    // 内存由 TTL（5 分钟）与容量上限（5 条 / 64MB）兜住。
+    expect(renderer.getRendered('one-shot')).not.toBeNull()
     // 活跃 source 持有 buffer 引用；stopPlayback 时释放
     const source = [...context.sources][0]
     expect(source).toBeDefined()
@@ -210,14 +211,24 @@ describe('TransitionRenderer playTransition（事件驱动 handoff + 迟到保�
     expect(source.disconnect).toHaveBeenCalled()
   })
 
-  it('迟到保护：触发偏移超过缓冲 85% 时返回 tooLate 且不启动缓冲', async () => {
+  it('迟到保护：seek 越过切点（偏移 > max(1.2s, 缓冲 20%)）时返回 tooLate 且不启动缓冲', async () => {
     const rendererAny = renderer as unknown as { addToCache: (p: TransitionPlan, b: AudioBuffer) => void }
     rendererAny.addToCache(makePlan('late-plan', 0), makeFakeAudioBuffer(44100))
-    // buffer.duration = 1s；sourceStartTime=0 → offset=0.95s > 0.85s
-    const result = await renderer.playTransition('late-plan', 0.95)
+    // buffer.duration = 1s → 阈值 = max(1.2s, 0.2s) = 1.2s；offset=1.5s 越过阈值
+    const result = await renderer.playTransition('late-plan', 1.5)
     expect(result).not.toBeNull()
     expect(result?.tooLate).toBe(true)
     expect(context.sources.size).toBe(0) // 未创建缓冲源
+  })
+
+  it('自然触发的微小偏移（timeupdate 粒度）不触发 tooLate', async () => {
+    const rendererAny = renderer as unknown as { addToCache: (p: TransitionPlan, b: AudioBuffer) => void }
+    rendererAny.addToCache(makePlan('tiny-offset-plan', 0), makeFakeAudioBuffer(44100))
+    // offset=0.25s（timeupdate 粒度）< max(1.2s, 0.2s) → 正常播放缓冲
+    const result = await renderer.playTransition('tiny-offset-plan', 0.25)
+    expect(result).not.toBeNull()
+    expect(result?.tooLate).toBeUndefined()
+    expect(context.sources.size).toBe(1)
   })
 
   it('正常触发时 tooLate 为 undefined 且缓冲源已启动', async () => {

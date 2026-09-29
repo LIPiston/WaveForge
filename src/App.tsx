@@ -1,11 +1,14 @@
 import { debugLog, isTransitionDebugEnabled } from './utils/debugLog'
 import { parseStoredBoolean } from './utils/storage'
 import { isTv, isTvModeActive, isDesktop } from './platform'
-import { dispatchTvBack, useTvBack } from './tv/tvCore'
-import { isPerfModeEfficiency } from './tv/perfMode'
+import { dispatchTvBack, useTvBack, useRemoteCursorMode } from './tv/tvCore'
+import { isPerfModeEfficiency, isPerfModeEnhanced } from './tv/perfMode'
 import { lazy, memo, Suspense, startTransition, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import AlbumCoverPlayer from './components/AlbumCoverPlayer'
+import TransitionTrackTitles from './components/TransitionTrackTitles'
+import { useTransitionLyricsCrossfade, useTransitionOverlayProgress, useTransitionTargetTime, useTransitionVisualIdentity } from './hooks/useTransitionVisual'
+import type { TransitionVisualStore } from './audio/transitionVisualStore'
 import LyricsDisplay from './components/LyricsDisplay'
 import PlayerControls from './components/PlayerControls'
 import TitleBar from './components/TitleBar'
@@ -13,16 +16,28 @@ import FusionEnableConfirmModal from './components/FusionEnableConfirmModal'
 import UpdateManager from './components/UpdateManager'
 import UpdatePrompt from './components/UpdatePrompt'
 import CrossfadeBackground from './components/CrossfadeBackground'
+import { chromaClient } from './plugins/clients/ChromaClient'
+import { signalRgbClient } from './plugins/clients/SignalRgbClient'
+import { getBackgroundArtworkSize } from './services/artwork'
+import { setGameModeFrozen as setGameModeFrozenRuntime } from './services/gameModeRuntime'
 import ModernFluidBackground from './components/ModernFluidBackground'
 import { FoliaTransitionOverlay } from './components/folia/FoliaTransitionOverlay'
 import { FoliaUpNextCard } from './components/folia/FoliaUpNextCard'
 import { resolveFoliaPresentation } from './components/folia/foliaPresentation'
+import { AutomixHudBadge, useAutomixHudTime, transitionEngineDisplayName } from './components/AutomixHudBadge'
 
 import MiniPlayer from './components/MiniPlayer'
 import Toast from './components/Toast'
 import GaplessModeToast from './components/GaplessModeToast'
 import TransitionDebugToast from './components/TransitionDebugToast'
 import ModeTransitionOverlay from './components/ModeTransitionOverlay'
+import {
+  getModeTransitionStyle,
+  isModeTransitionSoundEnabled,
+  MODE_TRANSITION_STYLE_EVENT,
+  MODE_TRANSITION_SOUND_EVENT,
+  type ModeTransitionStyle,
+} from './services/modeTransitionSettings'
 import { extractDominantColor, useColorThief } from './hooks/useColorThief'
 import { useAudioPlayer, type AudioGraphHandle } from './hooks/useAudioPlayer'
 import { airplayController } from './services/airplayController'
@@ -32,7 +47,8 @@ import { useAppleDynamicCover } from './hooks/useAppleDynamicCover'
 import { FOLIA_STYLES } from './vendor/folia/stylesMeta'
 import { useAudioPulseStore, type AudioPulseStore } from './hooks/useAudioPulse'
 import { useAutoHideCursor } from './hooks/useAutoHideCursor'
-import { Song, getSongUrl, getSodaPlaybackInfo, invalidateSongUrl, getLyrics, getProxiedImageUrl, getProxiedAudioUrl, getLocalAlbumIdentifier, resolveSongAlbumIdentifier, isSameSong, LyricLine } from './services/musicApi'
+import { Song, getSongUrl, getSodaPlaybackInfo, invalidateSongUrl, getLyrics, getProxiedImageUrl,
+  getSimilarSongs, getProxiedAudioUrl, getLocalAlbumIdentifier, resolveSongAlbumIdentifier, isSameSong, LyricLine } from './services/musicApi'
 import { recordAppleRecentPlaybackFallback } from './services/appleRecentPlayback'
 import type { MusicPlatform } from './services/platforms'
 import { getPlatformCapabilities, isPlatformVisible, platformLabel } from './services/platforms'
@@ -60,11 +76,12 @@ import { fetchNeteaseHeartMode, fetchNeteaseRoam } from './features/neteaseExplo
 import { fetchQQRadarSongs } from './features/qqExplore/api'
 import { scheduleBackgroundPrefetch } from './services/backgroundPrefetch'
 import { getResolvedArtworkUrl, preloadArtwork } from './services/artworkLoader'
+import { recordListen } from './services/listeningLog'
 import { getDesktopSpectrumConsumerCount, subscribeDesktopSpectrumConsumers } from './services/desktopSpectrum'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Settings, Sparkles, Check, Image as ImageIcon, Radio } from 'lucide-react'
 import { getDeterministicNextIndex, getUpcomingIndices } from './audio/PlaybackQueue'
-import type { TrackAnalysis, TransitionCommit, TransitionDebugInfo, TransitionState, TransitionStrategy } from './audio/types'
+import type { PreloadTrack, TrackAnalysis, TransitionCommit, TransitionDebugInfo, TransitionState, TransitionStrategy } from './audio/types'
 import { createPlaybackTimeCommitGate, type PlaybackTimeStore } from './audio/playbackTimeStore'
 import { canonicalTrackKey, isQueuePlaceholder, type ResonancePlatformBadge, type ResonanceTrack } from './features/resonance/model'
 import { getResonanceSession, subscribeResonanceSessionLifecycle } from './features/resonance/session'
@@ -83,8 +100,22 @@ const loadTraditionalView = () => import('./components/TraditionalView')
 const loadResonanceView = () => import('./features/resonance/ResonanceView')
 // 模式切换过渡动画时长：最短 3s（高性能机秒切也不一闪而过）；最长 12s 兜底（防止加载异常卡死界面）
 const MODE_TRANSITION_MIN_MS = 3000
+// 快速档（目标模式本次会话已挂载过、内容就绪）：只播一段压紧的丝滑过渡，不让用户白等
+const MODE_TRANSITION_QUICK_MIN_MS = 850
 const MODE_TRANSITION_MAX_MS = 12000
+// 各模式懒加载 chunk 的统一入口：过渡动画一开始（点击模式卡片）就提前拉取，
+// 与来源面板的收起动画并行下载/编译，viewModeChanged 到达时 chunk 通常已在内存里——
+// 这就是「切换时做预加载」的核心：把串行的 加载→切换 变成并行的 加载‖动画
+const MODE_CHUNK_LOADERS: Record<'explore' | 'minimal' | 'traditional' | 'desktop' | 'resonance', () => Promise<unknown>> = {
+  explore: loadExploreView,
+  minimal: loadHomeView,
+  traditional: loadTraditionalView,
+  desktop: loadDesktopView,
+  resonance: loadResonanceView,
+}
 const PLAYBACK_NEUTRAL_COLOR = '#6b7280'
+// TV 效能档禁入的重 GPU 歌词模式：多维（R3F WebGL 全速渲染）、Folia（WebGL）、PV（Pixi 60fps ticker）、壁纸（桌面壁纸语义）
+const TV_HEAVY_LYRIC_MODES: LyricDisplayMode[] = ['multidimensional', 'folia', 'pv', 'wallpaper']
 // 过渡进度在 App 侧的粗量化节流基准（见 setTransitionProgress 调用处）
 let lastTransitionProgressThrottle = 0
 const LazyHomeView = lazy(loadHomeView)
@@ -127,6 +158,7 @@ const LazyAlbumDetailModal = lazy(loadAlbumDetailModal)
 const LazyCommentModal = lazy(loadCommentModal)
 const loadModernAudioVisualizer = () => import('./components/ModernAudioVisualizer')
 const loadPlaybackRadialMenu = () => import('./components/PlaybackRadialMenu')
+const loadQQMusicPreferenceDialog = () => import('./features/qqExplore/QQMusicPreferenceDialog')
 const loadImmersiveControls = () => import('./components/ImmersiveControls')
 const loadQuickSettingsHost = () => import('./components/QuickSettingsHost')
 const loadTranslationDisplay = () => import('./components/TranslationDisplay')
@@ -144,6 +176,7 @@ const loadBilibiliMvPlayer = () => import('./components/BilibiliMvPlayer')
 const loadBilibiliMvBackground = () => import('./components/BilibiliMvBackground')
 const LazyModernAudioVisualizer = lazy(loadModernAudioVisualizer)
 const LazyPlaybackRadialMenu = lazy(loadPlaybackRadialMenu)
+const LazyQQMusicPreferenceDialog = lazy(loadQQMusicPreferenceDialog)
 const LazyImmersiveControls = lazy(loadImmersiveControls)
 const LazyQuickSettingsHost = lazy(loadQuickSettingsHost)
 const LazyTranslationDisplay = lazy(loadTranslationDisplay)
@@ -176,7 +209,7 @@ import RemoteCursor from './components/RemoteCursor'
 import PlatformLoginNotice from './components/PlatformLoginNotice'
 import SimilarSongsPanel from './components/SimilarSongsPanel'
 import PluginOverlay from './components/PluginOverlay'
-import { setGlobalAudioAnalyzerStore, setGlobalPlaybackActive, setGlobalAudioAnalysers } from './plugins/clients/DGLabClient'
+import { setGlobalAudioAnalyzerStore, setGlobalPlaybackActive, setGlobalAudioAnalysers, dglabClient } from './plugins/clients/DGLabClient'
 import { setChromaAudioAnalyzerStore, setChromaPlaybackActive } from './plugins/clients/ChromaClient'
 import { setSignalRgbAudioAnalyzerStore, setSignalRgbPlaybackActive } from './plugins/clients/SignalRgbClient'
 import { isPluginEnabled, PLUGIN_STATE_EVENT } from './services/pluginStore'
@@ -191,6 +224,8 @@ import {
 } from './utils/musicEntitlements'
 import { getQQUserDisplayName } from './utils/qqUser'
 import { LYRIC_STYLE_MODE_EVENT, readLyricStyleMode, type LyricStyleMode } from './utils/lyricStyle'
+import { ModeParkedContext, modeLayerStyle, modeLayerSuspendedAttr } from './utils/modeLayer'
+import { FrozenScope } from './components/frozenScope'
 import { getAppleLovedSongIds } from './services/appleCatalog'
 import {
   applyFavoriteMutation,
@@ -217,6 +252,15 @@ interface Track {
   dominantColor?: string
 }
 
+/**
+ * 这些歌词模式在「纯音乐」时使用自己的版面（居中封面、没有歌词列）。
+ * 其余模式（modern/soft 等默认播放页）统一走同一棵播放页树：纯音乐时收起歌词列，
+ * 有词时展开 —— 同一棵树 + layout 动画，使「有词 ↔ 纯音乐」过渡时封面是滑过去的。
+ */
+const PURE_MUSIC_OWN_LAYOUT_MODES = new Set<string>([
+  'modeng', 'immersive', 'wallpaper', 'multidimensional', 'folia', 'glorious', 'pv',
+])
+
 type LiveLyricsDisplayProps = Omit<ComponentProps<typeof LyricsDisplay>, 'currentTime'> & {
   playbackTimeStore: PlaybackTimeStore
 }
@@ -232,6 +276,65 @@ const LiveLyricsDisplay = memo(function LiveLyricsDisplay({
   ).currentTime
 
   return <LyricsDisplay {...props} currentTime={currentTime} />
+})
+
+/**
+ * 过渡期"先行淡入的下一首歌词层"。
+ *
+ * 用户诉求：前一首进入过渡后歌词按过渡时长逐渐淡出、后一首同时逐渐淡入（交叉）。
+ * canonical 歌词要等视觉切换帧（90%）才换成下一首，所以这里用**目标曲时间轴**
+ * （视觉轨道 targetTime）先把下一首歌词渲染出来，按交叉进度提升不透明度；视觉切换帧
+ * 由 canonical 歌词在同一位置、同样式、无入场动画地接替 —— 切换帧零可见变化。
+ *
+ * 非交互（无 seek/悬浮/点击），也不驱动宿主翻译面板。
+ */
+const TransitionIncomingLyrics = memo(function TransitionIncomingLyrics({
+  store,
+  lyrics,
+  trackId,
+  accentColor,
+  displayMode,
+  scrollAlignment,
+  backgroundEffect,
+  playerTheme,
+  lyricStyleMode,
+  onActiveIndexChange,
+}: {
+  store: TransitionVisualStore | null
+  lyrics: NonNullable<ComponentProps<typeof LyricsDisplay>['lyrics']>
+  trackId: string | number | undefined
+  accentColor: string
+  displayMode: ComponentProps<typeof LyricsDisplay>['displayMode']
+  scrollAlignment: ComponentProps<typeof LyricsDisplay>['scrollAlignment']
+  backgroundEffect: ComponentProps<typeof LyricsDisplay>['backgroundEffect']
+  playerTheme: 'light' | 'dark'
+  lyricStyleMode: ComponentProps<typeof LyricsDisplay>['lyricStyleMode']
+  onActiveIndexChange: (index: number) => void
+}) {
+  const targetTime = useTransitionTargetTime(store)
+  const progress = useTransitionLyricsCrossfade(store)
+  if (!store) return null
+  return (
+    <div className="absolute inset-0 overflow-hidden" style={{ opacity: progress, pointerEvents: 'none' }}>
+      <LyricsDisplay
+        currentTime={targetTime}
+        lyrics={lyrics}
+        trackId={trackId}
+        isPlaying
+        accentColor={accentColor}
+        displayMode={displayMode}
+        scrollAlignment={scrollAlignment}
+        backgroundEffect={backgroundEffect}
+        playerTheme={playerTheme}
+        lyricStyleMode={lyricStyleMode}
+        // 交叉期间不叠翻译/罗马音：宿主另有翻译面板，叠两层会重复
+        translationEnabled={false}
+        romanEnabled={false}
+        managedCrossfade
+        onActiveIndexChange={onActiveIndexChange}
+      />
+    </div>
+  )
 })
 
 type LivePlayerControlsProps = Omit<ComponentProps<typeof PlayerControls>, 'currentTime'> & {
@@ -419,6 +522,8 @@ interface PulsingCrossfadeBackgroundProps {
   transitionToUrl?: string
   isTransitioning: boolean
   transitionProgress: number
+  /** 过渡视觉轨道 store：传入时用它的逐帧进度（30fps 直达本组件，只重渲染整页背景层） */
+  transitionVisualStore?: TransitionVisualStore | null
   pulseStore: AudioPulseStore
   backgroundEffect: 'transparent' | 'blur' | 'immersive' | 'modern'
   backgroundBlur: number
@@ -447,12 +552,24 @@ const PulsingCrossfadeBackground = memo(function PulsingCrossfadeBackground({
   backgroundBlur,
   isPlaying,
   playerTheme,
+  transitionVisualStore = null,
+  transitionProgress = 0,
   ...crossfadeProps
 }: PulsingCrossfadeBackgroundProps) {
+  const storeBackgroundProgress = useTransitionOverlayProgress(transitionVisualStore, transitionProgress)
+  const activeBackgroundProgress = transitionVisualStore ? storeBackgroundProgress : transitionProgress
   const pulseRootRef = useRef<HTMLDivElement>(null)
   const pulseHighlightRef = useRef<HTMLDivElement>(null)
   const isModernBackground = backgroundEffect === 'modern'
   const baseScale = backgroundEffect === 'immersive' ? 1.15 : 1.1
+  // 窗口宽高比：普通长方形（16:9 / 16:10）整封面放大铺满即可；
+  // 只有极端超宽（带鱼屏 ≥2:1）封面被裁得只剩一条时，才用「整图 + 糊底」兜底。
+  const [viewportAspect, setViewportAspect] = useState(() => (typeof window === 'undefined' ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight)))
+  useEffect(() => {
+    const onResize = () => setViewportAspect(window.innerWidth / Math.max(1, window.innerHeight))
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   useEffect(() => {
     // 脉冲写入节流：pulseStore 由音频分析驱动，实测每秒写入约 97 次
@@ -530,6 +647,8 @@ const PulsingCrossfadeBackground = memo(function PulsingCrossfadeBackground({
     : backgroundEffect === 'blur'
       ? 'blur(40px)'
       : `blur(${backgroundBlur}px) saturate(1.3)`
+  // 背景源图分辨率跟随实际模糊半径：模糊 0 时 128 源图铺满全屏会糊成像素块
+  const backgroundArtworkSize = getBackgroundArtworkSize(backgroundEffect === 'blur' ? 40 : backgroundBlur)
   const crossfadeImageStyle = useMemo(() => ({
     filter: staticFilter,
     transform: `translate3d(0, 0, 0) scale(calc(${baseScale} + var(--cover-pulse-scale, 0) * ${PULSE_SCALE_GAIN}))`,
@@ -538,6 +657,34 @@ const PulsingCrossfadeBackground = memo(function PulsingCrossfadeBackground({
     // 摩登背景：封面图让位给流体层（保留挂载以便切回其它模式时无闪回）
     ...(isModernBackground ? { opacity: 0 } : {}),
   }), [baseScale, staticFilter, isModernBackground])
+
+  // 智能比例：封面是正方形、屏幕是长方形（超宽屏更极端）。
+  // 单纯 cover 会把方图放大裁成一条（超宽屏相当于把封面放大数倍），于是低模糊时改为
+  // 「整图 contain（不裁不放大）+ 同图糊化铺底补两侧」，既不切封面也不留空。
+  const backgroundBlurValue = backgroundEffect === 'blur' ? 40 : backgroundBlur
+  // 极端宽高比阈值：16:9=1.78 / 16:10=1.6 走铺满；21:9=2.33 / 32:9 才兜底
+  const EXTREME_ASPECT = 2.05
+  const fitWholeCover = backgroundEffect !== 'transparent'
+    && backgroundBlurValue < 16
+    && viewportAspect >= EXTREME_ASPECT
+    && !isModernBackground
+  const fillImageStyle = useMemo(() => ({
+    backgroundSize: 'cover',
+    backgroundPosition: 'center',
+    // 补底层始终重糊：既遮住裁切痕迹，也不与上层整图争细节
+    filter: `blur(${Math.max(30, backgroundBlurValue * 1.6)}px) saturate(1.25) brightness(0.6)`,
+    transform: `translate3d(0, 0, 0) scale(calc(${baseScale} + var(--cover-pulse-scale, 0)))`,
+    transition: 'transform 0.055s linear, opacity 0.5s',
+    willChange: 'transform' as const,
+  }), [backgroundBlurValue, baseScale])
+  const fitImageStyle = useMemo(() => ({
+    // 90% 视口高：整张封面完整可见，四周留一点呼吸位由糊化层补满（不留空、不裁切、不放大）
+    backgroundSize: 'auto 90%',
+    backgroundRepeat: 'no-repeat',
+    backgroundPosition: 'center',
+    filter: backgroundBlurValue > 0 ? `blur(${backgroundBlurValue}px) saturate(1.15)` : 'none',
+    transition: 'transform 0.055s linear, opacity 0.5s',
+  }), [backgroundBlurValue])
 
   return (
     <div
@@ -548,10 +695,21 @@ const PulsingCrossfadeBackground = memo(function PulsingCrossfadeBackground({
       {isModernBackground && (
         <ModernFluidBackground coverUrl={crossfadeProps.coverUrl} isPlaying={isPlaying} playerTheme={playerTheme} />
       )}
-      <CrossfadeBackground
-        {...crossfadeProps}
-        imageStyle={crossfadeImageStyle}
-      />
+      {fitWholeCover ? (
+        <>
+          {/* 补底：重糊环境层（小图即可，糊到看不出细节） */}
+          <CrossfadeBackground {...crossfadeProps} transitionProgress={activeBackgroundProgress} imageStyle={fillImageStyle} artworkSize={128} />
+          {/* 主体：整张封面等比 contain，不裁切、不过度放大 */}
+          <CrossfadeBackground {...crossfadeProps} transitionProgress={activeBackgroundProgress} imageStyle={fitImageStyle} artworkSize={backgroundArtworkSize} />
+        </>
+      ) : (
+        <CrossfadeBackground
+          {...crossfadeProps}
+          transitionProgress={activeBackgroundProgress}
+          imageStyle={crossfadeImageStyle}
+          artworkSize={backgroundArtworkSize}
+        />
+      )}
       <div
         ref={pulseHighlightRef}
         aria-hidden="true"
@@ -664,6 +822,44 @@ function createTrackFromSong(song: Song, url?: string, dominantColor?: string): 
     url,
     dominantColor,
   }
+}
+
+// QQ 原始结构里歌曲 mid 可能落在 songmid/songMid（Song 类型未声明），做一次宽松读取。
+type DeckIdentitySong = Song & { songmid?: string | null; songMid?: string | null }
+
+/**
+ * 播放 deck 元数据的唯一构造点（P0-2）：App 侧所有 preloadNext / loadAndPlay 注入点都必须
+ * 经由此函数，否则引擎侧 qqTrackRef 拿到空身份 ⇒ AutoMix Enhanced 云端档（advanced/extreme）
+ * 100% 静默降级 lite（用户设置的 extreme 从未生效）。
+ * 只补曲目身份字段；url/trackKey/duration/albumId/albumCover/appleHls 等仍由调用点按原语义传入。
+ */
+function buildDeckMetadata(
+  song: Song,
+  url: string,
+  index: number | undefined,
+  extras: Omit<PreloadTrack, 'url' | 'index' | 'songId' | 'mid' | 'name' | 'artists'> = {},
+): PreloadTrack {
+  const raw = song as DeckIdentitySong
+  const mid = [raw.mid, raw.songmid, raw.songMid].find((value): value is string => typeof value === 'string' && value.length > 0)
+  const artists = Array.isArray(song.artists) ? song.artists.map(artist => artist?.name).filter(Boolean) : []
+  return {
+    url,
+    index,
+    ...extras,
+    songId: song.id ?? mid,
+    ...(mid ? { mid } : {}),
+    ...(song.name ? { name: song.name } : {}),
+    ...(artists.length > 0 ? { artists } : {}),
+  }
+}
+
+/**
+ * 切歌 toast 展示"实际档位"（P1-12）：这两个字段在 TransitionDebugInfo 上由主负责人补充（可选），
+ * 此处做宽松读取——字段缺席时 toast 保持原有内容。
+ */
+function readEnhancedTierDebug(info: TransitionDebugInfo | null): { appliedTier?: string; tierFallbackReason?: string } {
+  const raw = info as (TransitionDebugInfo & { qqAppliedTier?: string; tierFallbackReason?: string }) | null
+  return { appliedTier: raw?.qqAppliedTier, tierFallbackReason: raw?.tierFallbackReason }
 }
 
 async function loadQQSongDetail(song: Song): Promise<Song> {
@@ -785,9 +981,29 @@ function App() {
   }, [desktopFusionEnabled, viewMode])
   // 模式切换过渡动画：全屏覆盖掩盖新模式挂载卡顿。to=目标模式，ready=目标内容已就绪，
   // 收起条件 = ready 且 时长 ≥ 最短 3s（慢机 5~10s 加载期间动画无限循环，不会"断片"）。
-  const [modeTransition, setModeTransition] = useState<{ to: 'explore' | 'minimal' | 'traditional' | 'desktop' | 'resonance'; startedAt: number; ready: boolean } | null>(null)
+  const [modeTransition, setModeTransition] = useState<{ to: 'explore' | 'minimal' | 'traditional' | 'desktop' | 'resonance'; startedAt: number; ready: boolean; quick?: boolean } | null>(null)
   const modeTransitionRef = useRef(modeTransition)
   modeTransitionRef.current = modeTransition
+  // 转场动画风格 / 音效（设置 → 个性化；全局设置注册表 'transition' 组同键同事件）
+  const [modeTransitionStyle, setModeTransitionStyleState] = useState<ModeTransitionStyle>(() => getModeTransitionStyle())
+  const [modeTransitionSoundOn, setModeTransitionSoundOnState] = useState(() => isModeTransitionSoundEnabled())
+  // 模式切换事件监听是挂载一次的长闭包，读风格要用 ref 拿最新值（直接读 state 会拿到过期值）
+  const modeTransitionStyleRef = useRef(modeTransitionStyle)
+  modeTransitionStyleRef.current = modeTransitionStyle
+  useEffect(() => {
+    const syncStyle = () => setModeTransitionStyleState(getModeTransitionStyle())
+    const syncSound = () => setModeTransitionSoundOnState(isModeTransitionSoundEnabled())
+    window.addEventListener(MODE_TRANSITION_STYLE_EVENT, syncStyle)
+    window.addEventListener(MODE_TRANSITION_SOUND_EVENT, syncSound)
+    window.addEventListener('waveforge:global-setting-changed', syncStyle)
+    window.addEventListener('waveforge:global-setting-changed', syncSound)
+    return () => {
+      window.removeEventListener(MODE_TRANSITION_STYLE_EVENT, syncStyle)
+      window.removeEventListener(MODE_TRANSITION_SOUND_EVENT, syncSound)
+      window.removeEventListener('waveforge:global-setting-changed', syncStyle)
+      window.removeEventListener('waveforge:global-setting-changed', syncSound)
+    }
+  }, [])
   const viewModeRef = useRef<ViewMode>(viewMode)
   viewModeRef.current = viewMode
   
@@ -835,8 +1051,7 @@ function App() {
   // 在同一帧被销毁重排，就是关闭掉帧与封面闪烁的来源。
   const [detailPlaylist, setDetailPlaylist] = useState<{ playlist: any; songs: Song[] } | null>(null)
   const [detailPlaylistOpen, setDetailPlaylistOpen] = useState(false)
-  const [detailPlaylistLoading, setDetailPlaylistLoading] = useState(false)
-  // 退场回调在动画完成时执行，需要读"此刻"是否又打开了面板，故用 ref 同步可见性
+  const [detailPlaylistLoading, setDetailPlaylistLoading] = useState(false)  // 退场回调在动画完成时执行，需要读"此刻"是否又打开了面板，故用 ref 同步可见性
   const detailPlaylistOpenRef = useRef(false)
   // 音效引擎版本（v1 远程原版 / v2 本地增强版 / v3 纯 TS DSP 内核），默认 v1；切换见 switchAudioEngine
   const [audioEngineVersion, setAudioEngineVersionState] = useState<AudioEngineVersion>(() => getAudioEngineVersion(getAvailableEngineIds()))
@@ -876,6 +1091,9 @@ function App() {
       .filter(loader => loader !== currentViewLoader)
 
     void currentViewLoader()
+    // TV 效能档跳过 idle 预载：10+ 个懒加载 chunk（含全部备用视图/弹窗）常驻解析后的 JS，
+    // 弱机内存吃紧——按需加载首开多等几百毫秒换取更小的常驻内存（隔离：仅 TV 效能档）
+    if (isTvModeActive() && isPerfModeEfficiency()) return
     return preloadOnIdle([
       loadSearchPanel,
       loadUpNextNotification,
@@ -923,7 +1141,20 @@ function App() {
   const [showHome, setShowHome] = useState(true) // 控制简约模式首页显示
   const [showSharedPlayer, setShowSharedPlayer] = useState(false)
   const [enteredFromMode, setEnteredFromMode] = useState<ViewMode>('minimal') // 记录进入来源，用于返回时恢复状态
+  // 遥控器/快捷键 Home 的恢复依据（ref 读最新值，避免事件监听闭包拿到旧状态）：
+  // 桌面模式播放被旧逻辑拽进播放页时，Home 应把用户送回桌面而不是 minimal 主页
+  const enteredFromModeRef = useRef<ViewMode>(enteredFromMode)
+  enteredFromModeRef.current = enteredFromMode
   const playbackOriginRef = useRef<PlaybackOrigin>({ mode: 'minimal', surface: 'home' })
+  // 当前播放队列是否来自 QQ「刷歌」：刷歌播放页/播放页右键菜单据此提供「音乐偏好设置」
+  const [radarPlaybackActive, setRadarPlaybackActive] = useState(false)
+  const [qqMusicPreferenceOpen, setQQMusicPreferenceOpen] = useState(false)
+  // 全局入口：探索页右键 / 刷歌播放器滑杆按钮 / 播放页右键都派发该事件
+  useEffect(() => {
+    const handleOpenMusicPreference = () => setQQMusicPreferenceOpen(true)
+    window.addEventListener('waveforge:qq-open-music-preference', handleOpenMusicPreference)
+    return () => window.removeEventListener('waveforge:qq-open-music-preference', handleOpenMusicPreference)
+  }, [])
   const recentPlaybackReportRef = useRef({
     songKey: '',
     reported: false,
@@ -955,7 +1186,7 @@ function App() {
   const [playbackContextPlaylists, setPlaybackContextPlaylists] = useState<any[]>([])
   const [playbackContextPlaylistsLoading, setPlaybackContextPlaylistsLoading] = useState(false)
   
-  const [lyrics, setLyrics] = useState<LyricLine[]>([])
+  const [canonicalLyrics, setLyrics] = useState<LyricLine[]>([])
   const [appleCoverUrl, setAppleCoverUrl] = useState<string | null>(null)
   const [lyricOffset, setLyricOffset] = useState(() => Number(localStorage.getItem('lyricOffset')) || 0)
   const [lyricStyleMode, setLyricStyleMode] = useState<LyricStyleMode>(readLyricStyleMode)
@@ -1187,7 +1418,10 @@ function App() {
   const [isPureMusic, setIsPureMusic] = useState(false)
   const [lyricDisplayMode, setLyricDisplayMode] = useState<LyricDisplayMode>(() => {
     const saved = localStorage.getItem('lyricDisplayMode')
-    return saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' || saved === 'multidimensional' || saved === 'modeng' || saved === 'video' || saved === 'folia' || saved === 'pv' ? saved : 'modern'
+    const mode = saved === 'immersive' || saved === 'wallpaper' || saved === 'glorious' || saved === 'multidimensional' || saved === 'modeng' || saved === 'video' || saved === 'folia' || saved === 'pv' ? saved : 'modern'
+    // TV 效能档：WebGL（多维/Folia）与 Pixi（PV）级歌词不可承受，历史选择直接回落摩登
+    if (isTvModeActive() && isPerfModeEfficiency() && TV_HEAVY_LYRIC_MODES.includes(mode)) return 'modern'
+    return mode
   })
   // 摩登模式状态 ref：resolveAppleCover 等回调读取最新值（AM 封面仅摩登使用）
   const lyricDisplayModeRef = useRef(lyricDisplayMode)
@@ -1325,6 +1559,17 @@ function App() {
     const saved = localStorage.getItem('autoMixEnhanced')
     return parseStoredBoolean(saved, false)
   })
+  // 过渡引擎三选一（标准 / Pro / Enhanced）；旧版本只有 autoMixEnhanced 布尔值
+  const [autoMixEngine, setAutoMixEngine] = useState<'standard' | 'pro' | 'enhanced'>(() => {
+    const saved = localStorage.getItem('autoMixEngine')
+    if (saved === 'standard' || saved === 'pro' || saved === 'enhanced') return saved
+    return parseStoredBoolean(localStorage.getItem('autoMixEnhanced'), false) ? 'pro' : 'standard'
+  })
+  // AutoMix Enhanced 档位（Lite / Advanced / Extreme）
+  const [autoMixEnhancedTier, setAutoMixEnhancedTier] = useState<'lite' | 'advanced' | 'extreme'>(() => {
+    const saved = localStorage.getItem('autoMixEnhancedTier')
+    return saved === 'advanced' || saved === 'extreme' ? saved : 'lite'
+  })
   const [autoMixTransitionIntensity, setAutoMixTransitionIntensity] = useState<'subtle' | 'standard' | 'strong'>(() => {
     const saved = localStorage.getItem('autoMixTransitionIntensity')
     return saved === 'subtle' || saved === 'strong' ? saved : 'standard'
@@ -1348,11 +1593,73 @@ function App() {
     return () => { cancelled = true }
   }, [autoMixAiMix])
 
-  // 看歌模式禁用交叉过渡/无缝衔接/自动混音（视频切歌做这些太割裂），只影响生效值不污染用户设置
+  // 游戏模式（主进程会话级开关，重启软件自动回到标准模式）：
+  // enabled = 模式开启（AutoMix 等重负载立即禁用）；frozen = 主窗已隐藏到托盘（10Hz 频谱 tick 冻结）
+  const [gameModeEnabled, setGameModeEnabled] = useState(false)
+  const [gameModeFrozen, setGameModeFrozen] = useState(false)
+  const gameModeFrozenRef = useRef(false)
+  gameModeFrozenRef.current = gameModeFrozen
+  useEffect(() => {
+    const api = window.electron?.gameMode
+    if (!api) return
+    void api.get?.().then((status) => {
+      setGameModeEnabled(Boolean(status?.enabled))
+      setGameModeFrozen(Boolean(status?.frozen))
+    }).catch(() => undefined)
+    return api.onChange?.((enabled, frozen) => {
+      if (enabled !== undefined) setGameModeEnabled(Boolean(enabled))
+      if (frozen !== undefined) setGameModeFrozen(Boolean(frozen))
+    })
+  }, [])
+
+  // 冻结态势下发到渲染端全局快照：散落在 service/hook 里的后台循环（Apple 桥轮询、
+  // 无缝衔接尾段监测、音频特效旋转、桌面挂件时钟等）按它自行降频，无需各自订阅 IPC
+  useEffect(() => {
+    setGameModeFrozenRuntime(gameModeFrozen)
+  }, [gameModeFrozen])
+
+  // 游戏模式冻结灯效/外部设备插件：Chroma 是 30fps setInterval 帧流（每帧逐设备 IPC + 本机 HTTP 请求），
+  // 且 Chroma/SignalRGB 会持有分析器后台租约把 30Hz FFT 锁活——窗口隐藏后照样满速，必须显式停。
+  // DG-LAB 同理：激活后 5s 中继状态轮询 + 30fps 特征推送 + 系统采集分析器都不会因窗口隐藏而停，
+  // 冻结时一并 deactivate（中继侧会自动 clear 归零），下次任务/解冻时 activate 自动重建。
+  // 解冻时只恢复冻结前处于激活状态的插件；插件注册表的启用状态不受影响（客户端为共享单例）。
+  const chromaFrozenRef = useRef(false)
+  const signalRgbFrozenRef = useRef(false)
+  const dgLabFrozenRef = useRef(false)
+  useEffect(() => {
+    if (gameModeFrozen) {
+      chromaFrozenRef.current = chromaClient.isActive()
+      signalRgbFrozenRef.current = signalRgbClient.isActive()
+      dgLabFrozenRef.current = dglabClient.isActive()
+      if (chromaFrozenRef.current) void chromaClient.deactivate().catch(() => undefined)
+      if (signalRgbFrozenRef.current) void signalRgbClient.deactivate().catch(() => undefined)
+      if (dgLabFrozenRef.current) dglabClient.deactivate()
+      return
+    }
+    if (chromaFrozenRef.current) {
+      chromaFrozenRef.current = false
+      void chromaClient.activate().catch(() => undefined)
+    }
+    if (signalRgbFrozenRef.current) {
+      signalRgbFrozenRef.current = false
+      void signalRgbClient.activate().catch(() => undefined)
+    }
+    if (dgLabFrozenRef.current) {
+      dgLabFrozenRef.current = false
+      dglabClient.activate()
+    }
+  }, [gameModeFrozen])
+
+  // 看歌模式禁用交叉过渡/无缝衔接/自动混音（视频切歌做这些太割裂），只影响生效值不污染用户设置；
+  // 游戏模式同理：为打游戏让路，直接禁用 AutoMix 这类分析/渲染大头；
+  // TV 上没有节拍/响度分析服务（3002/3003）也没有桌面渲染桥，AutoMix 只会静默降级为固定交叉淡化——
+  // 强制关闭以消除每次切歌的健康探测白等（≤2s）、REPREPARE 重试循环与「即将智能混音」的误导 HUD。
   const watchModeActive = lyricDisplayMode === 'video'
+  // TV：手机遥控器是否处于光标模式（连接后 hover 交互可用，焦点揭示逻辑要相应让位）
+  const remoteCursorModeActive = useRemoteCursorMode()
   const effectiveCrossfadeEnabled = !watchModeActive && crossfadeEnabled
   const effectiveGaplessEnabled = !watchModeActive && gaplessEnabled
-  const effectiveAutoMixEnabled = !watchModeActive && autoMixEnabled
+  const effectiveAutoMixEnabled = !watchModeActive && autoMixEnabled && !gameModeEnabled && !isTvModeActive()
   
   // 切歌过渡状态
   const [isTransitioning, setIsTransitioning] = useState(false)
@@ -1369,6 +1676,72 @@ function App() {
   const [transitionDuration, setTransitionDuration] = useState(0)
   const transitionTargetTimeRef = useRef(Number.NaN)
   const [transitionStartTime, setTransitionStartTime] = useState<number | null>(null)
+
+  // AutoMix 过渡 HUD（播放页封面下方时间节点徽标 + 进度条介入/过渡提示）。
+  // 个性化 → 「AutoMix 过渡提示」开关控制显示；localStorage 键 automixTransitionHudEnabled（默认开）。
+  const [automixHudEnabled, setAutomixHudEnabled] = useState(() => parseStoredBoolean(localStorage.getItem('automixTransitionHudEnabled'), true))
+  useEffect(() => {
+    const sync = () => setAutomixHudEnabled(parseStoredBoolean(localStorage.getItem('automixTransitionHudEnabled'), true))
+    window.addEventListener('automixTransitionHudChanged', sync)
+    return () => window.removeEventListener('automixTransitionHudChanged', sync)
+  }, [])
+
+  const [automixHudSkippedTrackKey, setAutomixHudSkippedTrackKey] = useState<string | null>(null)
+  // 过渡 HUD 数据（药丸时间节点 + 进度条上方金色引擎名共用）：
+  //   · automix：计划就绪（armed）即给出「即将在 m:ss 开始智能混音」的时间节点，直到过渡开跑；
+  //   · gapless：无缝衔接没有"开始混音"节点 —— 只给进度条上方显示「Gapless」，不出药丸；
+  //   · 已降级为普通交叉淡化（fixed-crossfade / none）时不给任何提示，避免误导。
+  const automixHud = useMemo(() => {
+    if (transitionState !== 'armed' && transitionState !== 'running-transition') return null
+    const strategy = transitionStrategy
+    const engineName = transitionEngineDisplayName(strategy, effectiveAutoMixEnabled, autoMixEngine)
+    if (!engineName) return null
+    const phase = (transitionState === 'running-transition' ? 'running' : 'armed') as 'armed' | 'running'
+    if (strategy === 'gapless') {
+      if (!(duration > 0)) return null
+      // 边界 = 本曲结尾（无缝拼接发生在 source ended 时）
+      return {
+        phase,
+        startAt: duration,
+        endAt: duration,
+        engineLabel: engineName,
+        kind: 'gapless' as const,
+        key: `gapless|${duration.toFixed(2)}`,
+      }
+    }
+    // 只有"智能过渡"才提示：用户点过关闭（本曲不做智能混音）或已降级为普通交叉淡化时不再打扰
+    // ——否则文案会说"开始智能混音"而实际只是一次短交叉，属于误导。
+    const isSmartTransition = strategy === 'smart-rendered'
+      || strategy === 'smart-rendered-v2'
+      || strategy === 'smart-rendered-qq'
+      || strategy === 'beat-crossfade'
+    if (!isSmartTransition) return null
+    const dbg = transitionDebug
+    if (!dbg || !Number.isFinite(dbg.sourceStartTime) || !Number.isFinite(dbg.sourceEndTime)) return null
+    if (dbg.sourceEndTime <= dbg.sourceStartTime) return null
+    if (automixHudSkippedTrackKey && dbg.sourceTrackKey === automixHudSkippedTrackKey) return null
+    return {
+      phase,
+      startAt: dbg.sourceStartTime,
+      endAt: dbg.sourceEndTime,
+      engineLabel: engineName,
+      kind: 'automix' as const,
+      key: `${dbg.sourceTrackKey}|${dbg.sourceStartTime.toFixed(2)}`,
+    }
+  }, [effectiveAutoMixEnabled, transitionState, transitionDebug, transitionStrategy, autoMixEngine, duration, automixHudSkippedTrackKey])
+  // modern 等流式播放页的过渡徽标：按 HUD 键记忆「关闭」（切歌/重排后自动恢复）。
+  // 药丸只服务于 AutoMix 的时间节点；无缝衔接（gapless）不出药丸，只有进度条上方的引擎名。
+  // 时间订阅（automixHudTime）在 audioPlayer 声明之后统一挂（依赖 playbackTimeStore）。
+  const [dismissedAutomixHudKey, setDismissedAutomixHudKey] = useState<string | null>(null)
+  useEffect(() => {
+    setDismissedAutomixHudKey(null)
+  }, [automixHud?.key])
+  const modernAutomixHud = automixHudEnabled && automixHud && automixHud.kind !== 'gapless' && automixHud.key !== dismissedAutomixHudKey
+    ? automixHud
+    : null
+  const modernAutomixHudColors = playerTheme === 'dark'
+    ? { chip: 'rgba(15, 17, 24, 0.55)', text: '#f7f7fa', dim: 'rgba(255,255,255,0.55)' }
+    : { chip: 'rgba(255, 255, 255, 0.62)', text: '#17181d', dim: 'rgba(20, 22, 28, 0.5)' }
   const [transitionFromTrack, setTransitionFromTrack] = useState<{
     trackKey: string
     coverUrl: string
@@ -1389,6 +1762,24 @@ function App() {
   } | null>(null)
   const [transitionFromAccentColor, setTransitionFromAccentColor] = useState<string | null>(null)
   const [transitionToAccentColor, setTransitionToAccentColor] = useState<string | null>(null)
+  /**
+   * 视觉轨道（Visual Track）：进度 90% 时把"画面归属"提前切到目标曲——歌名/歌手/封面/歌词/
+   * 配色/MV 都改读它，而 canonical 的 currentTrack、播放时钟、队列 revision、歌词归属一概不动
+   *（早期实现直接改 canonical，会误触发按 currentIndex 的加载链路，故分轨为纯展示状态）。
+   * 真正的提交帧只是把 canonical 换成同一首目标曲，因此那一刻画面上没有任何可见变化。
+   */
+  const [visualTrack, setVisualTrack] = useState<{
+    trackKey: string
+    index: number
+    coverUrl: string
+    title: string
+    artist: string
+    albumName?: string
+    songId?: string | number
+    /** 目标曲歌词（取预载缓存；缺失时沿用当前歌词，提交帧会自然纠正） */
+    lyrics: LyricLine[]
+  } | null>(null)
+  const visualTrackRef = useRef<typeof visualTrack>(null)
   const wasAudioTransitioningRef = useRef(false)
   // 过渡状态 1.5s 复位定时器：统一跟踪，避免快速连切时定时器叠加、卸载后迟到 setState
   const transitionResetTimerRef = useRef<number | null>(null)
@@ -1401,7 +1792,18 @@ function App() {
   useEffect(() => () => clearTransitionResetTimer(), [])
   
   // 当前播放进度
-  const currentSong = currentIndex >= 0 && currentIndex < playlist.length ? playlist[currentIndex] : null
+  const canonicalSong = currentIndex >= 0 && currentIndex < playlist.length ? playlist[currentIndex] : null
+  /**
+   * 视觉轨道（Visual Track）——过渡到 90%（进度）时把"画面归属"提前切到目标曲：
+   * 播放页上的一切展示（歌名/歌手/封面/时长/歌词/MV/队列高亮）都经 `currentSong` / `lyrics`
+   * 读取，这里让它们跟随视觉轨道；而 canonical 的 `currentIndex`/`currentTrack`/播放时钟/
+   * 队列 revision/歌词归属**不动**（早期实现直接改 canonical，会误触发按 index 的加载链路）。
+   * 真正提交时 canonical 换成同一首目标曲、视觉轨道在同一批清空 —— 画面在那一刻零变化。
+   * 视觉轨道仅在过渡 90% 之后存在，其余时间这两个绑定等于 canonical 值。
+   */
+  const currentSong = visualTrack ? (playlist[visualTrack.index] ?? canonicalSong) : canonicalSong
+  /** 歌词同理：切轨后歌词面板读目标曲歌词（时钟也已切到目标曲，避免"新时钟配旧歌词"）。 */
+  const lyrics = visualTrack && visualTrack.lyrics.length > 0 ? visualTrack.lyrics : canonicalLyrics
   const currentAppleRadio = currentSong?.appleRadio || null
   const isAppleRadioPlayback = Boolean(currentAppleRadio)
 
@@ -2195,6 +2597,9 @@ function App() {
   const handleNextRef = useRef<() => void>(() => undefined)
   const appleAcceptanceActiveRef = useRef(false)
   const dominantColorRef = useRef<string>(PLAYBACK_NEUTRAL_COLOR)
+  // P1-2：最近一次 ready 的封面主色/色板（含过渡目标封面的解析结果），
+  // 供封面取色处于 loading 的短暂帧沿用，避免整屏配色闪灰。
+  const lastReadyCoverColorRef = useRef<{ color: string | null; palette: string[] }>({ color: null, palette: [] })
   
   // 调音室音效引擎：通过统一适配层（IAudioEngineAdapter）接入 v1/v2/v3，App 不再直接持有引擎实例。
   // engineAdapterRef 在版本切换时重建（getEngineAdapter(next)）；addToast 注入给 v2 低音量提示。
@@ -2472,6 +2877,14 @@ function App() {
       setTransitionProgress(0)
       setTransitionFromTrack(null)
       setTransitionToTrack(null)
+      // 过渡被取消/失败/结束但**没有走到提交**：视觉轨道必须回退到 canonical。
+      // 否则会永久停在"歌词/背景已是下一首、歌名/封面还是上一首"的半套状态
+      //（视觉轨道只在真正提交的那一批里清空；取消路径不会经过提交）。
+      if (visualTrackRef.current) {
+        console.warn('[VisualTrack] 过渡未提交（' + state.transitionState + '），画面回退到当前曲:', visualTrackRef.current.trackKey)
+        visualTrackRef.current = null
+        setVisualTrack(null)
+      }
     }
     
     // 在过渡中点切换视觉信息
@@ -2496,7 +2909,8 @@ function App() {
       setTransitionFromTrack(null)
       setTransitionToTrack(null)
       setTransitionFromAccentColor(null)
-      setTransitionToAccentColor(null)
+      // P1-2：此帧不动 transitionToAccentColor——新封面此刻还在取色（loading），
+      // 由 transitionToTrack 取色 effect 在新封面 ready 后再清，避免过渡已淡入到的目标色被丢弃。
     }
 
     // ── #10 Gapless 方案弹窗：真实切歌提交时识别本次衔接方案 ──
@@ -2529,8 +2943,10 @@ function App() {
         toastMessage = isSameAlbumPlayback(sourceSong, targetSong)
           ? '已用「直接拼接」无缝切换'
           : '已用「60ms 淡入淡出」切换'
+      } else if (commit.strategy === 'smart-rendered-qq') {
+        toastMessage = '已用「AutoMix Enhanced 智能混音」切换'
       } else if (commit.strategy === 'smart-rendered-v2') {
-        toastMessage = '已用「AutoMix Enhanced 智能渲染」切换'
+        toastMessage = '已用「AutoMix Pro 智能渲染」切换'
       } else if (commit.strategy === 'smart-rendered') {
         toastMessage = '已用「Smart AutoMix 智能渲染」切换'
       } else if (commit.strategy === 'beat-crossfade') {
@@ -2539,8 +2955,17 @@ function App() {
         toastMessage = '已用「交叉淡化」切换'
       }
       if (toastMessage) {
-        const reason = transitionDebugRef.current?.fallbackReason
-        triggerGaplessModeToast(reason ? `${toastMessage}（${reason}）` : toastMessage)
+        const debug = transitionDebugRef.current
+        const notes: string[] = []
+        const reason = debug?.fallbackReason
+        if (reason) notes.push(reason)
+        // P1-12：展示档位 ≠ 实际档位时把真实档位与降级原因透出（例如 extreme 匹配不到 QQ 曲目
+        // 而实际跑 lite）；此前 qqAppliedTier 只写不读，降级对用户完全不可见。
+        const { appliedTier, tierFallbackReason } = readEnhancedTierDebug(debug)
+        if (appliedTier && appliedTier !== autoMixEnhancedTier) {
+          notes.push(`实际档位：${appliedTier}${tierFallbackReason ? ` · ${tierFallbackReason}` : ''}`)
+        }
+        triggerGaplessModeToast(notes.length > 0 ? `${toastMessage}（${notes.join('；')}）` : toastMessage)
       }
     } else if (
       state.transitionState === 'committed'
@@ -2606,7 +3031,7 @@ function App() {
         handleNextRef.current()
       }
     }
-  }, [duration, upNextTime, upNextEnabled, showUpNext, playMode, deterministicNextIndex, autoMixEnabled, gaplessEnabled, transitionStartTime, canShowUpNextOnCurrentSurface, playlist, handleNextRef, dominantColorRef]),
+  }, [duration, upNextTime, upNextEnabled, showUpNext, playMode, deterministicNextIndex, autoMixEnabled, gaplessEnabled, transitionStartTime, canShowUpNextOnCurrentSurface, playlist, handleNextRef, dominantColorRef, autoMixEnhancedTier]),
     { enabled: effectiveCrossfadeEnabled, duration: crossfadeDuration },
     { enabled: effectiveGaplessEnabled, albumGapless: albumGaplessEnabled },
     {
@@ -2617,6 +3042,8 @@ function App() {
       minDuration: autoMixMinDuration,
       maxDuration: autoMixMaxDuration,
       enhanced: autoMixEnhanced,
+      engine: autoMixEngine,
+      enhancedTier: autoMixEnhancedTier,
       intensity: autoMixTransitionIntensity,
       aiMix: autoMixAiMix && autoMixAiAvailable,
     },
@@ -2747,7 +3174,9 @@ function App() {
   }, [])
 
   // 播放器状态监听
-  const pulseActive = coverPulseEnabled && isPlaying
+  // 封面脉冲：30fps 写 CSS 变量 + 全背景子树样式重算（曾实测 RecalcStyle 1325 次/816ms），
+  // TV 普通/效能档强制关闭（增强档尊重用户开关）
+  const pulseActive = coverPulseEnabled && isPlaying && (!isTvModeActive() || isPerfModeEnhanced())
   const traditionalSpectrumActive = viewMode === 'traditional' && showHome && Boolean(currentSong) && traditionalSpectrumVisible && traditionalRightColumnVisible
   const analyzerEnabledNow = audioAnalyzerEnabled && (pulseActive || pluginAudioActive || traditionalSpectrumActive) && !isPerfModeEfficiency()
   // WebView2 播放面频谱：外部源模式下轮询 bridge /spectrum（WASAPI loopback），
@@ -2757,7 +3186,9 @@ function App() {
     externalSpectrumRef.current.fill(0)
   }, [])
   useEffect(() => {
-    if (!externalPlaybackActive || !analyzerEnabledNow) {
+    // 游戏模式冻结（主窗隐藏）时停掉这条 20Hz 轮询链：它由 setTimeout 自续，
+    // 窗口隐藏后照常满速跑，是穿透冻结的残留负载之一
+    if (!externalPlaybackActive || !analyzerEnabledNow || gameModeFrozenRef.current) {
       clearExternalSpectrum()
       return
     }
@@ -2897,20 +3328,20 @@ function App() {
         
         // 获取歌曲详情
         let normalizedSong = normalizeSongCover(song)
+      // 本地听歌记录：「听歌报告」数据源（每次实际开播记一条，90 秒内同曲去重）
+      recordListen(normalizedSong)
         if ((normalizedSong.platform || 'netease') === 'qq' && !normalizedSong.album?.picUrl) {
           normalizedSong = await loadQQSongDetail(normalizedSong)
         }
         
         // 接管预加载的音频元素
         if (options.preloadedAudio && options.preloadedAudioUrl) {
-          const success = await audioPlayer.adoptExternalAudio(options.preloadedAudio, {
-            url: options.preloadedAudioUrl,
+          const success = await audioPlayer.adoptExternalAudio(options.preloadedAudio, buildDeckMetadata(normalizedSong, options.preloadedAudioUrl, index, {
             trackKey: getSongKey(normalizedSong),
-            index: index,
             duration: normalizedSong.duration / 1000,
             albumId: getLocalAlbumIdentifier(normalizedSong, normalizedSong.platform || 'netease') || undefined,
             albumCover: normalizedSong.album?.picUrl || undefined,
-          })
+          }))
           
           if (!success) {
             console.error('[Gapless] 接管音频失败，回退到普通加载')
@@ -2970,6 +3401,14 @@ function App() {
       setAutoMixMinDuration(minDuration ? parseFloat(minDuration) : 2)
       setAutoMixMaxDuration(maxDuration ? parseFloat(maxDuration) : 12)
       setAutoMixEnhanced(parseStoredBoolean(enhanced, false))
+      const engineSaved = localStorage.getItem('autoMixEngine')
+      setAutoMixEngine(
+        engineSaved === 'standard' || engineSaved === 'pro' || engineSaved === 'enhanced'
+          ? engineSaved
+          : (parseStoredBoolean(enhanced, false) ? 'pro' : 'standard'),
+      )
+      const tierSaved = localStorage.getItem('autoMixEnhancedTier')
+      setAutoMixEnhancedTier(tierSaved === 'advanced' || tierSaved === 'extreme' ? tierSaved : 'lite')
       setAutoMixTransitionIntensity(
         intensity === 'subtle' || intensity === 'strong' ? intensity : 'standard',
       )
@@ -2987,6 +3426,8 @@ function App() {
       window.electron?.automixLog?.('settings', JSON.stringify({
         enabled: parseStoredBoolean(enabled, false),
         enhanced: parseStoredBoolean(enhanced, false),
+        engine: localStorage.getItem('autoMixEngine') || 'auto',
+        tier: localStorage.getItem('autoMixEnhancedTier') || 'lite',
         intensity: intensity === 'subtle' || intensity === 'strong' ? intensity : 'standard',
         aiMix: parseStoredBoolean(aiMix, false),
         beatMatching: parseStoredBoolean(beatMatching, true),
@@ -3191,6 +3632,7 @@ function App() {
       setRestorePlaybackOrigin(null)
       setShowSharedPlayer(false)
       playbackOriginRef.current = { mode, surface: mode === 'minimal' ? 'home' : 'mode-root' }
+      setRadarPlaybackActive(false)
       if (mode === 'desktop') setShowHome(false)
       else setShowHome(true)
       // 注意：不在此关闭融合穿透——融合开启时跨模式切换不应重建窗口（会中断播放）。
@@ -3238,23 +3680,16 @@ function App() {
       }
       resonanceModeSwitchBypassRef.current = false
       const revision = ++viewModeChangeRevisionRef.current
-      // 目标模式本次会话已经挂载过：内容已经就绪，不需要再用「加载遮罩」盖住（那个遮罩最短 3s，
-      // 等于白等），直接切过去；首次访问的模式仍走完整过渡动画。
+      // 目标模式本次会话已经挂载过：内容已经就绪，走「快速档」过渡（压紧版动画，不让用户白等）；
+      // 首次访问的模式仍走完整过渡动画。
       const warmTarget = visitedModesRef.current.has(mode)
       // 模式切换过渡动画：若尚未为同一目标显示，则立即显示（点击即盖住，覆盖加载卡顿；
-      // 已显示则保留原有 startedAt，不重置最短时长）
+      // 已显示则保留原有 startedAt，不重置最短时长）。模式卡片路径已在 viewModeTransitionStart
+      // 里提前预加载 chunk + 盖上动画，这里通常只是兜底（遥控器/远程等直接派发 viewModeChanged 的入口）
       if (!warmTarget && mode !== viewModeRef.current && modeTransitionRef.current?.to !== mode) {
-        setModeTransition({ to: mode, startedAt: performance.now(), ready: false })
+        setModeTransition({ to: mode, startedAt: performance.now(), ready: false, quick: false })
       }
-      const loadTarget = mode === 'resonance'
-        ? loadResonanceView
-        : mode === 'explore'
-          ? loadExploreView
-          : mode === 'desktop'
-            ? loadDesktopView
-            : mode === 'traditional'
-              ? loadTraditionalView
-              : loadHomeView
+      const loadTarget = MODE_CHUNK_LOADERS[mode]
 
       // Keep the current mode painted until the destination chunk is ready, then let the
       // two prepared roots crossfade. React.lazy must never expose the black app base here.
@@ -3262,15 +3697,20 @@ function App() {
         // 快速连续切换时，仅执行最新一次请求；但用户点击的模式必须最终生效，
         // 因此用「最近请求」判断：revision 与当前一致才应用（旧请求自然被丢弃）。
         if (revision !== viewModeChangeRevisionRef.current) return
+        const isQuick = modeTransitionRef.current?.to === mode && modeTransitionRef.current.quick === true
+        // ★ 复杂转场的动画窗口内继续预加载：目标 chunk 已就位，再把后续播放资源
+        //   （接下来几首歌的音频/歌词/封面缓存）提前拉好——3s 动画播完，新模式内容全热。
+        //   快速档内容本来就就绪，不做重复预加载。简易转场维持旧机制。
+        if (!isQuick) preloadUpcomingSongs(currentIndexRef.current)
         applyMode(mode)
-        // 目标模式挂载并绘制一帧后，再等 800ms 让首次渲染/数据拉取真正展开，然后标记 ready。
-        // ready 与最短时长（≥3s）共同决定何时收起过渡动画：慢机加载 5~10s 期间动画无限循环，
-        // 提前就绪的高性能机也至少播满最短时长；这期间新模式在动画下方正常渲染加载。
+        // 目标模式挂载并绘制一帧后，再等一小段让首次渲染/数据拉取真正展开，然后标记 ready。
+        // ready 与最短时长共同决定何时收起过渡动画：完整档 ≥3s、快速档 ≥0.85s；
+        // 慢机加载 5~10s 期间动画无限循环，这期间新模式在动画下方正常渲染加载。
         requestAnimationFrame(() => {
           window.setTimeout(() => {
             if (revision !== viewModeChangeRevisionRef.current) return
             setModeTransition((prev) => (prev && prev.to === mode ? { ...prev, ready: true } : prev))
-          }, 800)
+          }, isQuick ? 120 : 800)
         })
       }).catch(error => {
         console.error('[ViewMode] Failed to load target mode:', mode, error)
@@ -3290,9 +3730,20 @@ function App() {
     const handleTransitionStart = (e: Event) => {
       const mode = (e as CustomEvent).detail as 'explore' | 'minimal' | 'traditional' | 'desktop'
       if (!['explore', 'minimal', 'traditional', 'desktop', 'resonance'].includes(mode)) return
-      // 已挂载过的目标模式不再盖遮罩（同上：内容已就绪，遮罩只会让人白等）
-      if (!visitedModesRef.current.has(mode) && mode !== viewModeRef.current && modeTransitionRef.current?.to !== mode) {
-        setModeTransition({ to: mode, startedAt: performance.now(), ready: false })
+      const complexStyle = modeTransitionStyleRef.current === 'complex'
+      const warmTarget = visitedModesRef.current.has(mode)
+      // ★ 复杂转场的预加载前移：动画一开始就拉目标模式的 chunk（import 天然幂等，重复调用零开销），
+      //   与面板收起动画并行下载/编译；等 viewModeChanged 到达时 loadTarget() 直接命中缓存。
+      //   简易转场维持旧机制（viewModeChanged 时才加载）。
+      if (complexStyle) void MODE_CHUNK_LOADERS[mode]().catch(() => undefined)
+      // 复杂转场：冷目标 → 完整档动画；暖目标（内容已就绪）→ 压紧的快速档，丝滑但不白等。
+      // 简易转场：维持旧行为，只有冷目标才盖加载遮罩
+      if (
+        (complexStyle || !warmTarget)
+        && mode !== viewModeRef.current
+        && modeTransitionRef.current?.to !== mode
+      ) {
+        setModeTransition({ to: mode, startedAt: performance.now(), ready: false, quick: complexStyle && warmTarget })
       }
     }
     window.addEventListener('viewModeTransitionStart', handleTransitionStart as EventListener)
@@ -3314,7 +3765,9 @@ function App() {
         return
       }
       const elapsed = performance.now() - tr.startedAt
-      if ((tr.ready && elapsed >= MODE_TRANSITION_MIN_MS) || elapsed >= MODE_TRANSITION_MAX_MS) {
+      // 快速档最短时长压到 ~0.85s：动画主线播完即收，既有过渡感又不拖节奏
+      const minMs = tr.quick ? MODE_TRANSITION_QUICK_MIN_MS : MODE_TRANSITION_MIN_MS
+      if ((tr.ready && elapsed >= minMs) || elapsed >= MODE_TRANSITION_MAX_MS) {
         window.clearInterval(timer)
         setModeTransition(null)
       }
@@ -3376,6 +3829,8 @@ function App() {
   }
 
   const handleLyricDisplayModeChange = (mode: LyricDisplayMode) => {
+    // TV 效能档：WebGL/Pixi 级歌词模式不可进入（面板入口已过滤，这里兜底外部事件路径）
+    if (isTvModeActive() && isPerfModeEfficiency() && TV_HEAVY_LYRIC_MODES.includes(mode)) return
     // Close the overlay before swapping the lyric renderer. Keeping both updates in one React batch
     // can preserve the outgoing panel when the renderer changes during its exit transition.
     setShowLyricModePanel(false)
@@ -3401,7 +3856,7 @@ function App() {
       const livePosition = Number.isFinite(rawPosition) && rawPosition > 0 ? rawPosition : 0
       const storedPosition = Number.isFinite(storePosition) && storePosition > 0 ? storePosition : 0
       const renderedTransitionActive = transitionState === 'running-transition'
-        && (transitionStrategy === 'smart-rendered' || transitionStrategy === 'smart-rendered-v2')
+        && (transitionStrategy === 'smart-rendered' || transitionStrategy === 'smart-rendered-v2' || transitionStrategy === 'smart-rendered-qq')
       const pos = renderedTransitionActive
         ? Math.max(storedPosition, livePosition, rememberedPosition)
         : Math.max(livePosition, storedPosition, rememberedPosition)
@@ -3559,10 +4014,14 @@ function App() {
   // 当前所在歌词模式始终保留在可见列表里
   const ensureModernVisible = (modes: LyricDisplayMode[]): LyricDisplayMode[] =>
     modes.includes('modern') ? modes : ['modern', ...modes]
+  // TV 效能档：隐藏 WebGL（多维/Folia）与 Pixi（PV）级歌词模式（全速 GPU 渲染弱机带不动）
+  const tvEfficiencyFilteredVisibleLyricModes = isTvModeActive() && isPerfModeEfficiency()
+    ? visibleLyricModes.filter((m) => !TV_HEAVY_LYRIC_MODES.includes(m))
+    : visibleLyricModes
   const effectiveVisibleLyricModes = ensureModernVisible(
-    visibleLyricModes.includes(lyricDisplayMode)
-      ? visibleLyricModes
-      : [...visibleLyricModes, lyricDisplayMode]
+    tvEfficiencyFilteredVisibleLyricModes.includes(lyricDisplayMode)
+      ? tvEfficiencyFilteredVisibleLyricModes
+      : [...tvEfficiencyFilteredVisibleLyricModes, lyricDisplayMode]
   )
 
   const toggleLyricModeVisibility = (mode: LyricDisplayMode) => {
@@ -3587,7 +4046,13 @@ function App() {
 
   // Apple Music 命中时全局替换封面（异步解析、不阻塞：先显示平台封面，命中后无缝替换）
   // 显示封面：始终用平台封面（AM 封面只用于摩登模式的动态粒子效果，不替换显示封面）
-  const displayCoverUrl = currentTrack.coverUrl
+  // 视觉轨道：90% 切轨后显示封面同步切到目标曲（叠加层已退休，由 canonical 展示无缝接替），
+  // 取色随之切到目标曲；配合 applyVisualSwitch 里登记的"最近 ready 色"，切换帧不闪灰。
+  const displayCoverUrl = visualTrack?.coverUrl || currentTrack.coverUrl
+  // 视觉轨道生效时不再用 canonical 的**动态封面**（Apple HLS 动画封面属于上一首）：各播放页会优先
+  // 渲染它并盖掉已切换的静态封面，是半套切换/串台的另一条路径。静态封面仍走 displayCoverUrl。
+  const displayAnimatedCoverUrl = visualTrack ? null : (appleDynamicCover.cover?.videoUrl ?? null)
+  const displayAnimatedCoverPoster = visualTrack ? null : (appleDynamicCover.cover?.posterUrl ?? null)
 
   /**
    * 「播放设置」弹窗左侧预览用的播放上下文。
@@ -3606,9 +4071,19 @@ function App() {
 
   // 提取封面主色调
   const { dominantColor: extractedColor, palette: coverPalette, status: coverColorStatus } = useColorThief(displayCoverUrl)
+  // P1-2：封面 URL 变化的那一帧 useColorThief 回到 loading（新封面还没采样完），若直接退回中性灰，
+  // commit 帧整屏配色（背景渐变/强调色/歌词高亮/控件）会闪一下灰再跳到新色。
+  // 这里用 ref 记住最近一次 ready 的主色与色板：未 ready 时沿用（过渡目标色也会在解析完成后
+  // 写入该 ref，见 transitionToTrack 取色 effect），只有从未取到过颜色时才退回中性色。
+  if (coverColorStatus === 'ready' && (coverPalette[0] || extractedColor)) {
+    lastReadyCoverColorRef.current = { color: coverPalette[0] || extractedColor!, palette: coverPalette }
+  }
+  const lastReadyCoverColor = lastReadyCoverColorRef.current
   const playbackCoverColor = coverColorStatus === 'ready'
     ? (coverPalette[0] || extractedColor || PLAYBACK_NEUTRAL_COLOR)
-    : PLAYBACK_NEUTRAL_COLOR
+    : (lastReadyCoverColor.color || PLAYBACK_NEUTRAL_COLOR)
+  // 调色板同样沿用（视觉化的 palette 消费点），避免 loading 帧从有色变无色
+  const effectiveCoverPalette = coverColorStatus === 'ready' ? coverPalette : lastReadyCoverColor.palette
   const dominantColor = playbackCoverColor
   dominantColorRef.current = playbackCoverColor
   // 动画窗口：过渡动画（卡片/流光/交叉淡化）只在 currentTime 到达 transitionStartTime
@@ -3616,34 +4091,76 @@ function App() {
   // 若不加门控，视觉会跟着 60s 混音全程走。transitionStartTime 为 null（普通交叉淡化/
   // gapless）时视为始终在窗口内，保持 v1 行为不变。
   const inAnimationWindow = transitionStartTime === null || currentTime >= transitionStartTime
-  // 叠加动画（封面/字/MV 渐变）只在过渡最后 ~4 秒完成（用户要求：叠加 4 秒足够，
-  // 太长拖沓）；倒计时/流光仍按动画窗口全程提前出现（isVisualTransitioning 第一个条件）。
+  // 叠加动画（封面/字/MV 渐变）在过渡的最后一段完成：窗口取"最后 4 秒"与"90% 切换点"的交集，
+  // 使交叉淡化**恰好在视觉轨道切换那一帧到 100%**（随后叠加层退休、由 canonical 无缝接替）。
   const overlayProgress = (() => {
     if (!inAnimationWindow) return 0
     const dur = transitionDuration > 0 ? transitionDuration : 20
     const span = Math.min(4, dur)
     const start = 1 - span / dur
-    return Math.max(0, Math.min(1, (transitionProgress - start) / (span / dur)))
+    const end = 0.9
+    if (transitionProgress >= end) return 1
+    return Math.max(0, Math.min(1, (transitionProgress - start) / Math.max(1e-6, end - start)))
   })()
   const isVisualTransitioning = (isTransitioning && inAnimationWindow) || Boolean(transitionToTrack && overlayProgress > 0 && inAnimationWindow)
+  // 视觉切换（progress 90% 的 visualSwitchCommit）是否已把 currentSong 换成过渡目标：
+  // 换过之后新曲歌词/封面要做的是「淡入」，不再套用旧曲的淡出时钟（避免暗态→满亮跳变的割裂感）。
+  const visualSwitchedToTarget = Boolean(
+    transitionToTrack && currentSong && getSongKey(currentSong) === transitionToTrack.trackKey,
+  )
+
+  // ---- 歌词交叉淡化（用户诉求：前一首进入过渡就逐渐淡出、后一首逐渐淡入，交叉跟随过渡时长）----
+  // 只在"混音音频正在播放"期间生效（armed 等待期不动歌词；提交后交回 canonical）。
+  const transitionVisualIdentity = useTransitionVisualIdentity(audioPlayer.transitionVisualStore)
+  const transitionAudioRunning = transitionState === 'running-transition'
+  const lyricsCrossfadeActive = transitionAudioRunning
+    && transitionVisualIdentity.active
+    && !transitionVisualIdentity.switched
+  // 托管窗口：过渡音频在放（含视觉切换帧到提交之间）——此时歌词不做入场动画、滚动一步到位
+  const lyricsManagedSwitch = transitionAudioRunning && transitionVisualIdentity.active
+  // 过渡期"先行淡入的下一首歌词"层上报的焦点行：视觉切换帧交给正式歌词树做锚点，
+  // 避免"先锚第一句再跳回正确句"的闪跳（切歌瞬间引擎时间线可能还差一帧）。
+  const incomingLyricIndexRef = useRef(-1)
+  // 过渡结束即失效：避免下一轮过渡误用上一轮的行号
+  useEffect(() => {
+    if (!lyricsManagedSwitch) incomingLyricIndexRef.current = -1
+  }, [lyricsManagedSwitch])
+  const incomingLyrics = useMemo(() => {
+    if (!lyricsManagedSwitch) return null
+    const toKey = transitionVisualIdentity.toTrackKey
+    if (!toKey) return null
+    const cached = preloadCacheRef.current.get(toKey)?.lyrics
+    return cached && cached.length > 0 ? cached : null
+  }, [lyricsManagedSwitch, transitionVisualIdentity.toTrackKey])
+  // 有词 ↔ 纯音乐：纯音乐一侧在过渡期间也保留歌词列（让下一首歌词能淡入/上一首能淡出），
+  // 视觉切换帧再收起/展开；配合下面的 layout 动画，封面是"滑过去"而不是"抽一下"。
+  const showLyricsColumn = !isPureMusic || Boolean(lyricsCrossfadeActive && incomingLyrics)
   const getMvPlaybackTimeSeconds = useCallback(() => {
     const renderedTransitionActive = transitionState === 'running-transition'
-      && (transitionStrategy === 'smart-rendered' || transitionStrategy === 'smart-rendered-v2')
+      && (transitionStrategy === 'smart-rendered' || transitionStrategy === 'smart-rendered-v2' || transitionStrategy === 'smart-rendered-qq')
     return renderedTransitionActive
       ? audioPlayer.playbackTimeStore.getSnapshot().currentTime
       : Number.NaN
   }, [audioPlayer.playbackTimeStore, transitionState, transitionStrategy])
   const getMvTransitionTargetTimeSeconds = useCallback(() => {
     const renderedTransitionActive = transitionState === 'running-transition'
-      && (transitionStrategy === 'smart-rendered' || transitionStrategy === 'smart-rendered-v2')
+      && (transitionStrategy === 'smart-rendered' || transitionStrategy === 'smart-rendered-v2' || transitionStrategy === 'smart-rendered-qq')
     return renderedTransitionActive ? transitionTargetTimeRef.current : Number.NaN
   }, [transitionState, transitionStrategy])
   // 看歌模式下视频为唯一时间线：automix/无缝/交叉过渡全部失效
   const effectiveTransitionStrategy = lyricDisplayMode === 'video' ? 'none' : transitionStrategy
   // AutoMix 过渡时，播放页过渡指示显示 AutoMix 以与无缝衔接(Gapless)区分
   const isAutoMixTransition = effectiveAutoMixEnabled && effectiveTransitionStrategy !== 'gapless' && effectiveTransitionStrategy !== 'none'
-  // AutoMix 增强版（v2）：播放页过渡指示与右上角提示显示独立文案/样式
+  // AutoMix Pro（v2）：播放页过渡指示与右上角提示显示独立文案/样式
   const isEnhancedAutoMix = isAutoMixTransition && autoMixEnhanced
+  // AutoMix 三档与无缝衔接的**引擎名**（过渡徽标 / 进度条上方金色提示统一用它，
+  // 只写引擎名，不出现「即将介入 / 正在介入 / 过渡效果」这类中间态措辞）：
+  //   standard=AutoMix   pro=AutoMix Pro   enhanced=AutoMix Enhanced   gapless=Gapless
+  // 单一真源在 transitionEngineDisplayName（AutomixHudBadge.tsx），HUD 与这里共用同一份映射。
+  const autoMixEngineLabel = autoMixEngine === 'enhanced'
+    ? 'AutoMix Enhanced'
+    : autoMixEngine === 'pro' ? 'AutoMix Pro' : 'AutoMix'
+  const transitionEngineName = transitionEngineDisplayName(effectiveTransitionStrategy, effectiveAutoMixEnabled, autoMixEngine)
 
   // 过渡调试弹窗：过渡计划就绪（armed）时展示引擎/策略/DJ 效果清单；
   // 受「过渡调试」开关控制（设置 → 开发者选项 → 调试面板），关闭则不显示。
@@ -3670,18 +4187,32 @@ function App() {
     let cancelled = false
 
     if (!coverUrl) {
+      // P1-2：commit 帧 transitionToTrack 被清空，而新封面此刻往往还在取色（useColorThief=loading）。
+      // 立刻清掉目标色会让整屏配色从"过渡已淡入到的目标色"瞬间掉回上一首/中性灰。保留到新封面
+      // 取色 ready 再清；期间 isTransitioning 已为 false，PlayerControls 不会再消费该值。
+      // 残留的过渡目标色会在新封面 ready 后（下一次本 effect 运行）被清掉并交给新主色。
+      if (coverColorStatus === 'loading') return
       setTransitionToAccentColor(null)
       return
     }
 
+    // 摩登播放页过渡融合层的顶层封面用 512 档（与 preloadUpcomingSongs 的 128/500 两档不同档），
+    // armed 期间按 critical 预热 HTTP 缓存；选项必须与渲染处 getResolvedArtworkUrl 完全一致，
+    // 保证预加载与 <img> 实际请求命中同一条缓存记录
+    void preloadArtwork(coverUrl, { size: 512, priority: 'critical' }).catch(() => undefined)
+
     extractDominantColor(coverUrl).then(color => {
-      if (!cancelled) setTransitionToAccentColor(color)
+      if (cancelled) return
+      setTransitionToAccentColor(color)
+      // P1-2：该结果与 useColorThief 共用同一份按 URL 的内存缓存，等于提前拿到"下一首的主色"，
+      // 写入沿用 ref 后，commit 帧新封面尚未 ready 时也能用目标曲配色而不是灰。
+      if (color) lastReadyCoverColorRef.current = { color, palette: [color] }
     })
 
     return () => {
       cancelled = true
     }
-  }, [transitionToTrack?.coverUrl])
+  }, [transitionToTrack?.coverUrl, coverColorStatus])
 
   useEffect(() => {
     // 过渡进行中（准备/armed/混音中）保留叠加层；commit 后（playing/committed/idle）
@@ -3809,13 +4340,29 @@ function App() {
     detailPlaylistOpenRef.current = detailPlaylistOpen
   }, [detailPlaylistOpen])
 
-  // 歌曲详情「也爱歌单」→ 应用内打开歌单详情
+  // 歌单详情会话缓存：关→再进同一歌单秒回（冻结约定），不再全量重拉。
+  // 短 TTL 避免服务端歌单更新后长时间陈旧；容量封顶防极端浏览堆积。
+  const playlistDetailCacheRef = useRef(new Map<string, { at: number; payload: { playlist: any; songs: Song[] } }>())
   const handleOpenPlaylistFromDetail = async (playlistId: string, platform: MusicPlatform) => {
+    const cacheKey = `${platform}:${playlistId}`
+    const cached = playlistDetailCacheRef.current.get(cacheKey)
+    if (cached && Date.now() - cached.at < 60_000) {
+      setDetailPlaylist(cached.payload)
+      setDetailPlaylistOpen(true)
+      return
+    }
     setDetailPlaylistLoading(true)
     try {
       const data = await getPlaylistDetail(playlistId, platform)
       const songs = data?.songs || data?.songlist || data?.playlist?.tracks || data?.tracks || []
-      setDetailPlaylist({ playlist: data?.playlist || { id: playlistId, platform, name: '歌单' }, songs })
+      const payload = { playlist: data?.playlist || { id: playlistId, platform, name: '歌单' }, songs }
+      const cache = playlistDetailCacheRef.current
+      cache.set(cacheKey, { at: Date.now(), payload })
+      if (cache.size > 8) {
+        const oldest = [...cache.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+        if (oldest) cache.delete(oldest[0])
+      }
+      setDetailPlaylist(payload)
       setDetailPlaylistOpen(true)
     } catch {
       closeDetailPlaylistImmediate()
@@ -3903,6 +4450,7 @@ function App() {
             : { mode: viewMode, surface: viewMode === 'minimal' ? 'home' : 'mode-root' }
 
     playbackOriginRef.current = inferredOrigin
+    setRadarPlaybackActive(inferredOrigin.qqRadarContinuation?.mode === 'radar')
     setRestorePlaybackOrigin(null)
     const normalizedSong = normalizeSongCover(normalizeRawSongShape(song))
     const normalizedPlaylist = isRadioSelection ? [normalizedSong] : playlistFromSource?.map(normalizeSongCover)
@@ -3934,7 +4482,9 @@ function App() {
     // 共振房内的换歌由房主权威状态驱动（见 resonanceAdapter.apply）。共振模式必须原地切歌：
     // 若走到下面的 setViewMode('minimal')，成员会被踢出共振界面、并且把持久化的
     // viewMode 覆写成 minimal——与 docs/resonance-design.md「共振页内不切走播放页」相悖。
-    const playsInPlace = !isRadioSelection && (originMode === 'traditional' || originMode === 'explore' || originMode === 'resonance')
+    // 桌面模式同理原地播放：点歌只弹桌面迷你播放器，绝不抢整个窗口进播放页
+    // （抢切会把 viewMode 持久化成 minimal，之后不管从哪切回桌面都会再被拽进播放页）。
+    const playsInPlace = !isRadioSelection && (originMode === 'traditional' || originMode === 'explore' || originMode === 'resonance' || originMode === 'desktop')
     // 电台从探索页点播：探索页（含电台弹窗）保持挂载，播放页以覆盖层打开，返回时原样呈现弹窗
     const exploreRadioOverlay = isRadioSelection && originMode === 'explore'
     setEnteredFromMode(originMode)
@@ -3977,6 +4527,8 @@ function App() {
       }
     } else if (!playsInPlace) {
       await playbackSurfaceReady
+      // 记录进入来源：播放页 Home 键/主页按钮据此返回正确的模式
+      playbackOriginRef.current = inferredOrigin
       setShowHome(false)
     }
     await loadAndPlaySong(nextPlaylist[selectedIndex] || normalizedSong, selectedIndex, nextPlaylist)
@@ -4080,6 +4632,22 @@ function App() {
     const revision = ++restorePlaybackRevisionRef.current
     setRestorePlaybackOrigin({ ...origin, mode: targetMode, revision })
   }
+  // 键盘 Home 键：播放页时等同「回到主页」chip（遥控 Home 动作只覆盖遥控通道，键盘此前无处理）
+  const handlePlayerHomeRef = useRef<() => void>(() => undefined)
+  handlePlayerHomeRef.current = handlePlayerHome
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      // 仅 Home 裸键生效（带修饰键的组合留给系统/其他快捷键）
+      if (event.key !== 'Home' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+      const target = event.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable || target.getAttribute('role') === 'slider')) return
+      if (!backStateRef.current.isPlaybackPage) return
+      event.preventDefault()
+      handlePlayerHomeRef.current()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   // 下一首播放
   // 「下一首播放」的插入游标：连点两次时第二首会插到第一首前面（顺序反了），
@@ -4110,6 +4678,42 @@ function App() {
 
     // 显示全局消息提示
     addToast('已添加至下一首播放', 'success')
+  }
+
+  // 相似歌曲·直接切歌（网易云客户端「相似歌曲」灯泡同款）：
+  // 取第一首相似歌曲，插到当前歌曲之后并立即切换播放；原歌曲仍留在播放列表中。
+  const playSimilarNow = async (song: Song | null) => {
+    if (!song) return
+    if (song.platform === 'apple' || song.platform === 'soda') {
+      addToast('当前平台暂不支持相似歌曲', 'info')
+      return
+    }
+    try {
+      const similarId = song.platform === 'qq' ? String(song.id || song.mid) : String(song.id)
+      const similar = await getSimilarSongs(similarId, (song.platform || 'netease') as 'netease' | 'qq')
+      const selfKey = getSongKey(song)
+      const candidate = similar.find((item: Song) => getSongKey(item) !== selfKey)
+      if (!candidate) {
+        addToast('没有找到可播放的相似歌曲', 'info')
+        return
+      }
+      const idx = currentIndexRef.current
+      if (idx < 0 || playlist.length === 0) {
+        handleSongSelect(candidate)
+        return
+      }
+      const insertAt = idx + 1
+      const nextPlaylist = [...playlist]
+      nextPlaylist.splice(insertAt, 0, candidate)
+      bumpQueueRevision()
+      // 后续「下一首播放」以新的插入点为基准续排
+      playNextCursorRef.current = { base: idx, at: insertAt + 1 }
+      void loadAndPlaySong(candidate, insertAt, nextPlaylist)
+      addToast(`已切到相似歌曲：${candidate.name}`, 'success')
+    } catch (error) {
+      console.error('[相似歌曲] 切歌失败:', error)
+      addToast('相似歌曲获取失败，请重试', 'error')
+    }
   }
 
   // 添加到我喜欢
@@ -4425,16 +5029,14 @@ function App() {
             return
           }
           debugLog(`🍎 [Preload] Apple CENC standby 就绪: ${song.name}`)
-          audioPlayer.preloadNext({
-            url: stream.url,
+          audioPlayer.preloadNext(buildDeckMetadata(song, stream.url, idx, {
             appleHls: stream,
             trackKey: cacheKey,
-            index: idx,
             duration: song.duration / 1000,
             albumId: getLocalAlbumIdentifier(song, platform) || undefined,
             albumCover: song.album?.picUrl || undefined,
             onPreloadSettled: settleNativePreload,
-          })
+          }))
         })().catch(error => {
           settleNativePreload(false)
           console.warn(`[Preload] Apple CENC standby 失败: ${song.name}`, error)
@@ -4458,14 +5060,12 @@ function App() {
         if (requestRevision === queueRevisionRef.current && position === 0 && (effectiveCrossfadeEnabled || effectiveGaplessEnabled || effectiveAutoMixEnabled)) {
           debugLog(`📥 [Preload] 调用 audioPlayer.preloadNext (从缓存)`)
           debugLog(`   Position: ${position}`)
-            audioPlayer.preloadNext({
-              url: getProxiedAudioUrl(cached.url),
+            audioPlayer.preloadNext(buildDeckMetadata(song, getProxiedAudioUrl(cached.url), idx, {
               trackKey: cacheKey,
-            index: idx,
-            duration: song.duration / 1000,
-            albumId: getLocalAlbumIdentifier(song, platform) || undefined,
-            albumCover: song.album?.picUrl || undefined,
-          })
+              duration: song.duration / 1000,
+              albumId: getLocalAlbumIdentifier(song, platform) || undefined,
+              albumCover: song.album?.picUrl || undefined,
+            }))
         }
         return
       }
@@ -4494,14 +5094,12 @@ function App() {
             if (requestRevision === queueRevisionRef.current && position === 0 && (effectiveCrossfadeEnabled || effectiveGaplessEnabled || effectiveAutoMixEnabled)) {
               debugLog(`📥 [Preload] 调用 audioPlayer.preloadNext (新获取)`)
               debugLog(`   Position: ${position}, URL: ${url.substring(0, 80)}...`)
-              audioPlayer.preloadNext({
-                url: getProxiedAudioUrl(url),
+              audioPlayer.preloadNext(buildDeckMetadata(song, getProxiedAudioUrl(url), idx, {
                 trackKey: cacheKey,
-                index: idx,
                 duration: song.duration / 1000,
                 albumId: getLocalAlbumIdentifier(song, platform) || undefined,
                 albumCover: song.album?.picUrl || undefined,
-              })
+              }))
             }
           } else {
             debugLog(`❌ [Preload] 第 ${position + 1} 首歌曲 URL 获取失败，可能是VIP歌曲`)
@@ -4549,7 +5147,11 @@ function App() {
       : continuationPlatform === 'netease' && neteaseContinuation?.mode === 'roam'
         ? fetchNeteaseRoam(undefined, { unplaySongIds: excludedSongKeys })
         : continuationPlatform === 'qq' && qqRadarContinuation?.mode === 'radar'
-          ? fetchQQRadarSongs({ page: qqRadarContinuation.page + 1, reqType: qqRadarContinuation.reqType, entranceSongs: qqRadarContinuation.entranceSongs }).then(result => result.songs)
+          ? fetchQQRadarSongs({ page: qqRadarContinuation.page, reqType: qqRadarContinuation.reqType, entranceSongs: qqRadarContinuation.entranceSongs }).then(result => {
+              // continuation.page 语义 = 待取页（首次=后端返回的 已取页+1）；取完推进到下一页，避免漏批/重取
+              if (result.page) qqRadarContinuation.page = result.page
+              return result.songs
+            })
           : appleAutoplayActive
             ? (async () => {
                 // 种子=队列末尾 3 首的 Apple 目录 id；同一播放上下文复用同一连续电台
@@ -4788,13 +5390,64 @@ function App() {
   }
 
 
+  /**
+   * 视觉轨道切换（进度 90% 的 visualSwitchCommit）：
+   * 只更新"画面归属"——歌名/歌手/封面/歌词/配色/MV 改读 visualTrack；canonical 的
+   * currentTrack / currentIndex / 播放时钟 / 队列 revision / 歌词归属全部不动。
+   * 同时退休过渡叠加层：叠加层的交叉淡化以 90%（= 本切换点）为终点（见 overlayProgress），
+   * 此刻它显示的就是目标曲，撤掉叠加层后由 canonical 展示无缝接替。
+   */
+  const applyVisualSwitch = useCallback((commit: TransitionCommit) => {
+    if (!commit.isVisualSwitch) return
+    if (commit.sourceTrackKey && activeTrackKeyRef.current && commit.sourceTrackKey !== activeTrackKeyRef.current) return
+    const preparedIndex = commit.targetIndex
+    const preparedSong = preparedIndex !== undefined ? playlist[preparedIndex] : undefined
+    const targetIndex = preparedSong && getSongKey(preparedSong) === commit.targetTrackKey
+      ? preparedIndex!
+      : playlist.findIndex(song => getSongKey(song) === commit.targetTrackKey)
+    const song = targetIndex >= 0 ? playlist[targetIndex] : undefined
+    if (!song) return
+    const normalizedSong = normalizeSongCover(normalizeRawSongShape(song))
+    const cacheKey = getSongKey(normalizedSong)
+    const cachedLyrics = preloadCacheRef.current.get(cacheKey)?.lyrics
+    const next: NonNullable<typeof visualTrack> = {
+      trackKey: cacheKey,
+      index: targetIndex,
+      coverUrl: normalizedSong.album?.picUrl || '',
+      title: normalizedSong.name,
+      artist: normalizedSong.artists.map(artist => artist.name).join(', '),
+      albumName: normalizedSong.album?.name,
+      songId: normalizedSong.id ?? normalizedSong.mid,
+      lyrics: cachedLyrics && cachedLyrics.length > 0 ? cachedLyrics : lyrics,
+    }
+    visualTrackRef.current = next
+    setVisualTrack(next)
+    // 有词 ↔ 纯音乐 的版面归属也要跟着视觉轨道走：以前 isPureMusic 只在**音频提交帧**更新，
+    // 于是"过渡播完那一刻版面才抽到居中/双栏"（用户实测最难看的一处）。
+    // 这里与画面同帧更新，配合播放页的 layout 动画，封面是滑过去的。
+    if (cachedLyrics) setIsPureMusic(detectPureMusic(cachedLyrics))
+    // 封面也必须跟着切：各播放页优先用 App 的 appleCoverUrl（旧曲高清封面）而不是 coverUrl，
+    // 不清掉就会出现"歌名/歌词/背景已是下一首、封面还是上一首"的半套切换（用户实测串台）。
+    setAppleCoverUrl(null)
+    resolveAppleCover(normalizedSong)
+    // 目标曲配色已在 armed 阶段取过（transitionToTrack 取色 effect）：登记为"最近 ready 色"，
+    // 这样切轨后 canonical 封面开始取色（loading）时不会闪回源曲颜色，提交帧也保持目标色。
+    if (transitionToAccentColor && transitionToAccentColor !== lastReadyCoverColorRef.current?.color) {
+      lastReadyCoverColorRef.current = { color: transitionToAccentColor, palette: lastReadyCoverColorRef.current?.palette ?? [] }
+    }
+    setIsTransitioning(false)
+    setTransitionProgress(0)
+    setTransitionFromTrack(null)
+    setTransitionToTrack(null)
+    setTransitionFromAccentColor(null)
+    void window.electron?.automixLog?.('VisualTrack', `switch → ${cacheKey} @${Number(commit.targetTime || 0).toFixed(2)}s（叠加层退休，画面交给 canonical）`)?.catch?.(() => undefined)
+    debugLog('🎨 [VisualTrack] 画面已切到目标曲:', cacheKey)
+  }, [playlist, transitionToAccentColor, lyrics, getSongKey])
+
   // PlaybackEngine atomic commit: update React/UI only; never reload the deck already producing audio.
   const commitPreparedSong = useCallback((commit: TransitionCommit) => {
     if (commit.sourceTrackKey && activeTrackKeyRef.current && commit.sourceTrackKey !== activeTrackKeyRef.current) return
-    // Transition artwork already crossfades through transitionFromTrack/
-    // transitionToTrack. A visual-only notification must not mutate the
-    // canonical song, clock, queue revision or lyric ownership before the
-    // target deck actually becomes active.
+    // 视觉预切换走独立通道（applyVisualSwitch）：这里只处理真正的歌曲切换。
     if (commit.isVisualSwitch) return
     // Smart reorder can change queue positions after the next deck was prepared. Only trust
     // the prepared index when it still points at the committed track; otherwise resolve the
@@ -4805,7 +5458,17 @@ function App() {
       ? preparedIndex!
       : playlist.findIndex(song => getSongKey(song) === commit.targetTrackKey)
     const song = targetIndex >= 0 ? playlist[targetIndex] : undefined
-    if (!song) return
+    if (!song) {
+      // P2-17 兜底：目标曲在过渡途中被移出队列（只有桌面队列删除/移动/智能重排三条路径会先
+      // cancelTransition），而音频 deck 已经切到目标曲——裸 return 会让 UI（currentIndex/currentTrack/
+      // 歌词/时钟）永久停在与音频不一致的状态。
+      // 取舍：不尝试按旧 targetTrackKey 修复（该曲已不在队列里），改为提示 + 让播放层按最新队列
+      // 重新解析下一首（handleNext → 完整 loadAndPlay），由它一次性把 UI 与音频重新对齐。
+      console.warn('[TransitionCommit] 目标曲已不在队列中，重新同步播放状态:', commit.targetTrackKey)
+      addToast('队列已变化，正在重新同步播放状态', 'info')
+      handleNextRef.current()
+      return
+    }
     const nextRevision = bumpQueueRevision()
 
     const normalizedSong = normalizeSongCover(normalizeRawSongShape(song))
@@ -4815,6 +5478,14 @@ function App() {
     currentIndexRef.current = targetIndex
     setCurrentIndex(targetIndex)
     setCurrentTrack(createTrackFromSong(normalizedSong))
+    void window.electron?.automixLog?.('VisualTrack', `commit → ${cacheKey}（视觉轨道=${visualTrackRef.current?.trackKey || 'none'}，两者一致时画面零变化）`)?.catch?.(() => undefined)
+    // 视觉轨道此时与 canonical 指向同一首曲目（90% 已切轨）：在这里清掉视觉轨道，
+    // 与 canonical 换歌同批发生 → 画面上没有任何可见变化（这正是"提交帧零跳变"的关键）。
+    if (visualTrackRef.current && visualTrackRef.current.trackKey !== cacheKey) {
+      console.warn('[VisualTrack] 提交曲目与视觉轨道不一致，回退到 canonical:', visualTrackRef.current.trackKey, '→', cacheKey)
+    }
+    visualTrackRef.current = null
+    setVisualTrack(null)
     // Apple Music：切歌即清封面，后台匹配命中后替换为高清封面（与 loadAndPlaySong 一致——
     // 漏清会导致 appleCoverUrl 残留旧歌封面，自动切歌后 displayCoverUrl 恒为旧图）
     setAppleCoverUrl(null)
@@ -4828,7 +5499,8 @@ function App() {
       setLyrics(cached.lyrics)
       setIsPureMusic(detectPureMusic(cached.lyrics))
     } else {
-      setLyrics([])
+      // 无预载歌词：保留旧歌词直到 ensureSongLyrics 拉到新词再整体替换。
+      // 此前这里 setLyrics([]) 会把歌词区清空——提交瞬间界面"闪一下/像刷新"的直接来源。
       setIsPureMusic(detectPureMusic(cached?.lyrics))
     }
     void ensureSongLyrics(normalizedSong, cacheKey)
@@ -4837,14 +5509,23 @@ function App() {
       if (appleAcceptanceActiveRef.current) return
       preloadUpcomingSongs(targetIndex, nextRevision)
     }, 0)
-  }, [bumpQueueRevision, playlist, preloadUpcomingSongs, ensureSongLyrics, resolveAppleCover])
+  }, [bumpQueueRevision, playlist, preloadUpcomingSongs, ensureSongLyrics, resolveAppleCover, addToast])
 
   useEffect(() => {
-    transitionCommitRef.current = commitPreparedSong
-    return () => {
-      if (transitionCommitRef.current === commitPreparedSong) transitionCommitRef.current = () => undefined
+    // 提交分发：视觉预切换（isVisualSwitch）走纯展示的 applyVisualSwitch，
+    // 真正的歌曲切换才走 commitPreparedSong（canonical 状态）。
+    const dispatcher = (commit: TransitionCommit) => {
+      if (commit.isVisualSwitch) {
+        applyVisualSwitch(commit)
+        return
+      }
+      commitPreparedSong(commit)
     }
-  }, [commitPreparedSong])
+    transitionCommitRef.current = dispatcher
+    return () => {
+      if (transitionCommitRef.current === dispatcher) transitionCommitRef.current = () => undefined
+    }
+  }, [applyVisualSwitch, commitPreparedSong])
   // 加载并播放歌曲
   const loadAndPlaySong = async (song: Song, songIndex?: number, playlistOverride?: Song[]) => {
     // App 的渲染树巨大，播放页挂载/切歌 = 整树重建（"进入播放页瞬间卡一下"的根因）。
@@ -5205,14 +5886,14 @@ function App() {
       } else {
         try {
         // 此分支 !useWebView2：上方 url 为空分支已 return，url 必为有效载体/HLS 地址
-        started = await audioPlayer.loadAndPlay(appleHlsStream ? url! : getProxiedAudioUrl(url!), volume, {
+        const deckUrl = appleHlsStream ? url! : getProxiedAudioUrl(url!)
+        started = await audioPlayer.loadAndPlay(deckUrl, volume, buildDeckMetadata(normalizedSong, deckUrl, songIndex, {
           trackKey: cacheKey,
-          index: songIndex,
           duration: normalizedSong.duration / 1000,
           albumId: getLocalAlbumIdentifier(normalizedSong, platform) || undefined,
           albumCover: normalizedSong.album?.picUrl || undefined,
           appleHls: appleHlsStream || undefined,
-        })
+        }))
         // 看歌模式下引擎静默：视频接管音频，加载后立即暂停避免双重奏
         if (started && lyricDisplayModeRef.current === 'video') {
           const engineEl = audioPlayerRef.current?.getAudioElement?.()
@@ -5259,13 +5940,13 @@ function App() {
               url = carrierUrl
               setCurrentTrack(createTrackFromSong(normalizedSong, url))
               songLyrics = preloadCacheRef.current.get(cacheKey)?.lyrics || songLyrics
-              started = await audioPlayer.loadAndPlay(getProxiedAudioUrl(url), volume, {
+              const carrierDeckUrl = getProxiedAudioUrl(url)
+              started = await audioPlayer.loadAndPlay(carrierDeckUrl, volume, buildDeckMetadata(normalizedSong, carrierDeckUrl, songIndex, {
                 trackKey: cacheKey,
-                index: songIndex,
                 duration: normalizedSong.duration / 1000,
                 albumId: getLocalAlbumIdentifier(normalizedSong, resolved.platform || 'netease') || undefined,
                 albumCover: normalizedSong.album?.picUrl || undefined,
-              })
+              }))
               if (started && lyricDisplayModeRef.current === 'video') {
                 const engineEl = audioPlayerRef.current?.getAudioElement?.()
                 if (engineEl) { engineEl.volume = 0; engineEl.pause() }
@@ -5303,14 +5984,14 @@ function App() {
           lyricsPromise: refreshedLatest?.lyricsPromise,
         })
         setCurrentTrack(createTrackFromSong(normalizedSong, url))
-        started = await audioPlayer.loadAndPlay(getProxiedAudioUrl(url), volume, {
+        const retryDeckUrl = getProxiedAudioUrl(url)
+        started = await audioPlayer.loadAndPlay(retryDeckUrl, volume, buildDeckMetadata(normalizedSong, retryDeckUrl, songIndex, {
           trackKey: cacheKey,
-          index: songIndex,
           duration: normalizedSong.duration / 1000,
           albumId: getLocalAlbumIdentifier(normalizedSong, platform) || undefined,
           albumCover: normalizedSong.album?.picUrl || undefined,
           appleHls: appleHlsStream || undefined,
-        })
+        }))
         if (started && lyricDisplayModeRef.current === 'video') {
           const engineEl = audioPlayerRef.current?.getAudioElement?.()
           if (engineEl) { engineEl.volume = 0; engineEl.pause() }
@@ -5611,6 +6292,8 @@ function App() {
     if (deterministicNextIndex === undefined) return undefined
     return playlist[deterministicNextIndex]
   }, [playlist, deterministicNextIndex])
+  // modern 等流式播放页的过渡徽标倒计时：与 ModengPlayerPage 同一 playbackTimeStore 订阅
+  const automixHudTime = useAutomixHudTime(audioPlayer.playbackTimeStore)
   const foliaPresentation = resolveFoliaPresentation({
     isPlaybackPage,
     lyricMode: lyricDisplayMode,
@@ -6060,6 +6743,15 @@ function App() {
       setMuted(next)
     } else if (action === 'home') {
       // 遥控器 Home：回到当前模式主页（不切换模式），并关闭所有弹层
+      // 特例：桌面模式播放被拽进播放页（viewMode 已是 minimal 但来源是桌面）→ 直接送回桌面模式
+      if (viewModeRef.current === 'minimal' && enteredFromModeRef.current === 'desktop' && backStateRef.current.isPlaybackPage) {
+        setViewMode('desktop')
+        localStorage.setItem('viewMode', 'desktop')
+        setEnteredFromMode('desktop')
+        setShowSharedPlayer(false)
+        setShowHome(false)
+        return
+      }
       setShowSharedPlayer(false)
       setShowHome(viewModeRef.current !== 'desktop')
       setShowSongDetail(false)
@@ -6125,23 +6817,36 @@ function App() {
       if (ALL_LYRIC_MODES.includes(mode)) handleLyricDisplayModeChange(mode)
     } else if (action === 'stop') {
       // 停止：暂停并回到开头（主流遥控器停止键）
-      audioPlayerRef.current.seek(0)
-      if (audioPlayer.isExternalPlaybackActive?.()) {
-        if (getBridgeState().playing) audioPlayer.togglePlay()
+      // 看歌模式：时间源是视频元素（rewind/fast-forward 同此处理），不能 seek 音频
+      if (lyricDisplayModeRef.current === 'video' && watchPlayerRef.current) {
+        try { watchPlayerRef.current.seekTo(0) } catch { /* 视频桥不可用时忽略 */ }
+        if (watchVideoStateRef.current?.playing) watchPlayerRef.current.togglePlay?.()
       } else {
-        const audio = audioPlayer.getAudioElement()
-        if (isPlayingRef.current && !(audio?.paused ?? true)) audioPlayer.togglePlay()
+        audioPlayerRef.current.seek(0)
+        if (audioPlayer.isExternalPlaybackActive?.()) {
+          if (getBridgeState().playing) audioPlayer.togglePlay()
+        } else {
+          const audio = audioPlayer.getAudioElement()
+          if (isPlayingRef.current && !(audio?.paused ?? true)) audioPlayer.togglePlay()
+        }
       }
     } else if (action === 'rewind') {
-      // WebView2 播放面：时间源来自 bridge（本地元素无媒体）
-      const t = audioPlayer.isExternalPlaybackActive?.()
-        ? (getBridgeState().position || 0)
-        : (audioPlayer.getAudioElement()?.currentTime || 0)
+      // WebView2 播放面：时间源来自 bridge（本地元素无媒体）；看歌模式：时间源是视频
+      const t = lyricDisplayModeRef.current === 'video' && watchPlayerRef.current
+        ? (watchPlayerRef.current?.getCurrentTime?.() || 0)
+        : audioPlayer.isExternalPlaybackActive?.()
+          ? (getBridgeState().position || 0)
+          : (audioPlayer.getAudioElement()?.currentTime || 0)
       audioPlayerRef.current.seek(Math.max(0, t - 10))
     } else if (action === 'fast-forward') {
+      const watchMode = lyricDisplayModeRef.current === 'video' && watchPlayerRef.current
       const external = audioPlayer.isExternalPlaybackActive?.()
-      const t = external ? (getBridgeState().position || 0) : (audioPlayer.getAudioElement()?.currentTime || 0)
-      const d = external ? (getBridgeState().duration || 0) : (audioPlayer.getAudioElement()?.duration || 0)
+      const t = watchMode
+        ? (watchPlayerRef.current?.getCurrentTime?.() || 0)
+        : external ? (getBridgeState().position || 0) : (audioPlayer.getAudioElement()?.currentTime || 0)
+      const d = watchMode
+        ? (watchVideoStateRef.current?.duration || 0)
+        : external ? (getBridgeState().duration || 0) : (audioPlayer.getAudioElement()?.duration || 0)
       audioPlayerRef.current.seek(Math.min(d || t + 10, t + 10))
     } else if (action === 'open-search') {
       setShowSearch(true)
@@ -6217,11 +6922,13 @@ function App() {
     const mediaSession = 'mediaSession' in navigator ? navigator.mediaSession : null
 
     const dispatchMediaControl = (action: string, payload?: any) => {
+      // volume/seek 是连续控制（拖动滑块会产生高频事件），不能被按键去重拦截
+      const isContinuous = action === 'volume' || action === 'seek' || action === 'select-index'
       const group = action === 'toggle' || action === 'play' || action === 'pause' ? 'playback' : action
       const now = Date.now()
       const last = lastMediaControlRef.current
       // Windows 有时会同时把同一次按键交给 globalShortcut 与 Media Session。
-      if (last?.group === group && now - last.time < 280) return
+      if (!isContinuous && last?.group === group && now - last.time < 280) return
       lastMediaControlRef.current = { group, time: now }
       desktopControlHandlerRef.current(action, payload)
     }
@@ -6257,7 +6964,8 @@ function App() {
     }
 
     applyEnabledState(loadPlaybackShortcutSettings().mediaKeysEnabled)
-    const unsubscribe = mediaKeys?.onControl(action => dispatchMediaControl(action))
+    // payload 必须透传：任务栏播控/托盘弹窗的 seek、volume 等带参动作依赖它
+    const unsubscribe = mediaKeys?.onControl((action, payload) => dispatchMediaControl(action, payload))
     window.addEventListener(PLAYBACK_SHORTCUT_SETTINGS_EVENT, handleSettingsChange)
     return () => {
       unsubscribe?.()
@@ -6300,6 +7008,21 @@ function App() {
   useEffect(() => {
     const unsubscribe = window.electron?.desktopLyrics?.onEnabledChanged?.(enabled => {
       window.dispatchEvent(new CustomEvent('desktopLyricsEnabledChanged', { detail: enabled === true }))
+    })
+    return unsubscribe
+  }, [])
+
+  // 歌词岛 / 任务栏播控：托盘菜单等主进程路径改动开关后，转成 DOM 事件供设置面板同步
+  useEffect(() => {
+    const unsubscribe = window.electron?.lyricsIsland?.onEnabledChanged?.(enabled => {
+      window.dispatchEvent(new CustomEvent('lyricsIslandEnabledChanged', { detail: enabled === true }))
+    })
+    return unsubscribe
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.electron?.taskbarWidget?.onEnabledChanged?.(enabled => {
+      window.dispatchEvent(new CustomEvent('taskbarWidgetEnabledChanged', { detail: enabled === true }))
     })
     return unsubscribe
   }, [])
@@ -6510,6 +7233,16 @@ function App() {
     return () => window.removeEventListener('waveforge:show-similar-songs', handler)
   }, [])
 
+  // 相似歌曲直接切歌（网易云灯泡行为）：右键菜单/轮盘派发
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<Song | null | undefined>).detail
+      void playSimilarNow(detail || playlist[currentIndexRef.current] || null)
+    }
+    window.addEventListener('waveforge:play-similar-song', handler)
+    return () => window.removeEventListener('waveforge:play-similar-song', handler)
+  })
+
   // 共振挂起时，全局右键菜单多一项「推送至共振（一起听）」→ 这里把歌交给房间。
   // 房主当场决定：能加就设成下一曲，不能加就挂进预排队。
   useEffect(() => {
@@ -6607,6 +7340,12 @@ function App() {
 
     const tick = () => {
       timer = null
+      // 游戏模式冻结（主窗已隐藏到托盘）：跳过频谱计算与推送，换取 CPU/GPU 占用骤降；
+      // 保留 1Hz 空转心跳，解冻后自动恢复。歌词岛的进度由 500ms 兜底推送维持。
+      if (gameModeFrozenRef.current) {
+        if (isPlayingRef.current || watchTimelineActiveRef.current) schedule(1000)
+        return
+      }
       const overlayActive = desktopOverlayActiveRef.current
       const consumerCount = document.visibilityState === 'visible' ? getDesktopSpectrumConsumerCount() : 0
       const spectrumWidgetVisible = consumerCount > 0
@@ -6743,9 +7482,13 @@ function App() {
     if (!isDesktop()) return
     const videoTimeline = watchTimelineActive
     if (!isPlaying && !videoTimeline) return
+    // 游戏模式冻结期间 2Hz → 1Hz：歌词岛/任务栏播控都是本地插值，1s 推一次足够，
+    // 少一半 IPC + 序列化唤醒是纯赚（解冻立即回到 2Hz）
+    const intervalMs = gameModeFrozen ? 1000 : 500
     const timer = window.setInterval(() => {
-      // 有 overlay 时上面的 tick 已每 100ms 高频推送，无需重复上报
-      if (desktopOverlayActiveRef.current) return
+      // 有 overlay 时上面的 tick 已每 100ms 高频推送，无需重复上报；
+      // 游戏模式冻结期间 tick 停转，这条低频兜底负责维持歌词岛/任务栏的进度插值
+      if (desktopOverlayActiveRef.current && !gameModeFrozenRef.current) return
       if (videoTimeline) {
         // 看歌模式：任务栏进度按视频
         const v = watchVideoStateRef.current
@@ -6768,9 +7511,9 @@ function App() {
         progress: (Number(audio.currentTime) || 0) + lyricOffsetRef.current - 0.2,
         duration: Number.isFinite(audio.duration) && (audio.duration ?? 0) > 0 ? audio.duration : 0,
       })
-    }, 500)
+    }, intervalMs)
     return () => window.clearInterval(timer)
-  }, [isPlaying, watchTimelineActive])
+  }, [isPlaying, watchTimelineActive, gameModeFrozen])
 
   const handleSeek = useCallback((time: number) => {
     // 看歌模式：seek 作用于视频（迷你播放器/全局进度条）
@@ -6794,6 +7537,12 @@ function App() {
       return
     }
     audioPlayerRef.current.setVolume(newVolume)
+    // 界面滑条调整音量时同步解除静音状态：媒体键静音后 mutedRef 仍为 true，
+    // 用户拉高音量若不解除，托盘/歌词岛会一直显示静音图标且下一次媒体键「静音」语义反转
+    if (newVolume > 0 && mutedRef.current) {
+      mutedRef.current = false
+      setMuted(false)
+    }
     // 用户手动调整主音量：开启「跟随软件音量」时联动 AirPlay 音箱音量。
     // 只在用户操作时推送（unmute/streaming 同步等内部 setVolume 不推送，
     // 否则会拿默认 100% 音量覆盖用户设置的投送音量）。
@@ -6814,8 +7563,10 @@ function App() {
       setCurrentIndex(currentIndexRef.current)
     }
     setPlaylist(next)
-    bumpQueueRevision()
-  }, [playlist, bumpQueueRevision])
+    const nextRevision = bumpQueueRevision()
+    // 取消/顺序变化后按新队列重预载「下一首」，否则当前歌剩余时间里无缝/交叉过渡静默失效
+    window.setTimeout(() => preloadUpcomingSongs(currentIndexRef.current, nextRevision, playMode, next), 0)
+  }, [playlist, bumpQueueRevision, playMode, preloadUpcomingSongs])
 
   const handleDesktopQueueMove = useCallback((from: number, to: number) => {
     if (from === to || from < 0 || to < 0 || from >= playlist.length || to >= playlist.length) return
@@ -6824,12 +7575,21 @@ function App() {
     next.splice(to, 0, moved)
     const active = currentIndexRef.current
     const nextActive = active === from ? to : from < active && to >= active ? active - 1 : from > active && to <= active ? active + 1 : active
+    // 移动涉及「未播区」时，引擎可能已把旧顺序的下一首预载/武装过渡，必须取消并按新顺序重预载
+    // （对照 handleSmartReorder / handleDesktopQueueRemove；此前漏了这步：拖动后当前歌自然播完仍会切到拖动前的旧「下一首」）
+    const upcomingChanged = from > active || to > active
+    if (upcomingChanged) {
+      audioPlayerRef.current?.cancelTransition('queue reordered', false)
+    }
     currentIndexRef.current = nextActive
     playlistRef.current = next
     setCurrentIndex(nextActive)
     setPlaylist(next)
-    bumpQueueRevision()
-  }, [playlist, bumpQueueRevision])
+    const nextRevision = bumpQueueRevision()
+    if (upcomingChanged) {
+      window.setTimeout(() => preloadUpcomingSongs(nextActive, nextRevision, playMode, next), 0)
+    }
+  }, [playlist, bumpQueueRevision, playMode, preloadUpcomingSongs])
 
   // 登录处理
   const handleNeteaseLogin = async (cookie: string, showToastMessage = true) => {
@@ -7514,6 +8274,51 @@ function App() {
     })
   }
 
+  // 播放页两个面板（PlaylistPanel/SimilarSongsPanel）的右键菜单回调包：
+  // 处理器经 ref 转发最新闭包、对象用 useMemo 保持引用稳定——原来每次渲染都内联新建
+  // songMenu 对象，播放中 1Hz 的进度重渲染会让两个面板的 memo 每秒失效一次。
+  const playbackPanelHandlersRef = useRef({
+    handleSongSelect,
+    handlePlayNext,
+    handleAddToFavorites,
+    handleRemoveFromFavorites,
+    handleAddToPlaylist,
+    handleViewComments,
+    handlePlaybackViewAlbum,
+    handlePlaybackViewArtist,
+    handleCopyInfo,
+    onMenuOpen: handlePlaybackContextMenuOpen,
+    playlist,
+  })
+  playbackPanelHandlersRef.current = {
+    handleSongSelect,
+    handlePlayNext,
+    handleAddToFavorites,
+    handleRemoveFromFavorites,
+    handleAddToPlaylist,
+    handleViewComments,
+    handlePlaybackViewAlbum,
+    handlePlaybackViewArtist,
+    handleCopyInfo,
+    onMenuOpen: handlePlaybackContextMenuOpen,
+    playlist,
+  }
+  const panelSongMenu = useMemo(() => ({
+    userPlaylists: playbackContextPlaylists,
+    onPlayNow: (song: Song) => { void playbackPanelHandlersRef.current.handleSongSelect(song, playbackPanelHandlersRef.current.playlist) },
+    onPlayNext: (song: Song) => { playbackPanelHandlersRef.current.handlePlayNext(song) },
+    onAddToFavorites: (song: Song) => { void playbackPanelHandlersRef.current.handleAddToFavorites(song) },
+    onRemoveFromFavorites: (song: Song) => { void playbackPanelHandlersRef.current.handleRemoveFromFavorites(song) },
+    onAddToPlaylist: (song: Song, playlistId: string) => { void playbackPanelHandlersRef.current.handleAddToPlaylist(song, playlistId) },
+    onViewComments: (song: Song) => { playbackPanelHandlersRef.current.handleViewComments(song) },
+    onViewAlbum: (song: Song) => { playbackPanelHandlersRef.current.handlePlaybackViewAlbum(song) },
+    onViewArtist: (song: Song) => { playbackPanelHandlersRef.current.handlePlaybackViewArtist(song) },
+    onCopyInfo: (song: Song) => { playbackPanelHandlersRef.current.handleCopyInfo(song) },
+    // 队列/相似歌曲面板自己右键打开菜单时也要按当前歌曲平台拉候选歌单，
+    // 否则「添加到」子菜单是空的（这块原来只在播放页径向菜单里触发）
+    onMenuOpen: () => { playbackPanelHandlersRef.current.onMenuOpen() },
+  }), [playbackContextPlaylists])
+
   // 监听喜欢状态变化
   useEffect(() => {
     const restoreLoginState = async () => {
@@ -7586,6 +8391,8 @@ function App() {
 
   useEffect(() => {
     if (!loginRestoreComplete) return
+    // 游戏模式：停掉后台预取（10 分钟一次的突发网络 + 封面解码），把资源留给游戏
+    if (gameModeEnabled) return
     return scheduleBackgroundPrefetch({
       viewMode,
       neteaseLoggedIn,
@@ -7595,7 +8402,7 @@ function App() {
       appleStorefront,
       sodaAccountId: sodaUserId,
     })
-  }, [loginRestoreComplete, viewMode, neteaseLoggedIn, qqLoggedIn, appleLoggedIn, sodaLoggedIn, appleStorefront, neteaseUserId, qqUserId, sodaUserId])
+  }, [loginRestoreComplete, viewMode, neteaseLoggedIn, qqLoggedIn, appleLoggedIn, sodaLoggedIn, appleStorefront, neteaseUserId, qqUserId, sodaUserId, gameModeEnabled])
 
   // 处理喜欢按钮点击 - 切换喜欢状态
   const getBackgroundStyle = () => {
@@ -7646,8 +8453,10 @@ function App() {
     return () => { cancelled = true }
   }, [])
 
-  // 启动后空闲预热 GPU 着色管线（游戏式 shader 预编译）：首次进入可视化场景不再卡编译
+  // 启动后空闲预热 GPU 着色管线（游戏式 shader 预编译）：首次进入可视化场景不再卡编译。
+  // TV 效能档跳过：重 GPU 歌词模式已禁入，预热只在弱 GPU 上白建 WebGL 上下文（隔离：仅 TV 效能档）。
   useEffect(() => {
+    if (isTvModeActive() && isPerfModeEfficiency()) return
     runShaderWarmup()
   }, [])
 
@@ -8016,6 +8825,17 @@ function App() {
   const traditionalSuspended = traditionalKeptAlive || parkedTraditional
   const homeSuspended = minimalHomeKeptAlive || parkedMinimal
 
+  // 简约层被挂起时，连带收起它的「顶部歌词样式下拉」（触发按钮与面板，见 playback surface 里的
+  // createPortal）。它们 portal 到 body，不受挂起层 visibility:hidden 约束；光靠不渲染能挡住
+  // 眼前这一帧，但面板的 open 状态还留着，切回播放页会凭空自己展开一次。
+  // 放在这里而不是各条切换路径上：遥控器 Home / 键盘 Home / 模式卡片 / 远程指令都收敛到这一处。
+  useEffect(() => {
+    if (!parkedMinimal) return
+    setShowLyricModePanel(false)
+    setShowLyricModeCustomize(false)
+    setShowLyricModeArrowHint(false)
+  }, [parkedMinimal])
+
   // ── 详情弹窗 / 个人中心「冻结」────────────────────────────────────────────
   // 关闭时不再卸载、只把 suspended 传给被冻结的组件（组件内部隐藏自身），重开同一 id 时
   // 组件实例与内部 state（页签、分页、列表）原样保留，不会重建 DOM、不会重放加载动画、
@@ -8102,6 +8922,8 @@ function App() {
               onOpenArtist={(id, platform) => {
                 handleOpenArtist(id, platform)
               }}
+              onViewArtistSong={handlePlaybackViewArtist}
+              onViewAlbumSong={handlePlaybackViewAlbum}
             />
           </Suspense>
         )}
@@ -8114,6 +8936,7 @@ function App() {
             onPlayNow={viewCallbacks.onSongSelect}
             onPlayNext={viewCallbacks.onPlayNext}
             playerTheme={playerTheme}
+            songMenu={panelSongMenu}
           />
         )}
         {detailPlaylist && (
@@ -8377,7 +9200,13 @@ function App() {
 
 
       {/* 模式切换过渡动画：顶层常驻（不在任何模式容器内），切到任何模式都能覆盖显示 */}
-      <ModeTransitionOverlay mode={modeTransition?.to ?? null} theme={playerTheme} />
+      <ModeTransitionOverlay
+        mode={modeTransition?.to ?? null}
+        theme={playerTheme}
+        variant={modeTransitionStyle}
+        quick={modeTransition?.quick === true}
+        sound={modeTransitionSoundOn}
+      />
       
       <Suspense fallback={null}><AnimatePresence initial={false} mode="sync" presenceAffectsLayout={false}>
         {/* 桌面模式 */}
@@ -8389,9 +9218,14 @@ function App() {
             exit={{ opacity: 0, y: -18, scale: 1.012 }}
             transition={{ duration: 0.52, ease: [0.22, 1, 0.36, 1] }}
             className="absolute inset-0 h-full w-full"
-            style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: exploreSuspended ? 1 : 2, visibility: exploreSuspended ? 'hidden' : 'visible' }}
-            data-wf-suspended={exploreSuspended ? '' : undefined}
+            style={modeLayerStyle({ suspended: exploreSuspended })}
+            data-wf-suspended={modeLayerSuspendedAttr(exploreSuspended)}
           >
+            <ModeParkedContext.Provider value={exploreSuspended}>
+            {/* 探索页被播放页覆盖/或非当前模式时整页不可见：冻结作用域让封面只留 1×1 占位，
+                释放已解码位图（实测多平台浏览后隐藏面板里躺着 569 张已解码封面，
+                渲染进程 3.8GB）。返回时按原来的 src 从缓存重新解码，不重新下载。 */}
+            <FrozenScope.Provider value={exploreSuspended}>
             <LazyExploreView
               motionSuspended={exploreSuspended}
               suspended={exploreSuspended}
@@ -8451,6 +9285,8 @@ function App() {
               onCopyInfo={viewCallbacks.onCopyInfo}
             />
 
+            </FrozenScope.Provider>
+            </ModeParkedContext.Provider>
           </motion.div>
         )}
         {(renderedMode === 'desktop' || parkedDesktop) && (
@@ -8461,9 +9297,10 @@ function App() {
             exit={{ opacity: 0, y: -18, scale: 1.012 }}
             transition={{ duration: 0.52, ease: [0.22, 1, 0.36, 1] }}
             className="absolute inset-0 w-full h-full"
-            style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: parkedDesktop ? 1 : 2, visibility: parkedDesktop ? 'hidden' : 'visible' }}
-            data-wf-suspended={parkedDesktop ? '' : undefined}
+            style={modeLayerStyle({ suspended: parkedDesktop })}
+            data-wf-suspended={modeLayerSuspendedAttr(parkedDesktop)}
           >
+            <ModeParkedContext.Provider value={parkedDesktop}>
             <LazyDesktopView
               onSongSelect={viewCallbacks.onSongSelect}
               restorePlaybackOrigin={restorePlaybackOrigin}
@@ -8521,6 +9358,7 @@ function App() {
               onRemoteClick={viewCallbacks.onRemoteClick}
               onOpenDeviceControl={viewCallbacks.onOpenDeviceControl}
             />
+            </ModeParkedContext.Provider>
           </motion.div>
         )}
         {renderedMode === 'resonance' && (
@@ -8531,8 +9369,9 @@ function App() {
             exit={{ opacity: 0, y: -18, scale: 1.012 }}
             transition={{ duration: 0.52, ease: [0.22, 1, 0.36, 1] }}
             className="absolute inset-0 h-full w-full"
-            style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: 2 }}
+            style={modeLayerStyle({ suspended: false })}
           >
+            <ModeParkedContext.Provider value={false}>
             {/* 共振：房间状态在会话单例里，模式切换不会丢房间；播放由房主权威状态驱动 */}
             <LazyResonanceView
               playerTheme={playerTheme}
@@ -8553,6 +9392,7 @@ function App() {
               nowPlaying={{ song: currentSong, positionMs: currentTime, playing: isPlaying }}
               onSelectMode={mode => window.dispatchEvent(new CustomEvent('viewModeChanged', { detail: mode }))}
             />
+            </ModeParkedContext.Provider>
           </motion.div>
         )}
         {(renderedMode === 'traditional' || traditionalSuspended) && (
@@ -8563,9 +9403,10 @@ function App() {
             exit={{ opacity: 0, y: -18, scale: 1.012 }}
             transition={{ duration: 0.52, ease: [0.22, 1, 0.36, 1] }}
             className="absolute inset-0 w-full h-full"
-            style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: traditionalSuspended ? 1 : 2, visibility: traditionalSuspended ? 'hidden' : 'visible' }}
-            data-wf-suspended={traditionalSuspended ? '' : undefined}
+            style={modeLayerStyle({ suspended: traditionalSuspended })}
+            data-wf-suspended={modeLayerSuspendedAttr(traditionalSuspended)}
           >
+            <ModeParkedContext.Provider value={traditionalSuspended}>
             <LazyTraditionalView
               onSongSelect={viewCallbacks.onSongSelect}
               restorePlaybackOrigin={restorePlaybackOrigin}
@@ -8632,6 +9473,7 @@ function App() {
               onCopyInfo={viewCallbacks.onCopyInfo}
               suspended={traditionalSuspended}
             />
+            </ModeParkedContext.Provider>
           </motion.div>
         )}
         {(renderedMode === 'minimal' || exploreKeptAlive || parkedMinimal) && (
@@ -8643,8 +9485,12 @@ function App() {
             exit={{ opacity: 0, y: -18, scale: 1.012 }}
             transition={enteringPlayerFromExplore ? { duration: 0 } : { duration: 0.52, ease: [0.22, 1, 0.36, 1] }}
             className="absolute inset-0 h-screen w-full flex items-center justify-center overflow-hidden bg-black"
-            style={{ willChange: 'transform, opacity', backfaceVisibility: 'hidden', zIndex: exploreKeptAlive ? 4 : 2 }}
+            // 本层自带不透明黑底（bg-black）且 DOM 顺序在其它模式层之后，挂起时若不隐藏，
+            // 它会盖住传统/探索/桌面并吞掉点击——挂起样式必须走 modeLayerStyle。
+            style={modeLayerStyle({ suspended: parkedMinimal, overlayAbove: exploreKeptAlive })}
+            data-wf-suspended={modeLayerSuspendedAttr(parkedMinimal)}
           >
+            <ModeParkedContext.Provider value={parkedMinimal}>
 
       {/* 默认背景 - 始终存在 */}
       <div 
@@ -8666,6 +9512,8 @@ function App() {
             // 窗口开启瞬间恰好为 0，不会把过渡中段的进度硬跳上去。裸 transitionProgress
             // 的原点是音频过渡起点，窗口晚开时会一次性跳到 (dur-lead)/dur（AI 路径达 0.67）。
             transitionProgress={overlayProgress}
+            // 视觉轨道：整页背景层的交叉淡化也吃逐帧进度（只重渲染它，不再 10fps 台阶）
+            transitionVisualStore={audioPlayer.transitionVisualStore}
             pulseStore={audioPulseStore}
             backgroundEffect={backgroundEffect}
             backgroundBlur={backgroundBlur}
@@ -8704,13 +9552,20 @@ function App() {
             //   · showHome：简约首页接管。首页根节点是 .home-view-root（background:#09090b 不透明）
             //     且 MV 层在其下方，此时 MV 完全不可见却仍在全速解码 1080P——纯浪费。
             //     用同一个 hidden 通道而不是另造机制，才能保住「切回来无缝 + 实时对准」。
-            hidden={lyricDisplayMode === 'video' || showHome}
+            //   · parkedMinimal：整个简约层已被挂起隐藏（见本层容器的 modeLayerStyle），
+            //     同属「完全不可见」，一并走 hidden 通道停掉解码。
+            //   · gameModeFrozen：游戏模式已把主窗隐藏到托盘——整块画面都不可见，
+            //     但 1080P 视频解码 + 1.5s 对齐轮询不会因窗口隐藏自动停，必须一起冻结；
+            //     解冻时组件内的 returningFromHidden 分支会自动硬同步回音频位置。
+            hidden={lyricDisplayMode === 'video' || showHome || parkedMinimal || gameModeFrozen}
             lyrics={lyrics}
             blur={mvBackgroundBlur}
             transitionToTrack={transitionToTrack}
             // 封面过渡只在过渡动画窗口内叠加（用户要求：从过渡动画开始，不是 automix 介入），
             // 且叠加只在最后 4 秒完成（不拖沓）
             transitionProgress={overlayProgress}
+            // 视觉轨道：逐帧进度直达 MV 层（只重渲染它），目标 MV 渐入不再有整树节流台阶
+            transitionVisualStore={audioPlayer.transitionVisualStore}
             songTrackKey={currentSong ? getSongKey(currentSong) : ''}
             onFallbackChange={setMvBackgroundFallback}
             onReadyChange={setMvBackgroundReady}
@@ -8883,7 +9738,9 @@ function App() {
                 initialType={currentInitialVideo?.type}
                 getEnginePosition={() => Number(audioPlayerRef.current?.getAudioElement?.()?.currentTime) || 0}
                 engineHandoffActive={engineHandoffActive}
-                surfaceVisible={!showHome && lyricDisplayMode === 'video'}
+                // 游戏模式冻结（主窗隐藏到托盘）时也走 surfaceVisible=false：该分支只暂停视频解码，
+                // DASH 音频继续当播放源（歌照放），解冻时会自动 syncWatchVideoOnSurfaceRestore 回到音画同帧
+                surfaceVisible={!showHome && lyricDisplayMode === 'video' && !gameModeFrozen}
               />
             </div>
             )
@@ -8999,6 +9856,8 @@ function App() {
                 onViewArtist={handlePlaybackViewArtist}
                 onCopyInfo={handleCopyInfo}
                 onContextMenuOpen={handlePlaybackContextMenuOpen}
+                showMusicPreference={radarPlaybackActive}
+                onOpenMusicPreference={() => setQQMusicPreferenceOpen(true)}
               />
               {/* 全局控制按钮 - 各歌词模式按自己的版式取变体：
                   沉浸 = left（右上角整组控件：顶部收起箭头 + 按钮列，弹框出现时整组避让）；
@@ -9013,7 +9872,7 @@ function App() {
                   这类与电台页重复且语义不符的入口。 */}
               {((lyricDisplayMode !== 'video' && lyricDisplayMode !== 'modeng') || watchSearchFailed)
                 && !isAppleRadioPlayback && !podcastPlayback && !appleRadioSurfaceLocked && (
-              <MaybePortal active={lyricDisplayMode === 'video'}>
+              <MaybePortal active={lyricDisplayMode === 'video' && !parkedMinimal}>
                 <LazyImmersiveControls
                   coverColor={playbackCoverColor}
                   variant={
@@ -9051,8 +9910,11 @@ function App() {
               )}
 
               {/* 顶部中央歌词模式切换：createPortal 挂到 body，逃出 minimal-playback-surface 的
-                  transform 层叠上下文——否则在看歌模式下会被 data-watch-surface(z-10) 盖住，无法 hover */}
-              {!pureMusicPlayback && !isAppleRadioPlayback && createPortal((
+                  transform 层叠上下文——否则在看歌模式下会被 data-watch-surface(z-10) 盖住，无法 hover。
+                  但挂起（简约层不是当前显示的面）时必须连 portal 一起收起来：portal 挂在 body 上，
+                  不受挂起层 visibility:hidden 的约束，留在原地会盖在桌面/探索/传统模式的顶部，
+                  表现为「顶部下拉切模式，出来的却是歌词样式」。 */}
+              {!pureMusicPlayback && !isAppleRadioPlayback && !parkedMinimal && createPortal((
                 <>
                   <button
                     type="button"
@@ -9067,7 +9929,7 @@ function App() {
                     onMouseLeave={() => setIsLyricModeTopHovered(false)}
                   >
                     <AnimatePresence>
-                      {(isLyricModeTopHovered || showLyricModeArrowHint) && !showLyricModePanel && (
+                      {(isLyricModeTopHovered || showLyricModeArrowHint || (isTvModeActive() && !remoteCursorModeActive)) && !showLyricModePanel && (
                         <motion.div
                           initial={{ opacity: 0, y: -10 }}
                           animate={{ opacity: 1, y: 0 }}
@@ -9404,7 +10266,7 @@ function App() {
                   }}
                 />
               </motion.div>
-            ) : (isPureMusic && lyricDisplayMode !== 'modeng') ? (
+            ) : (isPureMusic && !PURE_MUSIC_OWN_LAYOUT_MODES.has(lyricDisplayMode)) ? (
               /* 纯音乐愭椂灞呬腑显示 */
               <motion.div
                 key="no-lyrics-player"
@@ -9428,46 +10290,42 @@ function App() {
                       isTransitioning={isVisualTransitioning}
                       // 与封面背景/MV 同源：overlayProgress 从动画窗口起点归一化，无跳变
                       transitionProgress={overlayProgress}
+                      // 视觉轨道：逐帧进度直达封面层（只重渲染它），交叉淡化不再有整树节流台阶
+                      transitionProgressStore={audioPlayer.transitionVisualStore}
                       transitionFromTrack={transitionFromTrack}
                       transitionToTrack={transitionToTrack}
                       pulseStore={audioPulseStore}
-                      animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
-                      animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
+                      animatedCoverUrl={displayAnimatedCoverUrl}
+                      animatedCoverPoster={displayAnimatedCoverPoster}
                     />
 
-                    {/* 歌曲信息 - 过渡时双层淡入淡出 */}
+                    {/* 歌曲信息 - 过渡时双层淡入淡出（逐帧进度由视觉轨道 store 直达组件，消除整树节流台阶） */}
                     <div className="relative w-full max-w-4xl space-y-3 text-center">
-                      {isVisualTransitioning && overlayProgress > 0 && transitionFromTrack && transitionToTrack ? (
-                        // 过渡模式：双层叠加（叠加动画只持续最后 4 秒，不拖沓）
-                        <>
-                          {/* 底层：旧歌曲信息 */}
-                          <div className="absolute inset-0" style={{ opacity: 1 - overlayProgress }}>
-                            <h1 className={`text-4xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
-                              {transitionFromTrack.title}
-                            </h1>
-                            <p className={`text-xl ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
-                              {transitionFromTrack.artist}
-                            </p>
-                          </div>
-                          {/* 顶层：新歌曲信息 */}
-                          <div className="relative" style={{ opacity: overlayProgress }}>
-                            <h1 className={`text-4xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
-                              {transitionToTrack.title}
-                            </h1>
-                            <p className={`text-xl ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
-                              {transitionToTrack.artist}
-                            </p>
-                          </div>
-                        </>
-                      ) : (
-                        // 正常模式：单层信息
-                        <div className="relative">
-                          <h1 className={`text-4xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
-                            {currentSong.name}
-                          </h1>
-                          <p className={`text-xl ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
-                            {currentSong.artists.map((a: any) => a.name).join(', ')}
-                          </p>
+                      <TransitionTrackTitles
+                        isTransitioning={isVisualTransitioning}
+                        progress={overlayProgress}
+                        progressStore={audioPlayer.transitionVisualStore}
+                        fromTrack={transitionFromTrack}
+                        toTrack={transitionToTrack}
+                        fallbackTitle={currentSong.name}
+                        fallbackArtist={currentSong.artists.map((a: any) => a.name).join(', ')}
+                        playerTheme={playerTheme}
+                        size="lg"
+                      />
+                      {/* AutoMix 过渡徽标：纯音乐居中布局同样显示（与有词布局一致）。
+                          绝对定位挂在歌名块下方（top-full + mt），不进文档流 —— 通知出现/消失
+                          不再撑高居中容器（否则封面与歌名歌手会被顶得上下位移）。 */}
+                      {modernAutomixHud && (
+                        <div className="pointer-events-none absolute left-0 right-0 top-full mt-4 flex w-full justify-center">
+                          <AutomixHudBadge
+                            info={modernAutomixHud}
+                            currentTime={automixHudTime}
+                            scale={1}
+                            colors={modernAutomixHudColors}
+                            // 药丸底色 = 当前封面主题色的淡色（color-mix 混入原底色，保持对比度）
+                            accentColor={playbackCoverColor}
+                            onDismiss={() => { setDismissedAutomixHudKey(modernAutomixHud.key); setAutomixHudSkippedTrackKey(modernAutomixHud.key.split('|')[0] || null); audioPlayer.skipAutoMixForCurrentPair() }}
+                          />
                         </div>
                       )}
                     </div>
@@ -9652,8 +10510,8 @@ function App() {
                     songAlbum={currentSong.album?.name}
                     coverUrl={displayCoverUrl}
                     appleCoverUrl={appleCoverUrl || undefined}
-                    animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
-                    animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
+                    animatedCoverUrl={displayAnimatedCoverUrl}
+                    animatedCoverPoster={displayAnimatedCoverPoster}
                     trackId={currentSong.id || currentSong.mid}
                     translationEnabled={translationEnabled}
                     romanEnabled={romanEnabled}
@@ -9661,7 +10519,11 @@ function App() {
                     hasRoman={hasRoman}
                     onTranslationToggle={handleTranslationToggle}
                     onRomanToggle={handleRomanToggle}
-                    onOpenComments={() => handleViewComments(currentSong)}
+                    // 评论能力按平台判断：不支持的平台直接不传回调（播放页按钮转为禁用态），
+                    // 而不是给了按钮、点了才提示「不支持」（2026-09-27 审计）
+                    onOpenComments={getPlatformCapabilities(currentSong.platform || 'netease').comments
+                      ? () => handleViewComments(currentSong)
+                      : undefined}
                     onHomeClick={handlePlayerHome}
                     onMvBackgroundToggle={handleMvBackgroundToggle}
                     mvBackgroundEnabled={mvBackgroundEnabled}
@@ -9683,6 +10545,14 @@ function App() {
                     playMode={playMode}
                     onPlayModeChange={handlePlayModeChange}
                     duration={duration}
+                    automixHud={automixHudEnabled ? automixHud : null}
+                    transitionProgress={overlayProgress}
+                    transitionFromCover={transitionFromTrack?.coverUrl ? getResolvedArtworkUrl(transitionFromTrack.coverUrl, { size: 512 }) : undefined}
+                    transitionToCover={transitionToTrack?.coverUrl ? getResolvedArtworkUrl(transitionToTrack.coverUrl, { size: 512 }) : undefined}
+                    // HUD「关闭」= 本曲不做智能混音（完整播放本曲，末尾短交叉）
+                    onSkipAutomix={() => audioPlayer.skipAutoMixForCurrentPair()}
+                    transitionToTitle={transitionToTrack?.title}
+                    transitionToArtist={transitionToTrack?.artist}
                   />
                 </motion.div>
               ) : lyricDisplayMode === 'pv' ? (
@@ -9713,21 +10583,31 @@ function App() {
                     onSeek={audioPlayer.seek}
                     mvBackgroundActive={mvBackgroundActive}
                     dominantColor={dominantColor}
+                    isTransitioning={isVisualTransitioning}
+                    transitionProgress={overlayProgress}
+                    transitionToTitle={transitionToTrack?.title}
+                    transitionToArtist={transitionToTrack?.artist}
                   />
                 </motion.div>
               ) : (
-                /* 有歌词时左右布局 */
+                /* 统一播放页版面：有词 = 左封面 + 右歌词；纯音乐 = 封面居中（歌词列收起）。
+                   两种状态共用同一棵树（不换 key）→ 封面用 layout 动画滑到新位置，
+                   不再"过渡完毕抽一下到中间"；封面/MV 也不会因换版面而重挂载。 */
                 <motion.div
-                  key="with-lyrics-player"
+                  key="default-player"
                   initial={{ opacity: 0, filter: 'blur(10px)' }}
                   animate={{ opacity: 1, filter: 'blur(0px)' }}
                   exit={{ opacity: 0, filter: 'blur(10px)' }}
                   transition={{ duration: 0.4, ease: [0.4, 0, 0.2, 1] }}
                   className="flex-1 w-full flex items-center justify-center"
                 >
-                  <div className="w-full max-w-7xl h-[85vh] flex gap-12 items-center">
+                  <div className={`w-full flex items-center justify-center ${showLyricsColumn ? 'max-w-7xl h-[85vh] gap-12' : 'gap-0'}`}>
                   {/* 左侧：封面展示区 */}
-                  <div className="flex-1 flex flex-col items-center justify-center gap-6">
+                  <motion.div
+                    layout="position"
+                    transition={{ duration: 0.5, ease: [0.32, 0.72, 0, 1] }}
+                    className={`flex flex-col items-center justify-center ${showLyricsColumn ? 'flex-1 gap-6' : 'gap-8 px-6'}`}
+                  >
                     <AlbumCoverPlayer
                       coverUrl={displayCoverUrl}
                       isPlaying={isPlaying}
@@ -9736,56 +10616,58 @@ function App() {
                       isTransitioning={isVisualTransitioning}
                       // 与封面背景/MV 同源：overlayProgress 从动画窗口起点归一化，无跳变
                       transitionProgress={overlayProgress}
+                      // 视觉轨道：逐帧进度直达封面层（只重渲染它），交叉淡化不再有整树节流台阶
+                      transitionProgressStore={audioPlayer.transitionVisualStore}
                       transitionFromTrack={transitionFromTrack}
                       transitionToTrack={transitionToTrack}
                       pulseStore={audioPulseStore}
-                      animatedCoverUrl={appleDynamicCover.cover?.videoUrl ?? null}
-                      animatedCoverPoster={appleDynamicCover.cover?.posterUrl ?? null}
+                      animatedCoverUrl={displayAnimatedCoverUrl}
+                      animatedCoverPoster={displayAnimatedCoverPoster}
                     />
 
-                    {/* 歌曲信息 - 过渡时双层淡入淡出 */}
-                    <div className="relative min-h-[5.25rem] w-full max-w-xl space-y-2 px-4 text-center">
-                      {isVisualTransitioning && overlayProgress > 0 && transitionFromTrack && transitionToTrack ? (
-                        // 过渡模式：双层叠加
-                        <>
-                          {/* 底层：旧歌曲信息 */}
-                          <div className="absolute inset-0" style={{ opacity: 1 - overlayProgress }}>
-                            <h1 className={`text-3xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
-                              {transitionFromTrack.title}
-                            </h1>
-                            <p className={`text-lg ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
-                              {transitionFromTrack.artist}
-                            </p>
-                          </div>
-                          {/* 顶层：新歌曲信息 */}
-                          <div className="relative" style={{ opacity: overlayProgress }}>
-                            <h1 className={`text-3xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
-                              {transitionToTrack.title}
-                            </h1>
-                            <p className={`text-lg ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
-                              {transitionToTrack.artist}
-                            </p>
-                          </div>
-                        </>
-                      ) : (
-                        // 正常模式：单层信息
-                        <div className="relative">
-                          <h1 className={`text-3xl font-bold ${playerTheme === 'dark' ? 'text-white drop-shadow-lg' : 'text-black/90'}`}>
-                            {currentSong.name}
-                          </h1>
-                          <p className={`text-lg ${playerTheme === 'dark' ? 'text-white/80 drop-shadow-md' : 'text-black/60'}`}>
-                            {currentSong.artists.map((a: any) => a.name).join(', ')}
-                          </p>
+                    {/* 歌曲信息 - 过渡时双层淡入淡出（逐帧进度由视觉轨道 store 直达组件） */}
+                    <div className={`relative w-full text-center ${showLyricsColumn ? 'min-h-[5.25rem] max-w-xl space-y-2 px-4' : 'max-w-4xl space-y-3'}`}>
+                      <TransitionTrackTitles
+                        isTransitioning={isVisualTransitioning}
+                        progress={overlayProgress}
+                        progressStore={audioPlayer.transitionVisualStore}
+                        fromTrack={transitionFromTrack}
+                        toTrack={transitionToTrack}
+                        fallbackTitle={currentSong.name}
+                        fallbackArtist={currentSong.artists.map((a: any) => a.name).join(', ')}
+                        playerTheme={playerTheme}
+                        size={showLyricsColumn ? 'md' : 'lg'}
+                      />
+                      {/* AutoMix 过渡徽标：歌名下方显示过渡时间节点（个性化里可关）。
+                          绝对定位（top-full）→ 不再把封面/歌名歌手顶跑位。 */}
+                      {modernAutomixHud && (
+                        <div className={`pointer-events-none absolute left-0 right-0 top-full flex w-full justify-center ${showLyricsColumn ? 'mt-3' : 'mt-4'}`}>
+                          <AutomixHudBadge
+                            info={modernAutomixHud}
+                            currentTime={automixHudTime}
+                            scale={1}
+                            colors={modernAutomixHudColors}
+                            // 药丸底色 = 当前封面主题色的淡色（color-mix 混入原底色，保持对比度）
+                            accentColor={playbackCoverColor}
+                            onDismiss={() => { setDismissedAutomixHudKey(modernAutomixHud.key); setAutomixHudSkippedTrackKey(modernAutomixHud.key.split('|')[0] || null); audioPlayer.skipAutoMixForCurrentPair() }}
+                          />
                         </div>
                       )}
                     </div>
-                  </div>
+                  </motion.div>
 
-                  {/* 右侧：歌词显示区 */}
-                  <div className="flex-1 flex flex-col justify-between h-full min-h-0 py-8">
+                  {/* 右侧：歌词显示区（纯音乐时收起——过渡期间例外，见 showLyricsColumn） */}
+                  {showLyricsColumn && (
+                  <motion.div
+                    layout="position"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.4, ease: 'easeOut' }}
+                    className="flex-1 flex flex-col justify-between h-full min-h-0 py-8"
+                  >
                     {/* 歌词显示 */}
                     <div className="flex-1 min-h-0 flex items-center justify-center">
-                      <div className="w-full h-full min-h-0">
+                      <div className="relative w-full h-full min-h-0">
                         <LiveLyricsDisplay
                       playbackTimeStore={audioPlayer.playbackTimeStore}
                           lyrics={lyrics}
@@ -9799,11 +10681,35 @@ function App() {
                           backgroundEffect={backgroundEffect}
                           sustainGlowEnabled
                           isTransitioning={isVisualTransitioning}
+                          // 歌词与封面/MV 共用同一交叉淡化时钟：仅在最后 ~4 秒窗口内渐隐，
+                          // 窗口外保持可读（此前动画窗口一开就压到 0.14，歌词提前消失）。
+                          // 交叉淡化（整段过渡）生效时由 crossfadeActive 接管，这里归零避免叠加。
+                          transitionFadeProgress={isVisualTransitioning && !visualSwitchedToTarget ? overlayProgress : 0}
+                          crossfadeActive={lyricsCrossfadeActive}
+                          crossfadeStore={audioPlayer.transitionVisualStore}
+                          managedCrossfade={lyricsManagedSwitch}
+                          indexHint={visualSwitchedToTarget && incomingLyricIndexRef.current >= 0 ? incomingLyricIndexRef.current : null}
                           trackId={currentSong?.id || currentSong?.mid}
                           pulseStore={audioPulseStore}
                           playerTheme={playerTheme}
                           lyricStyleMode={lyricStyleMode}
                         />
+                        {/* 过渡期下一首歌词层：与上面这层交叉（旧淡出 / 新淡入），
+                            视觉切换帧由 canonical 在同位置同样式无动画接替。 */}
+                        {lyricsCrossfadeActive && incomingLyrics && (
+                          <TransitionIncomingLyrics
+                            store={audioPlayer.transitionVisualStore}
+                            lyrics={incomingLyrics}
+                            trackId={transitionVisualIdentity.toTrackKey}
+                            accentColor={playbackCoverColor}
+                            displayMode="scroll"
+                            scrollAlignment="left"
+                            backgroundEffect={backgroundEffect}
+                            playerTheme={playerTheme}
+                            lyricStyleMode={lyricStyleMode}
+                            onActiveIndexChange={index => { incomingLyricIndexRef.current = index }}
+                          />
+                        )}
                       </div>
                     </div>
 
@@ -9813,20 +10719,21 @@ function App() {
                       show={translationEnabled && translationPosition === 'bottom-right'}
                       songId={currentSong?.id}
                     />
-                  </div>
+                  </motion.div>
+                  )}
                 </div>
               </motion.div>
             )
           })()}
 
           <AnimatePresence>
-            {currentSong && !showHome && !isAppleRadioPlayback && !appleRadioSurfaceLocked && lyricDisplayMode === 'modern' && modernAudioVisualizerEnabled && (
+            {currentSong && !showHome && !isAppleRadioPlayback && !appleRadioSurfaceLocked && lyricDisplayMode === 'modern' && modernAudioVisualizerEnabled && !(isTvModeActive() && isPerfModeEfficiency()) && (
               <LazyModernAudioVisualizer
                 key="modern-audio-visualizer"
                 analyser={audioPlayer.analyserNode}
                 isPlaying={isPlaying}
                 accentColor={playbackCoverColor}
-                palette={coverPalette}
+                palette={effectiveCoverPalette}
                 playerTheme={playerTheme}
                 pulseStore={audioPulseStore}
               />
@@ -9866,9 +10773,11 @@ function App() {
             </>
           )}
 
-          {/* 全局播放器固定在底部；真正无视频/失败时通过 portal 恢复音频控制。 */}
+          {/* 全局播放器固定在底部；真正无视频/失败时通过 portal 恢复音频控制。
+              挂起（简约层不是当前显示的面）时回归内联渲染：portal 挂在 body 上不受挂起层
+              visibility:hidden 约束，留着会浮在桌面/探索/传统模式上。 */}
           {currentSong && !showHome && !isAppleRadioPlayback && !appleRadioSurfaceLocked && lyricDisplayMode !== 'modeng' && (lyricDisplayMode !== 'video' || watchSearchFailed) && (
-            <MaybePortal active={lyricDisplayMode === 'video'}>
+            <MaybePortal active={lyricDisplayMode === 'video' && !parkedMinimal}>
             <LivePlayerControls
                       playbackTimeStore={audioPlayer.playbackTimeStore}
               isPlaying={isPlaying}
@@ -9895,6 +10804,9 @@ function App() {
               // 「AutoMix 正在介入」：只有真正开始混音（running-transition）才显示，
               // armed/准备阶段不显示（用户要求：不是开关开着就一直显示）
               enhancedAutoMixActive={isEnhancedAutoMix && transitionState === 'running-transition'}
+              // 进度条上方金色引擎名：AutoMix / AutoMix Pro / AutoMix Enhanced / Gapless
+              // （只写引擎名；无可归属引擎时为 undefined → 不显示）
+              transitionEngineLabel={transitionEngineName ?? undefined}
               transitionStartTime={transitionStartTime}
               immersiveTranslation={immersiveLyricLine?.translation || ''}
               immersiveRoman={immersiveLyricLine?.roman || ''}
@@ -9955,6 +10867,7 @@ function App() {
             isSmartReordering={isSmartReordering}
             smartReorderProgress={smartReorderProgress}
             onSongSelect={stableDialogCallbacks.playlistSongSelect}
+            songMenu={panelSongMenu}
             neteaseVip={neteaseVip}
             qqVip={qqVip}
             currentPlatform={currentSong?.platform || 'netease'}
@@ -9963,6 +10876,7 @@ function App() {
       )}
 
       {/* 鐧诲綍瑙嗗浘 */}
+            </ModeParkedContext.Provider>
           </motion.div>
         )}
       </AnimatePresence>
@@ -9999,15 +10913,20 @@ function App() {
         <Suspense fallback={null}>
           <LiveUpNextNotification
             playbackTimeStore={audioPlayer.playbackTimeStore}
-            eventTime={(effectiveAutoMixEnabled || effectiveGaplessEnabled)
-              ? (transitionStartTime ?? duration)
-              : duration}
+            // 倒计时目标 = 各档位「进入 AutoMix 的一瞬间」：优先用 automixHud.startAt
+            //（过渡计划里的介入点，与药丸时间节点同一个值）。此前用 transitionStartTime
+            //（=动画窗口起点），AI 长混音比真正介入晚几十秒 → 卡片倒计时与实际介入对不上（用户反馈）。
+            eventTime={automixHud?.startAt
+              ?? ((effectiveAutoMixEnabled || effectiveGaplessEnabled)
+                ? (transitionStartTime ?? duration)
+                : duration)}
             show={true}
             playerTheme={playerTheme}
             nextSong={nextSongToShow}
             mode={effectiveAutoMixEnabled || effectiveGaplessEnabled ? 'transition' : 'play'}
             enhanced={effectiveAutoMixEnabled && autoMixEnhanced}
-            transitionStyle={transitionStyle}
+            enhancedLabel={transitionStrategy === 'smart-rendered-qq' ? 'Enhanced 过渡' : 'Pro 过渡'}
+            transitionStyle={transitionStrategy === 'smart-rendered-qq' ? undefined : transitionStyle}
             onSkip={() => {
               suppressUpNextUntilRef.current = Date.now() + 3000
               setShowUpNext(false)
@@ -10145,6 +11064,12 @@ function App() {
           )}
       </Suspense>
 
+      {qqMusicPreferenceOpen && (
+        <Suspense fallback={null}>
+          <LazyQQMusicPreferenceDialog open={qqMusicPreferenceOpen} onClose={() => setQQMusicPreferenceOpen(false)} />
+        </Suspense>
+      )}
+
       <Suspense fallback={null}>
         <AnimatePresence>
           {commentModalFrozen && (
@@ -10152,6 +11077,9 @@ function App() {
               isOpen={showCommentModal}
               onClose={closeCommentModal}
               song={selectedCommentSong}
+              playerTheme={playerTheme}
+              accentColor={playbackCoverColor}
+              onOpenPlaylist={(playlist) => { void handleOpenPlaylistFromDetail(playlist.id, 'netease') }}
             />
           )}
         </AnimatePresence>

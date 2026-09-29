@@ -1,0 +1,2413 @@
+{
+ "kFilterPresetJson": {
+  "name": "SimpleFilterPreset",
+  "description": "A simple DJ plan with crossfade and filters",
+  "Achain": {
+   "description": "Gain and HPF for Track A",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 0.0,
+      "n": -20.0,
+      "start_pos": 0.5,
+      "end_pos": 1,
+      "curve_type": 2
+     }
+    },
+    {
+     "effect": {
+      "type": 3,
+      "freq": 10.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 10.0,
+      "n": 4000.0,
+      "start_pos": 0.0,
+      "end_pos": 0.6,
+      "curve_type": 2
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Gain and LPF for Track B",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -20.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": -20.0,
+      "n": 0.0,
+      "start_pos": 0.0,
+      "end_pos": 0.5,
+      "curve_type": 1
+     }
+    },
+    {
+     "effect": {
+      "type": 2,
+      "freq": 20.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 20.0,
+      "n": 8000.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 0
+     }
+    }
+   ]
+  },
+  "_va": "0x57997d",
+  "_md5": "9c26de5c3499b458dea76b713bf1fa18",
+  "_symbol": "kFilterPresetJson"
+ },
+ "k3bandPresetJson": {
+  "name": "3bandEQPreset",
+  "description": "A DJ plan with crossfade and 3bandEQ",
+  "Achain": {
+   "description": "Gain and 3bandEQ for Track A",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 0.0,
+      "n": -20.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 2
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "step",
+      "m": 0,
+      "n": -20,
+      "step_pos": 0.5
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "mid",
+      "mid": 0.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 0.0,
+      "n": -20.0,
+      "start_pos": 0.0,
+      "end_pos": 1.0,
+      "curve_type": 0
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "high",
+      "high": 0.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 0.0,
+      "n": -20.0,
+      "start_pos": 0.0,
+      "end_pos": 1.0,
+      "curve_type": 0
+     }
+    },
+    {
+     "effect": {
+      "type": 4,
+      "mix": 0.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 0.0,
+      "n": 0.6,
+      "start_pos": 0.1,
+      "end_pos": 0.8,
+      "curve_type": 0
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Gain and 3bandEQ for Track B",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -20.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": -20.0,
+      "n": 0.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 1
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -20
+     },
+     "automation": {
+      "type": "step",
+      "m": -20,
+      "n": 0,
+      "step_pos": 0.5
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "mid",
+      "mid": -20.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": -20.0,
+      "n": 0.0,
+      "start_pos": 0.0,
+      "end_pos": 1.0,
+      "curve_type": 0
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "high",
+      "high": -20.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": -20.0,
+      "n": 0.0,
+      "start_pos": 0.2,
+      "end_pos": 1.0,
+      "curve_type": 0
+     }
+    },
+    {
+     "effect": {
+      "type": 4,
+      "mix": 0.6
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 0.6,
+      "n": 0.0,
+      "start_pos": 0.2,
+      "end_pos": 1,
+      "curve_type": 0
+     }
+    }
+   ]
+  },
+  "_va": "0x579e83",
+  "_md5": "5b1fb3dcc1848ebdf77467b99f09fbdf",
+  "_symbol": "k3bandPresetJson"
+ },
+ "simpleexchange": {
+  "name": "3bandEQPreset",
+  "description": "A DJ plan with simple gain exchange",
+  "Achain": {
+   "description": "Gain and 3bandEQ for Track A",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 0.0,
+      "n": -20.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 2
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "step",
+      "m": 0,
+      "n": -28,
+      "step_pos": 0.5
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Gain and 3bandEQ for Track B",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -20.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": -20.0,
+      "n": 0.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 1
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -28
+     },
+     "automation": {
+      "type": "step",
+      "m": -28,
+      "n": 0,
+      "step_pos": 0.5
+     }
+    }
+   ]
+  },
+  "_va": "0x57a8ee",
+  "_md5": "781906398329d7a37542063bda81aa09",
+  "_symbol": "simpleexchange"
+ },
+ "filterEQPresetJson": {
+  "name": "3bandEQPreset",
+  "description": "A DJ plan with simple gain exchange",
+  "Achain": {
+   "description": "Gain and 3bandEQ for Track A",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 0.0,
+      "n": -20.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 2
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "step",
+      "m": 0,
+      "n": -28,
+      "step_pos": 0.5
+     }
+    },
+    {
+     "effect": {
+      "type": 3,
+      "freq": 10.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 10.0,
+      "n": 4000.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 2
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Gain and 3bandEQ for Track B",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -20.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": -20.0,
+      "n": 0.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 1
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -28
+     },
+     "automation": {
+      "type": "step",
+      "m": -28,
+      "n": 0,
+      "step_pos": 0.5
+     }
+    },
+    {
+     "effect": {
+      "type": 2,
+      "freq": 20.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 20.0,
+      "n": 8000.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 0
+     }
+    }
+   ]
+  },
+  "_va": "0x57adbd",
+  "_md5": "44404cf6737ba18e2cb21c0aab68dd51",
+  "_symbol": "filterEQPresetJson"
+ },
+ "NoPlanJson": {
+  "name": "NoPlan",
+  "description": "A DJ plan with no effect",
+  "Achain": {
+   "description": "No effect for Track A",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": 0.0,
+      "n": -20.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 2
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "step",
+      "m": 0,
+      "n": -20,
+      "step_pos": 0.5
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "No effect for Track B",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -20.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": -20.0,
+      "n": 0.0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 1
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -20
+     },
+     "automation": {
+      "type": "step",
+      "m": -20,
+      "n": 0,
+      "step_pos": 0.5
+     }
+    }
+   ]
+  },
+  "_va": "0x57b44a",
+  "_md5": "ea4ec7ac02c8ba2d9457320beba1fdc4",
+  "_symbol": "NoPlanJson"
+ },
+ "EchoDeclineJson": {
+  "name": "NoPlan",
+  "description": "A DJ plan with no effect",
+  "Achain": {
+   "description": "No effect for Track A",
+   "list": [
+    {
+     "effect": {
+      "type": 5,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "step",
+      "m": 0,
+      "n": 1,
+      "step_pos": 0.55
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "No effect for Track B",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -30.0
+     },
+     "automation": {
+      "type": "piecewise",
+      "m": -30.0,
+      "n": 0,
+      "start_pos": 0.0,
+      "end_pos": 1,
+      "curve_type": 0
+     }
+    }
+   ]
+  },
+  "_va": "0x57b8f0",
+  "_md5": "638e5965352c00bdc3478a647f2c2684",
+  "_symbol": "EchoDeclineJson"
+ },
+ "AMfilterPlanJson": {
+  "name": "AM",
+  "description": "An apple music type filter plan",
+  "Achain": {
+   "description": "No effect for Track A",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.4,
+        0.0
+       ],
+       [
+        0.55,
+        -8.0
+       ],
+       [
+        1.0,
+        -25.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 2,
+      "freq": 20000.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        20000.0
+       ],
+       [
+        0.1,
+        10000.0
+       ],
+       [
+        0.15,
+        6500.0
+       ],
+       [
+        0.25,
+        6000.0
+       ],
+       [
+        0.35,
+        4800.0
+       ],
+       [
+        0.4,
+        3000.0
+       ],
+       [
+        0.55,
+        2300.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "step",
+      "m": 0,
+      "n": -15,
+      "step_pos": 0.75
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "No effect for Track B",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -30.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.25,
+        -30.0
+       ],
+       [
+        0.45,
+        -10
+       ],
+       [
+        0.55,
+        -5.0
+       ],
+       [
+        0.9,
+        0.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 3,
+      "freq": 2000.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.25,
+        10000
+       ],
+       [
+        0.4,
+        3000
+       ],
+       [
+        0.45,
+        1000.0
+       ],
+       [
+        0.55,
+        300.0
+       ],
+       [
+        1.0,
+        20.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -15
+     },
+     "automation": {
+      "type": "step",
+      "m": -15,
+      "n": 0,
+      "step_pos": 0.75
+     }
+    }
+   ]
+  },
+  "_va": "0x57bbcd",
+  "_md5": "1945b883966e8e7e0f08540a1d97c0a2",
+  "_symbol": "AMfilterPlanJson"
+ },
+ "AMfilterPlanJson2": {
+  "name": "AM",
+  "description": "An apple music type filter plan",
+  "Achain": {
+   "description": "No effect for Track A",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.5,
+        0.0
+       ],
+       [
+        0.75,
+        -2.0
+       ],
+       [
+        0.85,
+        -6.0
+       ],
+       [
+        0.92,
+        -15.0
+       ],
+       [
+        1.0,
+        -35.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 2,
+      "freq": 20000.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        20000.0
+       ],
+       [
+        0.1,
+        10000.0
+       ],
+       [
+        0.25,
+        6500.0
+       ],
+       [
+        0.4,
+        4500.0
+       ],
+       [
+        0.65,
+        4000.0
+       ],
+       [
+        0.75,
+        3600.0
+       ],
+       [
+        0.85,
+        2500.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "step",
+      "m": 0,
+      "n": -15,
+      "step_pos": 0.8
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "No effect for Track B",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -30.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.35,
+        -30.0
+       ],
+       [
+        0.5,
+        -15
+       ],
+       [
+        0.7,
+        -7
+       ],
+       [
+        0.85,
+        -3
+       ],
+       [
+        0.92,
+        0.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 3,
+      "freq": 10000.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.35,
+        10000
+       ],
+       [
+        0.4,
+        1500
+       ],
+       [
+        0.55,
+        800.0
+       ],
+       [
+        0.75,
+        700.0
+       ],
+       [
+        0.82,
+        550.0
+       ],
+       [
+        0.92,
+        100.0
+       ],
+       [
+        1.0,
+        20.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -15
+     },
+     "automation": {
+      "type": "step",
+      "m": -15,
+      "n": 0,
+      "step_pos": 0.8
+     }
+    }
+   ]
+  },
+  "_va": "0x57c2db",
+  "_md5": "373d9fdccc46af45f4b693f7e019e342",
+  "_symbol": "AMfilterPlanJson2"
+ },
+ "mixmode:central_cut_out": {
+  "name": "CentralCutOut",
+  "description": "Central cut out: hard switch at the middle of the transition",
+  "Achain": {
+   "description": "Track A holds full volume until 50% then cuts out",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.49,
+        0.0
+       ],
+       [
+        0.51,
+        -30.0
+       ],
+       [
+        1.0,
+        -30.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B cuts in to full volume at 50%",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -30.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -30.0
+       ],
+       [
+        0.49,
+        -30.0
+       ],
+       [
+        0.51,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57cd31",
+  "_md5": "4c7d8ccabad491bb14954da22561990b",
+  "_symbol": "",
+  "_mixmode": "central_cut_out",
+  "_category": "fade/cut"
+ },
+ "mixmode:cut_in_fade_out": {
+  "name": "CutInFadeOut",
+  "description": "Cut in / fade out: track B cuts in at full volume, track A fades out slowly",
+  "Achain": {
+   "description": "Track A gain fades out slowly",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.25,
+        0.0
+       ],
+       [
+        0.5,
+        0.0
+       ],
+       [
+        0.75,
+        -15.0
+       ],
+       [
+        1.0,
+        -30.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B cuts in at full volume",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -30.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -30.0
+       ],
+       [
+        0.02,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57d0aa",
+  "_md5": "25f093aff17147ff3cedb42baf3a6ce6",
+  "_symbol": "",
+  "_mixmode": "cut_in_fade_out",
+  "_category": "fade/cut"
+ },
+ "mixmode:fade_in_cut_out": {
+  "name": "FadeInCutOut",
+  "description": "Fade in / cut out: track B fades in slowly, track A cuts out at the end",
+  "Achain": {
+   "description": "Track A holds full volume then cuts out",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.85,
+        0.0
+       ],
+       [
+        0.87,
+        -30.0
+       ],
+       [
+        1.0,
+        -30.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B gain fades in slowly",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -30.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -30.0
+       ],
+       [
+        0.25,
+        -20.0
+       ],
+       [
+        0.5,
+        -12.0
+       ],
+       [
+        0.75,
+        -5.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57d413",
+  "_md5": "d359099cf9d4c244a873304b9350b7ab",
+  "_symbol": "",
+  "_mixmode": "fade_in_cut_out",
+  "_category": "fade/cut"
+ },
+ "mixmode:fade_in_fade_out": {
+  "name": "FadeInFadeOut",
+  "description": "Fade in / fade out: track A holds then fades out fast, track B fades in slowly",
+  "Achain": {
+   "description": "Track A gain fades out",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.5,
+        0.0
+       ],
+       [
+        0.7,
+        -10.0
+       ],
+       [
+        0.85,
+        -20.0
+       ],
+       [
+        1.0,
+        -30.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B gain fades in",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -30.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -30.0
+       ],
+       [
+        0.15,
+        -20.0
+       ],
+       [
+        0.3,
+        -10.0
+       ],
+       [
+        0.5,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57d792",
+  "_md5": "ced7d8d51970641b96daa09dd54edac2",
+  "_symbol": "",
+  "_mixmode": "fade_in_fade_out",
+  "_category": "fade/cut"
+ },
+ "mixmode:fade_in_quick_out": {
+  "name": "FadeInQuickOut",
+  "description": "Fade in / quick out: track B fades in slowly, track A drops sharply at the end",
+  "Achain": {
+   "description": "Track A holds full volume then drops sharply",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.65,
+        0.0
+       ],
+       [
+        0.75,
+        0.0
+       ],
+       [
+        0.95,
+        0.0
+       ],
+       [
+        1.0,
+        -30.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B gain fades in slowly",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -30.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -30.0
+       ],
+       [
+        0.25,
+        -15.0
+       ],
+       [
+        0.5,
+        0.0
+       ],
+       [
+        0.75,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57db0c",
+  "_md5": "df2eb6c7f9adc71982b23ea01bbaa8f1",
+  "_symbol": "",
+  "_mixmode": "fade_in_quick_out",
+  "_category": "fade/cut"
+ },
+ "mixmode:overlap": {
+  "name": "Overlap",
+  "description": "Overlap: both tracks play at full volume during the transition",
+  "Achain": {
+   "description": "Track A keeps full volume",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B keeps full volume",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57dea1",
+  "_md5": "ed9f6c8541d0fa0fc8fe2864f41f37d3",
+  "_symbol": "",
+  "_mixmode": "overlap",
+  "_category": "fade/cut"
+ },
+ "mixmode:smooth_fade_in_fade_out": {
+  "name": "SmoothFadeInFadeOut",
+  "description": "Smooth fade in / fade out: classic X shaped symmetric crossfade",
+  "Achain": {
+   "description": "Track A gain fades out symmetrically",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.5,
+        -15.0
+       ],
+       [
+        1.0,
+        -30.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B gain fades in symmetrically",
+   "list": [
+    {
+     "effect": {
+      "type": 1,
+      "value": -30.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -30.0
+       ],
+       [
+        0.5,
+        -15.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57e1b4",
+  "_md5": "f84f462f3aafb82d2aabe1cf6e775ff2",
+  "_symbol": "",
+  "_mixmode": "smooth_fade_in_fade_out",
+  "_category": "fade/cut"
+ },
+ "mixmode:central_bass_swap": {
+  "name": "CentralBassSwap",
+  "description": "Central bass swap: low band steps over at 50%",
+  "Achain": {
+   "description": "Track A low band steps out at the middle",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.5,
+        0.0
+       ],
+       [
+        0.52,
+        -15.0
+       ],
+       [
+        1.0,
+        -15.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B low band steps in at the middle",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -15.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -15.0
+       ],
+       [
+        0.5,
+        -15.0
+       ],
+       [
+        0.52,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57e571",
+  "_md5": "03076cd3134e5c2a5352847a6f41b35e",
+  "_symbol": "",
+  "_mixmode": "central_bass_swap",
+  "_category": "bass"
+ },
+ "mixmode:long_bass_cut_out": {
+  "name": "LongBassCutOut",
+  "description": "Long bass cut out: track A low band drops early and track B low band recovers late",
+  "Achain": {
+   "description": "Track A low band cuts out early",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.05,
+        -15.0
+       ],
+       [
+        1.0,
+        -15.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B low band cuts in late",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -15.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -15.0
+       ],
+       [
+        0.95,
+        -15.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57e8fe",
+  "_md5": "d9446009d9af5ff7700b31f6a86359f8",
+  "_symbol": "",
+  "_mixmode": "long_bass_cut_out",
+  "_category": "bass"
+ },
+ "mixmode:quick_bass_cut_out": {
+  "name": "QuickBassCutOut",
+  "description": "Quick bass cut out: low band swaps quickly at 50% with a short ramp",
+  "Achain": {
+   "description": "Track A low band cuts out quickly",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.5,
+        0.0
+       ],
+       [
+        0.55,
+        -15.0
+       ],
+       [
+        1.0,
+        -15.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B low band cuts in quickly",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -15.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -15.0
+       ],
+       [
+        0.5,
+        -15.0
+       ],
+       [
+        0.55,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57ec84",
+  "_md5": "e2ca9efae165f7bdc1c7776ad4d5654d",
+  "_symbol": "",
+  "_mixmode": "quick_bass_cut_out",
+  "_category": "bass"
+ },
+ "mixmode:start_bass_swap": {
+  "name": "StartBassSwap",
+  "description": "Start bass swap: low band steps over right at the beginning",
+  "Achain": {
+   "description": "Track A low band steps out at the beginning",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.05,
+        -15.0
+       ],
+       [
+        1.0,
+        -15.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B low band steps in at the beginning",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -15.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -15.0
+       ],
+       [
+        0.05,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57f019",
+  "_md5": "e0d5e4acfef603ec88b41e067735de3a",
+  "_symbol": "",
+  "_mixmode": "start_bass_swap",
+  "_category": "bass"
+ },
+ "mixmode:tail_bass_swap": {
+  "name": "TailBassSwap",
+  "description": "Tail bass swap: low band steps over at 85%",
+  "Achain": {
+   "description": "Track A low band steps out at the tail",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.85,
+        0.0
+       ],
+       [
+        0.87,
+        -15.0
+       ],
+       [
+        1.0,
+        -15.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B low band steps in at the tail",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -15.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -15.0
+       ],
+       [
+        0.85,
+        -15.0
+       ],
+       [
+        0.87,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57f39e",
+  "_md5": "77182c0a4a77cb8cfa65fb592afcf51e",
+  "_symbol": "",
+  "_mixmode": "tail_bass_swap",
+  "_category": "bass"
+ },
+ "mixmode:three_band_fade": {
+  "name": "ThreeBandFade",
+  "description": "Three band fade: low band steps over at the middle, mid and high bands crossfade",
+  "Achain": {
+   "description": "Track A low band steps out, mid and high fade out",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.5,
+        0.0
+       ],
+       [
+        0.52,
+        -15.0
+       ],
+       [
+        1.0,
+        -15.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "mid",
+      "mid": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        1.0,
+        -15.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "high",
+      "high": 0.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        1.0,
+        -15.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B low band steps in, mid and high fade in",
+   "list": [
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "low",
+      "low": -15.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -15.0
+       ],
+       [
+        0.5,
+        -15.0
+       ],
+       [
+        0.52,
+        0.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "mid",
+      "mid": -15.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -15.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    },
+    {
+     "effect": {
+      "type": 0,
+      "target_param": "high",
+      "high": -15.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        -15.0
+       ],
+       [
+        1.0,
+        0.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57f723",
+  "_md5": "97d1813325d789292217d07dd8738140",
+  "_symbol": "",
+  "_mixmode": "three_band_fade",
+  "_category": "bass"
+ },
+ "mixmode:hpf_cut_in": {
+  "name": "HPFCutIn",
+  "description": "HPF cut in: track B high pass frequency drops to release the low end",
+  "Achain": {
+   "description": "No extra processing for track A",
+   "list": []
+  },
+  "Bchain": {
+   "description": "Track B high pass filter cuts in",
+   "list": [
+    {
+     "effect": {
+      "type": 3,
+      "freq": 10000.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        10000.0
+       ],
+       [
+        0.125,
+        2000.0
+       ],
+       [
+        0.25,
+        800.0
+       ],
+       [
+        0.375,
+        200.0
+       ],
+       [
+        0.5,
+        20.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x57ff5c",
+  "_md5": "2d134c55af08bed5f311827f152d824a",
+  "_symbol": "",
+  "_mixmode": "hpf_cut_in",
+  "_category": "filter"
+ },
+ "mixmode:hpf_cut_out": {
+  "name": "HPFCutOut",
+  "description": "HPF cut out: track A high pass frequency rises to remove the low end",
+  "Achain": {
+   "description": "Track A high pass filter cuts out",
+   "list": [
+    {
+     "effect": {
+      "type": 3,
+      "freq": 20.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.5,
+        20.0
+       ],
+       [
+        0.625,
+        200.0
+       ],
+       [
+        0.75,
+        800.0
+       ],
+       [
+        0.875,
+        2000.0
+       ],
+       [
+        1.0,
+        10000.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "No extra processing for track B",
+   "list": []
+  },
+  "_va": "0x5801c8",
+  "_md5": "6d370e3f23541f6ae6476c03f1a3672f",
+  "_symbol": "",
+  "_mixmode": "hpf_cut_out",
+  "_category": "filter"
+ },
+ "mixmode:hpf_in_hpf_out": {
+  "name": "HPFInHPFOut",
+  "description": "HPF cut in and HPF cut out: track A loses the low end while track B releases it",
+  "Achain": {
+   "description": "Track A high pass filter cuts out",
+   "list": [
+    {
+     "effect": {
+      "type": 3,
+      "freq": 20.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.5,
+        20.0
+       ],
+       [
+        0.625,
+        200.0
+       ],
+       [
+        0.75,
+        800.0
+       ],
+       [
+        0.875,
+        2000.0
+       ],
+       [
+        1.0,
+        10000.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B high pass filter cuts in",
+   "list": [
+    {
+     "effect": {
+      "type": 3,
+      "freq": 10000.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        10000.0
+       ],
+       [
+        0.125,
+        2000.0
+       ],
+       [
+        0.25,
+        800.0
+       ],
+       [
+        0.375,
+        200.0
+       ],
+       [
+        0.5,
+        20.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x580433",
+  "_md5": "6f5bd48b3d26f5c38f951c4adf9c9401",
+  "_symbol": "",
+  "_mixmode": "hpf_in_hpf_out",
+  "_category": "filter"
+ },
+ "mixmode:hpf_in_lpf_out": {
+  "name": "HPFInLPFOut",
+  "description": "HPF cut in and LPF cut out: track A loses the high end while track B releases the low end",
+  "Achain": {
+   "description": "Track A low pass filter cuts out",
+   "list": [
+    {
+     "effect": {
+      "type": 2,
+      "freq": 20000.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        20000.0
+       ],
+       [
+        0.5,
+        20000.0
+       ],
+       [
+        0.65,
+        8000.0
+       ],
+       [
+        0.85,
+        4000.0
+       ],
+       [
+        1.0,
+        2000.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B high pass filter cuts in",
+   "list": [
+    {
+     "effect": {
+      "type": 3,
+      "freq": 10000.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        10000.0
+       ],
+       [
+        0.125,
+        2000.0
+       ],
+       [
+        0.25,
+        800.0
+       ],
+       [
+        0.375,
+        200.0
+       ],
+       [
+        0.5,
+        20.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x5807d7",
+  "_md5": "740311854ec0f4ca22e82a71e3644199",
+  "_symbol": "",
+  "_mixmode": "hpf_in_lpf_out",
+  "_category": "filter"
+ },
+ "mixmode:lpf_cut_in": {
+  "name": "LPFCutIn",
+  "description": "LPF cut in: track B low pass frequency rises to open up the high end",
+  "Achain": {
+   "description": "No extra processing for track A",
+   "list": []
+  },
+  "Bchain": {
+   "description": "Track B low pass filter cuts in",
+   "list": [
+    {
+     "effect": {
+      "type": 2,
+      "freq": 2500.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        2500.0
+       ],
+       [
+        0.125,
+        4000.0
+       ],
+       [
+        0.25,
+        6000.0
+       ],
+       [
+        0.375,
+        10000.0
+       ],
+       [
+        0.5,
+        20000.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x580b89",
+  "_md5": "0e2a9d12c506cd109900beead756ee7b",
+  "_symbol": "",
+  "_mixmode": "lpf_cut_in",
+  "_category": "filter"
+ },
+ "mixmode:lpf_cut_out": {
+  "name": "LPFCutOut",
+  "description": "LPF cut out: track A low pass frequency drops to remove the high end",
+  "Achain": {
+   "description": "Track A low pass filter cuts out",
+   "list": [
+    {
+     "effect": {
+      "type": 2,
+      "freq": 20000.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        20000.0
+       ],
+       [
+        0.5,
+        20000.0
+       ],
+       [
+        0.65,
+        8000.0
+       ],
+       [
+        0.85,
+        4000.0
+       ],
+       [
+        1.0,
+        2000.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "No extra processing for track B",
+   "list": []
+  },
+  "_va": "0x580df8",
+  "_md5": "81c7f2bb107b4599732486928f48b8e6",
+  "_symbol": "",
+  "_mixmode": "lpf_cut_out",
+  "_category": "filter"
+ },
+ "mixmode:lpf_in_hpf_out": {
+  "name": "LPFInHPFOut",
+  "description": "LPF cut in and HPF cut out: track A loses the low end while track B opens up the high end",
+  "Achain": {
+   "description": "Track A high pass filter cuts out",
+   "list": [
+    {
+     "effect": {
+      "type": 3,
+      "freq": 20.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        20.0
+       ],
+       [
+        0.25,
+        200.0
+       ],
+       [
+        0.5,
+        800.0
+       ],
+       [
+        0.75,
+        2000.0
+       ],
+       [
+        1.0,
+        10000.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B low pass filter cuts in",
+   "list": [
+    {
+     "effect": {
+      "type": 2,
+      "freq": 2500.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        2500.0
+       ],
+       [
+        0.25,
+        4000.0
+       ],
+       [
+        0.5,
+        6000.0
+       ],
+       [
+        0.75,
+        10000.0
+       ],
+       [
+        1.0,
+        20000.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x581067",
+  "_md5": "e543b22227ac5a41079daeaa8558e4b4",
+  "_symbol": "",
+  "_mixmode": "lpf_in_hpf_out",
+  "_category": "filter"
+ },
+ "mixmode:lpf_in_lpf_out": {
+  "name": "LPFInLPFOut",
+  "description": "LPF cut in and LPF cut out: track A loses the high end while track B opens it up",
+  "Achain": {
+   "description": "Track A low pass filter cuts out",
+   "list": [
+    {
+     "effect": {
+      "type": 2,
+      "freq": 20000.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        20000.0
+       ],
+       [
+        0.5,
+        20000.0
+       ],
+       [
+        0.65,
+        8000.0
+       ],
+       [
+        0.85,
+        4000.0
+       ],
+       [
+        1.0,
+        2000.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "Bchain": {
+   "description": "Track B low pass filter cuts in",
+   "list": [
+    {
+     "effect": {
+      "type": 2,
+      "freq": 2500.0
+     },
+     "automation": {
+      "type": "custom",
+      "control_points": [
+       [
+        0.0,
+        2500.0
+       ],
+       [
+        0.125,
+        4000.0
+       ],
+       [
+        0.25,
+        6000.0
+       ],
+       [
+        0.375,
+        10000.0
+       ],
+       [
+        0.5,
+        20000.0
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "_va": "0x581412",
+  "_md5": "ac3840dfe63a4b44b99151b0712337eb",
+  "_symbol": "",
+  "_mixmode": "lpf_in_lpf_out",
+  "_category": "filter"
+ }
+}

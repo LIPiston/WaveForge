@@ -3,6 +3,9 @@ import CachedImage from './CachedImage'
 import AnimatedArtworkCover from './AnimatedArtworkCover'
 import { memo, useState, useEffect, useRef } from 'react'
 import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudioPulse'
+import { useTransitionOverlayProgress } from '../hooks/useTransitionVisual'
+import type { TransitionVisualStore } from '../audio/transitionVisualStore'
+import { useModeParked } from '../utils/modeLayer'
 
 interface Track {
   coverUrl: string
@@ -16,6 +19,11 @@ interface AlbumCoverPlayerProps {
   trackId?: string | number
   isTransitioning?: boolean
   transitionProgress?: number
+  /**
+   * 过渡视觉轨道 store（可选）：传入时叠加层改读它——进度以 ~30fps 直接广播给本组件
+   *（只重渲染封面这一层），不再经 App 整树 10fps 节流，消除交叉淡化的台阶感。
+   */
+  transitionProgressStore?: TransitionVisualStore | null
   transitionFromTrack?: Track | null
   transitionToTrack?: Track | null
   pulseStore?: AudioPulseStore
@@ -33,6 +41,7 @@ function AlbumCoverPlayer({
   trackId,
   isTransitioning = false,
   transitionProgress = 0,
+  transitionProgressStore = null,
   transitionFromTrack = null,
   transitionToTrack = null,
   pulseStore = EMPTY_AUDIO_PULSE_STORE,
@@ -40,6 +49,12 @@ function AlbumCoverPlayer({
   animatedCoverPoster = null,
 }: AlbumCoverPlayerProps) {
   const pulseSurfaceRef = useRef<HTMLDivElement | null>(null)
+  // 所属模式层挂起（切走模式/被覆盖）= 本组件不可见：动态封面据此暂停并回收媒体。
+  const modeParked = useModeParked()
+  // 过渡视觉轨道：传入 store 时用它（逐帧进度直达本组件、只重渲染封面层）；
+  // 未传入时回落到 props（老调用点行为不变）。
+  const storeProgress = useTransitionOverlayProgress(transitionProgressStore, transitionProgress)
+  const effectiveProgress = transitionProgressStore ? storeProgress : transitionProgress
 
   useEffect(() => {
     let pulseActive = false
@@ -108,7 +123,7 @@ function AlbumCoverPlayer({
 
       {/* 封面图片容器 */}
       <div className="relative z-10 h-full w-full overflow-hidden rounded-3xl shadow-2xl">
-        {isTransitioning && transitionProgress > 0 ? (
+        {isTransitioning && effectiveProgress > 0 ? (
           // 过渡模式：双层叠加效果（类似 Apple Music）
           <div className="relative h-full w-full">
             {/* 底层：旧封面 */}
@@ -132,11 +147,14 @@ function AlbumCoverPlayer({
               />
             </div>
             
-            {/* 顶层：新封面（根据过渡进度渐变） */}
+            {/* 顶层：新封面（根据过渡进度渐变）。120ms linear 过渡把 ~30fps 的进度采样
+                平滑成连续画面（此前直接写 opacity 且上游 10fps ⇒ 明显台阶）。 */}
             <motion.div
               className="absolute inset-0"
               style={{
-                opacity: transitionProgress,
+                opacity: effectiveProgress,
+                transition: 'opacity 120ms linear',
+                willChange: 'opacity',
               }}
             >
               <CachedImage
@@ -186,12 +204,15 @@ function AlbumCoverPlayer({
               }
             />
             {/* Apple Music 动态封面图层：盖在静态封面之上；无/加载失败/开关关闭时
-                不渲染，下层平台静态封面直接露出（永不替换显示封面） */}
+                不渲染，下层平台静态封面直接露出（永不替换显示封面）。
+                所属模式层被挂起（切到别的模式/被浮层覆盖）时连媒体一起回收：
+                该层已不可见，留着的只有解码器与 MSE 缓冲。 */}
             <AnimatedArtworkCover
               videoUrl={animatedCoverUrl}
               posterUrl={animatedCoverPoster}
               staticCoverUrl={validCoverUrl}
-              active
+              active={!modeParked}
+              retainMedia={!modeParked}
               className="absolute inset-0 h-full w-full"
             />
           </motion.div>

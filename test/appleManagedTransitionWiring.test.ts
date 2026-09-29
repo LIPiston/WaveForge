@@ -26,7 +26,9 @@ describe('Apple managed transition wiring', () => {
     )
     expect(start).not.toContain('跳过过渡，切歌时直连加载')
     expect(ended).not.toContain('当前曲目为 Apple 原生 HLS：置空过渡态')
-    expect(ended).toContain("resolvePairTransitionStrategy(currentMetadataRef.current, nextMetadataRef.current")
+    // 边界分流统一走 resolveBoundaryStrategy（专辑 + AutoMix 也算 gapless 边界）；
+    // 只认 pairStrategy 字面量的旧写法会让"专辑 + AutoMix"两条分支都不命中。
+    expect(ended).toContain('resolveBoundaryStrategy()')
   })
 
   it('routes fatal current and standby HLS failures through playback recovery', () => {

@@ -1,8 +1,10 @@
 /**
  * Apple Music 动态封面图层（React 版）。
  *
- * 静态封面由调用方始终打底；本组件只负责叠加动态媒体。HLS 实例仅在
- * URL 变化或组件卸载时销毁，离屏、页面隐藏等 inactive 状态只暂停播放。
+ * 静态封面由调用方始终打底；本组件只负责叠加动态媒体。HLS 实例在
+ * URL 变化、组件卸载、或 retainMedia 置 false（离屏/面板冻结）时销毁。
+ * 离屏、页面隐藏等 inactive 状态只暂停播放；调用方需要真正回收内存时
+ * 传 retainMedia=false，那会连带清掉 MSE 缓冲与解码器（只留 poster）。
  */
 import { useEffect, useRef, useState } from 'react'
 
@@ -21,6 +23,16 @@ interface AnimatedArtworkCoverProps {
    * 歌单详情面板需要平滑过渡，故显式开启。
    */
   fadeInOnReady?: boolean
+  /**
+   * 是否保留媒体管线（HLS 实例 + MSE 缓冲 + 解码器 + GPU 纹理）。
+   *
+   * 置 false 会销毁 HLS 引擎、清空 src 并 load()，只留 poster / 下层静态封面。
+   * 单条动态封面约 768×768，缓冲与解码资源是「封面一多就卡」的主要来源：
+   * 面板被冻结（切到别的平台）、卡片被滚出视口很远时都不该继续留着。
+   * 重新置 true 时按 videoUrl 重建管线（首帧到达前显示 poster，允许一次闪替）。
+   * 默认 true，保持既有调用方行为不变。
+   */
+  retainMedia?: boolean
 }
 
 const isHlsSource = (source: string) => /\.m3u8(?:$|[?#])/i.test(source)
@@ -35,6 +47,7 @@ export default function AnimatedArtworkCover({
   onError,
   objectFit = 'cover',
   fadeInOnReady = false,
+  retainMedia = true,
 }: AnimatedArtworkCoverProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [failed, setFailed] = useState(false)
@@ -52,19 +65,21 @@ export default function AnimatedArtworkCover({
   useEffect(() => {
     activeRef.current = active
     const video = videoRef.current
-    if (!video || failed || !videoUrl) return
+    if (!video || failed || !videoUrl || !retainMedia) return
     if (active) {
       void video.play().catch(() => undefined)
     } else {
       video.pause()
     }
-  }, [active, failed, videoUrl])
+  }, [active, failed, videoUrl, retainMedia])
 
   useEffect(() => {
     setFailed(false)
     setReady(false)
     const video = videoRef.current
-    if (!video || !videoUrl) return
+    // retainMedia=false：媒体已回收（或从未建立），只留 poster/静态封面。
+    // 这里必须早于创建逻辑返回，否则刚销毁又会立刻重建。
+    if (!video || !videoUrl || !retainMedia) return
 
     let cancelled = false
     let engine: { destroy: () => void } | null = null
@@ -94,7 +109,9 @@ export default function AnimatedArtworkCover({
           playWhenActive()
           return
         }
-          const instance = new Hls({ capLevelToPlayerSize: true, maxBufferLength: 12, backBufferLength: 0 })
+          // 缓冲压到 8s：封面是短循环无声视频，12s 缓冲在「几十条同时存在」时
+          // 只是白白占内存；backBufferLength=0 已保证不回放历史片段。
+          const instance = new Hls({ capLevelToPlayerSize: true, maxBufferLength: 8, backBufferLength: 0 })
           engine = instance
           instance.on(Hls.Events.ERROR, (_event: string, data: { fatal?: boolean }) => {
             if (data.fatal) fail('hls-fatal')
@@ -112,7 +129,7 @@ export default function AnimatedArtworkCover({
       video.removeAttribute('src')
       video.load()
     }
-  }, [videoUrl])
+  }, [videoUrl, retainMedia])
 
   if (!videoUrl || failed) return null
   const fading = fadeInOnReady && !ready
@@ -130,7 +147,7 @@ export default function AnimatedArtworkCover({
       muted
       loop
       playsInline
-      preload="auto"
+      preload={retainMedia ? 'auto' : 'none'}
       disablePictureInPicture
       onLoadedData={() => setReady(true)}
       onPlaying={() => setReady(true)}

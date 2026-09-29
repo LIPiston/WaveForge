@@ -15,6 +15,7 @@ interface TransitionDebugToastProps {
 const STRATEGY_LABEL: Record<string, string> = {
   'smart-rendered': '智能渲染',
   'smart-rendered-v2': '智能渲染',
+  'smart-rendered-qq': 'Enhanced 智能混音',
   'beat-crossfade': '节拍交叉淡化',
   'fixed-crossfade': '交叉淡化',
   'gapless': '无缝拼接',

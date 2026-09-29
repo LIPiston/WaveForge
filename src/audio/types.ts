@@ -5,12 +5,25 @@ export type PlaybackMode = 'sequential' | 'shuffle' | 'repeat'
 export type TransitionStrategy =
   | 'smart-rendered'
   | 'smart-rendered-v2'
+  /** AutoMix Enhanced：QQ 官方智能混音三档（Lite / Advanced / Extreme），云端切点 + 官方效果链 */
+  | 'smart-rendered-qq'
   | 'beat-crossfade'
   | 'fixed-crossfade'
   | 'gapless'
   | 'none'
 
-/** AutoMix 增强版（v2）特效强度档位 */
+/** AutoMix Enhanced 档位 */
+export type QQAutoMixTier = 'lite' | 'advanced' | 'extreme'
+
+/** 云端档匹配用的曲目身份（QQ 曲库直接给 mid；其他平台给歌名/歌手做联想匹配） */
+export interface QQTrackRef {
+  mid?: string
+  title?: string
+  artist?: string
+  trackId?: string
+}
+
+/** AutoMix Pro（v2）特效强度档位 */
 export type TransitionIntensity = 'subtle' | 'standard' | 'strong'
 
 /** 调性检测结果（Krumhansl-Schmuckler，Camelot 记法） */
@@ -24,7 +37,7 @@ export interface KeyDetection {
   camelot: number
 }
 
-/** AutoMix 增强版（v2）过渡特效编排计划 */
+/** AutoMix Pro（v2）过渡特效编排计划 */
 export interface V2Choreography {
   /** 过渡风格标签（UI 展示用） */
   style: 'energetic' | 'atmospheric' | 'clean'
@@ -82,6 +95,10 @@ export interface TransitionDebugInfo {
   /** 分析来源（调试用：librosa / beat_this / browser / metadata） */
   sourceProvider?: string
   targetProvider?: string
+  /** Enhanced 实际生效档位（与请求档位不同即说明发生了降级，展示用） */
+  qqAppliedTier?: string
+  /** 档位降级原因（如"未能在 QQ 音乐匹配到：前曲、后曲"） */
+  tierFallbackReason?: string
 }
 
 export type TransitionState =
@@ -187,7 +204,17 @@ export interface TransitionPlan {
   sourceBeatTimes?: number[]  // Beat positions in seconds for progressive stretching
   targetBeatTimes?: number[]  // Beat positions in seconds for progressive stretching
   djEffects?: DJEffectsPlan
-  /** AutoMix 增强版（v2）专用字段：v1 计划恒为 undefined，不参与 v1 的 plan.id 构造 */
+  /** AutoMix Enhanced 专用：Q 官方智能混音档位与两首曲目的匹配身份（仅 'smart-rendered-qq' 使用） */
+  qq?: {
+    tier: QQAutoMixTier
+    source: QQTrackRef
+    target: QQTrackRef
+  }
+  /** AutoMix Enhanced 实际生效档位（云端档不可用时为 'lite'，由渲染结果回填） */
+  qqAppliedTier?: string
+  /** AutoMix Enhanced 过渡手法说明（worker 渲染 meta 透传；过渡调试弹窗展示） */
+  qqTechniques?: string[]
+  /** AutoMix Pro（v2）专用字段：v1 计划恒为 undefined，不参与 v1 的 plan.id 构造 */
   v2?: {
     /** Enhanced 默认后端：Folia Beat This + HTDemucs；仅 v2 使用。 */
     backend?: 'folia-htdemucs' | 'djtransgan'
@@ -274,6 +301,14 @@ export interface PreloadTrack {
   duration?: number
   albumId?: string
   albumCover?: string
+  /**
+   * 曲目身份（AutoMix Enhanced 云端档匹配用）：必须由 App 侧随元数据一起注入。
+   * 缺失时 `qqTrackRef` 会得到空身份 → 云端档（advanced/extreme）100% 降级为 lite。
+   */
+  songId?: string | number
+  mid?: string
+  name?: string
+  artists?: string[]
   /** Apple Music 原生 HLS 音源元数据（url 为 .m3u8 时由引擎用 hls.js 播放） */
   appleHls?: import('../services/applePlayback').AppleNativeStream
   /** 预载管线完成通知；用于瞬时失败后由队列层决定是否重试。 */

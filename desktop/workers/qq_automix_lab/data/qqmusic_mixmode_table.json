@@ -1,0 +1,205 @@
+{
+ "central_cut_out": {
+  "category": "fade/cut",
+  "preset": "CentralCutOut",
+  "blob_va": "0x57cd31",
+  "md5": "fa2600b3c166876ac075858722fdc2b7",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "cut_in_fade_out": {
+  "category": "fade/cut",
+  "preset": "CutInFadeOut",
+  "blob_va": "0x57d0aa",
+  "md5": "369fc874e440c5bb1f968c9aed021972",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "fade_in_cut_out": {
+  "category": "fade/cut",
+  "preset": "FadeInCutOut",
+  "blob_va": "0x57d413",
+  "md5": "9fe5dd10a7ac9143fe894362e4c642b2",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "fade_in_fade_out": {
+  "category": "fade/cut",
+  "preset": "FadeInFadeOut",
+  "blob_va": "0x57d792",
+  "md5": "6aa20b07aac120624233cee729619422",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "fade_in_quick_out": {
+  "category": "fade/cut",
+  "preset": "FadeInQuickOut",
+  "blob_va": "0x57db0c",
+  "md5": "fef70b86fb0844dbe2db54b80f4995bc",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "overlap": {
+  "category": "fade/cut",
+  "preset": "Overlap",
+  "blob_va": "0x57dea1",
+  "md5": "9359b2c472eb4f3e2786d1328a95475b",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "smooth_fade_in_fade_out": {
+  "category": "fade/cut",
+  "preset": "SmoothFadeInFadeOut",
+  "blob_va": "0x57e1b4",
+  "md5": "c5f2764c1b3d8d3be0e99f3d153dd426",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "central_bass_swap": {
+  "category": "bass",
+  "preset": "CentralBassSwap",
+  "blob_va": "0x57e571",
+  "md5": "e255149a62508f7645f69e94f337d7dc",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "long_bass_cut_out": {
+  "category": "bass",
+  "preset": "LongBassCutOut",
+  "blob_va": "0x57e8fe",
+  "md5": "82c64e82b4273d2d47ea910f8c9ca5de",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "quick_bass_cut_out": {
+  "category": "bass",
+  "preset": "QuickBassCutOut",
+  "blob_va": "0x57ec84",
+  "md5": "74f8007bde3264190250ad6cf8fdc712",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "start_bass_swap": {
+  "category": "bass",
+  "preset": "StartBassSwap",
+  "blob_va": "0x57f019",
+  "md5": "52bf2a7f5dfce1cb6e88b821d5733c2e",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "tail_bass_swap": {
+  "category": "bass",
+  "preset": "TailBassSwap",
+  "blob_va": "0x57f39e",
+  "md5": "06151ffd4a2abe38ab69086828eb8129",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "three_band_fade": {
+  "category": "bass",
+  "preset": "ThreeBandFade",
+  "blob_va": "0x57f723",
+  "md5": "85ba05ef2e93b407cdb5140b1e20d6ec",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "hpf_cut_in": {
+  "category": "filter",
+  "preset": "HPFCutIn",
+  "blob_va": "0x57ff5c",
+  "md5": "6d99fb26fa5d2e25ee62c805f5793d32",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "hpf_cut_out": {
+  "category": "filter",
+  "preset": "HPFCutOut",
+  "blob_va": "0x5801c8",
+  "md5": "2afed4b02a508d440d75af070fc3c2f2",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "hpf_in_hpf_out": {
+  "category": "filter",
+  "preset": "HPFInHPFOut",
+  "blob_va": "0x580433",
+  "md5": "637a4697fc8dc94bf3458258ef97c581",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "hpf_in_lpf_out": {
+  "category": "filter",
+  "preset": "HPFInLPFOut",
+  "blob_va": "0x5807d7",
+  "md5": "e7ff210de79f99ed8b601ca595b015c6",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "lpf_cut_in": {
+  "category": "filter",
+  "preset": "LPFCutIn",
+  "blob_va": "0x580b89",
+  "md5": "76b0c3ecfd3e2a15c3f2ea7583208e0f",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "lpf_cut_out": {
+  "category": "filter",
+  "preset": "LPFCutOut",
+  "blob_va": "0x580df8",
+  "md5": "8bcb9443f5211e9234f3f3333dba100e",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "lpf_in_hpf_out": {
+  "category": "filter",
+  "preset": "LPFInHPFOut",
+  "blob_va": "0x581067",
+  "md5": "040acba81f5c9d237882b1ab3b45cadb",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "lpf_in_lpf_out": {
+  "category": "filter",
+  "preset": "LPFInLPFOut",
+  "blob_va": "0x581412",
+  "md5": "61164998b26f6b15eae449ab356bda27",
+  "lookup": "DJPlanPreset::FindPresetJson(category, name)"
+ },
+ "legacy:echo": {
+  "category": "legacy(SetPresetDJPlan)",
+  "preset": "NoPlan",
+  "blob_va": "0x57b8f0",
+  "md5": "638e5965352c00bdc3478a647f2c2684",
+  "lookup": "DJPlan::SetPresetDJPlan(name)"
+ },
+ "legacy:NoPlan": {
+  "category": "legacy(SetPresetDJPlan)",
+  "preset": "NoPlan",
+  "blob_va": "0x57b44a",
+  "md5": "ea4ec7ac02c8ba2d9457320beba1fdc4",
+  "lookup": "DJPlan::SetPresetDJPlan(name)"
+ },
+ "legacy:filter": {
+  "category": "legacy(SetPresetDJPlan)",
+  "preset": "SimpleFilterPreset",
+  "blob_va": "0x57997d",
+  "md5": "9c26de5c3499b458dea76b713bf1fa18",
+  "lookup": "DJPlan::SetPresetDJPlan(name)"
+ },
+ "legacy:3bandEQ": {
+  "category": "legacy(SetPresetDJPlan)",
+  "preset": "3bandEQPreset",
+  "blob_va": "0x579e83",
+  "md5": "5b1fb3dcc1848ebdf77467b99f09fbdf",
+  "lookup": "DJPlan::SetPresetDJPlan(name)"
+ },
+ "legacy:EQfilter": {
+  "category": "legacy(SetPresetDJPlan)",
+  "preset": "3bandEQPreset",
+  "blob_va": "0x57adbd",
+  "md5": "44404cf6737ba18e2cb21c0aab68dd51",
+  "lookup": "DJPlan::SetPresetDJPlan(name)"
+ },
+ "legacy:amfilter": {
+  "category": "legacy(SetPresetDJPlan)",
+  "preset": "AM",
+  "blob_va": "0x57bbcd",
+  "md5": "1945b883966e8e7e0f08540a1d97c0a2",
+  "lookup": "DJPlan::SetPresetDJPlan(name)"
+ },
+ "legacy:amfilter2": {
+  "category": "legacy(SetPresetDJPlan)",
+  "preset": "AM",
+  "blob_va": "0x57c2db",
+  "md5": "373d9fdccc46af45f4b693f7e019e342",
+  "lookup": "DJPlan::SetPresetDJPlan(name)"
+ },
+ "legacy:simpleexchange": {
+  "category": "legacy(SetPresetDJPlan)",
+  "preset": "3bandEQPreset",
+  "blob_va": "0x57a8ee",
+  "md5": "781906398329d7a37542063bda81aa09",
+  "lookup": "DJPlan::SetPresetDJPlan(name)"
+ }
+}

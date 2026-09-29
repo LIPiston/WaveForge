@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   AudioLines,
   Captions,
@@ -22,6 +22,7 @@ import {
 } from 'lucide-react'
 import type { LyricLine } from '../services/musicApi'
 import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
+import { getResolvedArtworkUrl } from '../services/artworkLoader'
 import { hasTrueWordTiming, prepareLyricWords } from '../utils/lyricWordTiming'
 import { getAgentTintColor, getAppleMusicSettings } from '../services/appleMusic'
 import QuickSettings from './QuickSettings'
@@ -30,6 +31,14 @@ import {
   LB_EASING,
   LB_THRESHOLD,
 } from './modengLyricMotion'
+import {
+  AutomixHudBadge,
+  AutomixHudProgressHint,
+  useAutomixHudTime,
+  type AutomixHudInfo,
+} from './AutomixHudBadge'
+
+export type { AutomixHudInfo } from './AutomixHudBadge'
 
 /**
  * 摩登模式音量条显隐持久化 key（仅本模式使用，与其他歌词模式完全隔离）。
@@ -132,6 +141,19 @@ interface ModengPlayerPageProps {
   duration?: number
   /** 纯音乐模式：true 时右栏不渲染歌词列，换成「纯音乐」居中占位（保证左栏控制条继续可用），与其他歌词模式隔离 */
   isPureMusic?: boolean
+  /** AutoMix 过渡 HUD：armed=等待过渡（封面下方时间节点徽标），running=过渡进行中（进度条上方金色提示）；null=未武装 */
+  automixHud?: AutomixHudInfo | null
+  /** 过渡动画窗口进度 0-1（overlayProgress：最后 4 秒窗口归一化），驱动封面/标题交叉淡化 */
+  transitionProgress?: number
+  /** 过渡旧曲封面（交叉淡化的底层） */
+  transitionFromCover?: string
+  /** 过渡新曲封面（交叉淡化的顶层，armed 期间已按 critical 预载） */
+  transitionToCover?: string
+  /** 过渡新曲标题/艺人（标题双层淡切用） */
+  transitionToTitle?: string
+  /** HUD「关闭」的引擎动作：本曲不做智能混音（完整播放本曲，末尾只留短交叉）；由 App 注入 */
+  onSkipAutomix?: () => void
+  transitionToArtist?: string
 }
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value))
@@ -242,6 +264,7 @@ export default function ModengPlayerPage({
   timeOffset,
   isPlaying,
   playerTheme,
+  accentColor,
   songTitle,
   songArtist,
   coverUrl,
@@ -273,9 +296,28 @@ export default function ModengPlayerPage({
   onOpenMixingStudio,
   onMoreClick,
   isPureMusic = false,
+  automixHud = null,
+  transitionProgress = 0,
+  transitionFromCover,
+  transitionToCover,
+  transitionToTitle,
+  onSkipAutomix,
+  transitionToArtist,
 }: ModengPlayerPageProps) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const [size, setSize] = useState({ width: 1312, height: 951 })
+  // AutoMix 过渡徽标「关闭」：按排程键记忆（切歌/重新排程后自动恢复显示）
+  const [automixHudDismissed, setAutomixHudDismissed] = useState(false)
+  useEffect(() => {
+    setAutomixHudDismissed(false)
+  }, [automixHud?.key])
+  const automixHudTime = useAutomixHudTime(playbackTimeStore)
+  // 过渡期封面/标题交叉淡化：仅在过渡窗口内有新旧两份素材时启用（素材由 App 在 armed 期间预载）
+  const coverTp = Math.max(0, Math.min(1, transitionProgress))
+  const coverTransitionActive = isTransitioning && Boolean(transitionFromCover && transitionToCover) && coverTp > 0
+  const titleTransitionActive = isTransitioning && Boolean(transitionToTitle) && coverTp > 0
+  // 常规封面统一走 512 档解析地址：与 App 的过渡预载同档同键，commit 切回单层时直接命中缓存不闪
+  const resolvedCover = coverUrl ? getResolvedArtworkUrl(coverUrl, { size: 512 }) : ''
   // 拖拽期间挂在 window 的 pointer 监听器：组件卸载时也要移除，避免外溢
   const dragCleanupRef = useRef<(() => void) | null>(null)
   const scrubCleanupRef = useRef<(() => void) | null>(null)
@@ -1593,9 +1635,9 @@ export default function ModengPlayerPage({
         ))}
       </div>
 
+      {/* 过渡期间本层保持可见：封面/标题走各自的双层交叉淡化，右栏歌词列做退场编排（见下方右栏样式） */}
       <div
         className="absolute inset-0"
-        style={{ opacity: isTransitioning ? 0 : 1, transition: 'opacity 0.45s cubic-bezier(0.42,0,0.58,1)' }}
       >
         {/* ---- 左栏：封面 + 信息 + 控制条（纯音乐时水平+垂直居中，不占用两栏空间） ---- */}
         <div
@@ -1621,7 +1663,8 @@ export default function ModengPlayerPage({
               height: isPureMusic ? 950 * s : '100%',
             }}
           >
-          {/* 封面（Apple 命中时优先用 Apple 高清封面；已移除动态封面视频层 & 律动，保持纯静态避免抽搐） */}
+          {/* 封面（过渡期：新旧封面双层交叉淡化 + 反向 Ken Burns 缩放，融合交接而非生硬替换；
+              Apple 命中时优先用 Apple 高清封面；已移除动态封面视频层 & 律动，保持纯静态避免抽搐） */}
           <div
             className="absolute overflow-hidden"
             style={{
@@ -1635,9 +1678,37 @@ export default function ModengPlayerPage({
               backfaceVisibility: 'hidden',
             }}
           >
-            {appleCoverUrl || coverUrl ? (
+            {coverTransitionActive ? (
+              <>
+                {/* 底层：旧封面，随过渡轻微放大退后 */}
+                <img
+                  src={transitionFromCover}
+                  alt={songTitle}
+                  draggable={false}
+                  className="h-full w-full object-cover"
+                  style={{
+                    transform: `scale(${(1 + 0.05 * (1 - coverTp)).toFixed(4)}) translateZ(0)`,
+                    transition: 'transform 320ms linear',
+                    backfaceVisibility: 'hidden',
+                  }}
+                />
+                {/* 顶层：新封面，淡入并从轻微放大回落到 1（旧退新进的「融合呼吸」） */}
+                <img
+                  src={transitionToCover}
+                  alt={transitionToTitle || songTitle}
+                  draggable={false}
+                  className="absolute inset-0 h-full w-full object-cover"
+                  style={{
+                    opacity: coverTp,
+                    transform: `scale(${(1.05 - 0.05 * coverTp).toFixed(4)}) translateZ(0)`,
+                    transition: 'opacity 320ms linear, transform 320ms linear',
+                    backfaceVisibility: 'hidden',
+                  }}
+                />
+              </>
+            ) : appleCoverUrl || resolvedCover ? (
               <img
-                src={appleCoverUrl || coverUrl}
+                src={appleCoverUrl || resolvedCover}
                 alt={songTitle}
                 draggable={false}
                 className="h-full w-full object-cover"
@@ -1650,19 +1721,66 @@ export default function ModengPlayerPage({
             )}
           </div>
 
-          {/* 标题 / 艺人 + 更多按钮 */}
-          <div className="absolute flex items-start justify-between" style={{ top: 641 * s, width: coverSize }}>
-            <div className="min-w-0">
-              <div
-                className="truncate font-bold"
-                style={{ color: c.title, fontSize: 19 * s, lineHeight: `${25 * s}px` }}
-              >
-                {songTitle}
-              </div>
-              <div className="truncate" style={{ color: c.sub, fontSize: 15 * s, lineHeight: `${21 * s}px` }}>
-                {songArtist}
+          {/* AutoMix 过渡徽标：封面下方显示过渡时间节点（个性化里可关） */}
+          {automixHud && !automixHudDismissed && (
+            <div
+              className="absolute flex items-center justify-center"
+              style={{ top: 597 * s, width: '100%', pointerEvents: 'none' }}
+            >
+              <div style={{ pointerEvents: 'auto' }}>
+                <AutomixHudBadge
+                  info={automixHud}
+                  currentTime={automixHudTime}
+                  scale={s}
+                  colors={{ chip: dark ? 'rgba(15, 17, 24, 0.55)' : 'rgba(255, 255, 255, 0.62)', text: c.title, dim: c.dim }}
+                  // 药丸底色 = 当前封面主题色的淡色（与 modern 页一致）
+                  accentColor={accentColor}
+                  onDismiss={() => { setAutomixHudDismissed(true); onSkipAutomix?.() }}
+                />
               </div>
             </div>
+          )}
+
+          {/* 标题 / 艺人 + 更多按钮（过渡期：新旧歌曲信息双层交叉淡化，与封面同步） */}
+          <div className="absolute flex items-start justify-between" style={{ top: 641 * s, width: coverSize }}>
+            {titleTransitionActive ? (
+              <div className="relative min-w-0 flex-1" style={{ minHeight: 46 * s }}>
+                <div className="absolute inset-0" style={{ opacity: 1 - coverTp, transition: 'opacity 320ms linear' }}>
+                  <div
+                    className="truncate font-bold"
+                    style={{ color: c.title, fontSize: 19 * s, lineHeight: `${25 * s}px` }}
+                  >
+                    {songTitle}
+                  </div>
+                  <div className="truncate" style={{ color: c.sub, fontSize: 15 * s, lineHeight: `${21 * s}px` }}>
+                    {songArtist}
+                  </div>
+                </div>
+                <div className="absolute inset-0" style={{ opacity: coverTp, transition: 'opacity 320ms linear' }}>
+                  <div
+                    className="truncate font-bold"
+                    style={{ color: c.title, fontSize: 19 * s, lineHeight: `${25 * s}px` }}
+                  >
+                    {transitionToTitle}
+                  </div>
+                  <div className="truncate" style={{ color: c.sub, fontSize: 15 * s, lineHeight: `${21 * s}px` }}>
+                    {transitionToArtist}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="min-w-0">
+                <div
+                  className="truncate font-bold"
+                  style={{ color: c.title, fontSize: 19 * s, lineHeight: `${25 * s}px` }}
+                >
+                  {songTitle}
+                </div>
+                <div className="truncate" style={{ color: c.sub, fontSize: 15 * s, lineHeight: `${21 * s}px` }}>
+                  {songArtist}
+                </div>
+              </div>
+            )}
             <button
               type="button"
               aria-label="更多"
@@ -1676,6 +1794,15 @@ export default function ModengPlayerPage({
               <MoreHorizontal style={{ width: 16 * s, height: 16 * s }} />
             </button>
           </div>
+
+          {/* AutoMix 过渡提示：过渡前 10 秒「即将介入」，过渡中金色「过渡效果」 */}
+          {automixHud && (
+            <AutomixHudProgressHint
+              info={automixHud}
+              currentTime={automixHudTime}
+              scale={s}
+            />
+          )}
 
           {/* 进度条 */}
           <div
@@ -2012,7 +2139,17 @@ export default function ModengPlayerPage({
         {!isPureMusic && (
           <div
             className="modeng-lyric-list absolute top-0 bottom-0 right-0 overflow-hidden"
-            style={{ left: rightX }}
+            style={{
+              left: rightX,
+              // 过渡编排：歌词不再整体消失，而是「柔和退场」（淡出至隐约可见 + 上浮 + 微缩），
+              // commit 后新歌词反向入场。长过渡（30s+）期间歌词全程隐约在场，最后 4 秒窗口完成退场。
+              opacity: isTransitioning ? 0.12 : 1,
+              transform: isTransitioning ? `translateY(${-14 * s}px) scale(0.985)` : 'none',
+              transition: isTransitioning
+                ? 'opacity 900ms ease, transform 900ms ease'
+                : 'opacity 600ms cubic-bezier(0.22,0.61,0.36,1), transform 600ms cubic-bezier(0.22,0.61,0.36,1)',
+              willChange: isTransitioning ? 'opacity, transform' : 'auto',
+            }}
             onPointerDown={startLyricScrub}
             onMouseEnter={e => {
               const list = e.currentTarget

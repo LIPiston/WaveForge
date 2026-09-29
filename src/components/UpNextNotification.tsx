@@ -9,9 +9,11 @@ interface UpNextNotificationProps {
   mode?: 'play' | 'transition'
   onSkip?: () => void // 添加点击跳转回调
   playerTheme?: 'light' | 'dark'
-  /** AutoMix 增强版（v2）：显示「增强过渡」文案与 v2 徽标（缺省时渲染与历史完全一致） */
+  /** AutoMix Pro（v2）：显示「Pro 过渡」文案与 Pro 徽标（缺省时渲染与历史完全一致） */
   enhanced?: boolean
-  /** v2 过渡风格标签（energetic=高能量 / atmospheric=氛围 / clean=干净） */
+  /** 过渡标识文案（Pro / Enhanced）；缺省按 Pro 过渡显示 */
+  enhancedLabel?: string;
+  /** Pro 过渡风格标签（energetic=高能量 / atmospheric=氛围 / clean=干净） */
   transitionStyle?: 'energetic' | 'atmospheric' | 'clean' | undefined
 }
 
@@ -21,7 +23,9 @@ const TRANSITION_STYLE_LABEL: Record<string, { text: string; color: string }> = 
   clean: { text: '干净', color: '#10B981' },
 }
 
-export default function UpNextNotification({ show, nextSong, secondsRemaining, mode = 'play', onSkip, playerTheme = 'dark', enhanced = false, transitionStyle }: UpNextNotificationProps) {
+export default function UpNextNotification({ show, nextSong, secondsRemaining, mode = 'play', onSkip, playerTheme = 'dark', enhanced = false, enhancedLabel, transitionStyle }: UpNextNotificationProps) {
+  // 刻意不接管 TV BACK：通知常驻挂载且注册早，BACK 会在无其他处理器时被它抢走——
+  // 用户想返回主页却变成跳歌（破坏性误触）。卡片本身 OK 可点（跳下一首），自动消失。
   if (!nextSong) return null
 
   const isDark = playerTheme === 'dark'
@@ -108,11 +112,12 @@ export default function UpNextNotification({ show, nextSong, secondsRemaining, m
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 mb-1">
                   <div className={`text-xs font-medium ${isDark ? 'text-white/70' : 'text-black/55'}`}>
-                    {isEnhancedTransition ? '增强过渡' : mode === 'transition' ? '即将进入过渡' : '即将播放'} · {Math.max(0, Math.ceil(secondsRemaining))}秒后
+                    {isEnhancedTransition ? (enhancedLabel || 'Pro 过渡') : mode === 'transition' ? '即将进入过渡' : '即将播放'} · {Math.max(0, Math.ceil(secondsRemaining))}秒后
                   </div>
                   {isEnhancedTransition && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#3B82F6' + '30', color: '#60A5FA' }}>
-                      v2
+                      {/* 徽章跟随实际引擎档位（Enhanced 过渡配 EN），不再写死 Pro 与文案打架 */}
+                      {(enhancedLabel || 'Pro 过渡').startsWith('Enhanced') ? 'EN' : 'Pro'}
                     </span>
                   )}
                   {styleTag && (

@@ -1,0 +1,298 @@
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { AudioLines } from 'lucide-react'
+import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
+
+/**
+ * AutoMix 过渡 HUD 共享组件：原来只内嵌在 ModengPlayerPage（modeng 歌词模式），
+ * modern 等其余歌词模式的播放页拿不到 → 用户在 modern 模式永远看不到过渡倒计时。
+ * 抽成共享模块后，App 各播放页分支可直接复用同一徽标与进度提示。
+ */
+
+export interface AutomixHudInfo {
+  /** armed=已排程等待；running=过渡音频正在播放 */
+  phase: 'armed' | 'running'
+  /** 过渡切入当前曲的时间点（秒） */
+  startAt: number
+  /** 过渡结束 = 目标曲开始（秒） */
+  endAt: number
+  /** 引擎名（供进度条上方金色提示直接显示）：AutoMix / AutoMix Pro / AutoMix Enhanced / Gapless。
+   *  只写引擎名，不带「即将介入 / 正在介入 / 过渡效果」这类中间态措辞。 */
+  engineLabel: string
+  /** 过渡类型：automix=智能混音（药丸显示时间节点）；gapless=无缝衔接（只在进度条提示里显示引擎名） */
+  kind?: 'automix' | 'gapless'
+  /** 稳定键：`${当前曲 trackKey}|${切点}`。切点变化只影响「关闭」状态；
+   *  通知「每曲只播一遍」按第一段（当前曲 trackKey）判定。 */
+  key: string
+}
+
+/** 过渡前提示窗口：8 秒（不含淡入淡出）。
+ *  进度条上方的金色引擎名在「切点前 8 + 淡入」出现，淡入结束的那一刻恰好还剩 8 秒，
+ *  切点一到立刻淡出 —— 药丸（时间节点）不受此窗口限制，见 AUTOMIX_HUD_NODE_*。 */
+export const AUTOMIX_HUD_LEAD_SECONDS = 8
+export const AUTOMIX_HUD_GOLD = '#F5C044'
+
+/** 药丸（时间节点）的提示节奏：本曲播放满 5 秒才提示一次，显示 8 秒后自动渐隐。
+ *  过渡计划若晚于 5 秒才就绪（冷启动 / 新歌新列表没预载），就绪那一刻立刻提示——
+ *  判定写在 shouldShow 里：条件是「播放位置 ≥ 5s」+「计划已就绪」，晚到时后者才成立。 */
+export const AUTOMIX_HUD_NODE_DELAY_SECONDS = 5
+export const AUTOMIX_HUD_NODE_HOLD_SECONDS = 8
+
+export const AUTOMIX_HUD_FADE_IN_SECONDS = 0.22
+export const AUTOMIX_HUD_FADE_OUT_SECONDS = 0.3
+/** CSS 过渡略长于两段淡变，既跟手又能把播放时间轴 ~250ms 的量化台阶抹平 */
+export const AUTOMIX_HUD_FADE_CSS_SECONDS = 0.24
+
+/**
+ * 通知播放记忆（模块级，跨播放页切换/组件卸载共享）：
+ * 同一首「当前曲」只提示一遍 —— 同曲内 seek / 快进 / 重新排程（HUD key 变化）不再重复弹出。
+ * done 的三个来源：提示满 8 秒自动收起、过渡开跑、用户点「关闭」。
+ * 只有「换歌」（当前曲 key 变化）或「本曲重新从头播放」（currentTime 明显回落，如单曲循环）
+ * 才重新允许显示一次。
+ */
+const automixNotificationMemory = {
+  trackKey: '',
+  notified: false,
+  maxTime: 0,
+}
+
+/** AutoMix 过渡倒计时订阅：与 LiveUpNextNotification 同一 useSyncExternalStore 范式（低频重渲染，开销可忽略） */
+export function useAutomixHudTime(playbackTimeStore: PlaybackTimeStore) {
+  return useSyncExternalStore(
+    playbackTimeStore.subscribe,
+    playbackTimeStore.getSnapshot,
+    playbackTimeStore.getSnapshot,
+  ).currentTime
+}
+
+export const formatAutomixHudTime = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
+  const whole = Math.floor(seconds)
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`
+}
+
+/** 过渡引擎显示名（进度条上方金色提示 / 过渡徽标统一用它）——只写引擎名，
+ *  不再出现「即将介入 / 正在介入 / 过渡效果」这类中间态措辞：
+ *    · gapless              → Gapless（无缝衔接）
+ *    · AutoMix standard     → AutoMix
+ *    · AutoMix pro（v2）    → AutoMix Pro
+ *    · AutoMix enhanced（QQ）→ AutoMix Enhanced
+ *    · 其它（纯交叉淡化等）  → null（不显示任何名字） */
+export function transitionEngineDisplayName(
+  strategy: string | undefined,
+  autoMixEnabled: boolean,
+  tier: 'standard' | 'pro' | 'enhanced',
+): string | null {
+  if (strategy === 'gapless') return 'Gapless'
+  if (!autoMixEnabled) return null
+  // 只有「真的由 AutoMix 家族完成的过渡」才挂名字：降级成 fixed-crossfade / none 时
+  // 不显示任何名字（宁可什么都不显示，也不写一个与实际执行引擎不符的档位名）。
+  const isAutoMixStrategy = strategy === 'smart-rendered'
+    || strategy === 'smart-rendered-v2'
+    || strategy === 'smart-rendered-qq'
+    || strategy === 'beat-crossfade'
+  if (!isAutoMixStrategy) return null
+  return tier === 'enhanced' ? 'AutoMix Enhanced' : tier === 'pro' ? 'AutoMix Pro' : 'AutoMix'
+}
+
+/** 徽标：过渡计划的**时间节点**（「即将在 m:ss 开始智能混音」，可关闭）。
+ *  提示节奏：本曲播放满 5 秒提示一次，显示 8 秒后自动渐隐，每曲一遍；
+ *  过渡计划晚于 5 秒才就绪时（冷启动 / 新歌没预载）就绪那一刻立刻提示。
+ *  此前两版分别是「常显」与「切点前 8 秒倒计时」——均非用户预期。
+ *  「关闭」的语义：**本曲不做智能混音**（想完整听完这首歌，末尾只留一次短交叉），
+ *  不是"隐藏这条通知"——点击后引擎会把本曲对的计划换成短交叉安全网。 */
+export const AutomixHudBadge = memo(function AutomixHudBadge({
+  info, currentTime, scale, colors, accentColor = null, onDismiss,
+}: {
+  info: AutomixHudInfo
+  currentTime: number
+  /** 设计稿缩放系数：固定版式播放页传布局 scale，流式布局（modern 等）传 1 */
+  scale: number
+  colors: { chip: string; text: string; dim: string }
+  /** 当前封面主题色：作为药丸底色的淡色染色（未提供时用 colors.chip 原值） */
+  accentColor?: string | null
+  onDismiss: () => void
+}) {
+  // info.key = `${当前曲 trackKey}|${切点}`：第一段即「当前曲」身份，
+  // 同一首歌内重新排程（seek / 快进）只会改变切点，不会改变这一段 → 通知不重复。
+  const trackKey = info.key.split('|')[0] || info.key
+  const memory = automixNotificationMemory
+  if (memory.trackKey !== trackKey) {
+    memory.trackKey = trackKey
+    memory.notified = false
+    memory.maxTime = 0
+  }
+  // 同一首歌重新从头播放（时间轴明显回落）：视为新一轮，允许再提示一次
+  if (memory.notified && currentTime + 2 < memory.maxTime) {
+    memory.notified = false
+  }
+  if (currentTime > memory.maxTime) memory.maxTime = currentTime
+
+  if (info.phase !== 'armed') {
+    // 过渡已经开跑：本曲的通知窗口到此为止，不再补播
+    memory.notified = true
+  }
+  const remaining = info.startAt - currentTime
+  // 入场条件：本曲播放满 5 秒 + 计划已就绪 + 本曲还没提示过 + 还没到切点。
+  // 「计划晚到」的兜底不需要额外分支：那时播放位置早已 ≥5s，计划一就绪这里立刻成立。
+  // 无缝衔接（gapless）没有"开始智能混音"节点 → 不出药丸，只出进度条上方的金色引擎名。
+  const eligible = info.phase === 'armed'
+    && info.kind !== 'gapless'
+    && !memory.notified
+    && remaining > 0
+    && currentTime >= AUTOMIX_HUD_NODE_DELAY_SECONDS
+
+  // 提示会话：一开始提示就落记「本曲已提示」（模块级 → 切播放页卸载重挂也不会对同曲重弹），
+  // 显示满 8 秒自动收起（渐隐由下面的进出场状态机负责）。
+  const [holding, setHolding] = useState(false)
+  // 换歌（当前曲身份变化）：上一首的驻留窗口不延续到新歌，新歌从自己的第 5 秒重新开始计时
+  useEffect(() => { setHolding(false) }, [trackKey])
+  useEffect(() => {
+    if (!eligible) return
+    memory.notified = true
+    setHolding(true)
+  }, [eligible])
+  useEffect(() => {
+    if (!holding) return
+    const timer = window.setTimeout(() => setHolding(false), AUTOMIX_HUD_NODE_HOLD_SECONDS * 1000)
+    return () => window.clearTimeout(timer)
+  }, [holding])
+  const shouldShow = holding && info.phase === 'armed' && remaining > 0
+
+  // 进出场用「状态机 + CSS 过渡」而不是每帧算不透明度：
+  // 出现时先以 0 不透明度挂载，effect 里抬到 1（触发 0.24s ease-out 淡入）；
+  // 隐藏时先淡出、淡出跑完再卸载 —— 切点到达、用户点关闭都是"滑走"而不是"啪地消失"。
+  const [opacity, setOpacity] = useState(0)
+  const [mounted, setMounted] = useState(false)
+  const unmountTimerRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (shouldShow) {
+      if (unmountTimerRef.current !== null) {
+        window.clearTimeout(unmountTimerRef.current)
+        unmountTimerRef.current = null
+      }
+      setMounted(true)
+      // 下一帧再抬升不透明度：保证浏览器先画出 opacity:0 这一帧，过渡才会生效
+      const raf = requestAnimationFrame(() => setOpacity(1))
+      return () => cancelAnimationFrame(raf)
+    }
+    if (!mounted) return
+    setOpacity(0)
+    unmountTimerRef.current = window.setTimeout(() => {
+      unmountTimerRef.current = null
+      setMounted(false)
+    }, AUTOMIX_HUD_FADE_OUT_SECONDS * 1000 + 60)
+    return () => {
+      if (unmountTimerRef.current !== null) {
+        window.clearTimeout(unmountTimerRef.current)
+        unmountTimerRef.current = null
+      }
+    }
+  }, [shouldShow, mounted])
+  // 卸载后归零：下一次通知仍从 0 淡入
+  useEffect(() => {
+    if (!mounted) setOpacity(0)
+  }, [mounted])
+
+  if (!mounted) return null
+  const nodeTime = formatAutomixHudTime(info.startAt)
+  // 底色：当前封面主题色的淡色（color-mix 混入原底色，保持可读的对比度）
+  const chipBackground = accentColor
+    ? `color-mix(in srgb, ${accentColor} 26%, ${colors.chip})`
+    : colors.chip
+  return (
+    <div
+      // 基线对齐：小字（关闭）与大字（主文案）的文字基线严格同一水平线；
+      // 图标用 alignSelf:center 单独垂直居中（否则 SVG 会跟着基线往下沉）。
+      className="flex items-baseline gap-2"
+      style={{
+        background: chipBackground,
+        backdropFilter: 'blur(18px) saturate(150%)',
+        WebkitBackdropFilter: 'blur(18px) saturate(150%)',
+        borderRadius: 999,
+        padding: `${5 * scale}px ${10 * scale}px ${5 * scale}px ${12 * scale}px`,
+        opacity,
+        transition: `opacity ${AUTOMIX_HUD_FADE_CSS_SECONDS}s ease-out`,
+        pointerEvents: opacity > 0.35 ? 'auto' : 'none',
+      }}
+    >
+      <AudioLines style={{ width: 13 * scale, height: 13 * scale, color: colors.text, flexShrink: 0, alignSelf: 'center' }} />
+      <span style={{ color: colors.text, fontSize: 11.5 * scale, lineHeight: 1.15, whiteSpace: 'nowrap' }}>
+        即将在 {nodeTime} 开始智能混音
+      </span>
+      <button
+        type="button"
+        title="本曲不做智能混音（完整听完这首歌，末尾只做一次短交叉）"
+        aria-label="本曲不做智能混音，完整播放本曲"
+        onClick={event => {
+          event.stopPropagation()
+          // 手动关闭同样算「本曲已提示过」：之后 seek/重排导致 key 变化也不会再弹回来
+          memory.notified = true
+          onDismiss()
+        }}
+        style={{
+          color: colors.dim,
+          fontSize: 10.5 * scale,
+          whiteSpace: 'nowrap',
+          // 与主文案同一基线：inline-flex（基线取首行文字基线）+ lineHeight 1 + 对称内边距
+          display: 'inline-flex',
+          alignItems: 'center',
+          lineHeight: 1,
+          padding: `${3 * scale}px ${7 * scale}px`,
+          marginLeft: -2 * scale,
+          borderRadius: 999,
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+        }}
+        className="hover:opacity-70 transition-opacity"
+      >
+        关闭
+      </button>
+    </div>
+  )
+})
+
+/** 进度条上方提示：直接显示引擎名（AutoMix / AutoMix Enhanced）+ 辉光。
+ *  不再有「即将介入 / 正在介入 / 过渡效果」这类中间态文案（用户要求）。 */
+export const AutomixHudProgressHint = memo(function AutomixHudProgressHint({
+  info, currentTime, scale,
+}: {
+  info: AutomixHudInfo
+  currentTime: number
+  scale: number
+}) {
+  const running = info.phase === 'running'
+  const remaining = info.startAt - currentTime
+  const visible = running || (remaining > 0 && remaining <= AUTOMIX_HUD_LEAD_SECONDS)
+  const [opacity, setOpacity] = useState(0)
+  useEffect(() => {
+    if (!visible) {
+      setOpacity(0)
+      return
+    }
+    const raf = requestAnimationFrame(() => setOpacity(1))
+    return () => cancelAnimationFrame(raf)
+  }, [visible])
+  return (
+    <div
+      className="absolute text-center"
+      style={{
+        top: 688 * scale,
+        width: '100%',
+        fontSize: 10.5 * scale,
+        fontWeight: 600,
+        color: AUTOMIX_HUD_GOLD,
+        letterSpacing: 0.4 * scale,
+        // 辉光：过渡进行中更亮，等待期稍弱但同样带光晕
+        textShadow: running
+          ? `0 0 ${12 * scale}px rgba(245, 196, 68, 0.75), 0 0 ${24 * scale}px rgba(245, 196, 68, 0.3)`
+          : `0 0 ${9 * scale}px rgba(245, 196, 68, 0.5)`,
+        pointerEvents: 'none',
+        opacity: visible ? opacity : 0,
+        transition: `opacity ${AUTOMIX_HUD_FADE_CSS_SECONDS}s ease-out`,
+      }}
+    >
+      {info.engineLabel}
+    </div>
+  )
+})

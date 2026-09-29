@@ -14,7 +14,11 @@ function parseRefreshIdentity(trackKey: string): { id: string; platform: 'qq' | 
 
 function isHttp403(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
-  return message.includes('AUDIO_DOWNLOAD_HTTP_403') || message.includes('HTTP 403')
+  // AUDIO_DOWNLOAD_403_COOLDOWN 是同一条 URL 403 后的冷却闸：响应正确动作与 403 相同——
+  // 刷新签名 URL 再试（新 URL 不在冷却表里），而不是当成不可恢复失败降级。
+  return message.includes('AUDIO_DOWNLOAD_HTTP_403')
+    || message.includes('AUDIO_DOWNLOAD_403_COOLDOWN')
+    || message.includes('HTTP 403')
 }
 
 
@@ -1188,6 +1192,19 @@ class AutoMixAnalysisService {
 
   clearMemoryCache() {
     memoryCache.clear()
+  }
+
+  /**
+   * 按曲目失效分析缓存：时长预检发现「分析时长与流时长不一致」（典型：早前无会员时
+   * 下载过 30s 试听片段被 trackKey 缓存钉死）时调用。移除内存缓存后，
+   * analyzeAndCache 的持久层复用带时长校验（差 >2s 不复用），会自然重新分析。
+   */
+  invalidateTrack(trackKey: string): void {
+    const normalized = String(trackKey || '').trim()
+    if (!normalized) return
+    for (const [key, analysis] of memoryCache.entries()) {
+      if (analysis.trackKey === normalized) memoryCache.delete(key)
+    }
   }
 
   /**

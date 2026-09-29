@@ -11,6 +11,22 @@ const path = require('path')
 
 let logPath = null
 
+// 轮转上限：超过 5MB 滚动为 .old（只保留一份旧档），防止挂机听歌数月后日志涨到 GB 级
+const LOG_MAX_BYTES = 5 * 1024 * 1024
+
+function rotateIfNeeded() {
+  try {
+    const stat = fs.statSync(logPath)
+    if (stat.size > LOG_MAX_BYTES) {
+      const oldPath = logPath + '.old'
+      try { fs.rmSync(oldPath, { force: true }) } catch { /* ignore */ }
+      fs.renameSync(logPath, oldPath)
+    }
+  } catch {
+    // 文件不存在等：直接按无轮转处理
+  }
+}
+
 function init(app) {
   if (!app || !app.getPath) return
   try {
@@ -28,6 +44,7 @@ function automixLog(scope, message) {
   if (logPath) {
     try {
       fs.mkdirSync(path.dirname(logPath), { recursive: true })
+      rotateIfNeeded()
       fs.appendFileSync(logPath, line + '\n')
     } catch {
       // 日志写入失败不影响主流程

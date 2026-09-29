@@ -44,6 +44,17 @@ def write_wav_atomic(output_path: str, audio: np.ndarray, sample_rate: int, chan
             os.remove(temp_path)
 
 
+def _finite_float(value) -> float | None:
+    """可选数值入参解析：None / 非数值 / NaN / inf 一律视为"未提供"（保持既有行为不变）。"""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
 def ensure_stereo(audio: np.ndarray) -> np.ndarray:
     """单声道输入上采样为立体声，立体声/多声道保持原样。
 
@@ -1198,7 +1209,12 @@ def render_transition_folia(params: dict) -> dict:
             output_rate = reader.samplerate
         without_grid = bool(v2.get('withoutBeatGrid', False))
         if without_grid:
-            output_length = max(1, int(round((plan['sourceEndTime'] - plan['sourceStartTime']) * output_rate)))
+            # 无节拍网格：输出跨度取两窗的较小者（与 v2 无网格分支同规则）。若仍按源窗长度
+            # 输出，目标更快时目标素材不足，_render_stem_mix 会补零 → 目标层中途"消失"成静音洞；
+            # 取 min 后缓冲内容与实际消耗的目标素材量严格一致（源曲此时正在渐出，裁尾可接受）。
+            folia_source_span = max(0.0, plan['sourceEndTime'] - plan['sourceStartTime'])
+            folia_target_span = max(0.0, plan['targetEndTime'] - plan['targetStartTime'])
+            output_length = max(1, int(round(min(folia_source_span, folia_target_span) * output_rate)))
             beat_durations = [0.5] * max(1, int(output_length / output_rate / 0.5) + 1)
         else:
             source_beats = [t - plan['sourceStartTime'] for t in plan.get('sourceBeatTimes', [])]
@@ -1216,7 +1232,16 @@ def render_transition_folia(params: dict) -> dict:
         size = write_wav_atomic(output_path, output, output_rate, output.shape[0])
         duration = output.shape[1] / output_rate
         target_span = max(0.0, plan['targetEndTime'] - plan['targetStartTime'])
-        target_resume_time = plan['targetStartTime'] + min(duration, target_span)
+        if without_grid:
+            # 无节拍网格（folia 走 _render_stem_mix 的截断分支）：输出长度已取两窗较小者，
+            # resume 直接用输出时长，保证"缓冲内目标素材终点 = handoff 续播点"（不跳段）。
+            target_resume_time = plan['targetStartTime'] + duration
+        else:
+            # 有网格：target 窗口被逐拍拉伸铺满输出网格（progressive_beat_stretch 取
+            # targetBeatTimes[0..beatCount]，其终点 = plan.targetEndTime），故缓冲内目标
+            # 素材的终点即 targetEndTime。与 v2 DSP 的 resume（render_transition_v2
+            # 有网格分支 = plan['targetEndTime']）严格一致，消除 handoff 处的重播。
+            target_resume_time = plan['targetEndTime']
         return {
             'success': True, 'outputPath': output_path, 'duration': duration,
             'sampleRate': output_rate, 'channels': output.shape[0], 'size': size,
@@ -1306,18 +1331,25 @@ def render_transition_v2(params: dict) -> dict:
             # 大 BPM 差（15~100）：不做节拍对齐拉伸（±15% 外质量崩坏）。
             # source 自然速度播完自己的窗口（渐出），target 渐入，配合氛围特效层。
             logger.info("🌫️ [v2] No-beat-grid transition (BPM gap too large, effects crossfade)")
-            output_length = source_audio.shape[1]
-            if target_audio.shape[1] < output_length:
-                target_audio = np.pad(target_audio, ((0, 0), (0, output_length - target_audio.shape[1])), mode='constant')
-            source_stretched = source_audio
+            # 输出长度 = 两窗跨度的较小者（对应样本数）：两轨都以自然速度播出，
+            # 缓冲里真实存在的内容 = min(源窗, 目标窗)。旧实现按源窗长度输出，目标更快时
+            # 目标层后段只能补零 → 缓冲尾段目标静音而 gain 仍升到 1，可闻"进曲半途断掉"。
+            # 取舍：目标更慢时源曲窗口的尾巴被裁掉（允许——源曲此时正渐出、且窗口内容
+            # 本就已经播到源曲尾部）；换来"缓冲内容 = 实际消耗的目标素材"，不再有静音洞。
+            source_span = plan['sourceEndTime'] - plan['sourceStartTime']
+            target_span = plan['targetEndTime'] - plan['targetStartTime']
+            output_length = max(1, min(
+                int(round(min(source_span, target_span) * output_sample_rate)),
+                source_audio.shape[1],
+                target_audio.shape[1],
+            ))
+            source_stretched = source_audio[:, :output_length]
             target_stretched = target_audio[:, :output_length]
             # 时间基合成节拍网格（0.5s/拍）：仅用于特效包络定位（riser/sweep/reverb）
             out_dur = output_length / output_sample_rate
             output_beat_durations = [0.5] * max(1, int(out_dur / 0.5) + 1)
-            # 目标曲恢复点：缓冲区混入了 target 前 min(src_span, tgt_span) 秒
-            source_span = plan['sourceEndTime'] - plan['sourceStartTime']
-            target_span = plan['targetEndTime'] - plan['targetStartTime']
-            resume_time = plan['targetStartTime'] + min(source_span, target_span)
+            # 目标曲恢复点 = 缓冲中目标素材的实际终点（= 输出时长对应的目标内容量）
+            resume_time = plan['targetStartTime'] + out_dur
         else:
             if not source_beat_times or not target_beat_times:
                 raise ValueError("Smart rendering requires source and target beat grids")
@@ -1526,6 +1558,139 @@ def render_transition_v2(params: dict) -> dict:
         }
 
 
+def render_qq_automix(params: dict) -> dict:
+    """AutoMix Enhanced 三档渲染（Lite / Advanced / Extreme）。
+
+    实现在 desktop/workers/qq_automix.py（移植自 automix-lab，MIT），
+    三档均已在真实曲目对上与实验台产物逐样本对齐（corr=1.0 / maxdiff=0）：
+      lite     —— 自主优化版（本地进阶方案），wsola_sync + 低音交换 + 扫频 + MS 处理
+      advanced —— QQ 官方 · 基础渐变（云端 MixPlan + MIR cue → EQfilter 链）
+      extreme  —— QQ 官方 · 进阶交融（强制 amfilter2 + 专属 cue → AMfilterPlan2 链）
+    """
+    try:
+        # 内嵌 Python 走 ._pth 隔离模式：脚本目录不在 sys.path，需显式加入才能 import 同目录模块
+        worker_dir = os.path.dirname(os.path.abspath(__file__))
+        if worker_dir not in sys.path:
+            sys.path.insert(0, worker_dir)
+        from qq_automix import render_file
+
+        tier = str(params.get('tier') or 'lite')
+        source_path = params['sourceAudioPath']
+        target_path = params['targetAudioPath']
+        output_path = params['outputPath']
+        sample_rate = int(params.get('sampleRate') or 44100)
+        window_s = float(params.get('window') or 12.0)
+        # P1-9（后端半边）：前端 cue 时间轴作为唯一事实下传。三个字段都给出且合法时，
+        # 覆盖云端决策/本地窗口的时间轴，保证渲染产物与前端排的过渡动画严格一致。
+        cue_timeline = None
+        cue_start = _finite_float(params.get('cueTransitionStartSeconds'))
+        cue_duration = _finite_float(params.get('cueTransitionDurationSeconds'))
+        cue_target_start = _finite_float(params.get('cueTargetStartSeconds'))
+        if cue_start is not None and cue_duration is not None and cue_target_start is not None and cue_duration > 0:
+            cue_timeline = {
+                'transition_start_s': max(0.0, cue_start),
+                'transition_duration_s': cue_duration,
+                'target_start_s': max(0.0, cue_target_start),
+            }
+            logger.info(
+                f"[qq-automix] cue timeline override: start={cue_timeline['transition_start_s']:.3f} "
+                f"dur={cue_timeline['transition_duration_s']:.3f} targetStart={cue_timeline['target_start_s']:.3f}"
+            )
+        logger.info(f"[qq-automix] tier={tier} src={source_path} tgt={target_path}")
+
+        meta = render_file(
+            tier, source_path, target_path, output_path,
+            sr=sample_rate,
+            mid_a=str(params.get('sourceMid') or ''),
+            mid_b=str(params.get('targetMid') or ''),
+            source_meta={
+                'mid': params.get('sourceMid'),
+                'title': params.get('sourceTitle'),
+                'artist': params.get('sourceArtist'),
+                'trackId': params.get('sourceTrackId'),
+            },
+            target_meta={
+                'mid': params.get('targetMid'),
+                'title': params.get('targetTitle'),
+                'artist': params.get('targetArtist'),
+                'trackId': params.get('targetTrackId'),
+            },
+            cookie=str(params.get('cookie') or ''),
+            # 登录态以调用方（主进程读 userData/qq-cookie.txt）为准：此处不再回退扫描其它路径，
+            # 否则"未登录"会被别处的历史票据误判成已登录。
+            allow_saved_cookie=False,
+            window_s=window_s,
+            cue_timeline=cue_timeline,
+        )
+        file_size = os.path.getsize(output_path)
+        effective_tier = meta.get('tier') or tier
+        return {
+            'success': True,
+            'outputPath': output_path,
+            'duration': meta.get('duration'),
+            'sampleRate': sample_rate,
+            'size': file_size,
+            'tier': tier,
+            'effectiveTier': effective_tier,
+            'fallback': meta.get('fallback'),
+            'rendererVersion': meta.get('strategy') or f'qq-automix-{effective_tier}',
+            'backend': f'qq-{effective_tier}',
+            'transitionStartSeconds': meta.get('transition_start_s'),
+            'transitionDurationSeconds': meta.get('transition_duration_s'),
+            'targetStartSeconds': meta.get('target_start_s'),
+            'sourceCutSeconds': meta.get('source_cut_time_s'),
+            'techniques': [str(t) for t in (meta.get('techniques') or [])],
+            # P2-21 写盘诊断：峰值与是否触发 tanh 软限幅
+            'peak': meta.get('peak'),
+            'softLimited': meta.get('softLimited') is True,
+            'qqMeta': {k: v for k, v in meta.items() if k != 'events'},
+            'stretchApplied': False,
+        }
+    except Exception as e:
+        logger.error(f"[qq-automix] Render failed: {e}", exc_info=True)
+        return {'success': False, 'error': str(e)}
+
+
+def plan_qq_automix(params: dict) -> dict:
+    """AutoMix Enhanced 播放前规划：只取交接时间轴（切点 / 过渡时长 / 目标曲续播位置）。
+
+    与 render_qq_automix 同一套判定与降级规则（未登录 / 跨平台匹配失败 → lite）。
+    """
+    try:
+        worker_dir = os.path.dirname(os.path.abspath(__file__))
+        if worker_dir not in sys.path:
+            sys.path.insert(0, worker_dir)
+        from qq_automix import plan_cue_file
+
+        cue = plan_cue_file(
+            str(params.get('tier') or 'lite'),
+            params['sourceAudioPath'],
+            params['targetAudioPath'],
+            mid_a=str(params.get('sourceMid') or ''),
+            mid_b=str(params.get('targetMid') or ''),
+            source_meta={
+                'mid': params.get('sourceMid'),
+                'title': params.get('sourceTitle'),
+                'artist': params.get('sourceArtist'),
+                'trackId': params.get('sourceTrackId'),
+            },
+            target_meta={
+                'mid': params.get('targetMid'),
+                'title': params.get('targetTitle'),
+                'artist': params.get('targetArtist'),
+                'trackId': params.get('targetTrackId'),
+            },
+            cookie=str(params.get('cookie') or ''),
+            allow_saved_cookie=False,
+            window_s=float(params.get('window') or 12.0),
+        )
+        logger.info(f"[qq-automix] plan tier={cue.get('tier')} start={cue.get('transition_start_s')} dur={cue.get('transition_duration_s')}")
+        return {'success': True, **cue}
+    except Exception as e:
+        logger.error(f"[qq-automix] Plan failed: {e}", exc_info=True)
+        return {'success': False, 'error': str(e)}
+
+
 def main():
     """Main worker loop - read JSON requests from stdin, write responses to stdout."""
     logger.info("Render worker ready")
@@ -1552,6 +1717,20 @@ def main():
                 }
             elif message_type == 'render_folia':
                 result = render_transition_folia(request['params'])
+                response = {
+                    'type': 'result',
+                    'id': message_id,
+                    'data': result
+                }
+            elif message_type == 'render_qq_automix':
+                result = render_qq_automix(request['params'])
+                response = {
+                    'type': 'result',
+                    'id': message_id,
+                    'data': result
+                }
+            elif message_type == 'plan_qq_automix':
+                result = plan_qq_automix(request['params'])
                 response = {
                     'type': 'result',
                     'id': message_id,

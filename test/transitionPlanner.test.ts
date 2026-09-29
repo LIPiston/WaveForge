@@ -451,6 +451,36 @@ describe('planTransitionV2（AutoMix 增强版）', () => {
     expect(plan.v2?.withoutBeatGrid).toBe(true)
   })
 
+  it('无节拍网格时 djEffects 与 choreography 一致：不含依赖节拍网格的 bassSwap/filterSweep（P2-18）', () => {
+    const plan = planTransitionV2(
+      makeAnalysis('netease-source', { estimatedBpm: 120 }),
+      makeAnalysis('netease-target', { estimatedBpm: 100 }),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    const choreography = plan.v2?.choreography
+    expect(plan.v2?.withoutBeatGrid).toBe(true)
+    expect(choreography?.style).toBe('atmospheric')
+    expect(choreography?.bassSwap).toBe(false)
+    expect(choreography?.filterSweep).toBe(false)
+    // 渲染端无条件执行 djEffects：必须与最终编排逐项一致（渲染 = 调试弹窗清单）
+    expect(plan.djEffects?.enabled).toBe(true)
+    expect(plan.djEffects?.profile).toBe('smooth')
+    expect(plan.djEffects?.bassSwap).toBe(choreography?.bassSwap)
+    expect(plan.djEffects?.filterSweep).toBe(choreography?.filterSweep)
+    expect(plan.djEffects?.echoOut).toBe(choreography?.echoOut)
+    expect(plan.djEffects?.sweepFx).toBe(choreography?.noiseSweep)
+  })
+
+  it('有节拍网格路径 djEffects 保持原样（低音互换/滤波扫频不被误清）', () => {
+    const plan = planTransitionV2(SOURCE, TARGET, SMART_SETTINGS, 'smart-rendered-v2')
+    expect(plan.v2?.withoutBeatGrid).toBe(false)
+    expect(plan.djEffects?.bassSwap).toBe(true)
+    expect(plan.djEffects?.filterSweep).toBe(true)
+    expect(plan.djEffects?.bassSwap).toBe(plan.v2?.choreography?.bassSwap)
+    expect(plan.djEffects?.filterSweep).toBe(plan.v2?.choreography?.filterSweep)
+  })
+
   it('BPM 差 >100 时降级为 fixed-crossfade', () => {
     const plan = planTransitionV2(
       makeAnalysis('netease-source', { estimatedBpm: 200 }),
@@ -521,6 +551,63 @@ function makeBpmAnalysis(trackKey: string, bpm: number, duration = 120): TrackAn
 }
 
 describe('planTransitionV2 部分同步（整数倍 BPM 跳拍对齐，Apple 专利）', () => {
+  it('206.9↔103.45（ratio 2.0，原始差 >100）：倍频救援先于 100 上限判定，走 ps2 智能混音（P1-23）', () => {
+    const plan = planTransitionV2(
+      makeBpmAnalysis('netease-source', 206.9),
+      makeBpmAnalysis('netease-target', 103.45),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(plan.strategy).toBe('smart-rendered-v2')
+    expect(plan.fallbackReason).toBeUndefined()
+    expect(plan.v2?.partialSyncN).toBe(2)
+    expect(plan.v2?.withoutBeatGrid).toBe(false)
+    expect(plan.id).toContain(':ps2')
+  })
+
+  it('103.45↔206.9（反向）同样 ps2 智能混音', () => {
+    const plan = planTransitionV2(
+      makeBpmAnalysis('netease-source', 103.45),
+      makeBpmAnalysis('netease-target', 206.9),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(plan.strategy).toBe('smart-rendered-v2')
+    expect(plan.v2?.partialSyncN).toBe(2)
+  })
+
+  it('整数倍表：160↔40 = ps4（N=4 此前数学上不可达）、150↔50 = ps3', () => {
+    const ps4 = planTransitionV2(
+      makeBpmAnalysis('netease-source', 160),
+      makeBpmAnalysis('netease-target', 40),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(ps4.strategy).toBe('smart-rendered-v2')
+    expect(ps4.v2?.partialSyncN).toBe(4)
+    expect(ps4.v2?.withoutBeatGrid).toBe(false)
+    const ps3 = planTransitionV2(
+      makeBpmAnalysis('netease-source', 150),
+      makeBpmAnalysis('netease-target', 50),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(ps3.strategy).toBe('smart-rendered-v2')
+    expect(ps3.v2?.partialSyncN).toBe(3)
+  })
+
+  it('非整数倍且原始差 >100（206.9↔88，ratio 2.35）：仍降级 fixed-crossfade', () => {
+    const plan = planTransitionV2(
+      makeBpmAnalysis('netease-source', 206.9),
+      makeBpmAnalysis('netease-target', 88),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(plan.v2?.partialSyncN).toBeUndefined()
+    expect(plan.strategy).toBe('fixed-crossfade')
+    expect(plan.fallbackReason).toContain('BPM difference')
+  })
+
   it('140↔70（2 倍速）：快曲网格跳拍对齐（ps2），走完整智能混音', () => {
     const plan = planTransitionV2(
       makeBpmAnalysis('netease-source', 140),
@@ -602,10 +689,75 @@ describe('planTransitionV2 部分同步（整数倍 BPM 跳拍对齐，Apple 专
 const KRUM_MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
 const KRUM_MINOR = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
 
-/** 构造指定主音/调性的分析对象：chroma 用 Krumhansl 轮廓旋转到主音 → detectKey 高置信度命中 */
+/**
+ * 用给定标度重塑整曲能量：同一能量形状在两种 provider 标度下应得到相同 style（P1-22）。
+ * 桌面 python provider：energy = rms²（≈0.001~0.09）；浏览器回退：energy = rms/maxRms（0~1）。
+ */
+function withEnergyScale(
+  trackKey: string,
+  scale: (value: number) => number,
+  shape: (index: number) => number = index => 0.7 + 0.3 * Math.sin(index / 7),
+): TrackAnalysis {
+  return makeAnalysis(trackKey, {
+    beatFeatures: makeAnalysis(trackKey).beatFeatures.map((frame, index) => ({
+      ...frame,
+      energy: scale(shape(index)),
+    })),
+  })
+}
+
+describe('planTransitionV2 能量量纲（provider 标度无关，P1-22）', () => {
+  const PROVIDER_SCALES: Array<[string, (value: number) => number]> = [
+    ['浏览器回退归一（0~1）', value => value],
+    ['桌面 rms²（0.001~0.09）', value => value * value * 0.09],
+    ['桌面 rms² 的纯倍数标度', value => value * 0.09],
+  ]
+
+  it.each(PROVIDER_SCALES)('%s：同一能量形状编排为 energetic（不再是恒 atmospheric）', (_name, scale) => {
+    const plan = planTransitionV2(
+      withEnergyScale('netease-source', scale),
+      withEnergyScale('netease-target', scale),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(plan.v2?.choreography?.style).toBe('energetic')
+    expect(plan.v2?.choreography?.bassSwap).toBe(true)
+  })
+
+  it('同一能量形状在两种标度下 style 与 energyDelta 一致（量纲无关）', () => {
+    const browser = planTransitionV2(
+      withEnergyScale('netease-source', value => value),
+      withEnergyScale('netease-target', value => value),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    const desktop = planTransitionV2(
+      withEnergyScale('netease-source', value => value * value * 0.09),
+      withEnergyScale('netease-target', value => value * value * 0.09),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(desktop.v2?.choreography?.style).toBe(browser.v2?.choreography?.style)
+    expect(desktop.v2?.choreography?.energyDelta).toBeCloseTo(browser.v2?.choreography?.energyDelta ?? -1, 1)
+  })
+
+  it('恒定低能量仍为 atmospheric（分布退化时保留原始量级，不误判成满动态）', () => {
+    const flatLow = (trackKey: string) => makeAnalysis(trackKey, {
+      beatFeatures: makeAnalysis(trackKey).beatFeatures.map(frame => ({ ...frame, energy: 0.1 })),
+    })
+    const plan = planTransitionV2(flatLow('netease-source'), flatLow('netease-target'), SMART_SETTINGS, 'smart-rendered-v2')
+    expect(plan.v2?.choreography?.style).toBe('atmospheric')
+  })
+})
+
+/**
+ * 构造指定主音/调性的分析对象：chroma 用 Krumhansl 轮廓旋转到主音。
+ * 音乐学正确方向：chroma[p] = R[(p - tonic + 12) % 12]（音级越靠近主音，轮廓权重越大）。
+ * 不能用与实现同向的 (p + tonic) 旋转——那样实现整体镜像也测不出来（P1-21 的测试 root cause）。
+ */
 function makeKeyAnalysis(trackKey: string, tonic: number, mode: 'major' | 'minor'): TrackAnalysis {
   const profile = mode === 'major' ? KRUM_MAJOR : KRUM_MINOR
-  const chroma = Array.from({ length: 12 }, (_, pitch) => profile[(pitch + tonic) % 12])
+  const chroma = Array.from({ length: 12 }, (_, pitch) => profile[(pitch - tonic + 12) % 12])
   return makeAnalysis(trackKey, {
     beatFeatures: makeAnalysis(trackKey).beatFeatures.map(frame => ({ ...frame, chroma })),
   })
@@ -679,6 +831,87 @@ describe('planTransitionV2 谐波变调（目标窗口变调到源曲主音）',
   })
 })
 
+/** 12 调 × 2 mode 的完整表（P1-21 矩阵用例）。 */
+const KEY_MATRIX: Array<[number, 'major' | 'minor']> = [
+  ...Array.from({ length: 12 }, (_, tonic) => [tonic, 'major'] as [number, 'major']),
+  ...Array.from({ length: 12 }, (_, tonic) => [tonic, 'minor'] as [number, 'minor']),
+]
+
+/** 12 音级最短距离（模 12）。 */
+function pitchClassDistance(a: number, b: number): number {
+  const delta = Math.abs(a - b) % 12
+  return Math.min(delta, 12 - delta)
+}
+
+describe('planTransitionV2 调性检测（K-S 旋转方向，P1-21）', () => {
+  it.each(KEY_MATRIX)('12 调 × 2 mode 矩阵：tonic=%i/%s 的 chroma 检出自身', (tonic, mode) => {
+    const plan = planTransitionV2(
+      makeKeyAnalysis('netease-source', tonic, mode),
+      makeKeyAnalysis('netease-target', tonic, mode),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(plan.v2?.key?.source?.tonic).toBe(tonic)
+    expect(plan.v2?.key?.source?.mode).toBe(mode)
+    expect(plan.v2?.key?.target?.tonic).toBe(tonic)
+    // 同调 → 兼容度 1.0
+    expect(plan.v2?.choreography?.keyCompat).toBe(1)
+  })
+
+  it('A 大调 chroma → tonic=9, mode=major（此前被镜像成 tonic=3）', () => {
+    const plan = planTransitionV2(
+      makeKeyAnalysis('netease-source', 9, 'major'),
+      makeKeyAnalysis('netease-target', 9, 'major'),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(plan.v2?.key?.source).toMatchObject({ tonic: 9, mode: 'major', camelot: 11 })
+    expect(plan.id).toContain('smart-rendered-v2')
+  })
+
+  it('关系大小调（C 大调 ↔ A 小调）兼容度 ≥ 0.85（此前被镜像成最差 0.25）', () => {
+    const plan = planTransitionV2(
+      makeKeyAnalysis('netease-source', 0, 'major'),
+      makeKeyAnalysis('netease-target', 9, 'minor'),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(plan.v2?.key?.source).toMatchObject({ tonic: 0, mode: 'major', camelot: 8 })
+    expect(plan.v2?.key?.target).toMatchObject({ tonic: 9, mode: 'minor', camelot: 8 })
+    expect(plan.v2?.choreography?.keyCompat).toBeGreaterThanOrEqual(0.85)
+  })
+
+  it('keyPitchShiftSemitones 不增大和声距离（12 调 × 12 调表驱动）', () => {
+    for (let sourceTonic = 0; sourceTonic < 12; sourceTonic += 1) {
+      for (let targetTonic = 0; targetTonic < 12; targetTonic += 1) {
+        const plan = planTransitionV2(
+          makeKeyAnalysis('netease-source', sourceTonic, 'major'),
+          makeKeyAnalysis('netease-target', targetTonic, 'major'),
+          SMART_SETTINGS,
+          'smart-rendered-v2',
+        )
+        const shift = plan.v2?.pitchShiftSemitones ?? 0
+        const before = pitchClassDistance(sourceTonic, targetTonic)
+        const after = pitchClassDistance(sourceTonic, targetTonic + shift)
+        expect(
+          after,
+          `src=${sourceTonic} tgt=${targetTonic} shift=${shift}`,
+        ).toBeLessThanOrEqual(before)
+      }
+    }
+  })
+
+  it('C 大调→D 大调仍为 -2 半音（修正后移调方向：目标降调对齐源主音）', () => {
+    const plan = planTransitionV2(
+      makeKeyAnalysis('netease-source', 0, 'major'),
+      makeKeyAnalysis('netease-target', 2, 'major'),
+      SMART_SETTINGS,
+      'smart-rendered-v2',
+    )
+    expect(plan.v2?.pitchShiftSemitones).toBe(-2)
+  })
+})
+
 describe('尾部静音确定性裁剪（outroSilence，skipSilence）', () => {
   it('源曲有大段尾静音时，过渡窗口不越过 duration - outroSilence', () => {
     // 120s 曲目带 20s 尾静音：有声内容只到 100s，out 点必须 ≤100s
@@ -691,5 +924,56 @@ describe('尾部静音确定性裁剪（outroSilence，skipSilence）', () => {
     const source = makeAnalysis('tail-silence-source-v2', { outroSilence: 20 })
     const plan = planTransitionV2(source, TARGET, { beatMatching: true, skipSilence: true, intensity: 'standard' }, 'smart-rendered-v2')
     expect(plan.sourceEndTime).toBeLessThanOrEqual(100 + 1e-6)
+  })
+
+  it('introSilence > 20% 时长时区间不塌成一点：仍走智能混音（P1-24）', () => {
+    // 120s 目标曲：头部静音 40.3s（>20%），旧实现 targetStartMax 塌成 40.3 → 无候选 → 退化固定交叉
+    const target = makeAnalysis('netease-target', { introSilence: 40.3 })
+    const plan = planTransitionV2(SOURCE, target, { beatMatching: true, skipSilence: true }, 'smart-rendered-v2')
+    expect(plan.strategy).toBe('smart-rendered-v2')
+    expect(plan.fallbackReason).toBeUndefined()
+    expect(plan.targetStartTime).toBeGreaterThanOrEqual(40.3)
+    expect(plan.targetBeatTimes?.length).toBe(plan.beatCount + 1)
+  })
+
+  it('v1 同样：introSilence > 20% 时长不退化（共用候选窗口构建）', () => {
+    const target = makeAnalysis('netease-target', { introSilence: 40.3 })
+    const plan = planTransition(SOURCE, target, { beatMatching: true, skipSilence: true }, 'smart-rendered')
+    expect(plan.strategy).toBe('smart-rendered')
+    expect(plan.targetStartTime).toBeGreaterThanOrEqual(40.3)
+  })
+
+  it('跳过静音导致无候选时回退到未裁剪候选集：显式记录 reason 且不比不开 skipSilence 更差（P1-24）', () => {
+    // 目标曲 40s：introSilence 30s + outroSilence 8s → 静音裁剪后放不下过渡窗口 → 无候选
+    const source = makeBpmAnalysis('netease-source', 120)
+    const target: TrackAnalysis = { ...makeBpmAnalysis('netease-target', 120, 40), introSilence: 30, outroSilence: 8 }
+    const withSkip = planTransitionV2(source, target, { beatMatching: true, skipSilence: true }, 'smart-rendered-v2')
+    const withoutSkip = planTransitionV2(source, target, { beatMatching: true, skipSilence: false }, 'smart-rendered-v2')
+    expect(withSkip.fallbackReason).toContain('Skip-silence')
+    expect(withSkip.strategy).toBe('smart-rendered-v2')
+    expect(withSkip.strategy).toBe(withoutSkip.strategy)
+    expect(withSkip.targetStartTime).toBe(withoutSkip.targetStartTime)
+    expect(withSkip.targetEndTime).toBe(withoutSkip.targetEndTime)
+    expect(withSkip.id).toBe(withoutSkip.id)
+  })
+
+  it('目标窗口末端有上界：不越过 duration - outroSilence（即便更晚的窗口乐句成本更低）（P1-24）', () => {
+    // 目标曲 outroSilence 20s → cap 100s；drop 段落（成本 0）落在 t=92，
+    // 若没有末端上界，成本最低的窗口会是 92-104（越过静音区）。
+    const target = makeAnalysis('netease-target', {
+      introSilence: 88,
+      outroSilence: 20,
+      sections: [{ time: 92, beatIndex: 184, type: 'drop', confidence: 0.9 }],
+    })
+    const plan = planTransitionV2(SOURCE, target, { beatMatching: true, skipSilence: true }, 'smart-rendered-v2')
+    expect(plan.strategy).toBe('smart-rendered-v2')
+    expect(plan.targetStartTime).toBeGreaterThanOrEqual(88)
+    expect(plan.targetEndTime).toBeLessThanOrEqual(100 + 1e-3)
+  })
+
+  it('目标窗口末端上界同样约束源曲 out 点（endTime 上界，不只是起点上界）', () => {
+    const source = makeAnalysis('netease-source', { outroSilence: 30 })
+    const plan = planTransitionV2(source, TARGET, { beatMatching: true, skipSilence: true }, 'smart-rendered-v2')
+    expect(plan.sourceEndTime).toBeLessThanOrEqual(90 + 1e-3)
   })
 })

@@ -1,0 +1,197 @@
+/** @vitest-environment jsdom */
+import React from 'react'
+import { render, cleanup, act } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  AutomixHudBadge,
+  AutomixHudProgressHint,
+  AUTOMIX_HUD_LEAD_SECONDS,
+  AUTOMIX_HUD_NODE_DELAY_SECONDS,
+  AUTOMIX_HUD_NODE_HOLD_SECONDS,
+  AUTOMIX_HUD_FADE_IN_SECONDS,
+  AUTOMIX_HUD_FADE_OUT_SECONDS,
+  formatAutomixHudTime,
+  transitionEngineDisplayName,
+} from '../src/components/AutomixHudBadge'
+
+/**
+ * 过渡 HUD 回归锁：
+ *   ① 药丸显示**时间节点**「即将在 m:ss 开始智能混音」（不是秒级倒计时），
+ *      且提示节奏为「本曲播放满 5 秒提示一次 → 显示 8 秒 → 渐隐」，每曲一遍（跨挂载记忆）；
+ *      计划晚于 5 秒才就绪（冷启动/未预载）时，就绪那一刻立刻提示；
+ *   ②「关闭」与主文案同一水平线：整行 items-baseline（文字基线严格对齐）+ 图标 alignSelf:center，
+ *      按钮内部 inline-flex + lineHeight 1 + 对称内边距（盒子不再把文字压低）；
+ *   ③ 底色用当前封面主题色的淡色（color-mix 混入原底色）；
+ *   ④ 渐入/渐出更快（0.22s / 0.3s，CSS 过渡 0.24s ease-out 抹平 250ms 量化台阶），
+ *      且隐藏是"先淡出再卸载"（不再啪地消失）；
+ *   ⑤ 引擎名只能是四个之一：AutoMix / AutoMix Pro / AutoMix Enhanced / Gapless；
+ *   ⑥ 无缝衔接（gapless）不出药丸（没有"开始智能混音"节点），只出进度条上方的金色引擎名。
+ */
+afterEach(() => {
+  vi.useRealTimers()
+  cleanup()
+})
+
+const noop = () => {}
+
+/** 每例用独立 trackKey：模块级"本曲已提示"记忆是跨用例共享的 */
+const badgeProps = (trackKey: string, startAt = 300) => ({
+  info: {
+    phase: 'armed' as const,
+    startAt,
+    endAt: startAt + 12,
+    engineLabel: 'AutoMix Enhanced',
+    kind: 'automix' as const,
+    key: `${trackKey}|${startAt}`,
+  },
+  scale: 1,
+  colors: { chip: 'rgba(15, 17, 24, 0.55)', text: '#f7f7fa', dim: 'rgba(255,255,255,0.55)' },
+  accentColor: 'rgb(120, 40, 200)',
+})
+
+/** 让淡入 rAF 与 CSS 过渡跑一帧（配合假定时器） */
+const flushFadeIn = async () => {
+  await act(async () => { vi.advanceTimersByTime(40) })
+}
+
+describe('AutoMix HUD 药丸', () => {
+  it('播放满 5 秒才提示：5 秒前不渲染，5 秒后显示时间节点（m:ss，不带倒计时）', async () => {
+    vi.useFakeTimers()
+    const props = badgeProps('t-delay')
+    const { container, rerender } = render(<AutomixHudBadge {...props} currentTime={3} onDismiss={noop} />)
+    expect(container.firstElementChild).toBeNull()
+    rerender(<AutomixHudBadge {...props} currentTime={AUTOMIX_HUD_NODE_DELAY_SECONDS + 0.2} onDismiss={noop} />)
+    await flushFadeIn()
+    expect(container.textContent).toContain('即将在 5:00 开始智能混音')
+    expect(container.textContent).not.toContain('秒后')
+    expect(formatAutomixHudTime(300)).toBe('5:00')
+    expect(formatAutomixHudTime(59.9)).toBe('0:59')
+  })
+
+  it('显示满 8 秒后渐隐并卸载；同一首歌换切点重挂也不再提示', async () => {
+    vi.useFakeTimers()
+    const props = badgeProps('t-hold')
+    const { container, rerender } = render(<AutomixHudBadge {...props} currentTime={6} onDismiss={noop} />)
+    await flushFadeIn()
+    expect(container.firstElementChild).toBeTruthy()
+    // 8 秒到点 → 先淡出（opacity 0），淡出跑完再卸载
+    await act(async () => { vi.advanceTimersByTime(AUTOMIX_HUD_NODE_HOLD_SECONDS * 1000 + 20) })
+    const fading = container.firstElementChild as HTMLElement | null
+    expect(fading).toBeTruthy()
+    expect(fading!.style.opacity).toBe('0')
+    await act(async () => { vi.advanceTimersByTime(AUTOMIX_HUD_FADE_OUT_SECONDS * 1000 + 120) })
+    expect(container.firstElementChild).toBeNull()
+    // 同曲（trackKey 相同）换了切点、位置也早已 ≥5s → 仍不再提示（每曲一遍）
+    rerender(<AutomixHudBadge {...props} info={{ ...props.info, key: 't-hold|305' }} currentTime={120} onDismiss={noop} />)
+    await flushFadeIn()
+    expect(container.firstElementChild).toBeNull()
+  })
+
+  it('计划晚到（冷启动/新歌未预载，播放位置早已超过 5 秒）：就绪那一刻立刻提示', async () => {
+    vi.useFakeTimers()
+    const props = badgeProps('t-late')
+    // 组件只有在计划就绪时才会被挂载：此刻播放已经在 42 秒 → 立刻进入提示
+    const { container } = render(<AutomixHudBadge {...props} currentTime={42} onDismiss={noop} />)
+    await flushFadeIn()
+    expect(container.textContent).toContain('即将在 5:00 开始智能混音')
+  })
+
+  it('过渡开跑（phase=running）即淡出并卸载，不再补播', async () => {
+    const props = badgeProps('t-running')
+    const { container, rerender } = render(<AutomixHudBadge {...props} currentTime={294} onDismiss={noop} />)
+    expect(container.firstElementChild).toBeTruthy()
+    rerender(<AutomixHudBadge {...props} info={{ ...props.info, phase: 'running' }} currentTime={295} onDismiss={noop} />)
+    const fading = container.firstElementChild as HTMLElement | null
+    expect(fading).toBeTruthy()
+    expect(fading!.style.opacity).toBe('0')
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, AUTOMIX_HUD_FADE_OUT_SECONDS * 1000 + 200))
+    })
+    expect(container.firstElementChild).toBeNull()
+  })
+
+  it('引擎名映射只有四个：AutoMix / AutoMix Pro / AutoMix Enhanced / Gapless', () => {
+    expect(transitionEngineDisplayName('smart-rendered', true, 'standard')).toBe('AutoMix')
+    expect(transitionEngineDisplayName('beat-crossfade', true, 'standard')).toBe('AutoMix')
+    expect(transitionEngineDisplayName('smart-rendered-v2', true, 'pro')).toBe('AutoMix Pro')
+    expect(transitionEngineDisplayName('smart-rendered-qq', true, 'enhanced')).toBe('AutoMix Enhanced')
+    expect(transitionEngineDisplayName('gapless', true, 'enhanced')).toBe('Gapless')
+    expect(transitionEngineDisplayName('gapless', false, 'standard')).toBe('Gapless')
+    // 没开启智能混音、或没有归属引擎（纯交叉淡化/看歌模式 none）→ 不显示任何名字
+    expect(transitionEngineDisplayName('smart-rendered', false, 'standard')).toBeNull()
+    expect(transitionEngineDisplayName('none', true, 'standard')).toBeNull()
+    expect(transitionEngineDisplayName('fixed-crossfade', true, 'pro')).toBeNull()
+  })
+
+  it('无缝衔接（gapless）不出药丸，只由进度条上方的金色引擎名承担', () => {
+    const gaplessProps = {
+      ...badgeProps('t-gapless'),
+      info: { ...badgeProps('t-gapless').info, engineLabel: 'Gapless', kind: 'gapless' as const, key: 'gapless|300' },
+    }
+    const { container } = render(<AutomixHudBadge {...gaplessProps} currentTime={42} onDismiss={noop} />)
+    expect(container.firstElementChild).toBeNull()
+    // 进度条提示：等待窗口内 + 过渡中都显示引擎名
+    const hint = render(<AutomixHudProgressHint info={gaplessProps.info} currentTime={294} scale={1} />)
+    expect(hint.container.textContent).toContain('Gapless')
+    expect(AUTOMIX_HUD_LEAD_SECONDS).toBe(8)
+  })
+
+  it('底色用当前封面主题色淡色（color-mix），并保留 CSS 过渡为 0.24s ease-out', () => {
+    const props = badgeProps('t-color')
+    const { container } = render(<AutomixHudBadge {...props} currentTime={294} onDismiss={noop} />)
+    const pill = container.firstElementChild as HTMLElement
+    expect(pill).toBeTruthy()
+    expect(pill.style.background).toContain('color-mix')
+    expect(pill.style.background).toContain(props.accentColor)
+    expect(pill.style.transition).toContain('0.24s')
+  })
+
+  it('「关闭」与主文案同一水平线（整行基线对齐 + 按钮自身盒模型不偏），并触发跳过回调', () => {
+    const onDismiss = vi.fn()
+    const props = badgeProps('t-dismiss')
+    const { container } = render(<AutomixHudBadge {...props} currentTime={294} onDismiss={onDismiss} />)
+    const pill = container.firstElementChild as HTMLElement
+    const button = container.querySelector('button') as HTMLButtonElement
+    expect(button).toBeTruthy()
+    expect(button.textContent).toBe('关闭')
+    // ① 整行按基线对齐：小字与大字的文字基线严格同线（垂直居中会让小字基线偏低 ~0.5px+）
+    expect(pill.className).toContain('items-baseline')
+    expect(pill.className).not.toContain('items-center')
+    // 图标单独垂直居中，不跟基线（SVG 的基线是底边，会往下沉）
+    const icon = pill.querySelector('svg') as SVGElement
+    expect(icon.style.alignSelf).toBe('center')
+    // ② 按钮自身盒模型：inline-flex + lineHeight 1 + 对称内边距 —— 文字在盒内不被压低
+    expect(button.style.display).toBe('inline-flex')
+    expect(button.style.alignItems).toBe('center')
+    expect(button.style.lineHeight).toBe('1')
+    const padTop = button.style.paddingTop
+    const padBottom = button.style.paddingBottom
+    expect(padTop).toBe(padBottom)
+    expect(padTop).not.toBe('')
+    expect(button.getAttribute('title') || '').toContain('智能混音')
+    // 主文案盒子收紧（lineHeight 1.15），避免大行高主导基线位置
+    const label = pill.querySelector('span') as HTMLElement
+    expect(label.style.lineHeight).toBe('1.15')
+    button.click()
+    expect(onDismiss).toHaveBeenCalledTimes(1)
+  })
+
+  it('渐入渐出预算已收紧（0.22s / 0.3s），切点到达也是淡出后卸载', async () => {
+    expect(AUTOMIX_HUD_FADE_IN_SECONDS).toBeLessThanOrEqual(0.25)
+    expect(AUTOMIX_HUD_FADE_OUT_SECONDS).toBeLessThanOrEqual(0.35)
+    // 换一首当前曲（trackKey 变）→ 记忆复位，重新允许提示
+    const props = badgeProps('t-budget')
+    const { container, rerender } = render(<AutomixHudBadge {...props} currentTime={294} onDismiss={noop} />)
+    expect(container.firstElementChild).toBeTruthy()
+    // 切点已到（phase 仍是 armed，但剩余 ≤0）→ 立刻把不透明度压到 0（CSS 过渡负责"滑走"），
+    // 元素留在树上等淡出结束再卸载，而不是当场消失。
+    rerender(<AutomixHudBadge {...props} currentTime={300.5} onDismiss={noop} />)
+    const pill = container.firstElementChild as HTMLElement | null
+    expect(pill).toBeTruthy()
+    expect(pill!.style.opacity).toBe('0')
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, AUTOMIX_HUD_FADE_OUT_SECONDS * 1000 + 200))
+    })
+    expect(container.firstElementChild).toBeNull()
+  })
+})

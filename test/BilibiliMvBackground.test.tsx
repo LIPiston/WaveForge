@@ -10,6 +10,7 @@ let mockWatchSettings = { targetQuality: 'auto', showLowConfidenceCandidates: fa
 
 vi.mock('../src/services/bilibiliApi', () => ({
   findBestBilibiliMv: vi.fn(),
+  pickPlayableCandidate: vi.fn((r) => (r.fallbackChain || r.candidates || [])[0] || null),
   getBilibiliView: vi.fn(),
   getBilibiliPlayUrl: vi.fn(),
   bilibiliStreamUrl: vi.fn((key: string, kind: string) => `http://stream/${key}/${kind}`),
@@ -19,6 +20,11 @@ vi.mock('../src/services/bilibiliApi', () => ({
   setBilibiliOverride: vi.fn(),
   getBilibiliOverride: vi.fn(() => null),
   clearBilibiliOverride: vi.fn(),
+  // 会话内手动选择（内存，未标记不构成记忆）：背景层选片只写这里，不写 override
+  setSessionManualPick: vi.fn(),
+  getSessionManualPick: vi.fn(() => null),
+  clearSessionManualPick: vi.fn(),
+  noteCurrentSongForManualPick: vi.fn(),
   getBilibiliWatchSettings: vi.fn(() => mockWatchSettings),
   WATCH_SETTINGS_EVENT: 'bilibili-settings-changed',
   resolveBiliPic: vi.fn((url: string) => url),
@@ -528,5 +534,175 @@ describe('BilibiliMvBackground regressions', () => {
     fireEvent.canPlay(video)
     await act(async () => { vi.advanceTimersByTime(1500) })
     expect(video.currentTime).toBe(61)
+  })
+
+  // commit 帧（App 同批清 transitionToTrack + progress 归零）不得把已按 progress 淡入的
+  // staged 槽透明度重置为 0——否则新 MV 瞬间消失、旧 MV 闪一帧再从 0 淡入。
+  it('keeps the committed staged slot opaque across the commit frame', async () => {
+    const audio = new Audio()
+    vi.mocked(bili.getBilibiliPlayUrl).mockImplementation(async (bvid: string) => ({ code: 0, cacheKey: `cache-${bvid}` }) as any)
+    vi.mocked(bili.findBestBilibiliMv).mockImplementation((ctx: any) => Promise.resolve(
+      autoResult(ctx.songTitle === 'Target' ? 'target-bvid' : 'current-bvid'),
+    ) as any)
+
+    const view = render(<BilibiliMvBackground {...baseProps(audio)} />)
+    await waitFor(() => expect(view.container.querySelector('video')?.getAttribute('src')).toBe('http://stream/cache-current-bvid/video'))
+    const currentVideo = view.container.querySelector('video')!
+    setMediaState(currentVideo, { readyState: 4, duration: 180 })
+    fireEvent.canPlay(currentVideo)
+
+    view.rerender(
+      <BilibiliMvBackground
+        {...baseProps(audio)}
+        isPlaying
+        transitionProgress={0.6}
+        transitionToTrack={{ trackKey: 'target-track', coverUrl: '', title: 'Target', artist: 'Artist', duration: 180, id: 'target' }}
+      />,
+    )
+    const targetVideo = await waitFor(() => {
+      const videos = [...view.container.querySelectorAll('video')]
+      const video = videos.find(item => item.getAttribute('src') === 'http://stream/cache-target-bvid/video')
+      expect(video).toBeTruthy()
+      return video!
+    })
+    setMediaState(targetVideo, { readyState: 4, duration: 180 })
+    fireEvent.canPlay(targetVideo)
+    expect(targetVideo.style.opacity).toBe('0.6')
+
+    // commit 帧：目标被打断/清空的同一帧，已就位的 staged 槽不得归 0
+    view.rerender(
+      <BilibiliMvBackground {...baseProps(audio)} isPlaying transitionProgress={0} transitionToTrack={null} />,
+    )
+    expect(targetVideo.style.opacity).toBe('1')
+  })
+
+  // 过渡期 staged 槽只被 seek 不播放 → 渐入的是 2-4fps 静止帧；canplay 后必须开播（muted）。
+  it('plays the staged MV during a running transition', async () => {
+    const audio = new Audio()
+    vi.mocked(bili.getBilibiliPlayUrl).mockImplementation(async (bvid: string) => ({ code: 0, cacheKey: `cache-${bvid}` }) as any)
+    vi.mocked(bili.findBestBilibiliMv).mockImplementation((ctx: any) => Promise.resolve(
+      autoResult(ctx.songTitle === 'Target' ? 'target-bvid' : 'current-bvid'),
+    ) as any)
+
+    const view = render(<BilibiliMvBackground {...baseProps(audio)} />)
+    await waitFor(() => expect(view.container.querySelector('video')?.getAttribute('src')).toBe('http://stream/cache-current-bvid/video'))
+    const currentVideo = view.container.querySelector('video')!
+    setMediaState(currentVideo, { readyState: 4, duration: 180 })
+    fireEvent.canPlay(currentVideo)
+
+    view.rerender(
+      <BilibiliMvBackground
+        {...baseProps(audio)}
+        isPlaying
+        getTransitionTargetTimeSeconds={() => 30}
+        transitionProgress={0.5}
+        transitionToTrack={{ trackKey: 'target-track', coverUrl: '', title: 'Target', artist: 'Artist', duration: 180, id: 'target' }}
+      />,
+    )
+    const targetVideo = await waitFor(() => {
+      const videos = [...view.container.querySelectorAll('video')]
+      const video = videos.find(item => item.getAttribute('src') === 'http://stream/cache-target-bvid/video')
+      expect(video).toBeTruthy()
+      return video!
+    })
+    // 元素级 play/paused：只反映该 staged 槽自己的播放状态
+    let stagedPlaying = false
+    Object.defineProperty(targetVideo, 'play', {
+      configurable: true,
+      value: () => { stagedPlaying = true; return Promise.resolve() },
+    })
+    Object.defineProperty(targetVideo, 'paused', { configurable: true, get: () => !stagedPlaying })
+    setMediaState(targetVideo, { readyState: 4, duration: 180, currentTime: 0 })
+
+    fireEvent.canPlay(targetVideo)
+    expect(stagedPlaying).toBe(true)
+    expect(targetVideo.paused).toBe(false)
+  })
+
+  // 预载属于下一曲：active 槽为空时必须放弃本次预载，绝不能把下一曲 MV 写进当前曲的可见槽。
+  it('never writes a staged preload into the active slot', async () => {
+    const audio = new Audio()
+    let resolveCurrent!: (value: any) => void
+    const currentSearch = new Promise((resolve) => { resolveCurrent = resolve })
+    vi.mocked(bili.getBilibiliPlayUrl).mockImplementation(async (bvid: string) => ({ code: 0, cacheKey: `cache-${bvid}` }) as any)
+    vi.mocked(bili.findBestBilibiliMv).mockImplementation((ctx: any) => (
+      ctx.songTitle === 'Current' ? currentSearch : Promise.resolve(autoResult('target-bvid'))
+    ) as any)
+
+    const view = render(<BilibiliMvBackground {...baseProps(audio)} />)
+    view.rerender(
+      <BilibiliMvBackground
+        {...baseProps(audio)}
+        transitionToTrack={{ trackKey: 'target-track', coverUrl: '', title: 'Target', artist: 'Artist', duration: 180, id: 'target' }}
+      />,
+    )
+    await waitFor(() => expect(bili.getBilibiliPlayUrl).toHaveBeenCalledWith('target-bvid', 1, 112, expect.any(AbortSignal)))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    const videos = [...view.container.querySelectorAll('video')]
+    expect(videos[0].getAttribute('src')).toBeNull()
+    expect(videos[0].style.display).toBe('none')
+    resolveCurrent({ status: 'none', best: null, candidates: [], fallbackChain: [] })
+  })
+
+  // armed（有过渡目标、动画未开始）时当前曲自己的槽仍需晋升：否则它的 MV 会被下一首的
+  // 过渡目标压到 commit 才上位（AI 档最长 60s）。
+  it('promotes the current song own staged slot while the next transition is armed', async () => {
+    const audio = new Audio()
+    vi.mocked(bili.getBilibiliPlayUrl).mockImplementation(async (bvid: string) => ({ code: 0, cacheKey: `cache-${bvid}` }) as any)
+    vi.mocked(bili.findBestBilibiliMv).mockImplementation((ctx: any) => Promise.resolve(
+      autoResult(ctx.songTitle === 'Target' ? 'target-bvid' : 'current-bvid'),
+    ) as any)
+
+    const view = render(<BilibiliMvBackground {...baseProps(audio)} />)
+    await waitFor(() => expect(view.container.querySelector('video')?.getAttribute('src')).toBe('http://stream/cache-current-bvid/video'))
+    const currentVideo = view.container.querySelector('video')!
+    setMediaState(currentVideo, { readyState: 4, duration: 180 })
+    fireEvent.canPlay(currentVideo)
+
+    // 过渡预载目标 MV，但视频尚未就绪
+    view.rerender(
+      <BilibiliMvBackground
+        {...baseProps(audio)}
+        isPlaying
+        transitionProgress={1}
+        transitionToTrack={{ trackKey: 'target-track', coverUrl: '', title: 'Target', artist: 'Artist', duration: 180, id: 'target' }}
+      />,
+    )
+    const targetVideo = await waitFor(() => {
+      const videos = [...view.container.querySelectorAll('video')]
+      const video = videos.find(item => item.getAttribute('src') === 'http://stream/cache-target-bvid/video')
+      expect(video).toBeTruthy()
+      return video!
+    })
+    setMediaState(targetVideo, { readyState: 1, duration: 180 })
+
+    // commit：目标曲成为当前曲，预载槽留在隐藏槽等待晋升
+    view.rerender(
+      <BilibiliMvBackground
+        {...baseProps(audio)}
+        songTitle="Target"
+        songId="target"
+        songTrackKey="target-track"
+        isPlaying
+        transitionToTrack={null}
+      />,
+    )
+    // 下一首的过渡已 armed（有目标、progress 仍为 0）
+    view.rerender(
+      <BilibiliMvBackground
+        {...baseProps(audio)}
+        songTitle="Target"
+        songId="target"
+        songTrackKey="target-track"
+        isPlaying
+        transitionProgress={0}
+        transitionToTrack={{ trackKey: 'later-track', coverUrl: '', title: 'Later', artist: 'Artist', duration: 180, id: 'later' }}
+      />,
+    )
+
+    setMediaState(targetVideo, { readyState: 4, duration: 180 })
+    fireEvent.canPlay(targetVideo)
+    expect(targetVideo.style.opacity).toBe('1')
   })
 })

@@ -9,7 +9,7 @@ const safeBpm = (value: number) => Math.max(40, Math.min(240, value || 120))
 const DEFAULT_BEAT_COUNTS = [8, 16, 24, 32]
 // v1 智能混音 BPM 差上限：保持历史行为（真实歌单常超此值而降级为交叉淡化）。
 const MAX_SMART_MIX_BPM_DIFFERENCE = 5
-// v2 增强版 BPM 差上限：逐拍保音高拉伸实际可承受 ±15% 变速（≈±18 BPM@120），
+// v2（Pro）BPM 差上限：逐拍保音高拉伸实际可承受 ±15% 变速（≈±18 BPM@120），
 // 放宽到 15 使真实歌单（BPM 差 5~15 常见）不再静默降级成纯交叉淡化。
 const MAX_SMART_MIX_BPM_DIFFERENCE_V2 = 15
 // v2 大 BPM 差（15~100）：不做节拍对齐拉伸（±15% 外质量崩坏），改为"特效过渡"——
@@ -22,7 +22,7 @@ const MIN_ANALYSIS_CONFIDENCE = 0.55
 const MIN_ANALYSIS_CONFIDENCE_V2 = 0.35
 // 渲染器/算法版本标识：并入 plan.id，避免不同版本渲染结果在缓存中互相碰撞。
 const RENDERER_VERSION = 'pitch-preserving-beatgrid-djfx-v4'
-// AutoMix 增强版（v2）渲染器版本：独立于 v1，参与 v2 plan.id 与磁盘缓存 key 隔离。
+// AutoMix Pro（v2）渲染器版本：独立于 v1，参与 v2 plan.id 与磁盘缓存 key 隔离。
 const RENDERER_VERSION_V2 = 'automix-v2-dsp-r1'
 // Enhanced 默认走 Folia 的独立 stem renderer；DJTransGAN 仅由显式开关选择。
 const RENDERER_VERSION_FOLIA = 'folia-beatthis-htdemucs-automix-v2-r1'
@@ -125,6 +125,82 @@ function buildWindow(
     beatTimes,
     frames: Array.from({ length: beatCount }, (_, offset) => frameByBeat.get(point.beatIndex + offset)),
   }
+}
+
+/** 候选窗口末端容差（秒）：浮点/网格微越界不算越界。 */
+const WINDOW_END_EPSILON = 1e-3
+/** 目标起窗区间最小宽度（秒）：introSilence 接近 20% 时长时区间不能塌成一点。 */
+const MIN_TARGET_WINDOW_WIDTH = 4
+/** 静音裁剪把候选集剪空时的回退说明（显式记录到 plan.fallbackReason，供调试弹窗/日志）。 */
+const SKIP_SILENCE_EMPTY_NOTE =
+  'Skip-silence left no candidate window (intro/outro silence); using uncropped windows'
+
+/** 合并降级原因与静音裁剪回退说明（都记录、不互相覆盖）；note 不参与策略判定。 */
+function composeFallbackReason(
+  reason: string | undefined,
+  skipSilenceNote: string | undefined,
+): string | undefined {
+  if (!skipSilenceNote) return reason
+  return reason ? `${reason}; ${skipSilenceNote}` : skipSilenceNote
+}
+
+interface CandidateWindowSets {
+  sourceWindows: BeatWindow[]
+  targetWindows: BeatWindow[]
+  skipSilenceNote?: string
+}
+
+/**
+ * 构建源/目标候选窗口，并按 skipSilence 做首尾静音裁剪：
+ * - 目标起窗区间保证最小宽度（≥4s），避免 introSilence > 20% 时长时区间塌成一点、
+ *   候选集为空、整条计划退化成片尾固定交叉（开"跳过静音"反而更差）；
+ * - 窗口末端有界：endTime ≤ duration - outroSilence（+ε），不再只保证 endTime ≥ 起点；
+ * - 静音裁剪导致无候选时回退到未裁剪候选集（与不开 skipSilence 等价）并显式记录 reason，
+ *   策略判定不受影响（note 只进 fallbackReason，不参与 smartEligible）。
+ */
+function buildCandidateWindows(
+  source: TrackAnalysis,
+  target: TrackAnalysis,
+  beatCount: number,
+  skipSilence: boolean,
+): CandidateWindowSets {
+  const sourceFrameByBeat = new Map(source.beatFeatures.map(frame => [frame.beatIndex, frame]))
+  const targetFrameByBeat = new Map(target.beatFeatures.map(frame => [frame.beatIndex, frame]))
+  const build = (cropSilence: boolean): Omit<CandidateWindowSets, 'skipSilenceNote'> => {
+    // 尾部静音确定性裁剪（skipSilence）：过渡窗口不进入 outroSilence 静音区，
+    // out 点落在真静音边界前（-45dBFS 语义，QQ 无缝"跳过首尾静音"同款）。
+    // 分析缺失/无尾静音时 cap=duration，与原行为一致。
+    const sourceEndCap = cropSilence && Number.isFinite(source.outroSilence) && source.outroSilence > 0
+      ? Math.max(0, source.duration - source.outroSilence)
+      : source.duration
+    // 过滤阈值跟随 cap 收缩：大段尾静音被裁掉后，避免候选窗被 75% 过滤器全部排除
+    const sourceEndFilter = Math.min(source.duration * 0.75, Math.max(0, sourceEndCap - 1))
+    const sourceWindows = candidatePoints(source, 0, sourceEndCap)
+      .map(point => buildWindow(source, point, beatCount, sourceFrameByBeat))
+      .filter((window): window is BeatWindow => Boolean(
+        window
+        && window.endTime >= sourceEndFilter
+        && window.endTime <= sourceEndCap + WINDOW_END_EPSILON,
+      ))
+    const targetStartMin = cropSilence ? Math.max(0, target.introSilence) : 0
+    const targetStartMax = Math.max(targetStartMin + MIN_TARGET_WINDOW_WIDTH, target.duration * 0.2)
+    const targetEndCap = cropSilence && Number.isFinite(target.outroSilence) && target.outroSilence > 0
+      ? Math.max(0, target.duration - target.outroSilence)
+      : target.duration
+    const targetWindows = candidatePoints(target, targetStartMin, targetStartMax)
+      .map(point => buildWindow(target, point, beatCount, targetFrameByBeat))
+      .filter((window): window is BeatWindow => Boolean(
+        window && window.endTime <= targetEndCap + WINDOW_END_EPSILON,
+      ))
+    return { sourceWindows, targetWindows }
+  }
+
+  let windows = build(skipSilence)
+  if (skipSilence && (!windows.sourceWindows.length || !windows.targetWindows.length)) {
+    windows = build(false)
+    return { ...windows, skipSilenceNote: SKIP_SILENCE_EMPTY_NOTE }
+  }
+  return windows
 }
 
 /**
@@ -304,27 +380,12 @@ export function planTransition(
   const maxDuration = Math.max(minDuration, Math.min(20, requestedMax))
   const beatCount = chooseBeatCount(beatDuration, minDuration, maxDuration)
 
-  const sourceFrameByBeat = new Map(source.beatFeatures.map(frame => [frame.beatIndex, frame]))
-  const targetFrameByBeat = new Map(target.beatFeatures.map(frame => [frame.beatIndex, frame]))
+  // 源/目标候选窗口（含 skipSilence 首尾静音裁剪与"剪空回退"，见 buildCandidateWindows）
+  const targetStartMin = settings.skipSilence ? Math.max(0, target.introSilence) : 0
   const sourceLoudness = loudnessNormalizer(source)
   const targetLoudness = loudnessNormalizer(target)
-
-  // 尾部静音确定性裁剪（skipSilence）：过渡窗口不进入 outroSilence 静音区，
-  // out 点落在真静音边界前（-45dBFS 语义，QQ 无缝"跳过首尾静音"同款）。
-  // 分析缺失/无尾静音时 cap=duration，与原行为一致。
-  const sourceEndCap = settings.skipSilence && Number.isFinite(source.outroSilence) && source.outroSilence > 0
-    ? Math.max(0, source.duration - source.outroSilence)
-    : source.duration
-  // 过滤阈值跟随 cap 收缩：大段尾静音被裁掉后，避免候选窗被 75% 过滤器全部排除
-  const sourceEndFilter = Math.min(source.duration * 0.75, Math.max(0, sourceEndCap - 1))
-  const sourceWindows = candidatePoints(source, 0, sourceEndCap)
-    .map(point => buildWindow(source, point, beatCount, sourceFrameByBeat))
-    .filter((window): window is BeatWindow => Boolean(window && window.endTime >= sourceEndFilter))
-  const targetStartMin = settings.skipSilence ? Math.max(0, target.introSilence) : 0
-  const targetStartMax = Math.max(targetStartMin, target.duration * 0.2)
-  const targetWindows = candidatePoints(target, targetStartMin, targetStartMax)
-    .map(point => buildWindow(target, point, beatCount, targetFrameByBeat))
-    .filter((window): window is BeatWindow => Boolean(window))
+  const { sourceWindows, targetWindows, skipSilenceNote } =
+    buildCandidateWindows(source, target, beatCount, settings.skipSilence)
 
   const pairs: CandidatePair[] = []
   for (const sourceWindow of sourceWindows) {
@@ -462,14 +523,14 @@ export function planTransition(
     gainOffsetDb,
     confidence,
     strategy: finalStrategy,
-    fallbackReason: reason,
+    fallbackReason: composeFallbackReason(reason, skipSilenceNote),
     analysisVersion: source.analysisVersion === target.analysisVersion ? source.analysisVersion : 'mixed-analysis',
     rendererVersion: RENDERER_VERSION,
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AutoMix 增强版（v2）计划层
+// AutoMix Pro（v2）计划层
 // 与 v1 完全隔离：独立函数、独立策略名、独立版本常量；v1 的 planTransition 零改动。
 // v2 在 v1 的候选点/窗口/成本框架之上增加：调性匹配（Krumhansl-Schmuckler）、
 // 乐句对齐、能量曲线匹配、特效编排（choreography）与强度档位。
@@ -502,7 +563,10 @@ function detectKey(frames: BeatFeatureFrame[]): KeyDetection | undefined {
       let lengthK = 0
       let lengthP = 0
       for (let pitch = 0; pitch < 12; pitch += 1) {
-        const rotated = krummhansl[(pitch + tonic) % 12]
+        // 标准 K-S 相关：把轮廓旋到主音（音级 p 对应轮廓的第 (p - tonic) 级），
+        // 使"主音上的轮廓权重最大"。此前的 (pitch + tonic) 是镜像旋转 →
+        // 除 C/F#（自镜像）外所有调被判成镜像调，导致移调方向取反、关系大小调兼容度失真。
+        const rotated = krummhansl[(pitch - tonic + 12) % 12]
         const value = profile[pitch]
         dot += rotated * value
         lengthK += rotated * rotated
@@ -538,11 +602,46 @@ function keyCompatibility(a?: KeyDetection, b?: KeyDetection): number {
   return 0.25
 }
 
-/** 窗口平均能量（0-1）：无帧数据时返回中性值。 */
-function windowEnergy(window: BeatWindow): number {
-  const values = window.frames
-    .map(frame => frame?.energy)
-    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+/** 线性插值分位数（输入需已升序排序）。 */
+function quantile(sortedValues: number[], fraction: number): number {
+  if (!sortedValues.length) return 0
+  const position = (sortedValues.length - 1) * fraction
+  const lower = Math.floor(position)
+  const upper = Math.min(sortedValues.length - 1, lower + 1)
+  const weight = position - lower
+  return sortedValues[lower] * (1 - weight) + sortedValues[upper] * weight
+}
+
+/**
+ * 逐曲能量归一化（per-track）：不同分析 provider 的 energy 量纲不一致——
+ * 桌面 python beat_analyzer 给 rms²（≈0.001~0.09），浏览器回退给 rms/maxRms（0~1）；
+ * 风格判据（energetic ≥0.3 / atmospheric <0.25）与能量成本必须跨 provider 可比，
+ * 因此在这里按该曲自身的能量分布（5%/95% 分位）归一化，不改分析器输出格式。
+ * 分布退化（全曲能量恒定）时返回原始量级（0~1 钳制）：恒定能量没有动态可比较，
+ * 保留"整体偏轻 → atmospheric"的保守判定。
+ */
+function energyNormalizer(analysis: TrackAnalysis): (frame?: BeatFeatureFrame) => number {
+  const values = analysis.beatFeatures
+    .map(frame => frame.energy)
+    .filter(value => typeof value === 'number' && Number.isFinite(value))
+    .sort((left, right) => left - right)
+  if (!values.length) return () => 0.5
+  const low = quantile(values, 0.05)
+  const high = quantile(values, 0.95)
+  const range = high - low
+  return frame => {
+    if (!frame || typeof frame.energy !== 'number' || !Number.isFinite(frame.energy)) return 0.5
+    if (range < 1e-9) return clamp01(frame.energy)
+    return clamp01((frame.energy - low) / range)
+  }
+}
+
+/** 窗口平均能量（0-1，逐曲归一后）：无帧数据时返回中性值。 */
+function windowEnergy(
+  window: BeatWindow,
+  normalizeEnergy: (frame?: BeatFeatureFrame) => number,
+): number {
+  const values = window.frames.map(frame => normalizeEnergy(frame))
   if (!values.length) return 0.5
   return values.reduce((sum, value) => sum + value, 0) / values.length
 }
@@ -713,7 +812,7 @@ function keyPitchShiftSemitones(
 }
 
 /**
- * AutoMix 增强版（v2）计划生成器。
+ * AutoMix Pro（v2）计划生成器。
  * 输出策略为 'smart-rendered-v2'（走 v2 渲染器）或与 v1 相同的降级策略
  * （beat-crossfade / fixed-crossfade），降级路径与 v1 完全一致。
  */
@@ -733,10 +832,12 @@ export function planTransitionV2(
   const sourceBpm = safeBpm(source.estimatedBpm)
   const targetBpm = safeBpm(target.estimatedBpm)
   const bpmDifference = Math.abs(sourceBpm - targetBpm)
-  // 部分同步（Apple 专利）：BPM 差 15~100 且快曲≈慢曲整数倍（±5% 容差）→
-  // 快曲跳拍对齐慢曲网格。有效 BPM 差≈0，可走完整智能混音而无需 ±N 倍拉伸。
+  // 部分同步（Apple 专利）：快曲≈慢曲整数倍（±5% 容差）→ 快曲跳拍对齐慢曲网格。
+  // 有效 BPM 差≈0，可走完整智能混音而无需 ±N 倍拉伸。
+  // 整数倍救援先于 100 BPM 上限判定尝试：206.9↔103.45（ratio 2.0）这类倍频对的
+  // 原始差 >100，但归一后有效差≈0，是最该被救的一类；100 上限只作用于倍频归一后的有效差。
   let partialSyncN = 0
-  if (bpmDifference > MAX_SMART_MIX_BPM_DIFFERENCE_V2 && bpmDifference <= MAX_V2_EFFECTS_BPM_DIFFERENCE) {
+  if (bpmDifference > MAX_SMART_MIX_BPM_DIFFERENCE_V2) {
     const bpmRatio = Math.max(sourceBpm, targetBpm) / Math.max(1e-6, Math.min(sourceBpm, targetBpm))
     if (bpmRatio >= 1.9 && bpmRatio <= 2.1) partialSyncN = 2
     else if (bpmRatio >= 2.9 && bpmRatio <= 3.1) partialSyncN = 3
@@ -751,6 +852,11 @@ export function planTransitionV2(
   }
   // 时长定标用有效节奏：部分同步时两曲听感同速（慢曲速度），否则用两曲均值
   const effectiveTempoBpm = partialSyncN > 0 ? Math.min(sourceBpm, targetBpm) : (sourceBpm + targetBpm) / 2
+  // 有效 BPM 差：部分同步时快曲抽稀 N 拍后与慢曲同速（≈0），否则等于原始差。
+  // 上限判定（>100 降级）只作用于这个"倍频归一后"的差。
+  const effectiveBpmDifference = partialSyncN > 0
+    ? Math.abs(Math.max(sourceBpm, targetBpm) / partialSyncN - Math.min(sourceBpm, targetBpm))
+    : bpmDifference
   const beatDuration = 60 / safeBpm(effectiveTempoBpm)
   const tempoSimilarity = 1 - Math.min(bpmDifference / 40, 1)
   const baseDuration = tempoSimilarity > 0.8 ? 12 : tempoSimilarity > 0.5 ? 10 : 8
@@ -765,27 +871,17 @@ export function planTransitionV2(
   const targetKey = detectKey(target.beatFeatures)
   const keyCompat = keyCompatibility(sourceKey, targetKey)
 
-  const sourceFrameByBeat = new Map(source.beatFeatures.map(frame => [frame.beatIndex, frame]))
-  const targetFrameByBeat = new Map(target.beatFeatures.map(frame => [frame.beatIndex, frame]))
   const sourceLoudness = loudnessNormalizer(source)
   const targetLoudness = loudnessNormalizer(target)
+  // 逐曲能量归一化：桌面 provider 的 energy=rms² 与浏览器回退的 0~1 归一量纲不可比，
+  // 归一后再进风格判据/能量成本，保证同一能量形状在两种标度下得到相同 style（P1-22）。
+  const sourceEnergy = energyNormalizer(source)
+  const targetEnergy = energyNormalizer(target)
 
-  // 尾部静音确定性裁剪（skipSilence）：过渡窗口不进入 outroSilence 静音区，
-  // out 点落在真静音边界前（-45dBFS 语义，QQ 无缝"跳过首尾静音"同款）。
-  // 分析缺失/无尾静音时 cap=duration，与原行为一致。
-  const sourceEndCap = settings.skipSilence && Number.isFinite(source.outroSilence) && source.outroSilence > 0
-    ? Math.max(0, source.duration - source.outroSilence)
-    : source.duration
-  // 过滤阈值跟随 cap 收缩：大段尾静音被裁掉后，避免候选窗被 75% 过滤器全部排除
-  const sourceEndFilter = Math.min(source.duration * 0.75, Math.max(0, sourceEndCap - 1))
-  const sourceWindows = candidatePoints(source, 0, sourceEndCap)
-    .map(point => buildWindow(source, point, beatCount, sourceFrameByBeat))
-    .filter((window): window is BeatWindow => Boolean(window && window.endTime >= sourceEndFilter))
+  // 源/目标候选窗口（含 skipSilence 首尾静音裁剪与"剪空回退"，见 buildCandidateWindows）
   const targetStartMin = settings.skipSilence ? Math.max(0, target.introSilence) : 0
-  const targetStartMax = Math.max(targetStartMin, target.duration * 0.2)
-  const targetWindows = candidatePoints(target, targetStartMin, targetStartMax)
-    .map(point => buildWindow(target, point, beatCount, targetFrameByBeat))
-    .filter((window): window is BeatWindow => Boolean(window))
+  const { sourceWindows, targetWindows, skipSilenceNote } =
+    buildCandidateWindows(source, target, beatCount, settings.skipSilence)
 
   const pairs: CandidatePair[] = []
   for (const sourceWindow of sourceWindows) {
@@ -793,9 +889,9 @@ export function planTransitionV2(
       const sourceSection = nearestSection(source.sections, sourceWindow.endTime)
       const targetSection = nearestSection(target.sections, targetWindow.startTime)
       const windowCosts = averageWindowCost(sourceWindow, targetWindow, sourceLoudness, targetLoudness)
-      const sourceEnergy = windowEnergy(sourceWindow)
-      const targetEnergy = windowEnergy(targetWindow)
-      const energyDelta = Math.abs(sourceEnergy - targetEnergy)
+      const sourceWindowEnergy = windowEnergy(sourceWindow, sourceEnergy)
+      const targetWindowEnergy = windowEnergy(targetWindow, targetEnergy)
+      const energyDelta = Math.abs(sourceWindowEnergy - targetWindowEnergy)
       pairs.push({
         source: sourceWindow,
         target: targetWindow,
@@ -862,13 +958,13 @@ export function planTransitionV2(
     && sourceBeatTimes.length === beatCount + 1
     && targetBeatTimes.length === beatCount + 1
   )
-  // 策略判定：BPM 差 ≤15 → 全节拍对齐智能混音；15<差≤100 → 整数倍 BPM 对走
-  // 部分同步（快曲跳拍对齐，仍为智能混音），其余走特效过渡（无节拍对齐，
-  // 交叉 + 氛围特效层，保证真实歌单大 BPM 差也有实际效果）；>100 → 降级 fixed-crossfade。
+  // 策略判定：有效 BPM 差（倍频归一后）≤15 → 全节拍对齐智能混音；15<差≤100 →
+  // 整数倍 BPM 对走部分同步（快曲跳拍对齐，仍为智能混音），其余走特效过渡（无节拍对齐，
+  // 交叉 + 氛围特效层，保证真实歌单大 BPM 差也有实际效果）；有效差 >100 → 降级 fixed-crossfade。
   let reason: string | undefined
   let withoutBeatGrid = false
-  if (bpmDifference > MAX_V2_EFFECTS_BPM_DIFFERENCE) {
-    reason = `BPM difference ${bpmDifference.toFixed(1)} exceeds the ${MAX_V2_EFFECTS_BPM_DIFFERENCE} BPM smart-mix limit`
+  if (effectiveBpmDifference > MAX_V2_EFFECTS_BPM_DIFFERENCE) {
+    reason = `BPM difference ${effectiveBpmDifference.toFixed(1)} exceeds the ${MAX_V2_EFFECTS_BPM_DIFFERENCE} BPM smart-mix limit`
   } else if (bpmDifference > MAX_SMART_MIX_BPM_DIFFERENCE_V2) {
     if (partialSyncN > 0 && reliableGrid) {
       // 部分同步：快曲跳拍对齐慢曲网格（有效 BPM 差≈0），走完整智能混音
@@ -890,7 +986,7 @@ export function planTransitionV2(
   const smartEligible = !reason
   const finalStrategy = smartEligible
     ? strategy
-    : reliableGrid && bpmDifference <= MAX_V2_EFFECTS_BPM_DIFFERENCE
+    : reliableGrid && effectiveBpmDifference <= MAX_V2_EFFECTS_BPM_DIFFERENCE
       ? 'beat-crossfade'
       : 'fixed-crossfade'
 
@@ -906,9 +1002,9 @@ export function planTransitionV2(
     return 60 / Math.max(0.001, outputDuration)
   })
 
-  const sourceEnergy = chosen ? windowEnergy(chosen.source) : 0.5
-  const targetEnergy = chosen ? windowEnergy(chosen.target) : 0.5
-  const energyDelta = Math.abs(sourceEnergy - targetEnergy)
+  const chosenSourceEnergy = chosen ? windowEnergy(chosen.source, sourceEnergy) : 0.5
+  const chosenTargetEnergy = chosen ? windowEnergy(chosen.target, targetEnergy) : 0.5
+  const energyDelta = Math.abs(chosenSourceEnergy - chosenTargetEnergy)
   const { choreography, djEffects } = buildV2Choreography({
     sourceSection: chosen?.sourceSection,
     targetSection: chosen?.targetSection,
@@ -916,11 +1012,10 @@ export function planTransitionV2(
     // 部分同步时有效 BPM 差≈0（两曲听感同速），按匹配节拍对待编排
     bpmDifference: partialSyncN > 0 ? 0 : bpmDifference,
     energyDelta,
-    avgEnergy: (sourceEnergy + targetEnergy) / 2,
+    avgEnergy: (chosenSourceEnergy + chosenTargetEnergy) / 2,
     keyCompat,
     intensity,
   })
-  const smartEffects = smartEligible ? djEffects : undefined
   const gainOffsetDb = computeGainOffsetDb(source, target)
   // 大 BPM 差（无节拍对齐）时：编排固定为氛围型并显式开启氛围特效
   // （riser/噪声扫频/混响虚化/回声），关闭依赖节拍网格的特效（鼓点/加速/低音互换/滤波扫频）。
@@ -939,6 +1034,23 @@ export function planTransitionV2(
       drumFillBeats: 0,
     }
     : choreography
+  // djEffects 必须与最终编排一致：无节拍网格路径下渲染端无条件执行 djEffects，
+  // 若继续沿用覆盖前 choreography 生成的 bassSwap/filterSweep，就会与
+  // "关闭依赖节拍网格的特效"的语义（以及调试弹窗清单）自相矛盾（P2-18）。
+  const finalDjEffects: DJEffectsPlan | undefined = !smartEligible
+    ? undefined
+    : withoutBeatGrid
+      ? {
+        ...djEffects,
+        profile: 'smooth',
+        bassSwap: finalChoreography.bassSwap,
+        filterSweep: finalChoreography.filterSweep,
+        echoOut: finalChoreography.echoOut,
+        sweepFx: finalChoreography.noiseSweep,
+        echoDelayBeats: 0.5,
+        echoFeedback: 0.22,
+      }
+      : djEffects
 
   // ── 乐句锚定：riser 收在 source 的 drop/break/outro 段落，混响虚化从 outro 前开始 ──
   const srcSection = chosen?.sourceSection
@@ -963,7 +1075,7 @@ export function planTransitionV2(
   // 谐波变调：过渡窗口内目标曲变调到源曲主音（≤2 半音），和声兼容
   const pitchShiftSemitones = keyPitchShiftSemitones(sourceKey, targetKey)
   // 能量平衡：target 更响 → 正，交叉中点略提前
-  const energyBalance = (targetEnergy - sourceEnergy) / Math.max(0.1, targetEnergy + sourceEnergy)
+  const energyBalance = (chosenTargetEnergy - chosenSourceEnergy) / Math.max(0.1, chosenTargetEnergy + chosenSourceEnergy)
   // Stem 分离窗口围绕 v2 粗计划的实际接缝，而不是机械取整曲头/尾：
   // source 覆盖出点前最多 30s；target 从入点开始覆盖最多 30s。
   // 缺模型/失败时 renderer 忽略该声明并保持原 full-mix v2 DSP。
@@ -1016,13 +1128,13 @@ export function planTransitionV2(
     targetSection: chosen?.targetSection,
     sourceBeatTimes,
     targetBeatTimes,
-    djEffects: smartEffects,
+    djEffects: finalDjEffects,
     v2,
     gainCurve: buildV2GainCurves(beatCount, anchoredChoreography.style, energyBalance),
     gainOffsetDb,
     confidence,
     strategy: finalStrategy,
-    fallbackReason: reason,
+    fallbackReason: composeFallbackReason(reason, skipSilenceNote),
     analysisVersion: source.analysisVersion === target.analysisVersion ? source.analysisVersion : 'mixed-analysis',
     rendererVersion,
   }
