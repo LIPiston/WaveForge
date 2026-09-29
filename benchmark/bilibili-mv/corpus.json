@@ -1,49 +1,4339 @@
 [
-  {"id":"game-cn-valorant-ticking-away","split":"dev","title":"Ticking Away","artists":["VALORANT Music","Grabbitz","bbno$"],"duration":205,"category":"game-international","locale":"en","popularity":"popular","targetVersion":"full-original","franchise":"VALORANT"},
-  {"id":"game-cn-genshin-rage-beneath","split":"dev","title":"Rage Beneath the Mountains","artists":["HOYO-MiX","陈致逸"],"duration":212,"category":"game-cn","locale":"instrumental","popularity":"popular","targetVersion":"full-original","franchise":"原神"},
-  {"id":"game-cn-genshin-rubia","split":"dev","title":"Rubia","artists":["周深","HOYO-MiX"],"duration":195,"category":"game-cn","locale":"en","popularity":"popular","targetVersion":"full-original","franchise":"崩坏3"},
-  {"id":"game-cn-hsr-wildfire","split":"dev","title":"Wildfire","artists":["HOYO-MiX","Jonathan Steingard"],"duration":227,"category":"game-cn","locale":"en","popularity":"popular","targetVersion":"full-original","franchise":"崩坏：星穹铁道"},
-  {"id":"game-cn-hsr-hope-is-thing","split":"holdout","title":"Hope Is the Thing With Feathers","artists":["HOYO-MiX","Chevy"],"duration":226,"category":"game-cn","locale":"en","popularity":"popular","targetVersion":"full-original","franchise":"崩坏：星穹铁道"},
-  {"id":"game-cn-zzz-come-alive","split":"dev","title":"Come Alive","artists":["HOYO-MiX","San-Z","Sam Haft"],"duration":221,"category":"game-cn","locale":"en","popularity":"medium","targetVersion":"full-original","franchise":"绝区零"},
-  {"id":"game-cn-arknights-speed-of-light","split":"dev","title":"Speed of Light","artists":["DJ OKAWARI","二宮愛"],"duration":241,"category":"game-cn","locale":"en","popularity":"medium","targetVersion":"full-original","franchise":"明日方舟"},
-  {"id":"game-cn-wuthering-saving-light","split":"holdout","title":"Saving Light","artists":["Jasmine Thompson"],"duration":191,"category":"game-cn","locale":"en","popularity":"medium","targetVersion":"full-original","franchise":"鸣潮"},
-  {"id":"game-cn-honor-of-kings-main-theme","split":"dev","title":"Main Theme","artists":["Hans Zimmer"],"duration":169,"category":"game-cn","locale":"instrumental","popularity":"popular","targetVersion":"full-original","franchise":"王者荣耀"},
-  {"id":"game-cn-naraka-unchained","split":"holdout","title":"无拘","artists":["林俊杰"],"duration":247,"category":"game-cn","locale":"zh","popularity":"medium","targetVersion":"full-original","franchise":"永劫无间"},
-  {"id":"game-intl-lol-warriors","split":"dev","title":"Warriors","artists":["Imagine Dragons"],"duration":171,"category":"game-international","locale":"en","popularity":"popular","targetVersion":"full-original","franchise":"League of Legends"},
-  {"id":"game-intl-lol-heavy-is-crown","split":"holdout","title":"Heavy Is the Crown","artists":["Linkin Park"],"duration":167,"category":"game-international","locale":"en","popularity":"popular","targetVersion":"full-original","franchise":"League of Legends"},
-  {"id":"game-jp-nier-weight-world","split":"dev","title":"Weight of the World","artists":["J'Nique Nicole","MONACA"],"duration":345,"category":"game-jp","locale":"en","popularity":"popular","targetVersion":"full-original","franchise":"NieR:Automata"},
-  {"id":"game-jp-elden-ring","split":"dev","title":"Elden Ring","artists":["Tsukasa Saitoh"],"duration":203,"category":"game-jp","locale":"instrumental","popularity":"popular","targetVersion":"full-original","franchise":"ELDEN RING"},
-  {"id":"game-jp-ff14-answers","split":"holdout","title":"Answers","artists":["植松伸夫","Susan Calloway"],"duration":427,"category":"game-jp","locale":"en","popularity":"medium","targetVersion":"full-original","franchise":"FINAL FANTASY XIV"},
-  {"id":"game-jp-persona-last-surprise","split":"dev","title":"Last Surprise","artists":["Lyn","目黒将司"],"duration":236,"category":"game-jp","locale":"en","popularity":"popular","targetVersion":"full-original","franchise":"Persona 5"},
-  {"id":"game-west-bury-light","split":"dev","title":"Bury the Light","artists":["Casey Edwards","Victor Borba"],"duration":574,"category":"game-international","locale":"en","popularity":"popular","targetVersion":"full-original","franchise":"Devil May Cry 5"},
-  {"id":"game-west-never-fade-away","split":"holdout","title":"Never Fade Away","artists":["SAMURAI","Refused"],"duration":190,"category":"game-international","locale":"en","popularity":"medium","targetVersion":"full-original","franchise":"Cyberpunk 2077"},
-
-  {"id":"anime-gurenge","split":"dev","title":"紅蓮華","artists":["LiSA"],"duration":236,"category":"anime","locale":"ja","popularity":"popular","targetVersion":"full-original","franchise":"鬼滅の刃"},
-  {"id":"anime-idol","split":"dev","title":"アイドル","artists":["YOASOBI"],"duration":213,"category":"anime","locale":"ja","popularity":"popular","targetVersion":"full-original","franchise":"推しの子"},
-  {"id":"anime-kick-back","split":"dev","title":"KICK BACK","artists":["米津玄師"],"duration":193,"category":"anime","locale":"ja","popularity":"popular","targetVersion":"full-original","franchise":"チェンソーマン"},
-  {"id":"anime-blue","split":"holdout","title":"青のすみか","artists":["キタニタツヤ"],"duration":196,"category":"anime","locale":"ja","popularity":"popular","targetVersion":"full-original","franchise":"呪術廻戦"},
-  {"id":"anime-hana-ni-natte","split":"dev","title":"花になって","artists":["緑黄色社会"],"duration":199,"category":"anime","locale":"ja","popularity":"medium","targetVersion":"full-original","franchise":"薬屋のひとりごと"},
-  {"id":"anime-unravel","split":"holdout","title":"unravel","artists":["TK from 凛として時雨"],"duration":238,"category":"anime","locale":"ja","popularity":"popular","targetVersion":"full-original","franchise":"東京喰種"},
-  {"id":"anime-tank-tv","split":"dev","title":"Tank! (TV Size)","artists":["SEATBELTS"],"duration":90,"category":"anime","locale":"instrumental","popularity":"medium","targetVersion":"tv-size","franchise":"Cowboy Bebop"},
-
-  {"id":"vocaloid-vampire","split":"dev","title":"ヴァンパイア","artists":["DECO*27","初音ミク"],"duration":179,"category":"vocaloid","locale":"ja","popularity":"popular","targetVersion":"virtual-singer"},
-  {"id":"vocaloid-god-ish","split":"dev","title":"神っぽいな","artists":["ピノキオピー","初音ミク"],"duration":204,"category":"vocaloid","locale":"ja","popularity":"popular","targetVersion":"virtual-singer"},
-  {"id":"vocaloid-lagtrain","split":"holdout","title":"ラグトレイン","artists":["稲葉曇","歌愛ユキ"],"duration":251,"category":"vocaloid","locale":"ja","popularity":"medium","targetVersion":"virtual-singer"},
-  {"id":"vocaloid-king","split":"dev","title":"KING","artists":["Kanaria","GUMI"],"duration":134,"category":"vocaloid","locale":"ja","popularity":"popular","targetVersion":"virtual-singer"},
-  {"id":"vocaloid-volt-tackle","split":"holdout","title":"ボルテッカー","artists":["DECO*27","初音ミク"],"duration":161,"category":"vocaloid","locale":"ja","popularity":"medium","targetVersion":"virtual-singer","franchise":"Project VOLTAGE"},
-  {"id":"pjsk-stella","split":"dev","title":"ステラ","artists":["Leo/need"],"duration":326,"category":"project-sekai","locale":"ja","popularity":"medium","targetVersion":"sekai-version","franchise":"Project SEKAI"},
-  {"id":"pjsk-lower","split":"holdout","title":"ロウワー","artists":["25時、ナイトコードで。"],"duration":230,"category":"project-sekai","locale":"ja","popularity":"medium","targetVersion":"sekai-version","franchise":"Project SEKAI"},
-  {"id":"pjsk-cinema","split":"dev","title":"シネマ","artists":["Vivid BAD SQUAD"],"duration":209,"category":"project-sekai","locale":"ja","popularity":"medium","targetVersion":"sekai-version","franchise":"Project SEKAI"},
-
-  {"id":"pop-cn-dao-xiang","split":"dev","title":"稻香","artists":["周杰伦"],"duration":223,"category":"pop","locale":"zh","popularity":"popular","targetVersion":"full-original"},
-  {"id":"pop-cn-xihuan-ni","split":"holdout","title":"喜欢你","artists":["G.E.M.邓紫棋"],"duration":239,"category":"pop","locale":"zh","popularity":"popular","targetVersion":"full-original"},
-  {"id":"pop-jp-yoru-ni-kakeru","split":"dev","title":"夜に駆ける","artists":["YOASOBI"],"duration":261,"category":"pop","locale":"ja","popularity":"popular","targetVersion":"full-original"},
-  {"id":"pop-jp-seasons","split":"holdout","title":"春夏秋冬 (Seasons)","artists":["NIKIIE"],"duration":306,"category":"pop","locale":"ja","popularity":"rare","targetVersion":"full-original"},
-  {"id":"pop-ko-ditto","split":"dev","title":"Ditto","artists":["NewJeans"],"duration":185,"category":"pop","locale":"ko","popularity":"popular","targetVersion":"full-original"},
-  {"id":"pop-en-blinding-lights","split":"dev","title":"Blinding Lights","artists":["The Weeknd"],"duration":200,"category":"pop","locale":"en","popularity":"popular","targetVersion":"full-original"},
-  {"id":"pop-en-starboy","split":"holdout","title":"Starboy","artists":["The Weeknd","Daft Punk"],"duration":230,"category":"pop","locale":"en","popularity":"popular","targetVersion":"full-original"},
-  {"id":"pop-es-despacito","split":"dev","title":"Despacito","artists":["Luis Fonsi","Daddy Yankee"],"duration":229,"category":"pop","locale":"es","popularity":"popular","targetVersion":"full-original"},
-
-  {"id":"classical-beethoven-5-kleiber","split":"holdout","title":"Symphony No. 5 in C Minor, Op. 67","artists":["Carlos Kleiber","Vienna Philharmonic"],"duration":1978,"category":"classical","locale":"instrumental","popularity":"medium","targetVersion":"specific-performance"},
-  {"id":"classical-clair-de-lune-ciccolini","split":"holdout","title":"Clair de lune","artists":["Aldo Ciccolini","Claude Debussy"],"duration":302,"category":"classical","locale":"instrumental","popularity":"medium","targetVersion":"specific-performance"}
+ {
+  "id": "game-cn-valorant-ticking-away",
+  "split": "dev",
+  "title": "Ticking Away",
+  "artists": [
+   "VALORANT Music",
+   "Grabbitz",
+   "bbno$"
+  ],
+  "duration": 205,
+  "category": "game-international",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "VALORANT"
+ },
+ {
+  "id": "game-cn-genshin-rage-beneath",
+  "split": "dev",
+  "title": "Rage Beneath the Mountains",
+  "artists": [
+   "HOYO-MiX",
+   "陈致逸"
+  ],
+  "duration": 212,
+  "category": "game-cn",
+  "locale": "instrumental",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "原神"
+ },
+ {
+  "id": "game-cn-genshin-rubia",
+  "split": "dev",
+  "title": "Rubia",
+  "artists": [
+   "周深",
+   "HOYO-MiX"
+  ],
+  "duration": 195,
+  "category": "game-cn",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "崩坏3"
+ },
+ {
+  "id": "game-cn-hsr-wildfire",
+  "split": "dev",
+  "title": "Wildfire",
+  "artists": [
+   "HOYO-MiX",
+   "Jonathan Steingard"
+  ],
+  "duration": 227,
+  "category": "game-cn",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "崩坏：星穹铁道"
+ },
+ {
+  "id": "game-cn-hsr-hope-is-thing",
+  "split": "holdout",
+  "title": "Hope Is the Thing With Feathers",
+  "artists": [
+   "HOYO-MiX",
+   "Chevy"
+  ],
+  "duration": 226,
+  "category": "game-cn",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "崩坏：星穹铁道"
+ },
+ {
+  "id": "game-cn-zzz-come-alive",
+  "split": "dev",
+  "title": "Come Alive",
+  "artists": [
+   "HOYO-MiX",
+   "San-Z",
+   "Sam Haft"
+  ],
+  "duration": 221,
+  "category": "game-cn",
+  "locale": "en",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "franchise": "绝区零"
+ },
+ {
+  "id": "game-cn-arknights-speed-of-light",
+  "split": "dev",
+  "title": "Speed of Light",
+  "artists": [
+   "DJ OKAWARI",
+   "二宮愛"
+  ],
+  "duration": 241,
+  "category": "game-cn",
+  "locale": "en",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "franchise": "明日方舟"
+ },
+ {
+  "id": "game-cn-wuthering-saving-light",
+  "split": "holdout",
+  "title": "Saving Light",
+  "artists": [
+   "Jasmine Thompson"
+  ],
+  "duration": 191,
+  "category": "game-cn",
+  "locale": "en",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "franchise": "鸣潮"
+ },
+ {
+  "id": "game-cn-honor-of-kings-main-theme",
+  "split": "dev",
+  "title": "Main Theme",
+  "artists": [
+   "Hans Zimmer"
+  ],
+  "duration": 169,
+  "category": "game-cn",
+  "locale": "instrumental",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "王者荣耀"
+ },
+ {
+  "id": "game-cn-naraka-unchained",
+  "split": "holdout",
+  "title": "无拘",
+  "artists": [
+   "林俊杰"
+  ],
+  "duration": 247,
+  "category": "game-cn",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "franchise": "永劫无间"
+ },
+ {
+  "id": "game-intl-lol-warriors",
+  "split": "dev",
+  "title": "Warriors",
+  "artists": [
+   "Imagine Dragons"
+  ],
+  "duration": 171,
+  "category": "game-international",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "League of Legends"
+ },
+ {
+  "id": "game-intl-lol-heavy-is-crown",
+  "split": "holdout",
+  "title": "Heavy Is the Crown",
+  "artists": [
+   "Linkin Park"
+  ],
+  "duration": 167,
+  "category": "game-international",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "League of Legends"
+ },
+ {
+  "id": "game-jp-nier-weight-world",
+  "split": "dev",
+  "title": "Weight of the World",
+  "artists": [
+   "J'Nique Nicole",
+   "MONACA"
+  ],
+  "duration": 345,
+  "category": "game-jp",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "NieR:Automata"
+ },
+ {
+  "id": "game-jp-elden-ring",
+  "split": "dev",
+  "title": "Elden Ring",
+  "artists": [
+   "Tsukasa Saitoh"
+  ],
+  "duration": 203,
+  "category": "game-jp",
+  "locale": "instrumental",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "ELDEN RING"
+ },
+ {
+  "id": "game-jp-ff14-answers",
+  "split": "holdout",
+  "title": "Answers",
+  "artists": [
+   "植松伸夫",
+   "Susan Calloway"
+  ],
+  "duration": 427,
+  "category": "game-jp",
+  "locale": "en",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "franchise": "FINAL FANTASY XIV"
+ },
+ {
+  "id": "game-jp-persona-last-surprise",
+  "split": "dev",
+  "title": "Last Surprise",
+  "artists": [
+   "Lyn",
+   "目黒将司"
+  ],
+  "duration": 236,
+  "category": "game-jp",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "Persona 5"
+ },
+ {
+  "id": "game-west-bury-light",
+  "split": "dev",
+  "title": "Bury the Light",
+  "artists": [
+   "Casey Edwards",
+   "Victor Borba"
+  ],
+  "duration": 574,
+  "category": "game-international",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "Devil May Cry 5"
+ },
+ {
+  "id": "game-west-never-fade-away",
+  "split": "holdout",
+  "title": "Never Fade Away",
+  "artists": [
+   "SAMURAI",
+   "Refused"
+  ],
+  "duration": 190,
+  "category": "game-international",
+  "locale": "en",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "franchise": "Cyberpunk 2077"
+ },
+ {
+  "id": "anime-gurenge",
+  "split": "dev",
+  "title": "紅蓮華",
+  "artists": [
+   "LiSA"
+  ],
+  "duration": 236,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "鬼滅の刃"
+ },
+ {
+  "id": "anime-idol",
+  "split": "dev",
+  "title": "アイドル",
+  "artists": [
+   "YOASOBI"
+  ],
+  "duration": 213,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "推しの子"
+ },
+ {
+  "id": "anime-kick-back",
+  "split": "dev",
+  "title": "KICK BACK",
+  "artists": [
+   "米津玄師"
+  ],
+  "duration": 193,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "チェンソーマン"
+ },
+ {
+  "id": "anime-blue",
+  "split": "holdout",
+  "title": "青のすみか",
+  "artists": [
+   "キタニタツヤ"
+  ],
+  "duration": 196,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "呪術廻戦"
+ },
+ {
+  "id": "anime-hana-ni-natte",
+  "split": "dev",
+  "title": "花になって",
+  "artists": [
+   "緑黄色社会"
+  ],
+  "duration": 199,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "franchise": "薬屋のひとりごと"
+ },
+ {
+  "id": "anime-unravel",
+  "split": "holdout",
+  "title": "unravel",
+  "artists": [
+   "TK from 凛として時雨"
+  ],
+  "duration": 238,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "franchise": "東京喰種"
+ },
+ {
+  "id": "anime-tank-tv",
+  "split": "dev",
+  "title": "Tank! (TV Size)",
+  "artists": [
+   "SEATBELTS"
+  ],
+  "duration": 90,
+  "category": "anime",
+  "locale": "instrumental",
+  "popularity": "medium",
+  "targetVersion": "tv-size",
+  "franchise": "Cowboy Bebop"
+ },
+ {
+  "id": "vocaloid-vampire",
+  "split": "dev",
+  "title": "ヴァンパイア",
+  "artists": [
+   "DECO*27",
+   "初音ミク"
+  ],
+  "duration": 179,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "virtual-singer"
+ },
+ {
+  "id": "vocaloid-god-ish",
+  "split": "dev",
+  "title": "神っぽいな",
+  "artists": [
+   "ピノキオピー",
+   "初音ミク"
+  ],
+  "duration": 204,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "virtual-singer"
+ },
+ {
+  "id": "vocaloid-lagtrain",
+  "split": "holdout",
+  "title": "ラグトレイン",
+  "artists": [
+   "稲葉曇",
+   "歌愛ユキ"
+  ],
+  "duration": 251,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "virtual-singer"
+ },
+ {
+  "id": "vocaloid-king",
+  "split": "dev",
+  "title": "KING",
+  "artists": [
+   "Kanaria",
+   "GUMI"
+  ],
+  "duration": 134,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "virtual-singer"
+ },
+ {
+  "id": "vocaloid-volt-tackle",
+  "split": "holdout",
+  "title": "ボルテッカー",
+  "artists": [
+   "DECO*27",
+   "初音ミク"
+  ],
+  "duration": 161,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "virtual-singer",
+  "franchise": "Project VOLTAGE"
+ },
+ {
+  "id": "pjsk-stella",
+  "split": "dev",
+  "title": "ステラ",
+  "artists": [
+   "Leo/need"
+  ],
+  "duration": 326,
+  "category": "project-sekai",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "sekai-version",
+  "franchise": "Project SEKAI"
+ },
+ {
+  "id": "pjsk-lower",
+  "split": "holdout",
+  "title": "ロウワー",
+  "artists": [
+   "25時、ナイトコードで。"
+  ],
+  "duration": 230,
+  "category": "project-sekai",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "sekai-version",
+  "franchise": "Project SEKAI"
+ },
+ {
+  "id": "pjsk-cinema",
+  "split": "dev",
+  "title": "シネマ",
+  "artists": [
+   "Vivid BAD SQUAD"
+  ],
+  "duration": 209,
+  "category": "project-sekai",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "sekai-version",
+  "franchise": "Project SEKAI"
+ },
+ {
+  "id": "pop-cn-dao-xiang",
+  "split": "dev",
+  "title": "稻香",
+  "artists": [
+   "周杰伦"
+  ],
+  "duration": 223,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original"
+ },
+ {
+  "id": "pop-cn-xihuan-ni",
+  "split": "holdout",
+  "title": "喜欢你",
+  "artists": [
+   "G.E.M.邓紫棋"
+  ],
+  "duration": 239,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original"
+ },
+ {
+  "id": "pop-jp-yoru-ni-kakeru",
+  "split": "dev",
+  "title": "夜に駆ける",
+  "artists": [
+   "YOASOBI"
+  ],
+  "duration": 261,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original"
+ },
+ {
+  "id": "pop-jp-seasons",
+  "split": "holdout",
+  "title": "春夏秋冬 (Seasons)",
+  "artists": [
+   "NIKIIE"
+  ],
+  "duration": 306,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "full-original"
+ },
+ {
+  "id": "pop-ko-ditto",
+  "split": "dev",
+  "title": "Ditto",
+  "artists": [
+   "NewJeans"
+  ],
+  "duration": 185,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original"
+ },
+ {
+  "id": "pop-en-blinding-lights",
+  "split": "dev",
+  "title": "Blinding Lights",
+  "artists": [
+   "The Weeknd"
+  ],
+  "duration": 200,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original"
+ },
+ {
+  "id": "pop-en-starboy",
+  "split": "holdout",
+  "title": "Starboy",
+  "artists": [
+   "The Weeknd",
+   "Daft Punk"
+  ],
+  "duration": 230,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original"
+ },
+ {
+  "id": "pop-es-despacito",
+  "split": "dev",
+  "title": "Despacito",
+  "artists": [
+   "Luis Fonsi",
+   "Daddy Yankee"
+  ],
+  "duration": 229,
+  "category": "pop",
+  "locale": "es",
+  "popularity": "popular",
+  "targetVersion": "full-original"
+ },
+ {
+  "id": "classical-beethoven-5-kleiber",
+  "split": "holdout",
+  "title": "Symphony No. 5 in C Minor, Op. 67",
+  "artists": [
+   "Carlos Kleiber",
+   "Vienna Philharmonic"
+  ],
+  "duration": 1978,
+  "category": "classical",
+  "locale": "instrumental",
+  "popularity": "medium",
+  "targetVersion": "specific-performance"
+ },
+ {
+  "id": "classical-clair-de-lune-ciccolini",
+  "split": "holdout",
+  "title": "Clair de lune",
+  "artists": [
+   "Aldo Ciccolini",
+   "Claude Debussy"
+  ],
+  "duration": 302,
+  "category": "classical",
+  "locale": "instrumental",
+  "popularity": "medium",
+  "targetVersion": "specific-performance"
+ },
+ {
+  "id": "x2-anime-ja-001",
+  "split": "dev",
+  "title": "炎",
+  "artists": [
+   "LiSA"
+  ],
+  "duration": 274,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "炎 LiSA"
+ },
+ {
+  "id": "x2-anime-ja-002",
+  "split": "dev",
+  "title": "残酷な天使のテーゼ (残酷天使的行动纲领)",
+  "artists": [
+   "高橋洋子"
+  ],
+  "duration": 245,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "残酷な天使のテーゼ 高橋洋子"
+ },
+ {
+  "id": "x2-anime-ja-003",
+  "split": "holdout",
+  "title": "アイドル (偶像)",
+  "artists": [
+   "YOASOBI"
+  ],
+  "duration": 213,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "アイドル YOASOBI"
+ },
+ {
+  "id": "x2-pop-ja-001",
+  "split": "dev",
+  "title": "夜に駆ける (向夜晚奔去)",
+  "artists": [
+   "YOASOBI"
+  ],
+  "duration": 261,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "夜に駆ける YOASOBI"
+ },
+ {
+  "id": "x2-pop-ja-002",
+  "split": "dev",
+  "title": "群青",
+  "artists": [
+   "YOASOBI"
+  ],
+  "duration": 248,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "群青 YOASOBI"
+ },
+ {
+  "id": "x2-anime-ja-004",
+  "split": "dev",
+  "title": "勇者",
+  "artists": [
+   "YOASOBI"
+  ],
+  "duration": 194,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "勇者 YOASOBI"
+ },
+ {
+  "id": "x2-pop-ja-003",
+  "split": "dev",
+  "title": "Lemon",
+  "artists": [
+   "米津玄師"
+  ],
+  "duration": 256,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Lemon 米津玄師"
+ },
+ {
+  "id": "x2-anime-ja-005",
+  "split": "dev",
+  "title": "打上花火",
+  "artists": [
+   "Daoko",
+   "米津玄師"
+  ],
+  "duration": 289,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "打上花火 DAOKO"
+ },
+ {
+  "id": "x2-anime-ja-006",
+  "split": "dev",
+  "title": "なんでもないや (没什么大不了) (Movie ver.)",
+  "artists": [
+   "RADWIMPS"
+  ],
+  "duration": 341,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "なんでもないや RADWIMPS"
+ },
+ {
+  "id": "x2-anime-ja-007",
+  "split": "holdout",
+  "title": "前前前世",
+  "artists": [
+   "Mike Zhou",
+   "RADWIMPS"
+  ],
+  "duration": 83,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "前前前世 RADWIMPS"
+ },
+ {
+  "id": "x2-anime-ja-008",
+  "split": "dev",
+  "title": "スパークル (火花) (Movie ver.)",
+  "artists": [
+   "RADWIMPS"
+  ],
+  "duration": 534,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "スパークル RADWIMPS"
+ },
+ {
+  "id": "x2-anime-ja-010",
+  "split": "dev",
+  "title": "青のすみか (苍蓝所栖)",
+  "artists": [
+   "キタニタツヤ"
+  ],
+  "duration": 196,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "青のすみか キタニタツヤ"
+ },
+ {
+  "id": "x2-pop-ja-004",
+  "split": "dev",
+  "title": "怪獣の花唄 (怪兽的花之歌)",
+  "artists": [
+   "Vaundy"
+  ],
+  "duration": 224,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "怪獣の花唄 Vaundy"
+ },
+ {
+  "id": "x2-pop-ja-005",
+  "split": "dev",
+  "title": "踊り子 (舞女)",
+  "artists": [
+   "Vaundy"
+  ],
+  "duration": 230,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "踊り子 Vaundy"
+ },
+ {
+  "id": "x2-anime-ja-011",
+  "split": "dev",
+  "title": "唱",
+  "artists": [
+   "Ado"
+  ],
+  "duration": 189,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "唱 Ado"
+ },
+ {
+  "id": "x2-pop-ja-006",
+  "split": "holdout",
+  "title": "うっせぇわ (吵死了)",
+  "artists": [
+   "Ado"
+  ],
+  "duration": 205,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "うっせぇわ Ado"
+ },
+ {
+  "id": "x2-anime-ja-012",
+  "split": "holdout",
+  "title": "新時代 (ウタ from ONE PIECE FILM RED)",
+  "artists": [
+   "Ado"
+  ],
+  "duration": 228,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "新時代 Ado"
+ },
+ {
+  "id": "x2-anime-ja-013",
+  "split": "dev",
+  "title": "私は最強 (我是最强的)",
+  "artists": [
+   "Mrs. GREEN APPLE"
+  ],
+  "duration": 256,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "私は最強 Ado"
+ },
+ {
+  "id": "x2-anime-ja-014",
+  "split": "holdout",
+  "title": "ギラギラ (闪闪发光)",
+  "artists": [
+   "Ado"
+  ],
+  "duration": 276,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ギラギラ Ado"
+ },
+ {
+  "id": "x2-pop-ja-007",
+  "split": "dev",
+  "title": "ただ声一つ (只想说一声)",
+  "artists": [
+   "ロクデナシ"
+  ],
+  "duration": 161,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ただ声一つ ロクデナシ"
+ },
+ {
+  "id": "x2-pop-ja-008",
+  "split": "dev",
+  "title": "ドライフラワー (干花)",
+  "artists": [
+   "優里"
+  ],
+  "duration": 285,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ドライフラワー 優里"
+ },
+ {
+  "id": "x2-pop-ja-009",
+  "split": "holdout",
+  "title": "ベテルギウス (参宿四)",
+  "artists": [
+   "優里"
+  ],
+  "duration": 230,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ベテルギウス 優里"
+ },
+ {
+  "id": "x2-pop-ja-010",
+  "split": "dev",
+  "title": "ドラマツルギー (拟剧论)",
+  "artists": [
+   "Eve"
+  ],
+  "duration": 238,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ドラマツルギー Eve"
+ },
+ {
+  "id": "x2-anime-ja-015",
+  "split": "holdout",
+  "title": "廻廻奇譚 (轮回奇谭)",
+  "artists": [
+   "Eve"
+  ],
+  "duration": 221,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "廻廻奇譚 Eve"
+ },
+ {
+  "id": "x2-pop-ja-011",
+  "split": "dev",
+  "title": "ナンセンス文学 (无意义文学)",
+  "artists": [
+   "Eve"
+  ],
+  "duration": 203,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ナンセンス文学 Eve"
+ },
+ {
+  "id": "x2-pop-ja-012",
+  "split": "holdout",
+  "title": "白日",
+  "artists": [
+   "King Gnu"
+  ],
+  "duration": 276,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "白日 King Gnu"
+ },
+ {
+  "id": "x2-anime-ja-016",
+  "split": "holdout",
+  "title": "逆夢",
+  "artists": [
+   "King Gnu"
+  ],
+  "duration": 307,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "逆夢 King Gnu"
+ },
+ {
+  "id": "x2-anime-ja-017",
+  "split": "holdout",
+  "title": "SPECIALZ",
+  "artists": [
+   "King Gnu"
+  ],
+  "duration": 239,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "SPECIALZ King Gnu"
+ },
+ {
+  "id": "x2-anime-ja-018",
+  "split": "holdout",
+  "title": "花に亡霊 (花上的亡灵)",
+  "artists": [
+   "ヨルシカ"
+  ],
+  "duration": 239,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "花に亡霊 ヨルシカ"
+ },
+ {
+  "id": "x2-pop-ja-013",
+  "split": "dev",
+  "title": "ただ君に晴れ (只为你拨云放晴)",
+  "artists": [
+   "ヨルシカ"
+  ],
+  "duration": 198,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ただ君に晴れ ヨルシカ"
+ },
+ {
+  "id": "x2-pop-ja-014",
+  "split": "dev",
+  "title": "だから僕は音楽を辞めた",
+  "artists": [
+   "ヨルシカ"
+  ],
+  "duration": 255,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "だから僕は音楽を辞めた ヨルシカ"
+ },
+ {
+  "id": "x2-pop-ja-015",
+  "split": "dev",
+  "title": "春泥棒 (Spring Thief)",
+  "artists": [
+   "ヨルシカ"
+  ],
+  "duration": 290,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "春泥棒 ヨルシカ"
+ },
+ {
+  "id": "x2-pop-ja-016",
+  "split": "dev",
+  "title": "又三郎",
+  "artists": [
+   "ヨルシカ"
+  ],
+  "duration": 227,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "又三郎 ヨルシカ"
+ },
+ {
+  "id": "x2-pop-ja-017",
+  "split": "dev",
+  "title": "老人と海 (老人与海)",
+  "artists": [
+   "ヨルシカ"
+  ],
+  "duration": 255,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "老人と海 ヨルシカ"
+ },
+ {
+  "id": "x2-pop-ja-018",
+  "split": "dev",
+  "title": "裸の心 (赤诚的心)",
+  "artists": [
+   "あいみょん"
+  ],
+  "duration": 296,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "裸の心 あいみょん"
+ },
+ {
+  "id": "x2-pop-ja-019",
+  "split": "dev",
+  "title": "秒針を噛む (噬咬秒针)",
+  "artists": [
+   "ずっと真夜中でいいのに。"
+  ],
+  "duration": 259,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "秒針を噛む ずっと真夜中でいいのに。"
+ },
+ {
+  "id": "x2-pop-ja-020",
+  "split": "dev",
+  "title": "お勉強しといてよ",
+  "artists": [
+   "ずっと真夜中でいいのに。"
+  ],
+  "duration": 279,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "お勉強しといてよ ずっと真夜中でいいのに。"
+ },
+ {
+  "id": "x2-pop-ja-021",
+  "split": "holdout",
+  "title": "正義",
+  "artists": [
+   "ずっと真夜中でいいのに。"
+  ],
+  "duration": 271,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "正義 ずっと真夜中でいいのに。"
+ },
+ {
+  "id": "x2-pop-ja-022",
+  "split": "dev",
+  "title": "メディアノーチェ",
+  "artists": [
+   "ずっと真夜中でいいのに。"
+  ],
+  "duration": 228,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "メディアノーチェ ずっと真夜中でいいのに。"
+ },
+ {
+  "id": "x2-pop-ja-023",
+  "split": "dev",
+  "title": "ばかじゃないのに",
+  "artists": [
+   "ずっと真夜中でいいのに"
+  ],
+  "duration": 122,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ばかじゃないのに ずっと真夜中でいいのに。"
+ },
+ {
+  "id": "x2-pop-ja-024",
+  "split": "dev",
+  "title": "残機",
+  "artists": [
+   "ずっと真夜中でいいのに。"
+  ],
+  "duration": 230,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "残機 ずっと真夜中でいいのに。"
+ },
+ {
+  "id": "x2-pop-ja-025",
+  "split": "holdout",
+  "title": "猫",
+  "artists": [
+   "DISH//"
+  ],
+  "duration": 276,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "猫 DISH//"
+ },
+ {
+  "id": "x2-pop-ja-026",
+  "split": "dev",
+  "title": "Pretender",
+  "artists": [
+   "Official髭男dism"
+  ],
+  "duration": 326,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Pretender Official髭男dism"
+ },
+ {
+  "id": "x2-pop-ja-027",
+  "split": "dev",
+  "title": "I LOVE...",
+  "artists": [
+   "Official髭男dism"
+  ],
+  "duration": 282,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "I Love... Official髭男dism"
+ },
+ {
+  "id": "x2-anime-ja-019",
+  "split": "dev",
+  "title": "Cry Baby",
+  "artists": [
+   "Official髭男dism"
+  ],
+  "duration": 240,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Cry Baby Official髭男dism"
+ },
+ {
+  "id": "x2-pop-ja-028",
+  "split": "dev",
+  "title": "Subtitle",
+  "artists": [
+   "Official髭男dism"
+  ],
+  "duration": 305,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Subtitle Official髭男dism"
+ },
+ {
+  "id": "x2-anime-ja-020",
+  "split": "dev",
+  "title": "ミックスナッツ (MIXED NUTS)",
+  "artists": [
+   "Official髭男dism"
+  ],
+  "duration": 213,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ミックスナッツ Official髭男dism"
+ },
+ {
+  "id": "x2-anime-ja-021",
+  "split": "dev",
+  "title": "怪盗",
+  "artists": [
+   "back number"
+  ],
+  "duration": 196,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "怪盗 back number"
+ },
+ {
+  "id": "x2-pop-ja-029",
+  "split": "holdout",
+  "title": "クリスマスソング (圣诞歌)",
+  "artists": [
+   "back number"
+  ],
+  "duration": 340,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "クリスマスソング back number"
+ },
+ {
+  "id": "x2-pop-ja-030",
+  "split": "dev",
+  "title": "水平線",
+  "artists": [
+   "back number"
+  ],
+  "duration": 285,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "水平線 back number"
+ },
+ {
+  "id": "x2-anime-ja-022",
+  "split": "dev",
+  "title": "ソラニン",
+  "artists": [
+   "ASIAN KUNG-FU GENERATION"
+  ],
+  "duration": 275,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ソラニン ASIAN KUNG-FU GENERATION"
+ },
+ {
+  "id": "x2-anime-ja-023",
+  "split": "dev",
+  "title": "リライト (改写)",
+  "artists": [
+   "ASIAN KUNG-FU GENERATION"
+  ],
+  "duration": 227,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "リライト ASIAN KUNG-FU GENERATION"
+ },
+ {
+  "id": "x2-anime-ja-024",
+  "split": "holdout",
+  "title": "君の知らない物語 (你不知道的故事)",
+  "artists": [
+   "supercell"
+  ],
+  "duration": 344,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "君の知らない物語 supercell"
+ },
+ {
+  "id": "x2-anime-ja-025",
+  "split": "dev",
+  "title": "great escape",
+  "artists": [
+   "cinema staff"
+  ],
+  "duration": 88,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Great Escape cinema staff"
+ },
+ {
+  "id": "x2-anime-ja-026",
+  "split": "holdout",
+  "title": "紅蓮の弓矢",
+  "artists": [
+   "Linked Horizon"
+  ],
+  "duration": 315,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "紅蓮の弓矢 Linked Horizon"
+ },
+ {
+  "id": "x2-anime-ja-027",
+  "split": "holdout",
+  "title": "心臓を捧げよ!",
+  "artists": [
+   "Linked Horizon"
+  ],
+  "duration": 346,
+  "category": "anime",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "心臓を捧げよ! Linked Horizon"
+ },
+ {
+  "id": "x2-pop-zh-001",
+  "split": "dev",
+  "title": "晴天",
+  "artists": [
+   "周杰伦"
+  ],
+  "duration": 269,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "晴天 周杰伦"
+ },
+ {
+  "id": "x2-pop-zh-002",
+  "split": "holdout",
+  "title": "七里香",
+  "artists": [
+   "周杰伦"
+  ],
+  "duration": 299,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "七里香 周杰伦"
+ },
+ {
+  "id": "x2-pop-zh-003",
+  "split": "dev",
+  "title": "青花瓷",
+  "artists": [
+   "周杰伦"
+  ],
+  "duration": 239,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "青花瓷 周杰伦"
+ },
+ {
+  "id": "x2-pop-zh-004",
+  "split": "dev",
+  "title": "告白气球",
+  "artists": [
+   "周杰伦"
+  ],
+  "duration": 215,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "告白气球 周杰伦"
+ },
+ {
+  "id": "x2-pop-zh-005",
+  "split": "dev",
+  "title": "反方向的钟",
+  "artists": [
+   "周杰伦"
+  ],
+  "duration": 258,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "反方向的钟 周杰伦"
+ },
+ {
+  "id": "x2-pop-zh-006",
+  "split": "dev",
+  "title": "富士山下",
+  "artists": [
+   "陈奕迅"
+  ],
+  "duration": 259,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "富士山下 陈奕迅"
+ },
+ {
+  "id": "x2-pop-zh-007",
+  "split": "dev",
+  "title": "十年",
+  "artists": [
+   "陈奕迅"
+  ],
+  "duration": 205,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "十年 陈奕迅"
+ },
+ {
+  "id": "x2-pop-zh-008",
+  "split": "dev",
+  "title": "浮夸",
+  "artists": [
+   "陈奕迅"
+  ],
+  "duration": 283,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "浮夸 陈奕迅"
+ },
+ {
+  "id": "x2-pop-zh-009",
+  "split": "dev",
+  "title": "孤勇者",
+  "artists": [
+   "陈奕迅"
+  ],
+  "duration": 256,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "孤勇者 陈奕迅"
+ },
+ {
+  "id": "x2-pop-zh-010",
+  "split": "dev",
+  "title": "爱情转移",
+  "artists": [
+   "陈奕迅"
+  ],
+  "duration": 255,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "爱情转移 陈奕迅"
+ },
+ {
+  "id": "x2-pop-zh-011",
+  "split": "dev",
+  "title": "红玫瑰",
+  "artists": [
+   "陈奕迅"
+  ],
+  "duration": 239,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "红玫瑰 陈奕迅"
+ },
+ {
+  "id": "x2-pop-zh-012",
+  "split": "dev",
+  "title": "陀飞轮",
+  "artists": [
+   "陈奕迅"
+  ],
+  "duration": 278,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "陀飞轮 陈奕迅"
+ },
+ {
+  "id": "x2-pop-zh-013",
+  "split": "dev",
+  "title": "明年今日",
+  "artists": [
+   "陈奕迅"
+  ],
+  "duration": 206,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "明年今日 陈奕迅"
+ },
+ {
+  "id": "x2-pop-zh-014",
+  "split": "holdout",
+  "title": "后来",
+  "artists": [
+   "刘若英"
+  ],
+  "duration": 341,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "后来 刘若英"
+ },
+ {
+  "id": "x2-pop-zh-015",
+  "split": "dev",
+  "title": "光年之外",
+  "artists": [
+   "G.E.M.邓紫棋"
+  ],
+  "duration": 235,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "光年之外 邓紫棋"
+ },
+ {
+  "id": "x2-pop-zh-016",
+  "split": "dev",
+  "title": "泡沫",
+  "artists": [
+   "G.E.M.邓紫棋"
+  ],
+  "duration": 258,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "泡沫 邓紫棋"
+ },
+ {
+  "id": "x2-pop-zh-017",
+  "split": "dev",
+  "title": "句号",
+  "artists": [
+   "G.E.M.邓紫棋"
+  ],
+  "duration": 235,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "句号 邓紫棋"
+ },
+ {
+  "id": "x2-pop-zh-018",
+  "split": "dev",
+  "title": "演员",
+  "artists": [
+   "薛之谦"
+  ],
+  "duration": 261,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "演员 薛之谦"
+ },
+ {
+  "id": "x2-pop-zh-019",
+  "split": "holdout",
+  "title": "丑八怪",
+  "artists": [
+   "薛之谦"
+  ],
+  "duration": 248,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "丑八怪 薛之谦"
+ },
+ {
+  "id": "x2-pop-zh-020",
+  "split": "dev",
+  "title": "成都",
+  "artists": [
+   "赵雷"
+  ],
+  "duration": 328,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "成都 赵雷"
+ },
+ {
+  "id": "x2-pop-zh-021",
+  "split": "dev",
+  "title": "山丘",
+  "artists": [
+   "李宗盛"
+  ],
+  "duration": 405,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "山丘 李宗盛"
+ },
+ {
+  "id": "x2-pop-zh-022",
+  "split": "holdout",
+  "title": "晚风心里吹",
+  "artists": [
+   "阿梨粤"
+  ],
+  "duration": 186,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "晚风心里吹 阿梨粤"
+ },
+ {
+  "id": "x2-pop-zh-023",
+  "split": "dev",
+  "title": "一路生花",
+  "artists": [
+   "温奕心"
+  ],
+  "duration": 256,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "一路生花 温奕心"
+ },
+ {
+  "id": "x2-pop-zh-024",
+  "split": "dev",
+  "title": "漠河舞厅",
+  "artists": [
+   "柳爽"
+  ],
+  "duration": 334,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "漠河舞厅 柳爽"
+ },
+ {
+  "id": "x2-pop-zh-025",
+  "split": "holdout",
+  "title": "小情歌 (苏打绿版)",
+  "artists": [
+   "苏打绿"
+  ],
+  "duration": 276,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "小情歌 苏打绿"
+ },
+ {
+  "id": "x2-pop-zh-026",
+  "split": "holdout",
+  "title": "无与伦比的美丽 (苏打绿版)",
+  "artists": [
+   "苏打绿"
+  ],
+  "duration": 306,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "无与伦比的美丽 苏打绿"
+ },
+ {
+  "id": "x2-pop-zh-027",
+  "split": "holdout",
+  "title": "起风了",
+  "artists": [
+   "买辣椒也用券"
+  ],
+  "duration": 325,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "起风了 买辣椒也用券"
+ },
+ {
+  "id": "x2-pop-zh-028",
+  "split": "dev",
+  "title": "牵丝戏",
+  "artists": [
+   "银临",
+   "Aki阿杰"
+  ],
+  "duration": 239,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "牵丝戏 银临"
+ },
+ {
+  "id": "x2-pop-zh-029",
+  "split": "dev",
+  "title": "盗将行",
+  "artists": [
+   "花粥",
+   "马雨阳"
+  ],
+  "duration": 198,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "盗将行 花粥"
+ },
+ {
+  "id": "x2-pop-zh-030",
+  "split": "holdout",
+  "title": "出山",
+  "artists": [
+   "花粥",
+   "王胜娚"
+  ],
+  "duration": 200,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "出山 花粥"
+ },
+ {
+  "id": "x2-pop-zh-031",
+  "split": "dev",
+  "title": "赤伶",
+  "artists": [
+   "HITA"
+  ],
+  "duration": 266,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "赤伶 HITA"
+ },
+ {
+  "id": "x2-pop-zh-032",
+  "split": "dev",
+  "title": "囍",
+  "artists": [
+   "葛东琪"
+  ],
+  "duration": 216,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "囍 葛东琪"
+ },
+ {
+  "id": "x2-pop-zh-033",
+  "split": "holdout",
+  "title": "芒种",
+  "artists": [
+   "音阙诗听",
+   "赵方婧"
+  ],
+  "duration": 216,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "芒种 音阙诗听"
+ },
+ {
+  "id": "x2-pop-zh-034",
+  "split": "dev",
+  "title": "万疆",
+  "artists": [
+   "李玉刚"
+  ],
+  "duration": 234,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "万疆 李玉刚"
+ },
+ {
+  "id": "x2-pop-zh-035",
+  "split": "dev",
+  "title": "海阔天空",
+  "artists": [
+   "BEYOND"
+  ],
+  "duration": 324,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "海阔天空 Beyond"
+ },
+ {
+  "id": "x2-pop-zh-036",
+  "split": "holdout",
+  "title": "光辉岁月",
+  "artists": [
+   "BEYOND"
+  ],
+  "duration": 302,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "光辉岁月 Beyond"
+ },
+ {
+  "id": "x2-pop-zh-037",
+  "split": "dev",
+  "title": "喜欢你",
+  "artists": [
+   "BEYOND"
+  ],
+  "duration": 273,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "喜欢你 Beyond"
+ },
+ {
+  "id": "x2-pop-zh-038",
+  "split": "dev",
+  "title": "红日",
+  "artists": [
+   "李克勤"
+  ],
+  "duration": 291,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "红日 李克勤"
+ },
+ {
+  "id": "x2-pop-zh-039",
+  "split": "dev",
+  "title": "喜帖街 (Live)",
+  "artists": [
+   "谢安琪"
+  ],
+  "duration": 210,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "喜帖街 谢安琪"
+ },
+ {
+  "id": "x2-pop-zh-040",
+  "split": "dev",
+  "title": "一生所爱",
+  "artists": [
+   "卢冠廷",
+   "莫文蔚"
+  ],
+  "duration": 273,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "一生所爱 卢冠廷"
+ },
+ {
+  "id": "x2-pop-zh-041",
+  "split": "dev",
+  "title": "千千阙歌",
+  "artists": [
+   "陈慧娴"
+  ],
+  "duration": 300,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "千千阙歌 陈慧娴"
+ },
+ {
+  "id": "x2-pop-zh-042",
+  "split": "dev",
+  "title": "月亮代表我的心",
+  "artists": [
+   "邓丽君"
+  ],
+  "duration": 215,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "月亮代表我的心 邓丽君"
+ },
+ {
+  "id": "x2-pop-zh-043",
+  "split": "dev",
+  "title": "甜蜜蜜",
+  "artists": [
+   "邓丽君"
+  ],
+  "duration": 211,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "甜蜜蜜 邓丽君"
+ },
+ {
+  "id": "x2-pop-zh-044",
+  "split": "holdout",
+  "title": "我只在乎你",
+  "artists": [
+   "邓丽君"
+  ],
+  "duration": 252,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "我只在乎你 邓丽君"
+ },
+ {
+  "id": "x2-pop-zh-045",
+  "split": "holdout",
+  "title": "小半",
+  "artists": [
+   "陈粒"
+  ],
+  "duration": 297,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "小半 陈粒"
+ },
+ {
+  "id": "x2-pop-zh-046",
+  "split": "dev",
+  "title": "奇妙能力歌",
+  "artists": [
+   "陈粒"
+  ],
+  "duration": 253,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "奇妙能力歌 陈粒"
+ },
+ {
+  "id": "x2-pop-zh-047",
+  "split": "dev",
+  "title": "易燃易爆炸",
+  "artists": [
+   "陈粒"
+  ],
+  "duration": 200,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "易燃易爆炸 陈粒"
+ },
+ {
+  "id": "x2-pop-zh-048",
+  "split": "holdout",
+  "title": "斑马，斑马",
+  "artists": [
+   "宋冬野"
+  ],
+  "duration": 253,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "斑马斑马 宋冬野"
+ },
+ {
+  "id": "x2-pop-zh-049",
+  "split": "dev",
+  "title": "董小姐",
+  "artists": [
+   "宋冬野"
+  ],
+  "duration": 313,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "董小姐 宋冬野"
+ },
+ {
+  "id": "x2-pop-zh-050",
+  "split": "dev",
+  "title": "安和桥",
+  "artists": [
+   "宋冬野"
+  ],
+  "duration": 251,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "安和桥 宋冬野"
+ },
+ {
+  "id": "x2-pop-zh-051",
+  "split": "dev",
+  "title": "南山南",
+  "artists": [
+   "马頔"
+  ],
+  "duration": 325,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "南山南 马頔"
+ },
+ {
+  "id": "x2-pop-zh-052",
+  "split": "dev",
+  "title": "春风十里",
+  "artists": [
+   "鹿先森乐队"
+  ],
+  "duration": 375,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "春风十里 鹿先森乐队"
+ },
+ {
+  "id": "x2-pop-zh-053",
+  "split": "dev",
+  "title": "理想三旬",
+  "artists": [
+   "陈鸿宇"
+  ],
+  "duration": 210,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "理想三旬 陈鸿宇"
+ },
+ {
+  "id": "x2-anime-zh-001",
+  "split": "dev",
+  "title": "大鱼",
+  "artists": [
+   "周深"
+  ],
+  "duration": 313,
+  "category": "anime",
+  "locale": "zh",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "大鱼 周深"
+ },
+ {
+  "id": "x2-pop-zh-054",
+  "split": "dev",
+  "title": "光亮",
+  "artists": [
+   "周深"
+  ],
+  "duration": 288,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "光亮 周深"
+ },
+ {
+  "id": "x2-pop-zh-055",
+  "split": "dev",
+  "title": "化身孤岛的鲸",
+  "artists": [
+   "周深"
+  ],
+  "duration": 265,
+  "category": "pop",
+  "locale": "zh",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "化身孤岛的鲸 周深"
+ },
+ {
+  "id": "x2-doujin-ja-001",
+  "split": "dev",
+  "title": "ナイト・オブ・ナイツ",
+  "artists": [
+   "ビートまりお"
+  ],
+  "duration": 191,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ナイト・オブ・ナイツ ビートまりお"
+ },
+ {
+  "id": "x2-doujin-ja-002",
+  "split": "dev",
+  "title": "魔理沙は大変なものを盗んでいきました (魔理沙偷走了重要的东西)",
+  "artists": [
+   "IOSYS"
+  ],
+  "duration": 241,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "魔理沙は大変なものを盗んでいきました IOSYS"
+ },
+ {
+  "id": "x2-doujin-ja-003",
+  "split": "holdout",
+  "title": "チルノのパーフェクトさんすう教室 (琪露诺的完美算术教室)",
+  "artists": [
+   "IOSYS"
+  ],
+  "duration": 277,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "チルノのパーフェクトさんすう教室 IOSYS"
+ },
+ {
+  "id": "x2-doujin-ja-004",
+  "split": "dev",
+  "title": "お嫁にしなさいっ！",
+  "artists": [
+   "IOSYS"
+  ],
+  "duration": 151,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "お嫁にしなさいっ! IOSYS"
+ },
+ {
+  "id": "x2-doujin-ja-005",
+  "split": "dev",
+  "title": "Bad Apple!! (坏苹果)",
+  "artists": [
+   "nomico"
+  ],
+  "duration": 319,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Bad Apple!! nomico"
+ },
+ {
+  "id": "x2-doujin-ja-006",
+  "split": "dev",
+  "title": "月に叢雲華に風(OP2 ver.",
+  "artists": [
+   "幽閉サテライト"
+  ],
+  "duration": 105,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "月に叢雲華に風 幽閉サテライト"
+ },
+ {
+  "id": "x2-doujin-ja-007",
+  "split": "dev",
+  "title": "亡き王女の為のセプテット",
+  "artists": [
+   "上海アリス幻樂団"
+  ],
+  "duration": 164,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "亡き王女の為のセプテット 上海アリス幻樂団"
+ },
+ {
+  "id": "x2-doujin-ja-008",
+  "split": "dev",
+  "title": "U.N.オーエンは彼女なのか？",
+  "artists": [
+   "上海アリス幻樂団"
+  ],
+  "duration": 145,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "U.N.オーエンは彼女なのか? 上海アリス幻樂団"
+ },
+ {
+  "id": "x2-doujin-ja-009",
+  "split": "holdout",
+  "title": "幽雅に咲かせ、墨染の桜 ～ Border of Life",
+  "artists": [
+   "上海アリス幻樂団"
+  ],
+  "duration": 89,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "幽雅に咲かせ、墨染の桜 ～ Border of Life 上海アリス幻樂団"
+ },
+ {
+  "id": "x2-doujin-ja-010",
+  "split": "dev",
+  "title": "竹取飛翔 ～ Lunatic Princess",
+  "artists": [
+   "上海アリス幻樂団"
+  ],
+  "duration": 160,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "竹取飛翔 ～ Lunatic Princess 上海アリス幻樂団"
+ },
+ {
+  "id": "x2-doujin-ja-011",
+  "split": "dev",
+  "title": "月まで届け、不死の煙",
+  "artists": [
+   "上海アリス幻樂団"
+  ],
+  "duration": 174,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "月まで届け、不死の煙 上海アリス幻樂団"
+ },
+ {
+  "id": "x2-doujin-ja-012",
+  "split": "holdout",
+  "title": "おてんば恋娘",
+  "artists": [
+   "上海アリス幻樂団"
+  ],
+  "duration": 89,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "おてんば恋娘 上海アリス幻樂団"
+ },
+ {
+  "id": "x2-doujin-ja-013",
+  "split": "holdout",
+  "title": "感情の摩天楼 ～ Cosmic Mind",
+  "artists": [
+   "上海アリス幻樂団"
+  ],
+  "duration": 203,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "感情の摩天楼 ～ Cosmic Mind 上海アリス幻樂団"
+ },
+ {
+  "id": "x2-vocaloid-ja-001",
+  "split": "dev",
+  "title": "メルト",
+  "artists": [
+   "supercell"
+  ],
+  "duration": 258,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "メルト supercell"
+ },
+ {
+  "id": "x2-vocaloid-ja-002",
+  "split": "holdout",
+  "title": "初音ミクの消失 (初音未来的消失)",
+  "artists": [
+   "cosMo@暴走P",
+   "初音未来"
+  ],
+  "duration": 289,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "初音ミクの消失 cosMo@暴走P"
+ },
+ {
+  "id": "x2-vocaloid-ja-003",
+  "split": "holdout",
+  "title": "ロミオとシンデレラ (罗密欧与辛德瑞拉)",
+  "artists": [
+   "doriko",
+   "初音未来"
+  ],
+  "duration": 280,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ロミオとシンデレラ doriko"
+ },
+ {
+  "id": "x2-vocaloid-ja-004",
+  "split": "holdout",
+  "title": "深海少女",
+  "artists": [
+   "ゆうゆ",
+   "初音未来"
+  ],
+  "duration": 208,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "深海少女 ゆうゆ"
+ },
+ {
+  "id": "x2-vocaloid-ja-005",
+  "split": "dev",
+  "title": "カゲロウデイズ (阳炎眩乱)",
+  "artists": [
+   "じん"
+  ],
+  "duration": 234,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "カゲロウデイズ じん"
+ },
+ {
+  "id": "x2-vocaloid-ja-006",
+  "split": "dev",
+  "title": "夜咄ディセイブ (夜咄Deceive)",
+  "artists": [
+   "じん",
+   "LiSA",
+   "美依礼芽MARiA"
+  ],
+  "duration": 201,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "夜咄ディセイブ じん"
+ },
+ {
+  "id": "x2-vocaloid-ja-007",
+  "split": "holdout",
+  "title": "アウターサイエンス (界外科学)",
+  "artists": [
+   "ONE",
+   "じん"
+  ],
+  "duration": 299,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "アウターサイエンス じん"
+ },
+ {
+  "id": "x2-vocaloid-ja-008",
+  "split": "dev",
+  "title": "サマータイムレコード",
+  "artists": [
+   "じん"
+  ],
+  "duration": 278,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "サマータイムレコード じん"
+ },
+ {
+  "id": "x2-vocaloid-ja-009",
+  "split": "holdout",
+  "title": "神っぽいな (像神一样呐)",
+  "artists": [
+   "ピノキオピー"
+  ],
+  "duration": 203,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "神っぽいな ピノキオピー"
+ },
+ {
+  "id": "x2-vocaloid-ja-010",
+  "split": "dev",
+  "title": "転生林檎 (转生苹果)",
+  "artists": [
+   "ピノキオピー"
+  ],
+  "duration": 219,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "転生林檎 ピノキオピー"
+ },
+ {
+  "id": "x2-vocaloid-ja-011",
+  "split": "holdout",
+  "title": "魔法少女とチョコレゐト (魔法少女与巧克力)",
+  "artists": [
+   "ピノキオピー"
+  ],
+  "duration": 187,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "魔法少女とチョコレゐト ピノキオピー"
+ },
+ {
+  "id": "x2-vocaloid-ja-012",
+  "split": "dev",
+  "title": "ラグトレイン",
+  "artists": [
+   "稲葉曇"
+  ],
+  "duration": 251,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ラグトレイン 稲葉曇"
+ },
+ {
+  "id": "x2-vocaloid-ja-013",
+  "split": "holdout",
+  "title": "きゅうくらりん (心跳不止)",
+  "artists": [
+   "いよわ"
+  ],
+  "duration": 217,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "きゅうくらりん いよわ"
+ },
+ {
+  "id": "x2-vocaloid-ja-014",
+  "split": "dev",
+  "title": "ヴァンパイア (吸血鬼)",
+  "artists": [
+   "DECO*27",
+   "初音未来"
+  ],
+  "duration": 180,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ヴァンパイア DECO*27"
+ },
+ {
+  "id": "x2-vocaloid-ja-015",
+  "split": "dev",
+  "title": "ゴーストルール",
+  "artists": [
+   "DECO*27",
+   "触手猴"
+  ],
+  "duration": 220,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ゴーストルール DECO*27"
+ },
+ {
+  "id": "x2-vocaloid-ja-016",
+  "split": "dev",
+  "title": "ヒバナ",
+  "artists": [
+   "初音未来",
+   "DECO*27"
+  ],
+  "duration": 206,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ヒバナ DECO*27"
+ },
+ {
+  "id": "x2-vocaloid-ja-017",
+  "split": "holdout",
+  "title": "乙女解剖",
+  "artists": [
+   "DECO*27"
+  ],
+  "duration": 223,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "乙女解剖 DECO*27"
+ },
+ {
+  "id": "x2-vocaloid-ja-018",
+  "split": "holdout",
+  "title": "ボルテッカー (伏特攻击)",
+  "artists": [
+   "DECO*27"
+  ],
+  "duration": 152,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ボルテッカー DECO*27"
+ },
+ {
+  "id": "x2-vocaloid-ja-019",
+  "split": "dev",
+  "title": "エゴロック",
+  "artists": [
+   "すりぃ"
+  ],
+  "duration": 169,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "エゴロック すりぃ"
+ },
+ {
+  "id": "x2-vocaloid-ja-020",
+  "split": "holdout",
+  "title": "ジャンキーナイトタウンオーケストラ",
+  "artists": [
+   "すりぃ"
+  ],
+  "duration": 213,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ジャンキーナイトタウンオーケストラ すりぃ"
+ },
+ {
+  "id": "x2-vocaloid-ja-021",
+  "split": "dev",
+  "title": "キュートなカノジョ",
+  "artists": [
+   "syudou",
+   "KaFû"
+  ],
+  "duration": 131,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "キュートなカノジョ syudou"
+ },
+ {
+  "id": "x2-vocaloid-ja-022",
+  "split": "dev",
+  "title": "ベノム (猛毒)",
+  "artists": [
+   "かいりきベア"
+  ],
+  "duration": 203,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ベノム かいりきベア"
+ },
+ {
+  "id": "x2-vocaloid-ja-023",
+  "split": "holdout",
+  "title": "ダーリン (亲爱的)",
+  "artists": [
+   "須田景凪"
+  ],
+  "duration": 148,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ダーリン 須田景凪"
+ },
+ {
+  "id": "x2-vocaloid-ja-024",
+  "split": "holdout",
+  "title": "シャルル (Charles)",
+  "artists": [
+   "バルーン",
+   "v flower"
+  ],
+  "duration": 233,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "シャルル バルーン"
+ },
+ {
+  "id": "x2-vocaloid-ja-025",
+  "split": "dev",
+  "title": "エンヴィーベイビー",
+  "artists": [
+   "Kanaria",
+   "GUMI"
+  ],
+  "duration": 135,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "virtual-singer",
+  "platformSource": "qq",
+  "sourceQuery": "エンヴィーベイビー Kanaria"
+ },
+ {
+  "id": "x2-vocaloid-ja-026",
+  "split": "dev",
+  "title": "グッバイ宣言",
+  "artists": [
+   "Chinozo",
+   "v flower"
+  ],
+  "duration": 176,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "グッバイ宣言 Chinozo"
+ },
+ {
+  "id": "x2-vocaloid-ja-027",
+  "split": "dev",
+  "title": "ボッカデラベリタ",
+  "artists": [
+   "柊キライ",
+   "flower"
+  ],
+  "duration": 199,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "virtual-singer",
+  "platformSource": "qq",
+  "sourceQuery": "ボッカデラベリタ 柊キライ"
+ },
+ {
+  "id": "x2-vocaloid-ja-028",
+  "split": "dev",
+  "title": "春嵐",
+  "artists": [
+   "john"
+  ],
+  "duration": 161,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "春嵐 john"
+ },
+ {
+  "id": "x2-vocaloid-ja-029",
+  "split": "dev",
+  "title": "ロキ",
+  "artists": [
+   "鏡音リン",
+   "鏡音レン",
+   "みきとP"
+  ],
+  "duration": 234,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "virtual-singer",
+  "platformSource": "qq",
+  "sourceQuery": "ロキ みきとP"
+ },
+ {
+  "id": "x2-vocaloid-ja-030",
+  "split": "dev",
+  "title": "命に嫌われている",
+  "artists": [
+   "カンザキイオリ"
+  ],
+  "duration": 268,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "命に嫌われている カンザキイオリ"
+ },
+ {
+  "id": "x2-vocaloid-ja-031",
+  "split": "dev",
+  "title": "少女A",
+  "artists": [
+   "椎名もた",
+   "镜音铃"
+  ],
+  "duration": 221,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "virtual-singer",
+  "platformSource": "qq",
+  "sourceQuery": "少女A 椎名もた"
+ },
+ {
+  "id": "x2-vocaloid-ja-032",
+  "split": "holdout",
+  "title": "それがあなたの幸せとしても",
+  "artists": [
+   "巡音流歌",
+   "ヘブンズP"
+  ],
+  "duration": 297,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "virtual-singer",
+  "platformSource": "qq",
+  "sourceQuery": "それがあなたの幸せとしても ヘブンズP"
+ },
+ {
+  "id": "x2-project-sekai-ja-001",
+  "split": "dev",
+  "title": "アイディスマイル (IDSMILE)",
+  "artists": [
+   "25時、ナイトコードで。"
+  ],
+  "duration": 180,
+  "category": "project-sekai",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "アイディスマイル 25時、ナイトコードで。"
+ },
+ {
+  "id": "x2-project-sekai-ja-002",
+  "split": "holdout",
+  "title": "ステラ (Stella)",
+  "artists": [
+   "Leo/need"
+  ],
+  "duration": 323,
+  "category": "project-sekai",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "sekai-version",
+  "platformSource": "qq",
+  "sourceQuery": "ステラ Leo/need"
+ },
+ {
+  "id": "x2-project-sekai-ja-003",
+  "split": "dev",
+  "title": "ロウワー (堕落眼界)",
+  "artists": [
+   "25時、ナイトコードで。"
+  ],
+  "duration": 230,
+  "category": "project-sekai",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ロウワー 25時、ナイトコードで。"
+ },
+ {
+  "id": "x2-project-sekai-ja-004",
+  "split": "dev",
+  "title": "シネマ (电影)",
+  "artists": [
+   "Vivid BAD SQUAD"
+  ],
+  "duration": 211,
+  "category": "project-sekai",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "sekai-version",
+  "platformSource": "qq",
+  "sourceQuery": "シネマ Vivid BAD SQUAD"
+ },
+ {
+  "id": "x2-pop-ko-001",
+  "split": "holdout",
+  "title": "Hype Boy",
+  "artists": [
+   "NewJeans"
+  ],
+  "duration": 176,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Hype Boy NewJeans"
+ },
+ {
+  "id": "x2-pop-ko-002",
+  "split": "dev",
+  "title": "Super Shy",
+  "artists": [
+   "NewJeans"
+  ],
+  "duration": 154,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Super Shy NewJeans"
+ },
+ {
+  "id": "x2-pop-ko-003",
+  "split": "dev",
+  "title": "How You Like That",
+  "artists": [
+   "BLACKPINK"
+  ],
+  "duration": 181,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "How You Like That BLACKPINK"
+ },
+ {
+  "id": "x2-pop-ko-004",
+  "split": "dev",
+  "title": "Dynamite",
+  "artists": [
+   "BTS"
+  ],
+  "duration": 199,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Dynamite BTS"
+ },
+ {
+  "id": "x2-pop-ko-005",
+  "split": "dev",
+  "title": "Butter",
+  "artists": [
+   "BTS"
+  ],
+  "duration": 164,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Butter BTS"
+ },
+ {
+  "id": "x2-pop-ko-006",
+  "split": "dev",
+  "title": "LOVE DIVE",
+  "artists": [
+   "IVE"
+  ],
+  "duration": 177,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Love Dive IVE"
+ },
+ {
+  "id": "x2-pop-ko-007",
+  "split": "dev",
+  "title": "I AM",
+  "artists": [
+   "IVE"
+  ],
+  "duration": 183,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "I AM IVE"
+ },
+ {
+  "id": "x2-pop-ko-008",
+  "split": "dev",
+  "title": "Spicy",
+  "artists": [
+   "aespa"
+  ],
+  "duration": 197,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Spicy aespa"
+ },
+ {
+  "id": "x2-pop-ko-009",
+  "split": "dev",
+  "title": "Supernova",
+  "artists": [
+   "aespa"
+  ],
+  "duration": 178,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Supernova aespa"
+ },
+ {
+  "id": "x2-pop-ko-010",
+  "split": "dev",
+  "title": "Feel My Rhythm",
+  "artists": [
+   "Red Velvet"
+  ],
+  "duration": 210,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Feel My Rhythm Red Velvet"
+ },
+ {
+  "id": "x2-pop-ko-011",
+  "split": "dev",
+  "title": "ANTIFRAGILE",
+  "artists": [
+   "LE SSERAFIM"
+  ],
+  "duration": 184,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "ANTIFRAGILE LE SSERAFIM"
+ },
+ {
+  "id": "x2-pop-ko-012",
+  "split": "dev",
+  "title": "UNFORGIVEN (feat. Nile Rodgers)",
+  "artists": [
+   "LE SSERAFIM",
+   "Nile Rodgers"
+  ],
+  "duration": 182,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "UNFORGIVEN LE SSERAFIM"
+ },
+ {
+  "id": "x2-pop-ko-013",
+  "split": "holdout",
+  "title": "TOMBOY",
+  "artists": [
+   "i-dle"
+  ],
+  "duration": 174,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "TOMBOY (G)I-DLE"
+ },
+ {
+  "id": "x2-pop-ko-014",
+  "split": "holdout",
+  "title": "퀸카 (Queencard) (Live)",
+  "artists": [
+   "(G)I-DLE"
+  ],
+  "duration": 166,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Queencard (G)I-DLE"
+ },
+ {
+  "id": "x2-pop-ko-015",
+  "split": "dev",
+  "title": "Magnetic",
+  "artists": [
+   "ILLIT"
+  ],
+  "duration": 160,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Magnetic ILLIT"
+ },
+ {
+  "id": "x2-pop-ko-016",
+  "split": "dev",
+  "title": "Fate",
+  "artists": [
+   "(G)I-DLE"
+  ],
+  "duration": 178,
+  "category": "pop",
+  "locale": "ko",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Fate (G)I-DLE"
+ },
+ {
+  "id": "x2-pop-en-001",
+  "split": "dev",
+  "title": "Shape of You",
+  "artists": [
+   "Ed Sheeran"
+  ],
+  "duration": 233,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Shape of You Ed Sheeran"
+ },
+ {
+  "id": "x2-pop-en-002",
+  "split": "dev",
+  "title": "Perfect",
+  "artists": [
+   "Ed Sheeran"
+  ],
+  "duration": 263,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Perfect Ed Sheeran"
+ },
+ {
+  "id": "x2-pop-en-003",
+  "split": "dev",
+  "title": "Photograph",
+  "artists": [
+   "Ed Sheeran"
+  ],
+  "duration": 258,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Photograph Ed Sheeran"
+ },
+ {
+  "id": "x2-pop-en-004",
+  "split": "holdout",
+  "title": "Rolling In the Deep",
+  "artists": [
+   "Adele"
+  ],
+  "duration": 259,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Rolling in the Deep Adele"
+ },
+ {
+  "id": "x2-pop-en-005",
+  "split": "dev",
+  "title": "Someone Like You",
+  "artists": [
+   "Adele"
+  ],
+  "duration": 285,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Someone Like You Adele"
+ },
+ {
+  "id": "x2-pop-en-006",
+  "split": "dev",
+  "title": "Hello",
+  "artists": [
+   "Adele"
+  ],
+  "duration": 295,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Hello Adele"
+ },
+ {
+  "id": "x2-pop-en-007",
+  "split": "dev",
+  "title": "Easy On Me",
+  "artists": [
+   "Adele"
+  ],
+  "duration": 224,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Easy On Me Adele"
+ },
+ {
+  "id": "x2-pop-en-008",
+  "split": "dev",
+  "title": "Counting Stars",
+  "artists": [
+   "OneRepublic"
+  ],
+  "duration": 257,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Counting Stars OneRepublic"
+ },
+ {
+  "id": "x2-pop-en-009",
+  "split": "holdout",
+  "title": "Apologize",
+  "artists": [
+   "Timbaland",
+   "OneRepublic"
+  ],
+  "duration": 184,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Apologize OneRepublic"
+ },
+ {
+  "id": "x2-pop-en-010",
+  "split": "dev",
+  "title": "Faded",
+  "artists": [
+   "Alan Walker"
+  ],
+  "duration": 212,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Faded Alan Walker"
+ },
+ {
+  "id": "x2-pop-en-011",
+  "split": "dev",
+  "title": "Believer",
+  "artists": [
+   "Imagine Dragons"
+  ],
+  "duration": 204,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Believer Imagine Dragons"
+ },
+ {
+  "id": "x2-pop-en-012",
+  "split": "dev",
+  "title": "Demons",
+  "artists": [
+   "Imagine Dragons"
+  ],
+  "duration": 175,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Demons Imagine Dragons"
+ },
+ {
+  "id": "x2-pop-en-013",
+  "split": "holdout",
+  "title": "Thunder",
+  "artists": [
+   "Imagine Dragons"
+  ],
+  "duration": 187,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Thunder Imagine Dragons"
+ },
+ {
+  "id": "x2-pop-en-014",
+  "split": "dev",
+  "title": "bad guy",
+  "artists": [
+   "Billie Eilish"
+  ],
+  "duration": 194,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "bad guy Billie Eilish"
+ },
+ {
+  "id": "x2-pop-en-015",
+  "split": "holdout",
+  "title": "BIRDS OF A FEATHER",
+  "artists": [
+   "Billie Eilish"
+  ],
+  "duration": 210,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Birds of a Feather Billie Eilish"
+ },
+ {
+  "id": "x2-pop-en-016",
+  "split": "dev",
+  "title": "Cruel Summer",
+  "artists": [
+   "Taylor Swift"
+  ],
+  "duration": 178,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Cruel Summer Taylor Swift"
+ },
+ {
+  "id": "x2-pop-en-017",
+  "split": "dev",
+  "title": "Love Story",
+  "artists": [
+   "Taylor Swift"
+  ],
+  "duration": 236,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Love Story Taylor Swift"
+ },
+ {
+  "id": "x2-pop-en-018",
+  "split": "dev",
+  "title": "Blank Space",
+  "artists": [
+   "Taylor Swift"
+  ],
+  "duration": 231,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Blank Space Taylor Swift"
+ },
+ {
+  "id": "x2-pop-en-019",
+  "split": "dev",
+  "title": "Anti-Hero",
+  "artists": [
+   "Taylor Swift"
+  ],
+  "duration": 200,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Anti-Hero Taylor Swift"
+ },
+ {
+  "id": "x2-pop-en-020",
+  "split": "dev",
+  "title": "Flowers",
+  "artists": [
+   "Miley Cyrus"
+  ],
+  "duration": 200,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Flowers Miley Cyrus"
+ },
+ {
+  "id": "x2-pop-en-021",
+  "split": "dev",
+  "title": "As It Was",
+  "artists": [
+   "Harry Styles"
+  ],
+  "duration": 167,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "As It Was Harry Styles"
+ },
+ {
+  "id": "x2-pop-en-022",
+  "split": "dev",
+  "title": "Stay With Me",
+  "artists": [
+   "Sam Smith"
+  ],
+  "duration": 172,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Stay With Me Sam Smith"
+ },
+ {
+  "id": "x2-pop-en-023",
+  "split": "dev",
+  "title": "Someone You Loved",
+  "artists": [
+   "Lewis Capaldi"
+  ],
+  "duration": 182,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Someone You Loved Lewis Capaldi"
+ },
+ {
+  "id": "x2-pop-en-024",
+  "split": "dev",
+  "title": "Yellow",
+  "artists": [
+   "Coldplay"
+  ],
+  "duration": 266,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Yellow Coldplay"
+ },
+ {
+  "id": "x2-pop-en-025",
+  "split": "dev",
+  "title": "Fix You",
+  "artists": [
+   "Coldplay"
+  ],
+  "duration": 295,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Fix You Coldplay"
+ },
+ {
+  "id": "x2-pop-en-026",
+  "split": "dev",
+  "title": "Viva la Vida",
+  "artists": [
+   "Coldplay"
+  ],
+  "duration": 241,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Viva La Vida Coldplay"
+ },
+ {
+  "id": "x2-pop-en-027",
+  "split": "holdout",
+  "title": "Bohemian Rhapsody",
+  "artists": [
+   "Queen"
+  ],
+  "duration": 357,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Bohemian Rhapsody Queen"
+ },
+ {
+  "id": "x2-pop-en-028",
+  "split": "dev",
+  "title": "Don't Stop Me Now",
+  "artists": [
+   "Queen"
+  ],
+  "duration": 210,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Don't Stop Me Now Queen"
+ },
+ {
+  "id": "x2-pop-en-029",
+  "split": "dev",
+  "title": "Hotel California",
+  "artists": [
+   "Eagles"
+  ],
+  "duration": 391,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Hotel California Eagles"
+ },
+ {
+  "id": "x2-pop-en-030",
+  "split": "dev",
+  "title": "Yesterday (Remastered 2009)",
+  "artists": [
+   "The Beatles"
+  ],
+  "duration": 125,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Yesterday The Beatles"
+ },
+ {
+  "id": "x2-pop-en-031",
+  "split": "dev",
+  "title": "Hey Jude",
+  "artists": [
+   "The Beatles"
+  ],
+  "duration": 431,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Hey Jude The Beatles"
+ },
+ {
+  "id": "x2-pop-en-032",
+  "split": "holdout",
+  "title": "Take Me Home, Country Roads",
+  "artists": [
+   "John Denver"
+  ],
+  "duration": 192,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Take Me Home, Country Roads John Denver"
+ },
+ {
+  "id": "x2-pop-en-033",
+  "split": "dev",
+  "title": "Right Here Waiting",
+  "artists": [
+   "Richard Marx"
+  ],
+  "duration": 264,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Right Here Waiting Richard Marx"
+ },
+ {
+  "id": "x2-pop-en-034",
+  "split": "dev",
+  "title": "Shape Of My Heart",
+  "artists": [
+   "Sting"
+  ],
+  "duration": 279,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Shape of My Heart Sting"
+ },
+ {
+  "id": "x2-pop-en-035",
+  "split": "dev",
+  "title": "Zombie",
+  "artists": [
+   "The Cranberries"
+  ],
+  "duration": 307,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Zombie The Cranberries"
+ },
+ {
+  "id": "x2-pop-en-036",
+  "split": "holdout",
+  "title": "Creep",
+  "artists": [
+   "Radiohead"
+  ],
+  "duration": 257,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Creep Radiohead"
+ },
+ {
+  "id": "x2-pop-en-037",
+  "split": "holdout",
+  "title": "Numb",
+  "artists": [
+   "Linkin Park"
+  ],
+  "duration": 187,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Numb Linkin Park"
+ },
+ {
+  "id": "x2-pop-en-038",
+  "split": "dev",
+  "title": "In The End",
+  "artists": [
+   "Linkin Park"
+  ],
+  "duration": 216,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "In the End Linkin Park"
+ },
+ {
+  "id": "x2-pop-en-039",
+  "split": "dev",
+  "title": "Bring Me To Life",
+  "artists": [
+   "Evanescence"
+  ],
+  "duration": 235,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Bring Me to Life Evanescence"
+ },
+ {
+  "id": "x2-pop-en-040",
+  "split": "dev",
+  "title": "Sugar",
+  "artists": [
+   "Maroon 5"
+  ],
+  "duration": 235,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Sugar Maroon 5"
+ },
+ {
+  "id": "x2-pop-en-041",
+  "split": "holdout",
+  "title": "Memories",
+  "artists": [
+   "Maroon 5"
+  ],
+  "duration": 189,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Memories Maroon 5"
+ },
+ {
+  "id": "x2-pop-en-042",
+  "split": "dev",
+  "title": "Something Just Like This",
+  "artists": [
+   "The Chainsmokers",
+   "Coldplay"
+  ],
+  "duration": 247,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Something Just Like This The Chainsmokers"
+ },
+ {
+  "id": "x2-pop-en-043",
+  "split": "dev",
+  "title": "Closer",
+  "artists": [
+   "The Chainsmokers",
+   "Halsey"
+  ],
+  "duration": 244,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Closer The Chainsmokers"
+ },
+ {
+  "id": "x2-pop-en-044",
+  "split": "dev",
+  "title": "Wake Me Up",
+  "artists": [
+   "Avicii"
+  ],
+  "duration": 249,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Wake Me Up Avicii"
+ },
+ {
+  "id": "x2-pop-en-045",
+  "split": "dev",
+  "title": "Waiting For Love",
+  "artists": [
+   "Avicii"
+  ],
+  "duration": 232,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Waiting for Love Avicii"
+ },
+ {
+  "id": "x2-pop-en-046",
+  "split": "holdout",
+  "title": "The Nights",
+  "artists": [
+   "Avicii"
+  ],
+  "duration": 176,
+  "category": "pop",
+  "locale": "en",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "The Nights Avicii"
+ },
+ {
+  "id": "x2-pop-es-001",
+  "split": "dev",
+  "title": "Waka Waka",
+  "artists": [
+   "Shakira"
+  ],
+  "duration": 202,
+  "category": "pop",
+  "locale": "es",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Waka Waka Shakira"
+ },
+ {
+  "id": "x2-pop-fr-001",
+  "split": "dev",
+  "title": "La vie en rose",
+  "artists": [
+   "Édith Piaf"
+  ],
+  "duration": 187,
+  "category": "pop",
+  "locale": "fr",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "La Vie en rose Édith Piaf"
+ },
+ {
+  "id": "x2-classical-it-001",
+  "split": "dev",
+  "title": "Con Te Partirò",
+  "artists": [
+   "Andrea Bocelli"
+  ],
+  "duration": 250,
+  "category": "classical",
+  "locale": "it",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Con te partirò Andrea Bocelli"
+ },
+ {
+  "id": "x2-classical-it-002",
+  "split": "holdout",
+  "title": "Nessun dorma!",
+  "artists": [
+   "Luciano Pavarotti",
+   "London Philharmonic Orchestra",
+   "John Alldis Choir",
+   "Wandsworth School Boys' Choir",
+   "Zubin Mehta"
+  ],
+  "duration": 179,
+  "category": "classical",
+  "locale": "it",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Nessun Dorma Luciano Pavarotti"
+ },
+ {
+  "id": "x2-pop-es-002",
+  "split": "holdout",
+  "title": "La Camisa Negra",
+  "artists": [
+   "Juanes"
+  ],
+  "duration": 216,
+  "category": "pop",
+  "locale": "es",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "La Camisa Negra Juanes"
+ },
+ {
+  "id": "x2-pop-pt-001",
+  "split": "dev",
+  "title": "Ai Se Eu Te Pego",
+  "artists": [
+   "Michel Teló"
+  ],
+  "duration": 165,
+  "category": "pop",
+  "locale": "pt",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Ai Se Eu Te Pego Michel Teló"
+ },
+ {
+  "id": "x2-instrumental-instrumental-001",
+  "split": "dev",
+  "title": "Summer",
+  "artists": [
+   "久石譲"
+  ],
+  "duration": 59,
+  "category": "instrumental",
+  "locale": "instrumental",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Summer 久石譲"
+ },
+ {
+  "id": "x2-instrumental-instrumental-002",
+  "split": "dev",
+  "title": "千と千尋の神隠し : あの夏へ (Winter Piano Ver.)",
+  "artists": [
+   "α Healing",
+   "久石譲"
+  ],
+  "duration": 337,
+  "category": "instrumental",
+  "locale": "instrumental",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "あの夏へ 久石譲"
+ },
+ {
+  "id": "x2-instrumental-instrumental-003",
+  "split": "dev",
+  "title": "Einaudi - Nuvole Bianche (艾奥迪 - 鲁多维科・艾奥迪：白云)",
+  "artists": [
+   "Ludovico Einaudi"
+  ],
+  "duration": 357,
+  "category": "instrumental",
+  "locale": "instrumental",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Nuvole Bianche Ludovico Einaudi"
+ },
+ {
+  "id": "x2-instrumental-instrumental-004",
+  "split": "dev",
+  "title": "Experience (经验 - 经验)",
+  "artists": [
+   "Ludovico Einaudi"
+  ],
+  "duration": 315,
+  "category": "instrumental",
+  "locale": "instrumental",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "Experience Ludovico Einaudi"
+ },
+ {
+  "id": "x2-instrumental-instrumental-005",
+  "split": "dev",
+  "title": "风居住的街道",
+  "artists": [
+   "磯村由紀子"
+  ],
+  "duration": 203,
+  "category": "instrumental",
+  "locale": "instrumental",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "风居住的街道 磯村由紀子"
+ },
+ {
+  "id": "x2-instrumental-instrumental-006",
+  "split": "dev",
+  "title": "夜的钢琴曲五",
+  "artists": [
+   "石进"
+  ],
+  "duration": 130,
+  "category": "instrumental",
+  "locale": "instrumental",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "qq",
+  "sourceQuery": "夜的钢琴曲五 石进"
+ },
+ {
+  "id": "x2-pop-ja-031",
+  "split": "holdout",
+  "title": "マリーゴールド",
+  "artists": [
+   "あいみょん"
+  ],
+  "duration": 307,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "netease",
+  "sourceQuery": "マリーゴールド あいみょん"
+ },
+ {
+  "id": "x2-pop-ja-032",
+  "split": "holdout",
+  "title": "君はロックを聴かない",
+  "artists": [
+   "あいみょん"
+  ],
+  "duration": 249,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "full-original",
+  "platformSource": "netease",
+  "sourceQuery": "君はロックを聴かない あいみょん"
+ },
+ {
+  "id": "x2-pop-ja-033",
+  "split": "holdout",
+  "title": "ハルノヒ",
+  "artists": [
+   "あいみょん"
+  ],
+  "duration": 327,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "netease",
+  "sourceQuery": "ハルノヒ あいみょん"
+ },
+ {
+  "id": "x2-pop-ja-034",
+  "split": "dev",
+  "title": "時の流れに身をまかせ",
+  "artists": [
+   "邓丽君"
+  ],
+  "duration": 250,
+  "category": "pop",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "netease",
+  "sourceQuery": "時の流れに身をまかせ テレサ・テン"
+ },
+ {
+  "id": "x2-doujin-ja-014",
+  "split": "dev",
+  "title": "色は匂へど散りぬるを (幻想万華鏡 春雪異変の章 OP主題歌)",
+  "artists": [
+   "幽閉サテライト"
+  ],
+  "duration": 217,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "netease",
+  "sourceQuery": "色は匂へど散りぬるを 幽閉サテライト"
+ },
+ {
+  "id": "x2-doujin-ja-015",
+  "split": "holdout",
+  "title": "泡沫、哀のまほろば",
+  "artists": [
+   "幽閉サテライト"
+  ],
+  "duration": 240,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "full-original",
+  "platformSource": "netease",
+  "sourceQuery": "泡沫、哀のまほろば 幽閉サテライト"
+ },
+ {
+  "id": "x2-doujin-ja-016",
+  "split": "dev",
+  "title": "ネクロファンタジア",
+  "artists": [
+   "上海アリス幻樂団"
+  ],
+  "duration": 353,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "full-original",
+  "platformSource": "netease",
+  "sourceQuery": "ネクロファンタジア 上海アリス幻樂団"
+ },
+ {
+  "id": "x2-doujin-ja-017",
+  "split": "dev",
+  "title": "少女綺想曲 ～ Dream Battle",
+  "artists": [
+   "上海アリス幻樂団"
+  ],
+  "duration": 335,
+  "category": "doujin",
+  "locale": "ja",
+  "popularity": "rare",
+  "targetVersion": "full-original",
+  "platformSource": "netease",
+  "sourceQuery": "少女綺想曲 ～ Dream Battle 上海アリス幻樂団"
+ },
+ {
+  "id": "x2-vocaloid-ja-033",
+  "split": "dev",
+  "title": "千本桜",
+  "artists": [
+   "黒うさP",
+   "初音ミク"
+  ],
+  "duration": 252,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "popular",
+  "targetVersion": "virtual-singer",
+  "platformSource": "netease",
+  "sourceQuery": "千本桜 初音ミク"
+ },
+ {
+  "id": "x2-vocaloid-ja-034",
+  "split": "dev",
+  "title": "天樂",
+  "artists": [
+   "ゆうゆ",
+   "鏡音リン"
+  ],
+  "duration": 274,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "virtual-singer",
+  "platformSource": "netease",
+  "sourceQuery": "天樂 ゆうゆ"
+ },
+ {
+  "id": "x2-vocaloid-ja-035",
+  "split": "holdout",
+  "title": "少女レイ",
+  "artists": [
+   "みきとP"
+  ],
+  "duration": 293,
+  "category": "vocaloid",
+  "locale": "ja",
+  "popularity": "medium",
+  "targetVersion": "full-original",
+  "platformSource": "netease",
+  "sourceQuery": "少女レイ みきとP"
+ }
 ]

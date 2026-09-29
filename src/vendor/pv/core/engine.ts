@@ -162,6 +162,11 @@ export class PVEngine {
 
   get paused() { return this._paused; }
 
+  /** 运行期调整 Pixi ticker 帧率上限（TV 弱机降档用；内部 delta 换算按 maxFPS 动态读取，改了即生效） */
+  setMaxFps(fps: number) {
+    this.app.ticker.maxFPS = Math.max(1, Math.min(120, fps));
+  }
+
   pause() {
     this._paused = true;
     this.beat.pause();

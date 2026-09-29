@@ -40,7 +40,7 @@ interface BilibiliProfileModalProps {
   onClose: () => void
   playerTheme?: 'light' | 'dark'
   /** 提供后视频浮层可"设为当前歌曲 MV" */
-  currentSongContext?: { songKey: string; songTitle: string } | null
+  currentSongContext?: { songKey: string; songTitle: string; artist?: string } | null
 }
 
 type ProfileTab = 'fav' | 'history' | 'uploads' | 'following'

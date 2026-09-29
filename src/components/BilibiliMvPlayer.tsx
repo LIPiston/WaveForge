@@ -57,9 +57,12 @@ import {
   pickBestPage,
   flattenLyricLinesForMatch,
   songKeyOf,
-  setBilibiliOverride,
   clearBilibiliOverride,
   getBilibiliOverride,
+  setSessionManualPick,
+  getSessionManualPick,
+  clearSessionManualPick,
+  noteCurrentSongForManualPick,
   getBilibiliBlacklist,
   addBilibiliBlacklist,
   formatBiliTime,
@@ -69,6 +72,7 @@ import {
   scoreCandidate,
   compareCandidates,
   getBilibiliWatchSettings,
+  pickPlayableCandidate,
   saveBilibiliWatchSettings,
   getLocalMvMark,
   saveLocalMvMark,
@@ -536,6 +540,11 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
   const songContextRef = useRef({ songKey, songTitle, songArtists, songDuration, platform, songId, songUrl, lyrics: lyricsProp })
   songContextRef.current = { songKey, songTitle, songArtists, songDuration, platform, songId, songUrl, lyrics: lyricsProp }
 
+  // 切歌即让"会话内手动选择"失效：手动选择只在当前这首歌、这次播放内有效（未标记不构成记忆）
+  useEffect(() => {
+    noteCurrentSongForManualPick(songKey)
+  }, [songKey])
+
   // 组件跨歌曲常驻；每首歌都要重新接收进入看歌时的歌曲时间和预加载流。
   useEffect(() => {
     startupSeekRef.current = initialSeekSeconds != null && Number.isFinite(initialSeekSeconds)
@@ -856,6 +865,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
           if (getBilibiliOverride(song.songKey) === candidate.video.bvid) {
             clearBilibiliOverride(song.songKey)
           }
+          if (getSessionManualPick(song.songKey) === candidate.video.bvid) clearSessionManualPick()
           // 自动回退：确凿失败（失效/受限）时尝试下一候选
           const message = error instanceof Error ? error.message : '视频加载失败'
           failedBvidsRef.current.add(candidate.video.bvid)
@@ -933,7 +943,8 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
             void loadVideo(result.best, Math.max(0, (result.fallbackChain || []).indexOf(result.best)))
           }
         } else if (result.status === 'confirm') {
-          const best = result.best || result.candidates?.[0]
+          // 低置信也是"先播最高分"；但伴奏/卡拉OK/音游/翻唱这类被标记的候选不作为首选
+          const best = pickPlayableCandidate(result) || result.candidates?.[0]
           if (best) {
             fallbackChainRef.current = result.fallbackChain || result.candidates || []
             const playingBvid = activeVideoRef.current?.video.bvid
@@ -1198,7 +1209,9 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     manualPlaybackSecondsRef.current = 0
     manualPlaybackLastTimeRef.current = null
     setManualPlaybackMarkPrompt(false)
-    setBilibiliOverride(songKey, raw.bvid)
+    // 手动选择只写"会话内记忆"（内存）：看歌/背景两个表面保持一致，但不算匹配记忆。
+    // 持久化只发生在点「标记」时（confirmManualMark → saveLocalMvMark）。
+    setSessionManualPick(songKey, raw.bvid)
     setShowPicker(false)
     void loadVideo(candidate, 0, true)
   }, [songKey, loadVideo])
@@ -1653,6 +1666,9 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
       if (!surfaceVisible) return
       if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+      // TV 焦点导航已处理过该按键（tvCore capture 监听先于本 handler，移动焦点时
+      // 会 preventDefault）——不检查会左右键同时"seek + 跳焦点"
+      if (e.defaultPrevented) return
       const target = e.target instanceof HTMLElement ? e.target : null
       const isEditable = Boolean(target?.closest('input, textarea, select, button, [contenteditable="true"]'))
       if (isEditable) return
@@ -2070,13 +2086,15 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     return () => document.removeEventListener('fullscreenchange', onChange)
   }, [])
 
-  // TV 遥控器 BACK：登录面板 → 设置 → 个人主页 → 候选列表 → 返回音频（仅播放器为可见表面时接管）
+  // TV 遥控器 BACK：登录面板 → 设置 → 个人主页 → 候选列表 → 画质菜单/歌曲信息 → 返回音频（仅播放器为可见表面时接管）
   useTvBack(() => {
     if (!surfaceVisible) return false
     if (showLogin) setShowLogin(false)
     else if (showSettings) setShowSettings(false)
     else if (showProfile) setShowProfile(false)
     else if (showPicker) setShowPicker(false)
+    else if (showQualityMenu) setShowQualityMenu(false) // 小浮层无遮罩：BACK 先关菜单而不是退出看歌
+    else if (showSongInfo) setShowSongInfo(false)
     else onBackToAudio()
     return true
   })
@@ -2090,12 +2108,14 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
       else if (showSettings) setShowSettings(false)
       else if (showProfile) setShowProfile(false)
       else if (showPicker) setShowPicker(false)
+      else if (showQualityMenu) setShowQualityMenu(false)
+      else if (showSongInfo) setShowSongInfo(false)
       else if (isFullscreen) return
       else onBackToAudio()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [showLogin, showSettings, showProfile, showPicker, isFullscreen, onBackToAudio, surfaceVisible])
+  }, [showLogin, showSettings, showProfile, showPicker, showQualityMenu, showSongInfo, isFullscreen, onBackToAudio, surfaceVisible])
 
   // 空格键播放/暂停（跟随"播放页快捷键"设置；看歌模式下全局 PlayerControls 不渲染，需自行监听）
   useEffect(() => {
@@ -2527,7 +2547,8 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
                 {/* 单行：上一曲/播放/下一曲 + 时间 + 进度条（flex-1 止于右侧按钮组左侧）+ 右下角按钮组。
                     右侧按钮组位置不动；进度条不再通长。 */}
                 <div className="flex min-w-0 flex-wrap items-center gap-3 pointer-events-auto">
-                  <div className="flex items-center gap-1.5 flex-shrink-0" data-tv-arrows="play prev next">
+                  {/* 原 data-tv-arrows="play prev next" 是无效模式值（tvCore 只认 seek/volume/scroll/horizontal），已移除 */}
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
                     <button type="button" onClick={onPrevious} className="w-9 h-9 rounded-full flex items-center justify-center text-white/80 hover:bg-white/15 hover:text-white transition-colors" title="上一首">
                       <ChevronLeft size={20} />
                     </button>
@@ -2930,7 +2951,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
         <BilibiliProfileModal
           onClose={() => setShowProfile(false)}
           playerTheme={playerTheme}
-          currentSongContext={{ songKey, songTitle }}
+          currentSongContext={{ songKey, songTitle, artist: songArtists.join('、') }}
         />
       )}
 

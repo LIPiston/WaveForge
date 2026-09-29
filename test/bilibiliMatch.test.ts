@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   normalizeText,
   cleanSongTitle,
@@ -17,10 +17,27 @@ import {
   compareSubtitleWithLyrics,
   flattenLyricLinesForMatch,
   rescoreResultWithLyrics,
+  detectSongDurationConsensus,
+  pickBestPage,
   getBilibiliBlacklist,
   addBilibiliBlacklist,
+  setBilibiliOverride,
+  getBilibiliOverride,
+  getLocalMvMark,
+  saveLocalMvMark,
+  removeLocalMvMark,
+  pruneLegacyUnmarkedOverrides,
+  clearAllMvMatchCache,
+  setSessionManualPick,
+  getSessionManualPick,
+  peekSessionManualPick,
+  clearSessionManualPick,
+  noteCurrentSongForManualPick,
   getBilibiliWatchSettings,
   saveBilibiliWatchSettings,
+  setBilibiliApiBaseForTest,
+  findBestBilibiliMv,
+  resetLegacyOverrideSweepForTest,
   type MatchContext,
   type BilibiliVideo,
   type CandidateScore,
@@ -195,6 +212,38 @@ describe('scoreCandidate（候选打分）', () => {
     const officialChannel = scoreCandidate(video({ title: '周杰伦《稻香》MV', duration: 223, play: 100_000, author: '杰威尔音乐官方' }), ctx)
     const randomChannel = scoreCandidate(video({ title: '周杰伦《稻香》MV', duration: 223, play: 100_000, author: '音乐分享君' }), ctx)
     expect(officialChannel.score - randomChannel.score).toBe(25)
+  })
+
+  it('官方发行 MV 压过时长贴合的翻录（SAKURA リグレット 实测用例）', () => {
+    // 用户实测：索尼音乐中国发的官方 MV（7:10，机构认证）排在翻录正片后面。
+    // 两处系统性偏差叠加：①「歌手「歌名」」形态判不出 artist-title，白丢 25；
+    // ② 官方 MV 时长天然比流媒体单曲长，被时长项判 -15，而贴合的翻录拿 +40。
+    const sakuraCtx: MatchContext = {
+      songTitle: 'SAKURA リグレット (落樱的悔恨)',
+      artists: ['Flower (フラワー)'],
+      songDuration: 305,
+      platform: 'netease',
+      id: 0,
+    }
+    const officialMv = scoreCandidate(
+      video({ bvid: 'BVsony', title: 'Flower「SAKURAリグレット」', author: '索尼音乐中国', mid: 486906719, duration: 430, play: 1496 }),
+      sakuraCtx,
+      { rank: 0, officialVerifyType: 1 },
+    )
+    const rip = scoreCandidate(
+      video({ bvid: 'BVrip', title: 'Flower - SAKURA リグレット', author: '-友人C-', duration: 311, play: 6687 }),
+      sakuraCtx,
+      { rank: 0 },
+    )
+    // 「歌手「歌名」」是官方发行常用命名，必须算 artist-title（与破折号形态同权）
+    expect(classifyExactTitleMatch('Flower「SAKURAリグレット」', sakuraCtx.songTitle, resolveArtistNames(['Flower (フラワー)']))).toBe('artist-title')
+    expect(officialMv.signals.officialChannel).toBe(true)
+    expect(officialMv.score).toBeGreaterThan(rip.score)
+
+    // 豁免只对官方来源的「更长」方向生效：同样超长的普通搬运仍按原规则扣分
+    const ripLonger = scoreCandidate(video({ title: 'Flower - SAKURAリグレット', author: 'xX永Xx', duration: 425, play: 5000 }), sakuraCtx, { rank: 0 })
+    const ripMatched = scoreCandidate(video({ title: 'Flower - SAKURAリグレット', author: 'xX永Xx', duration: 311, play: 5000 }), sakuraCtx, { rank: 0 })
+    expect(ripMatched.score - ripLonger.score).toBeCloseTo(55)
   })
 
   it('分数 >= 230 且无官方信号也自动播放（全面强匹配）', () => {
@@ -1016,5 +1065,408 @@ describe('CC 验证接线（shouldAutoPlay strong 收紧 + 缓存命中零网络
     expect(upgraded.candidates[0].video.bvid).toBe('BVreal')
     // 拿到歌词重扫后不再缺歌词标记
     expect(upgraded.ccUnverifiedWithoutLyrics).toBeFalsy()
+  })
+})
+
+describe('教学/标注向内容与圈层前缀（用户实测：Thank you for dears. 场景）', () => {
+  // 复现案例：真机自动匹配曾把 1.4 万播放的「歌词详解|罗马音假名标注」排到 233.7 万播放的
+  // 正片（【东方Vocal】原曲：感情的摩天楼）之前，导致看歌/MV 背景都播了教学视频。
+  const dearsCtx: MatchContext = {
+    songTitle: 'Thank you for dears.',
+    artists: ['GET IN THE RING (みぃ)'],
+    songDuration: 326,
+  }
+
+  const teaching = () => scoreCandidate(
+    video({
+      bvid: 'BVlesson',
+      title: '歌词详解|罗马音假名标注「Thank you for dears.」GET IN THE RING',
+      duration: 321,
+      play: 14_126,
+      author: '卷心儿-听歌学日语',
+      typename: '校园学习',
+    }),
+    dearsCtx,
+    { rank: 6, officialVerifyType: -1 },
+  )
+
+  const realMv = () => scoreCandidate(
+    video({
+      bvid: 'BVtouhou',
+      title: '【东方Vocal】Thank you for dears.（原曲：感情的摩天楼 ～ Cosmic Mind）【中日双语字幕】',
+      duration: 327,
+      play: 2_337_009,
+      author: '头铁的辉夜',
+      typename: '乐评盘点',
+    }),
+    dearsCtx,
+    { rank: 1, officialVerifyType: -1 },
+  )
+
+  it('歌词详解 + 教学频道：正片必须排在它前面，且不自动播放', () => {
+    const lesson = teaching()
+    const mv = realMv()
+    expect(lesson.signals.negativeHit).toBe(true)
+    expect(shouldAutoPlay(lesson)).toBe(false)
+    expect(mv.score).toBeGreaterThan(lesson.score)
+  })
+
+  it('标题负向词（详解/空耳/谐音）逐条生效；配罗马音的正规搬运不罚', () => {
+    const base = scoreCandidate(video({ title: 'Thank you for dears.', duration: 326, play: 100_000, author: '搬运工' }), dearsCtx, {})
+    const explained = scoreCandidate(video({ title: 'Thank you for dears. 歌词详解', duration: 326, play: 100_000, author: '搬运工' }), dearsCtx, {})
+    expect(base.score - explained.score).toBeGreaterThanOrEqual(35)
+    // 正规搬运带「中日字幕配罗马音」后缀是加分项不是教学向（用户实测：4K音楽館 录音室版）
+    const romaji = scoreCandidate(video({ title: 'Thank you for dears. 中日字幕配罗马音', duration: 326, play: 100_000, author: '搬运工' }), dearsCtx, {})
+    expect(romaji.score).toBeGreaterThanOrEqual(base.score)
+  })
+
+  it('作者名命中教学向标记也降权（标题可以完全不提教学）', () => {
+    const plainAuthor = scoreCandidate(video({ title: 'Thank you for dears. 歌词版', duration: 326, play: 100_000, author: '搬运工' }), dearsCtx, {})
+    const teachingAuthor = scoreCandidate(video({ title: 'Thank you for dears. 歌词版', duration: 326, play: 100_000, author: '卷心儿-听歌学日语' }), dearsCtx, {})
+    expect(plainAuthor.score - teachingAuthor.score).toBeGreaterThanOrEqual(35)
+    expect(teachingAuthor.signals.negativeHit).toBe(true)
+  })
+
+  it('【东方Vocal】等圈层/类型前缀不再被当"他人署名"（与真实人名前缀对比）', () => {
+    const qualifier = scoreCandidate(video({ title: '【东方Vocal】Thank you for dears.', duration: 326, play: 100_000, author: 'up主' }), dearsCtx, {})
+    const personLead = scoreCandidate(video({ title: '【黒音さや】Thank you for dears.', duration: 326, play: 100_000, author: 'up主' }), dearsCtx, {})
+    expect(qualifier.score).toBeGreaterThan(personLead.score)
+  })
+
+  it('「原曲/東方」框架下标题无假名不再触发"中文同名曲"降权', () => {
+    // 两条标题只差「原曲」二字（都不构成精确标题匹配，排除其它项干扰）
+    const framed = scoreCandidate(video({ title: 'Thank you for dears.（原曲：感情的摩天楼）', duration: 326, play: 100_000, author: '头铁的辉夜' }), dearsCtx, {})
+    const bare = scoreCandidate(video({ title: 'Thank you for dears.（感情的摩天楼）', duration: 326, play: 100_000, author: '头铁的辉夜' }), dearsCtx, {})
+    expect(framed.score - bare.score).toBe(15)
+  })
+
+  it('钩子式引号文案不按"主标题是另一首歌"重罚（歌名就是引号外的主体）', () => {
+    const hooked = scoreCandidate(video({ title: '“竟然是东方曲 难怪这么惊艳”！Thank you for dears.', duration: 327, play: 7_060_056, author: '饿了的白熊' }), dearsCtx, { rank: 0 })
+    const plain = scoreCandidate(video({ title: '竟然是东方曲 难怪这么惊艳！Thank you for dears.', duration: 327, play: 7_060_056, author: '饿了的白熊' }), dearsCtx, { rank: 0 })
+    expect(hooked.score).toBe(plain.score)
+  })
+
+  it('翻调（虚拟歌手二次创作）按翻唱处理：类型 cover + 负向压分 + 不自动播放', () => {
+    expect(classifyCandidateType('【重音Teto|SV翻调】GET IN THE RING - Thank You For Dears')).toBe('cover')
+    const cover = scoreCandidate(
+      video({ title: '【重音Teto|SV翻调】GET IN THE RING - Thank You For Dears', duration: 327, play: 900, author: 'やそうきょく夜想曲', typename: 'VOCALOID·UTAU' }),
+      dearsCtx,
+      { rank: 39 },
+    )
+    expect(cover.type).toBe('cover')
+    expect(cover.signals.negativeHit).toBe(true)
+    expect(shouldAutoPlay(cover)).toBe(false)
+    expect(cover.score).toBeLessThan(realMv().score)
+  })
+})
+
+describe('手动选择的持久化语义（未标记不构成记忆）', () => {
+  it('会话内手动选择只走内存，切歌即失效', () => {
+    setSessionManualPick('qq:1', 'BVPICK')
+    expect(getSessionManualPick('qq:1')).toBe('BVPICK')
+    // 切到别的歌（另一个表面也会通知一次）
+    noteCurrentSongForManualPick('qq:2')
+    expect(getSessionManualPick('qq:1')).toBeNull()
+    // 直接换 key 取也会失效
+    setSessionManualPick('qq:3', 'BVOTHER')
+    expect(getSessionManualPick('qq:4')).toBeNull()
+    expect(getSessionManualPick('qq:3')).toBeNull()
+    clearSessionManualPick()
+  })
+
+  it('peekSessionManualPick 查别的歌不作废当前选择（预加载不能清掉手动选择）', () => {
+    // 背景/播放器会为「下一首」预加载而查询别的 songKey：若用会触发"切歌即失效"的
+    // getSessionManualPick，当前歌的手动选择会被后台预加载悄悄清掉。
+    setSessionManualPick('qq:peek', 'BVKEEP')
+    expect(peekSessionManualPick('qq:next')).toBeNull()
+    expect(peekSessionManualPick('qq:peek')).toBe('BVKEEP')
+    clearSessionManualPick()
+  })
+
+  it('手动选择后重新匹配仍是它：不被自动第一名顶掉、旧缓存也不盖过（看歌/背景一致）', async () => {
+    // 用户实测 bug：看歌里换成另一个 MV → 切普通歌词（背景已对齐同一 BVID）→ 再切回看歌，
+    // 播放器重挂载后后台复跑匹配，best 回到自动第一名 ≠ 手动选择。
+    // 背景靠自己的接管 effect 读会话内选择，播放器走 findBestBilibiliMv —— 两表面必须同源。
+    setBilibiliApiBaseForTest('http://probe.invalid/api/bilibili')
+    const json = (payload: unknown) => ({ ok: true, json: async () => payload }) as Response
+    const hit = (bvid: string, title: string, duration: number, play: number, author: string) => ({
+      bvid, title, duration, play, author, mid: 1, pic: '', typename: '音乐',
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input)
+      if (url.includes('/search')) {
+        return json({
+          code: 0,
+          results: [
+            hit('BVAUTO', 'アーティスト - 曲名', 202, 500_000, '搬运工'),
+            hit('BVPICK', '曲名', 205, 12, '小UP'),
+          ],
+        })
+      }
+      if (url.includes('/view')) {
+        const bvid = new URL(url).searchParams.get('bvid') || ''
+        const isPick = bvid === 'BVPICK'
+        return json({
+          code: 0,
+          data: {
+            bvid,
+            cid: 1,
+            title: isPick ? '曲名' : 'アーティスト - 曲名',
+            duration: isPick ? 205 : 202,
+            play: isPick ? 12 : 500_000,
+            pic: '',
+            owner: { mid: 1, name: isPick ? '小UP' : '搬运工', officialVerifyType: -1 },
+          },
+        })
+      }
+      return json({ code: -1 })
+    }))
+    const probeCtx: MatchContext = { songTitle: '曲名', artists: ['アーティスト'], songDuration: 203, platform: 'netease', id: 987654 }
+    try {
+      clearAllMvMatchCache()
+      clearSessionManualPick()
+      // ① 没有手动选择：自动第一名 BVAUTO（缓存建立）
+      const auto = await findBestBilibiliMv(probeCtx, { useDeveloperDeclarations: false })
+      expect(auto.best?.video.bvid).toBe('BVAUTO')
+      // ② 手动换成 BVPICK（只写会话内记忆，未标记）→ 重新匹配必须还是 BVPICK
+      setSessionManualPick(songKeyOf(probeCtx), 'BVPICK')
+      const picked = await findBestBilibiliMv(probeCtx, { useDeveloperDeclarations: false })
+      expect(picked.best?.video.bvid).toBe('BVPICK')
+      expect(picked.status).toBe('auto')
+      // 候选列表仍保留自动结果，用户还能换回去
+      expect(picked.candidates.some((c) => c.video.bvid === 'BVAUTO')).toBe(true)
+    } finally {
+      clearSessionManualPick()
+      clearAllMvMatchCache()
+      resetLegacyOverrideSweepForTest()
+      setBilibiliApiBaseForTest('http://localhost:3001/api/bilibili')
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('只有标记才写 override；遗留的未标记 override 会被清扫，标记的保留', () => {
+    // 清扫是一次性开关：先复位，避免前面调用过匹配器的用例把它用掉（顺序无关）
+    resetLegacyOverrideSweepForTest()
+    setBilibiliOverride('qq:legacy', 'BVLEGACY')
+    saveLocalMvMark({ songKey: 'qq:marked', songTitle: '歌', artist: '人', bvid: 'BVMARKED', videoTitle: 't', pic: '', author: '' })
+    expect(getBilibiliOverride('qq:legacy')).toBe('BVLEGACY')
+    pruneLegacyUnmarkedOverrides()
+    expect(getBilibiliOverride('qq:legacy')).toBeNull()
+    expect(getBilibiliOverride('qq:marked')).toBe('BVMARKED')
+    expect(getLocalMvMark('qq:marked')?.bvid).toBe('BVMARKED')
+    removeLocalMvMark('qq:marked')
+    expect(getBilibiliOverride('qq:marked')).toBeNull()
+  })
+
+  it('清除 MV 匹配缓存会同时清掉标记库（弹窗文案承诺的"手动标记"）', () => {
+    saveLocalMvMark({ songKey: 'qq:clear', songTitle: '歌', artist: '人', bvid: 'BVCLEAR', videoTitle: 't', pic: '', author: '' })
+    expect(getLocalMvMark('qq:clear')?.bvid).toBe('BVCLEAR')
+    clearAllMvMatchCache()
+    expect(getLocalMvMark('qq:clear')).toBeNull()
+    expect(getBilibiliOverride('qq:clear')).toBeNull()
+  })
+})
+
+describe('跨语言版本与《歌名》前缀描述语（扩充评测发现的失败模式）', () => {
+  const yoruCtx: MatchContext = { songTitle: '夜に駆ける', artists: ['YOASOBI'], songDuration: 261 }
+
+  it('英文版压不过日文官方 MV（用户实测：Into The Night 曾登顶）', () => {
+    const englishVer = scoreCandidate(
+      video({ title: '【中英字幕】Into The Night（夜に駆ける 英文 官方正式完整版） - YOASOBI 向夜晚奔去Ayase+ikura幾田りら', duration: 276, play: 615_232, author: '姐夫日剧字幕组' }),
+      yoruCtx,
+      { rank: 1, officialVerifyType: -1 },
+    )
+    const jpOfficial = scoreCandidate(
+      video({ title: 'YOASOBI 夜に駆ける (Yoru ni Kakeru) Official Music Video', duration: 276, play: 14_765_074, author: 'Ayase-YOASOBI' }),
+      yoruCtx,
+      { rank: 2, officialVerifyType: 1 },
+    )
+    expect(jpOfficial.score).toBeGreaterThan(englishVer.score)
+  })
+
+  it('同语言的版本标记（中文字幕/日本語フル）不触发跨语言罚分', () => {
+    const withZhSub = scoreCandidate(
+      video({ title: '【中文字幕】夜に駆ける - YOASOBI', duration: 261, play: 100_000, author: '搬运工' }),
+      yoruCtx,
+      {},
+    )
+    const plain = scoreCandidate(
+      video({ title: '夜に駆ける - YOASOBI', duration: 261, play: 100_000, author: '搬运工' }),
+      yoruCtx,
+      {},
+    )
+    expect(withZhSub.score).toBeGreaterThanOrEqual(plain.score)
+  })
+
+  it('中文歌标题的「英文版」候选被压（翻译版不是原录音）', () => {
+    const daoXiang: MatchContext = { songTitle: '稻香', artists: ['周杰伦'], songDuration: 223 }
+    const enVer = scoreCandidate(video({ title: '稻香 英文版 Rice Field English Ver', duration: 223, play: 500_000, author: '搬运工' }), daoXiang, {})
+    const normal = scoreCandidate(video({ title: '稻香 - 周杰伦', duration: 223, play: 500_000, author: '搬运工' }), daoXiang, {})
+    expect(normal.score).toBeGreaterThan(enVer.score)
+  })
+
+  it('《歌名》前的描述语（官方制作的/自制）不再被当成"他人署名"（用户实测：EVA 2021 官方 MV 被罚 -45）', () => {
+    const evaCtx: MatchContext = { songTitle: '残酷な天使のテーゼ', artists: ['高橋洋子'], songDuration: 245 }
+    const officialMv = scoreCandidate(
+      video({ title: '【4K 新世纪福音战士】官方制作的《残酷な天使のテーゼ》MUSIC VIDEO 2021年黑科技4K60帧', duration: 245, play: 1_351_282, author: 'RiKi的音乐游戏店' }),
+      evaCtx,
+      { rank: 30 },
+    )
+    // 前缀是真演唱者时仍然要罚（张国荣《春夏秋冬》对 NIKIIE 的歌）
+    const othersPerf = scoreCandidate(
+      video({ title: '张国荣Leslie《残酷な天使のテーゼ》', duration: 245, play: 1_351_282, author: '荣迷俱乐部' }),
+      evaCtx,
+      { rank: 31 },
+    )
+    expect(officialMv.score).toBeGreaterThan(othersPerf.score)
+  })
+})
+
+describe('normalizeText NFC（分解形假名导致硬误杀）', () => {
+  it('セ+U+3099 组合浊点经 NFC 归一为 ゼ，歌名硬淘汰不再误杀（用户实测：EVA 官方 MV 被误杀）', () => {
+    // B 站真实标题：'残酷な天使のテーゼ' 的 ゼ 被上传方写成 セ+组合浊点（NFD 形态）
+    const decomposed = '残酷な天使のテー' + 'セ' + '゙'
+    expect(normalizeText(decomposed)).toBe(normalizeText('残酷な天使のテーゼ'))
+    const eva: MatchContext = { songTitle: '残酷な天使のテーゼ', artists: ['高橋洋子'], songDuration: 245 }
+    const s = scoreCandidate(
+      video({ title: `【4K】官方制作的《${decomposed}》MUSIC VIDEO`, duration: 245, play: 1_351_282, author: 'RiKi的音乐游戏店' }),
+      eva,
+      {},
+    )
+    expect(s.score).not.toBe(-Infinity)
+  })
+})
+
+describe('搜索阶段多P合集软罚（尼尔 case：正确 OST 合集曾掉出复审名单）', () => {
+  it('搜索阶段（无分P信息）总时长 ≥3× 歌曲时长 → 软罚 -15 而非 -35，保留进复审资格', () => {
+    const compilation = video({ title: '周杰伦《稻香》MV全集', duration: 1200, play: 200_000, author: '周杰伦音乐馆' })
+    const searchStage = scoreCandidate(compilation, ctx)
+    // 复审确认它是长单P（无分P可选）→ 恢复重罚
+    const reviewStage = scoreCandidate(compilation, ctx, { effectiveDuration: 1200 })
+    expect(reviewStage.score - searchStage.score).toBe(-20) // 复审 -35 vs 搜索阶段软罚 -15
+  })
+
+  it('总时长不足 3× 歌曲时长的普通长视频不软化（仍按 -35）', () => {
+    const longVideo = video({ title: '周杰伦《稻香》MV', duration: 620 })
+    const searchStage = scoreCandidate(longVideo, ctx)
+    const reviewStage = scoreCandidate(longVideo, ctx, { effectiveDuration: 620 })
+    expect(reviewStage.score).toBe(searchStage.score)
+  })
+
+  it('复审阶段拿到贴近的分P时长 → 正常计分（合集视频的分P路径闭环）', () => {
+    const compilation = video({ title: '周杰伦《稻香》MV全集', duration: 1200, play: 200_000, author: '周杰伦音乐馆' })
+    const reviewed = scoreCandidate(compilation, ctx, { effectiveDuration: 223 })
+    expect(reviewed.signals.nearDuration).toBe(true)
+  })
+})
+
+describe('songDurationOverride（平台元数据时长错误防御）', () => {
+  const badDurCtx: MatchContext = { songTitle: 'ばかじゃないのに', artists: ['ずっと真夜中でいいのに。'], songDuration: 122 }
+  it('有共识校正值时按校正值评分：正确官方 MV 获得时长贴近分', () => {
+    const mv = video({ title: 'ずっと真夜中でいいのに。『ばかじゃないのに』MUSIC VIDEO', duration: 256, play: 100_000, author: '环球音乐日本' })
+    const withOverride = scoreCandidate(mv, badDurCtx, { songDurationOverride: 256 })
+    const withoutOverride = scoreCandidate(mv, badDurCtx)
+    expect(withOverride.signals.nearDuration).toBe(true)
+    expect(withOverride.score - withoutOverride.score).toBe(75) // +40 vs -35
+  })
+
+  it('校正值优先于平台时长，且不影响无校正值路径', () => {
+    const clip = video({ title: 'ばかじゃないのに 试听短片', duration: 122, play: 5_000 })
+    const asOverride = scoreCandidate(clip, badDurCtx, { songDurationOverride: 256 })
+    const asIs = scoreCandidate(clip, badDurCtx)
+    expect(asOverride.score).toBeLessThan(asIs.score) // 122s 片段在正确基准下被压
+  })
+})
+
+describe('detectSongDurationConsensus（候选时长聚集推正平台错误时长）', () => {
+  const consensusCtx: MatchContext = { songTitle: 'ばかじゃないのに', artists: ['ずっと真夜中でいいのに。'], songDuration: 122 }
+  const v = (bvid: string, title: string, duration: number, author = '搬运君'): BilibiliVideo => ({
+    bvid, title, duration, play: 1_000, author, pic: '', typename: '音乐',
+  })
+
+  it('≥3 个双命中候选聚集 ±10% 且与平台时长偏离 >60% → 返回聚集中位数', () => {
+    const videos = [
+      v('BV1', 'ずっと真夜中でいいのに。『ばかじゃないのに』MUSIC VIDEO', 256, '环球音乐日本'),
+      v('BV2', 'ばかじゃないのに / ずっと真夜中でいいのに。(Official)', 254),
+      v('BV3', '【公式MV】ばかじゃないのに ずっと真夜中でいいのに。', 258),
+      v('BV4', 'ばかじゃないのに 短版试听', 122),
+    ]
+    expect(detectSongDurationConsensus(videos, consensusCtx)).toBe(256)
+  })
+
+  it('候选时长分散（无聚集簇）→ 不校正', () => {
+    const videos = [
+      v('BV1', 'ばかじゃないのに ずっと真夜中でいいのに。', 256),
+      v('BV2', 'ばかじゃないのに ずっと真夜中でいいのに。 现场', 180),
+      v('BV3', 'ばかじゃないのに ずっと真夜中でいいのに。 钢琴版', 300),
+    ]
+    expect(detectSongDurationConsensus(videos, consensusCtx)).toBeUndefined()
+  })
+
+  it('聚集簇不足 3 个 → 不校正', () => {
+    const videos = [
+      v('BV1', 'ばかじゃないのに ずっと真夜中でいいのに。', 256),
+      v('BV2', 'ばかじゃないのに ずっと真夜中でいいのに。 完整版', 258),
+      v('BV3', 'ばかじゃないのに ずっと真夜中でいいのに。 试听', 122),
+    ]
+    expect(detectSongDurationConsensus(videos, consensusCtx)).toBeUndefined()
+  })
+
+  it('偏离 ≤60%（小误差）→ 不校正（保守阈值，避免误伤 TV size 等合法差异）', () => {
+    const ctx238: MatchContext = { ...consensusCtx, songDuration: 238 }
+    const videos = [
+      v('BV1', 'ばかじゃないのに ずっと真夜中でいいのに。', 256),
+      v('BV2', 'ばかじゃないのに ずっと真夜中でいいのに。 完整版', 255),
+      v('BV3', 'ばかじゃないのに ずっと真夜中でいいのに。 MV', 257),
+    ]
+    expect(detectSongDurationConsensus(videos, ctx238)).toBeUndefined()
+  })
+
+  it('标题命中的候选但歌手/上传者全不命中 → 不计入共识（防同名曲污染）', () => {
+    const videos = [
+      v('BV1', 'ばかじゃないのに （别人翻唱）', 256, '路人A'),
+      v('BV2', 'ばかじゃないのに 翻唱版', 254, '路人B'),
+      v('BV3', 'ばかじゃないのに cover', 258, '路人C'),
+    ]
+    expect(detectSongDurationConsensus(videos, consensusCtx)).toBeUndefined()
+  })
+})
+
+describe('pickBestPage（多P分P选择：标题内容为主，时长兜底）', () => {
+  const pages = (parts: Array<[string, number]>) =>
+    parts.map(([part, duration], i) => ({ cid: i + 1, page: i + 1, part, duration }))
+  const pageCtx = (songDuration?: number) => ({ songTitle: '稻香', artists: ['周杰伦'], songDuration })
+
+  it('标题命中歌名的分 P 优先（不看时长）', () => {
+    const idx = pickBestPage(pages([['01', 100], ['稻香 完整版', 180], ['02', 223]]), pageCtx(223))
+    expect(idx).toBe(1)
+  })
+
+  it('伴奏/现场分 P 降权，正片分 P 胜出（内容判据来自上传者的分 P 命名）', () => {
+    const idx = pickBestPage(
+      pages([['稻香 伴奏', 223], ['稻香 现场版', 223], ['稻香 MV 完整版', 223]]),
+      pageCtx(223),
+    )
+    expect(idx).toBe(2)
+  })
+
+  it('纯编号分 P 无标题信息 → 按时长贴近兜底（不盲选第 1 个分 P）', () => {
+    const idx = pickBestPage(pages([['01', 400], ['02', 223], ['03', 500]]), pageCtx(223))
+    expect(idx).toBe(1)
+  })
+
+  it('标题全无命中的文字分 P → 也按时长贴近兜底', () => {
+    const idx = pickBestPage(pages([['杂谈', 400], ['音乐分享', 223], ['合集', 500]]), pageCtx(223))
+    expect(idx).toBe(1)
+  })
+
+  it('分 P 无时长信息 → 回退第 1 个分 P（历史行为）', () => {
+    const idx = pickBestPage(pages([['01', 0], ['02', 0]]), pageCtx(223))
+    expect(idx).toBe(0)
+  })
+
+  it('单 P 视频直接返回 0', () => {
+    const idx = pickBestPage(pages([['稻香', 223]]), pageCtx(223))
+    expect(idx).toBe(0)
   })
 })

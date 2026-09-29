@@ -16,15 +16,20 @@
 import { createPortal } from 'react-dom'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, X, Clock, Eye } from 'lucide-react'
+import { useModeParked } from '../utils/modeLayer'
 import {
   findBestBilibiliMv,
+  pickPlayableCandidate,
   getBilibiliView,
   getBilibiliPlayUrl,
   bilibiliStreamUrl,
   pickBestPage,
   flattenLyricLinesForMatch,
   songKeyOf,
-  setBilibiliOverride,
+  setSessionManualPick,
+  getSessionManualPick,
+  clearSessionManualPick,
+  noteCurrentSongForManualPick,
   getBilibiliOverride,
   clearBilibiliOverride,
   getBilibiliWatchSettings,
@@ -36,6 +41,8 @@ import {
   type CandidateType,
 } from '../services/bilibiliApi'
 import { computeMvSyncTarget } from '../services/mvBackground'
+import { useTransitionOverlayProgress } from '../hooks/useTransitionVisual'
+import type { TransitionVisualStore } from '../audio/transitionVisualStore'
 import {
   ensureMvAlignment,
   getMvAlignmentFor,
@@ -119,6 +126,11 @@ interface BilibiliMvBackgroundProps {
   } | null
   /** 过渡进度 0-1：过渡期预载的 MV 以其为透明度叠在旧 MV 上渐入 */
   transitionProgress?: number
+  /**
+   * 过渡视觉轨道 store（可选）：传入时改用它的逐帧进度（30fps 直达本组件），
+   * 不再经 App 整树 10fps 节流 —— 过渡期新 MV 的渐入不再有台阶感。
+   */
+  transitionVisualStore?: TransitionVisualStore | null
   /** 当前歌曲在 App 层的稳定 trackKey（用于跳过"过渡目标就是当前歌"的重复预载） */
   songTrackKey?: string
 }
@@ -254,8 +266,13 @@ export default function BilibiliMvBackground({
   blur = 0,
   transitionToTrack = null,
   transitionProgress = 0,
+  transitionVisualStore = null,
   songTrackKey = '',
 }: BilibiliMvBackgroundProps) {
+  // 过渡视觉轨道：传入 store 时用它驱动 staged 槽渐入（30fps 直达本组件，
+  // 不再经 App 整树 10fps 节流）；未传入时回落到 props（老调用点行为不变）。
+  const storeTransitionProgress = useTransitionOverlayProgress(transitionVisualStore, transitionProgress)
+  const activeTransitionProgress = transitionVisualStore ? storeTransitionProgress : transitionProgress
   const slotARef = useRef<HTMLVideoElement>(null)
   const slotBRef = useRef<HTMLVideoElement>(null)
   const searchControllerRef = useRef<AbortController | null>(null)
@@ -295,6 +312,10 @@ export default function BilibiliMvBackground({
   // 用 ref 而非闭包捕获——否则旧歌的 loadVideo 会把新歌的槽位灌入错误 MV
   const songRef = useRef({ songTitle, songArtists, songDuration, platform, songId })
   songRef.current = { songTitle, songArtists, songDuration, platform, songId }
+
+  // 挂起（所属模式层被切走）时不渲染候选条：它 portal 到 body，不受挂起层 visibility:hidden 约束，
+  // 留着会浮在当前模式底部（同 useModeParked 的说明）。
+  const parked = useModeParked()
 
   const [status, setStatus] = useState<MvBackgroundStatus>('idle')
   const searchedSongKeyRef = useRef('')
@@ -375,6 +396,10 @@ export default function BilibiliMvBackground({
   // 用 ref 而非闭包捕获——否则旧歌的 loadVideo 会把新歌的槽位灌入错误 MV
   const songKeyRef = useRef(songKey)
   songKeyRef.current = songKey
+  // 切歌即让"会话内手动选择"失效（未标记不构成记忆）：两个表面各自在 songKey 变化时通知
+  useEffect(() => {
+    noteCurrentSongForManualPick(songKey)
+  }, [songKey])
   // 对齐检测读取最新歌词（App 每渲染传新引用，进依赖会导致效果反复重跑）
   const lyricsRef = useRef<LyricLine[]>(lyrics)
   lyricsRef.current = lyrics
@@ -454,35 +479,60 @@ export default function BilibiliMvBackground({
         void window.electron?.automixLog?.('MvAlign', `[背景] 跳转对齐 ${bvid} offset=${alignment.offsetSeconds}s conf=${alignment.confidence.toFixed(2)} audio=${audio.currentTime.toFixed(1)}s → video seek ${target.toFixed(1)}s（原 ${video.currentTime.toFixed(1)}s，槽${slot} src=${(video.currentSrc || video.src || '空').slice(-40)}）`)?.catch?.(() => undefined)
         lastSyncCorrectionRef.current = performance.now()
         video.currentTime = target
-          if (isPlayingRef.current && video.paused && video.readyState >= 3 && (slot === activeSlotRef.current || slot === incomingSlotRef.current)) void video.play().catch(() => undefined)
+          if (isPlayingRef.current && video.paused && video.readyState >= 3 && (slot === activeSlotRef.current || slot === incomingSlotRef.current || isTransitioningStagedSlot(slot))) void video.play().catch(() => undefined)
       }
     }
   }, [songKey])
 
   const normalizedBlur = clampMvBlur(blur)
-  const slotUrl = (slot: 'A' | 'B') => (slot === 'A' ? slotAUrl : slotBUrl)  // 过渡期（automix/无缝/普通切歌的 audio 过渡期间）为 true：预载的目标 MV 以 transitionProgress 叠在旧 MV 上渐入
+  const slotUrl = (slot: 'A' | 'B') => (slot === 'A' ? slotAUrl : slotBUrl)
+  // 过渡期（automix/无缝/普通切歌的 audio 过渡期间）为 true：预载的目标 MV 以 transitionProgress 叠在旧 MV 上渐入
   const transitionActive = Boolean(transitionToTrack?.trackKey)
   transitionActiveRef.current = transitionActive
+  /** 过渡期已按 progress 淡到可见的 staged 槽及其 URL：commit 帧（transitionToTrack 被清空、
+   *  progress 归零）该槽必须保持 1 直到晋升/换片——否则新 MV 瞬间归 0、旧 MV 闪一帧再从 0 淡入 */
+  const transitionFadedRef = useRef<{ slot: 'A' | 'B'; url: string } | null>(null)
+  /** 当前叠加层展示进度（0 = 不在动画窗口内/非过渡期）：staged 槽只在 >0 时播放与显示。 */
+  const stagedOverlayProgressRef = useRef(0)
+  stagedOverlayProgressRef.current = activeTransitionProgress
+  if (transitionActive && activeTransitionProgress > 0 && stagedSlotRef.current) {
+    const fadedUrl = slotUrl(stagedSlotRef.current)
+    if (fadedUrl) transitionFadedRef.current = { slot: stagedSlotRef.current, url: fadedUrl }
+  }
+  const isFadedStagedSlot = (slot: 'A' | 'B') => {
+    if (transitionActive) return false // 过渡进行中：由 progress 驱动
+    const faded = transitionFadedRef.current
+    return Boolean(faded && faded.slot === slot && stagedSlotRef.current === slot && faded.url === slotUrl(slot))
+  }
   const slotOpacity = (slot: 'A' | 'B') => {
     if (slot === incomingSlot) return 1
     if (slot === activeSlot) return firstFadeDone ? 1 : 0
-    if (transitionActive && stagedSlotRef.current === slot) return transitionProgress
+    if (stagedSlotRef.current === slot) {
+      if (transitionActive) return activeTransitionProgress
+      if (isFadedStagedSlot(slot)) return 1
+    }
     return 0
   }
   // 过渡期槽位透明度跟随 progress（~30ms 级更新）用短过渡平滑；其余槽位保持常规 0.65s 渐入
   const slotTransition = (slot: 'A' | 'B') =>
-    transitionActive && stagedSlotRef.current === slot ? 'opacity 120ms linear' : 'opacity 0.65s ease'
-  // 分层：正在渐入的新视频（incoming / 过渡期预载槽）必须置顶，否则会被 opacity:1 的旧视频盖住
-  // （A/B 槽 DOM 顺序固定，B 天然在 A 之上；不显式分层时"新盖旧"只在 B 槽才可见）
+    isFadedStagedSlot(slot) || (transitionActive && stagedSlotRef.current === slot) ? 'opacity 120ms linear' : 'opacity 0.65s ease'
+  // 分层：正在渐入的新视频（incoming / 过渡期预载槽 / commit 帧保位的 staged 槽）必须置顶，
+  // 否则会被 opacity:1 的旧视频盖住（A/B 槽 DOM 顺序固定，B 天然在 A 之上；不显式分层时"新盖旧"只在 B 槽才可见）
   const slotZIndex = (slot: 'A' | 'B') => {
     if (slot === incomingSlot) return 2
-    if (transitionActive && stagedSlotRef.current === slot) return 2
+    if (stagedSlotRef.current === slot && (transitionActive || isFadedStagedSlot(slot))) return 2
     if (slot === activeSlot) return 1
     return 0
   }
   const slotEl = (slot: 'A' | 'B') => (slot === 'A' ? slotARef.current : slotBRef.current)
+  // 过渡渐变中的 staged 槽参照 active/incoming 播放（muted）：只 seek 不播 → 渐入的是 2-4fps 静止帧
+  const isTransitioningStagedSlot = (slot: 'A' | 'B') =>
+    transitionActiveRef.current
+    && stagedSlotRef.current === slot
+    // 只在动画窗口内（叠加进度 > 0）才算正在过渡的目标槽：预载期它不可见，也不该空转解码
+    && stagedOverlayProgressRef.current > 0
   const shouldPlaySlot = (slot: 'A' | 'B') => (
-    isPlaying && !hidden && (slot === activeSlot || slot === incomingSlot)
+    isPlaying && !hidden && (slot === activeSlot || slot === incomingSlot || isTransitioningStagedSlot(slot))
   )
   const activeEl = () => slotEl(activeSlotRef.current)
   const otherSlot = (slot: 'A' | 'B') => (slot === 'A' ? 'B' : 'A')
@@ -491,7 +541,7 @@ export default function BilibiliMvBackground({
     const shouldResume = enabled
       && !hidden
       && isPlayingRef.current
-      && (slot === activeSlotRef.current || slot === incomingSlotRef.current)
+      && (slot === activeSlotRef.current || slot === incomingSlotRef.current || isTransitioningStagedSlot(slot))
     if (!shouldResume || !video || !video.paused || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return false
     void video.play().catch(() => undefined)
     return true
@@ -551,8 +601,9 @@ export default function BilibiliMvBackground({
           }
           const currentActiveEl = activeEl()
           const currentActiveUrl = currentActiveEl?.currentSrc || currentActiveEl?.src || null
-          // 预载（stagedOnly）绝不进入“直接进槽”分支——它属于下一首歌，
-          // 若吃掉 songSwitchedRef 会把下一首的候选直塞进当前歌的 active 槽（错位一首）。
+          // 预载（stagedOnly）属于下一曲：绝不进“直接进槽”分支（否则当前曲 active 槽会被塞进
+          // 下一曲 MV——张冠李戴）；active 槽空/已是同一视频时放弃本次预载，只允许落空闲槽。
+          if (stagedOnly && (!currentActiveUrl || currentActiveUrl === newVideoUrl)) return
           const songJustSwitched = !stagedOnly && songSwitchedRef.current
           if (!stagedOnly) songSwitchedRef.current = false
           if (!currentActiveUrl || currentActiveUrl === newVideoUrl || songJustSwitched) {
@@ -624,6 +675,7 @@ export default function BilibiliMvBackground({
         } catch (error) {
           if (!isCurrentRequest()) return
           if (getBilibiliOverride(songKey) === candidate.video.bvid) clearBilibiliOverride(songKey)
+          if (getSessionManualPick(songKey) === candidate.video.bvid) clearSessionManualPick()
           if (stagedOnly) return // 后台预载失败静默：不影响当前播放，也不弹错误提示
           const message = error instanceof Error ? error.message : 'MV 加载失败'
           failedBvidsRef.current.add(candidate.video.bvid)
@@ -655,6 +707,7 @@ export default function BilibiliMvBackground({
     if (stagedSlotRef.current !== slot) return
     const prevActive = activeSlotRef.current
     stagedSlotRef.current = null
+    transitionFadedRef.current = null // 保位结束：晋升后由 incoming/active 常规透明度接管
     pendingPromotionRef.current = null
     incomingSlotRef.current = slot
     setIncomingSlot(slot)
@@ -755,8 +808,9 @@ export default function BilibiliMvBackground({
           fallbackChainSongRef.current = songKey
           loadVideo(result.best)
         } else if (result.status === 'confirm') {
-          // 低置信不是无 MV：始终先播放最高分候选，设置开启时额外展示可选列表。
-          const best = result.best || result.candidates[0]
+          // 低置信不是无 MV：先播最高分的"干净"候选（伴奏/卡拉OK/音游/翻唱不作为首选），
+          // 设置开启时额外展示可选列表。
+          const best = pickPlayableCandidate(result) || result.candidates[0]
           fallbackChainRef.current = result.fallbackChain
           fallbackChainSongRef.current = songKey
           setCandidates(result.candidates)
@@ -1141,7 +1195,10 @@ export default function BilibiliMvBackground({
         const stagedAlign = getMvAlignmentFor(stagedOwner || songKey, stagedBvid, alignmentOwnerFor(stagedBvid))
         const stagedVideo = slotEl(staged)
         const targetClock = getTransitionTargetTimeRef.current?.()
-        if (transitionActiveRef.current && typeof targetClock === 'number' && Number.isFinite(targetClock)) {
+        // 真正在跑过渡（有目标内容时钟）≠ armed（有过渡目标、时钟尚未就绪）：armed 期当前曲
+        // 自己的槽照常晋升/校正，只有真过渡才按目标曲时钟就位并拦下他歌预载的晋升。
+        const transitionRunning = transitionActiveRef.current && typeof targetClock === 'number' && Number.isFinite(targetClock)
+        if (transitionRunning) {
           const stagedOffset = stagedAlign && stagedAlign.confidence >= MIN_ALIGNMENT_CONFIDENCE ? stagedAlign.offsetSeconds : 0
           if (stagedVideo && stagedVideo.readyState >= 2 && !Number.isNaN(stagedVideo.duration)) {
             const stagedTarget = computeMvSyncTarget(targetClock + stagedOffset, stagedVideo.duration)
@@ -1149,27 +1206,29 @@ export default function BilibiliMvBackground({
               stagedVideo.currentTime = stagedTarget
             }
           }
+          // 过渡期也要播放（muted）：只 seek 不播 → 渐入的是 2-4fps 静止帧
+          resumeSlot(staged)
           return
         }
-        if (!transitionActiveRef.current) {
-          // 晋升看门狗：commit 接管后待晋升（pendingPromotionRef）的预载视频一旦就绪就上位。
-          // 覆盖 canplay 被过渡动画跳过（transitionActive → handleCanPlay 返回）且不再触发
-          // 的边角——否则预载视频永远停在隐藏槽，背景空白等待下一首。
-          if (pendingPromotionRef.current === staged && stagedVideo && stagedVideo.readyState >= 2 && (stagedVideo.currentSrc || stagedVideo.src)) {
-            pendingPromotionRef.current = null
-            void window.electron?.automixLog?.('MvAlign', `[背景] 晋升看门狗 槽${staged}（接管后就绪）`)?.catch?.(() => undefined)
-            beginCrossfade(staged)
-            return
-          }
-          // 无对齐结果（自由播放）时仍按 offset=0 跟随音频位置：背景视频是静音纯视觉，
-          // 歌词跳转/进度拖动时画面必须跟着歌曲走（否则背景冻结在旧位置）
-          const stagedOffset = stagedAlign && stagedAlign.confidence >= MIN_ALIGNMENT_CONFIDENCE ? stagedAlign.offsetSeconds : 0
-          if (stagedVideo && stagedVideo.readyState >= 2 && !Number.isNaN(stagedVideo.duration)) {
-            const stagedTarget = computeMvSyncTarget(playbackTime(audio) + stagedOffset, stagedVideo.duration)
-            if (stagedTarget !== null && Math.abs(stagedVideo.currentTime - stagedTarget) > 1.5 && now - lastSyncCorrectionRef.current > 5000) {
-              lastSyncCorrectionRef.current = now
-              stagedVideo.currentTime = stagedTarget
-            }
+        // 晋升看门狗：commit 接管后待晋升（pendingPromotionRef）、或属于当前曲自己的槽一旦就绪
+        // 就上位——armed 期不例外，否则当前曲自己的 MV 会一直停在隐藏槽（AI 档最长 60s）。
+        const stagedOwnerIsOtherSong = Boolean(stagedOwner && stagedOwner !== songKeyRef.current)
+        if (!stagedOwnerIsOtherSong && stagedVideo && stagedVideo.readyState >= 2 && (stagedVideo.currentSrc || stagedVideo.src)) {
+          pendingPromotionRef.current = null
+          void window.electron?.automixLog?.('MvAlign', `[背景] 晋升看门狗 槽${staged}（接管后就绪）`)?.catch?.(() => undefined)
+          beginCrossfade(staged)
+          return
+        }
+        // armed 期他歌预载保持隐藏：不按当前曲时钟校正
+        if (transitionActiveRef.current) return
+        // 无对齐结果（自由播放）时仍按 offset=0 跟随音频位置：背景视频是静音纯视觉，
+        // 歌词跳转/进度拖动时画面必须跟着歌曲走（否则背景冻结在旧位置）
+        const stagedOffset = stagedAlign && stagedAlign.confidence >= MIN_ALIGNMENT_CONFIDENCE ? stagedAlign.offsetSeconds : 0
+        if (stagedVideo && stagedVideo.readyState >= 2 && !Number.isNaN(stagedVideo.duration)) {
+          const stagedTarget = computeMvSyncTarget(playbackTime(audio) + stagedOffset, stagedVideo.duration)
+          if (stagedTarget !== null && Math.abs(stagedVideo.currentTime - stagedTarget) > 1.5 && now - lastSyncCorrectionRef.current > 5000) {
+            lastSyncCorrectionRef.current = now
+            stagedVideo.currentTime = stagedTarget
           }
         }
         return
@@ -1318,10 +1377,11 @@ export default function BilibiliMvBackground({
     onPlayStateChangeRef.current?.(null)
   }, [enabled])
 
-  // 看歌模式中手动选择的视频写入 override；切回背景时接管同一 BVID，保持两条表面一致。
+  // 看歌/背景手动选择的视频：切到背景时接管同一 BVID，保持两条表面一致。
+  // 记忆来源二选一：会话内手动选择（内存，未标记，切歌即失效）> 已标记 override（持久）。
   useEffect(() => {
     if (hidden || !enabled) return
-    const override = getBilibiliOverride(songKey)
+    const override = getSessionManualPick(songKey) || getBilibiliOverride(songKey)
     const activeBvid = slotBvidRef.current[activeSlotRef.current]
     if (!override || override === activeBvid) return
     const controller = new AbortController()
@@ -1351,7 +1411,8 @@ export default function BilibiliMvBackground({
         fallbackChainSongRef.current = songKey
         loadVideo(candidate)
       } catch {
-        // 手动 override 视频失效时保留当前背景，下一次匹配负责清理。
+        // 手动 override 视频失效时保留当前背景，下一次匹配负责清理；会话内选择则立即作废
+        if (getSessionManualPick(songKey) === override) clearSessionManualPick()
       }
     })()
     return () => controller.abort()
@@ -1400,7 +1461,8 @@ export default function BilibiliMvBackground({
   }, [])
 
   const selectCandidate = (candidate: CandidateScore) => {
-    setBilibiliOverride(songKey, candidate.video.bvid)
+    // 手动选择 = 只看这次（会话内内存记忆），不写 override：只有点「标记」才持久化
+    setSessionManualPick(songKey, candidate.video.bvid)
     setShowCandidates(false)
     setCandidates([])
     fallbackChainRef.current = [candidate, ...fallbackChainRef.current.filter((c) => c.video.bvid !== candidate.video.bvid)]
@@ -1415,11 +1477,11 @@ export default function BilibiliMvBackground({
     setPaintedSlots(prev => prev[slot] ? prev : { ...prev, [slot]: true })
     resumeSlot(slot)
     if (stagedSlotRef.current === slot) {
-      // staged 槽是"过渡预载"（transitionPreloadRef 未消费）或过渡动画进行中时：
-      // 一律不在此切换 active——预载只需缓冲，切换统一由 commit 后主路径接管
-      // （beginCrossfade），否则 active 提前切走/旧槽被清，commit 时无槽可接管 → MV 残留。
-      // 但 commit 后若该槽已经归属于当前歌曲，canplay 必须能够完成晋升；
-      // 否则下一首的全局 transitionPreloadRef 会把当前槽永久拦住，过渡透明度归零后只剩封面。
+      // staged 槽是他歌预载或过渡动画进行中时：一律不在此切换 active——预载只需缓冲，
+      // 切换统一由 commit 后主路径接管（beginCrossfade），否则 active 提前切走/旧槽被清，
+      // commit 时无槽可接管 → MV 残留。
+      // 但 armed（有过渡目标、动画未开始）与 commit 后的过渡里，属于当前曲自己的槽
+      // 必须能晋升；否则它会被下一首的过渡目标压到 commit（AI 档可达 60s）才上位。
       const stagedOwner = slotOwnerRef.current[slot]
       const belongsToCurrentSong = stagedOwner === songKeyRef.current
       const preloadingOtherSong = Boolean(
@@ -1427,7 +1489,7 @@ export default function BilibiliMvBackground({
         && !transitionPreloadRef.current.failed
         && !belongsToCurrentSong,
       )
-      if (transitionActive || preloadingOtherSong) return
+      if (!belongsToCurrentSong && (transitionActive || preloadingOtherSong)) return
       beginCrossfade(slot)
       return
     }
@@ -1528,7 +1590,7 @@ export default function BilibiliMvBackground({
       )}
 
       {/* 轻量候选条（低置信确认） */}
-      {showCandidatePicker && typeof document !== 'undefined' && createPortal(
+      {showCandidatePicker && !parked && typeof document !== 'undefined' && createPortal(
         <div className="pointer-events-none fixed inset-0 z-[1000] flex items-end justify-center px-3 pb-6">
           <div className="pointer-events-auto w-[min(92vw,760px)] max-h-[min(42vh,360px)] overflow-hidden rounded-[14px] border shadow-2xl"
             style={{

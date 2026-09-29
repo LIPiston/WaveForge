@@ -407,8 +407,8 @@ export default function BilibiliWatchSettingsModal({ onClose, playerTheme = 'dar
             <section className="space-y-1 border-t pt-3" style={{ borderColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }}>
               <ToggleRow
                 dark={dark}
-                label="记住我的选择"
-                desc="手动选过的视频，下次这首直接播你选的"
+                label="记住已标记的 MV"
+                desc="点过「标记」的视频，下次这首直接播它；只看没标记的手动选择不记住"
                 checked={settings.useRememberedOverride}
                 onChange={(v) => update({ useRememberedOverride: v })}
               />

@@ -6,7 +6,7 @@
  * B 站视频全屏播放器浮层（个人主页/收藏/历史点播用）
  *
  * bvid → view(cid) → playurl → 流代理 全链路复用；带 CC 字幕（官方字幕即歌词）、
- * 进度续播（历史记录）、可"设为当前歌曲的 MV"（写入该歌 override）。
+ * 进度续播（历史记录）、可"设为当前歌曲的 MV"（写入本地标记库 + override，设置里可管理）。
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react'
@@ -25,7 +25,7 @@ import {
   cleanSubtitleLines,
   formatBiliTime,
   qualityLabel,
-  setBilibiliOverride,
+  saveLocalMvMark,
   getBilibiliWatchSettings,
   WATCH_SETTINGS_EVENT,
   type BilibiliSubtitleLine,
@@ -39,7 +39,7 @@ interface BilibiliVideoPlayerOverlayProps {
   /** 续播进度（秒，观看历史用） */
   initialSeek?: number
   /** 提供后显示「设为当前歌曲 MV」按钮 */
-  setAsMvContext?: { songKey: string; songTitle: string } | null
+  setAsMvContext?: { songKey: string; songTitle: string; artist?: string } | null
 }
 
 export default function BilibiliVideoPlayerOverlay({ bvid, title, onClose, initialSeek, setAsMvContext }: BilibiliVideoPlayerOverlayProps) {
@@ -173,8 +173,18 @@ export default function BilibiliVideoPlayerOverlay({ bvid, title, onClose, initi
 
   const handleSetAsMv = () => {
     if (!setAsMvContext) return
-    setBilibiliOverride(setAsMvContext.songKey, bvid)
-    setMvSetHint(`已设为《${setAsMvContext.songTitle}》的 MV，回到看歌将自动播放`)
+    // 这是"明确的持久选择"，语义等同看歌里的「标记」：写本地标记库（内含 override）。
+    // 只写 override 的话，这条记忆在界面上无处可见、也无法单独移除（曾被误当脏数据清理）。
+    saveLocalMvMark({
+      songKey: setAsMvContext.songKey,
+      songTitle: setAsMvContext.songTitle,
+      artist: setAsMvContext.artist || '',
+      bvid,
+      videoTitle: title || bvid,
+      pic: '',
+      author: '',
+    })
+    setMvSetHint(`已标记为《${setAsMvContext.songTitle}》的 MV，回到看歌将自动播放`)
     window.setTimeout(() => setMvSetHint(''), 3500)
   }
 
