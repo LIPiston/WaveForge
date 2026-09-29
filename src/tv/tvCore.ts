@@ -246,11 +246,28 @@ function currentScope(): HTMLElement | Document {
   return document
 }
 
-function candidates(from: HTMLElement | null = null, dir: Direction | null = null): HTMLElement[] {
+// ---------------- 候选列表原始缓存 ----------------
+// querySelectorAll(FOCUSABLE_SELECTOR) 是每次按键最贵的固定开销之一（含 [class*=] 子串
+// 匹配 + 大 DOM 全量遍历）。childList / data-tv-scope / class 变更都会推进 domGeneration
+// 使缓存失效；两次按键之间无 DOM 变化时（长列表连续下移的常见情形）直接复用原始列表。
+// 过滤（isRendered/裁剪/命中测试）仍在每次导航时实时计算——滚动位置与 opacity/display
+// 样式不受缓存影响，卸载节点也会被 isConnected 检查滤掉，无 stale 风险。
+let domGeneration = 0
+const candidateListCache = new WeakMap<HTMLElement | Document, { gen: number; list: HTMLElement[] }>()
+
+function queryFocusable(root: HTMLElement | Document): HTMLElement[] {
+  const cached = candidateListCache.get(root)
+  if (cached && cached.gen === domGeneration) return cached.list
+  const list = Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR)) as HTMLElement[]
+  candidateListCache.set(root, { gen: domGeneration, list })
+  return list
+}
+
+function candidates(from: HTMLElement | null = null, dir: Direction | null = null, requireHitTest = true): HTMLElement[] {
   const scope = currentScope()
   const root = scope instanceof Document ? document : scope
-  const list = Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR)) as HTMLElement[]
-  return list.filter((el) => {
+  const list = queryFocusable(root)
+  const filtered = list.filter((el) => {
     if (el.closest('[data-tv-skip]')) return false
     // sr-only 开关 input（checkbox/radio 且有 label）：label 已是候选（focusRectOf 用 label rect），
     // 排除 input，避免同一开关两个候选（label + input）rect 相同导致导航原地打转
@@ -293,13 +310,15 @@ function candidates(from: HTMLElement | null = null, dir: Direction | null = nul
       }
       return false
     }
-    // 未裁剪项必须在视口内且可命中
+    // 未裁剪项必须在视口内
     const vr = focusRectOf(el)
     if (vr.bottom < 0 || vr.top > window.innerHeight) return false
     if (vr.right < 0 || vr.left > window.innerWidth) return false
-    if (!isHitTestable(el)) return false
     return true
   })
+  // 命中测试（elementFromPoint）每候选一次、成本高：导航打分路径可以延迟到打分后
+  // 只对按分排序的前几名执行（见 bestNeighbor），避免长列表页每次按键 O(N) 次命中查询
+  return requireHitTest ? filtered.filter(isHitTestable) : filtered
 }
 
 // ---------------- 焦点状态与焦点环 ----------------
@@ -411,6 +430,10 @@ export function setTvFocus(el: HTMLElement | null): void {
     updateRing()
     return
   }
+  // 焦点转移即退出 range/select 调节模式（防模式跨元素残留：残留后聚焦同类控件
+  // 会不经 OK 确认直接被方向键改值）
+  rangeAdjusting = false
+  selectAdjusting = false
   focusedEl?.classList.remove('tv-focused')
   focusedEl = el
   if (el) {
@@ -473,7 +496,9 @@ function updateVolumeKeyCapture(): void {
 type Direction = 'up' | 'down' | 'left' | 'right'
 
 function bestNeighbor(current: HTMLElement, dir: Direction): HTMLElement | null {
-  const list = candidates(current, dir)
+  // requireHitTest=false：先按几何/裁剪规则收集候选并打分，只对分数最优的少数候选
+  // 依次执行命中测试（elementFromPoint），长列表页每次按键的强制布局成本大幅下降
+  const list = candidates(current, dir, false)
   // 诊断：打印候选摘要（文本/是否裁剪/是否同容器），配合调试台定位导航问题。
   // 整块受详细日志开关门控：diag 会对每个候选调 scrollParentOf / isClippedByScroll
   //（内部是 getComputedStyle + 祖先链遍历），遥控器每按一次方向键就白算一遍。
@@ -498,8 +523,7 @@ function bestNeighbor(current: HTMLElement, dir: Direction): HTMLElement | null 
   const cur = focusRectOf(current)
   const cx = cur.left + cur.width / 2
   const cy = cur.top + cur.height / 2
-  let best: HTMLElement | null = null
-  let bestScore = Infinity
+  const scored: Array<{ el: HTMLElement; score: number }> = []
   for (const el of list) {
     if (el === current) continue
     const r = focusRectOf(el)
@@ -527,14 +551,18 @@ function bestNeighbor(current: HTMLElement, dir: Direction): HTMLElement | null 
       // 同容器内滚出可视区的项（可自动滚动回去）也小惩，优先选当前可见的紧邻项
       else if (curScroll && candScroll === curScroll && isClippedByScroll(el)) score += 60
     }
-    if (score < bestScore) {
-      bestScore = score
-      best = el
-    }
+    scored.push({ el, score })
+  }
+  // 按分升序（稳定排序：同分保持收集顺序，与旧的严格小于取首个一致），
+  // 依次命中测试取第一个可命中的——行为等价于「过滤后取最优」，只是把命中测试推迟
+  scored.sort((a, b) => a.score - b.score)
+  for (const { el } of scored) {
+    if (isHitTestable(el)) return el
   }
   // 诊断：选中项（同样受详细日志开关门控）
   if (isVerboseLogEnabled()) {
     try {
+      const best = scored.length ? scored[0].el : null
       if (best) {
         const bl = (best.textContent || best.getAttribute('aria-label') || best.className || '').toString().replace(/\s+/g, ' ').slice(0, 16)
         debugLog(`[NAV] → 选中: ${bl}`)
@@ -545,7 +573,7 @@ function bestNeighbor(current: HTMLElement, dir: Direction): HTMLElement | null 
       // ignore
     }
   }
-  return best
+  return null
 }
 
 function focusFirst(): void {
@@ -592,6 +620,106 @@ function activate(): void {
   }
   focusFirst()
 }
+
+// ---------------- OK 长按 → 右键菜单 / select 调节模式 ----------------
+// 遥控器没有鼠标：歌曲行/歌单卡片的右键菜单（收藏/加入歌单/下一首播放/移除等）
+// 是纯遥控器唯一的完整操作入口。约定：短按 OK = click（keyup 时触发），
+// 长按 OK ≥600ms = 在焦点元素上派发 contextmenu（React onContextMenu 可收到）。
+const OK_LONG_PRESS_MS = 600
+let okPressTimer: number | null = null
+let okPressEl: HTMLElement | null = null
+let okPressConsumed = false // 计时期间被 range/select 进入调节模式等逻辑消费：keyup 不再 activate
+let okLongPressFired = false // 计时器已触发：本次按压按长按（contextmenu）处理
+let okLongPressHintShown = false
+
+function clearOkPressTimer(): void {
+  if (okPressTimer !== null) {
+    window.clearTimeout(okPressTimer)
+    okPressTimer = null
+  }
+}
+
+/** 计时期间被其他逻辑（进入 range/select 调节模式）消费：keyup 只复位不再 activate。 */
+function consumeOkPress(): void {
+  clearOkPressTimer()
+  okPressConsumed = true
+}
+
+function handleOkKeyUp(): void {
+  // 状态判定要在复位前取好：长按已触发 / 被调节模式消费 / 正常短按
+  const longPressed = okLongPressFired
+  const consumed = okPressConsumed
+  const shortPress = okPressEl !== null && !longPressed && !consumed
+  const el = okPressEl
+  clearOkPressTimer()
+  okPressEl = null
+  okPressConsumed = false
+  okLongPressFired = false
+  if (longPressed) return // 长按已在计时器回调里派发 contextmenu，keyup 不再 activate
+  if (consumed) return // range/select 进入调节模式时已消费本次按压
+  if (shortPress && el) activate()
+}
+
+function triggerContextMenu(el: HTMLElement): void {
+  okLongPressFired = true
+  let handled = false
+  try {
+    // 带上焦点元素中心的坐标：行级处理器用 event.clientX/Y 定位菜单弹出位置
+    const r = el.getBoundingClientRect()
+    const ev = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: r.left + r.width / 2,
+      clientY: r.top + r.height / 2,
+    })
+    el.dispatchEvent(ev)
+    // 有 onContextMenu 处理器的元素（歌曲行/歌单卡片）会 preventDefault；
+    // 没有处理器的普通按钮无人响应 → 回落为普通确认（keyup 时正常 activate）
+    handled = ev.defaultPrevented
+  } catch {
+    // ignore
+  }
+  if (!handled) {
+    okLongPressFired = false
+    return
+  }
+  // 首次使用提示（一次性，跨会话持久化）：让用户知道这个手势的存在
+  if (!okLongPressHintShown) {
+    try {
+      okLongPressHintShown = localStorage.getItem('waveforge:tv-ok-longpress-hint') === '1'
+    } catch {
+      // ignore
+    }
+    if (!okLongPressHintShown) {
+      okLongPressHintShown = true
+      try {
+        localStorage.setItem('waveforge:tv-ok-longpress-hint', '1')
+      } catch {
+        // ignore
+      }
+      try {
+        window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '长按 OK 可打开歌曲/歌单操作菜单', type: 'info' } }))
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+function startOkLongPress(el: HTMLElement): void {
+  clearOkPressTimer()
+  okPressEl = el
+  okPressConsumed = false
+  okLongPressFired = false
+  okPressTimer = window.setTimeout(() => {
+    okPressTimer = null
+    if (okPressEl === el && !okPressConsumed) triggerContextMenu(el)
+  }, OK_LONG_PRESS_MS)
+}
+
+// select 调节模式：WebView 里程序化 click() 无法展开原生下拉，
+// 改为 OK 进入调节模式后 ▲▼ 直接改 selectedIndex（同 range 滑块的处理方式）
+let selectAdjusting = false
 
 // ---------------- BACK 处理栈 ----------------
 type BackHandler = () => boolean
@@ -657,6 +785,15 @@ function dirOf(code: number): Direction {
   }
 }
 
+/** OK keyup：短按激活 / 长按已在计时器回调里派发 contextmenu（见 startOkLongPress）。 */
+function handleKeyUp(e: KeyboardEvent): void {
+  if (!tvMode) return
+  const code = e.keyCode
+  if (code === 13 || code === 23 || code === 66) {
+    handleOkKeyUp()
+  }
+}
+
 function handleKeyDown(e: KeyboardEvent): void {
   if (!tvMode) return
   const code = e.keyCode
@@ -691,6 +828,7 @@ function handleKeyDown(e: KeyboardEvent): void {
     e.preventDefault()
     if (!rangeAdjusting) {
       rangeAdjusting = true
+      consumeOkPress() // 本次按压已被"进入调节模式"消费：keyup 不再 activate
       try {
         window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '按 ◀ ▶ 调节数值，其他键退出', type: 'info' } }))
       } catch {
@@ -714,6 +852,45 @@ function handleKeyDown(e: KeyboardEvent): void {
       return
     }
     rangeAdjusting = false // 非左右键：退出调节模式，走正常导航
+  }
+
+  // select 调节模式：OK 进入后 ▲▼ 改 selectedIndex（WebView 里程序化 click 无法展开原生下拉）
+  const isSelectFocused = focusedEl !== null && focusedEl.tagName === 'SELECT'
+  if (isSelectFocused && (code === 13 || code === 23 || code === 66)) {
+    e.preventDefault()
+    if (!selectAdjusting) {
+      selectAdjusting = true
+      consumeOkPress()
+      try {
+        window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '按 ▲ ▼ 选择选项，其他键退出', type: 'info' } }))
+      } catch {
+        // ignore
+      }
+    }
+    return
+  }
+  if (selectAdjusting && isSelectFocused) {
+    if (code === 38 || code === 19 || code === 40 || code === 20) {
+      e.preventDefault()
+      const select = focusedEl as HTMLSelectElement
+      try {
+        const delta = code === 38 || code === 19 ? -1 : 1
+        let next = select.selectedIndex
+        // 跳过 disabled 选项
+        do {
+          next += delta
+        } while (next >= 0 && next < select.options.length && select.options[next].disabled)
+        if (next >= 0 && next < select.options.length && next !== select.selectedIndex) {
+          select.selectedIndex = next
+          select.dispatchEvent(new Event('input', { bubbles: true }))
+          select.dispatchEvent(new Event('change', { bubbles: true }))
+        }
+      } catch {
+        // ignore
+      }
+      return
+    }
+    selectAdjusting = false // 非上下键：退出调节模式，走正常导航
   }
 
   // 软键盘激活：方向键在键盘网格内做空间导航，Enter 激活键位，BACK 关闭键盘
@@ -780,13 +957,19 @@ function handleKeyDown(e: KeyboardEvent): void {
       // 同上：activate() 会 click() 一次，若事件继续冒泡到 React 根监听器，
       // 组件内基于 key === 'Enter' 的处理器会再触发一次动作。
       e.stopPropagation()
-      activate()
+      // OK 改为 keyup 时激活：短按 = click，长按 ≥600ms = contextmenu（歌曲/歌单操作菜单）
+      if (e.repeat) return // 长按期间原生 repeat 不重启计时
+      if (focusedEl) startOkLongPress(focusedEl)
+      else focusFirst()
       return
     case 8: // Backspace（PC 模拟 TV 的 BACK）
     case 27: // Escape（PC 模拟 TV 的 BACK）
     case 4: // KEYCODE_BACK
       if (dispatchTvBack()) {
         e.preventDefault()
+        // 同 Enter 分支：BACK 被 BACK 栈消费后必须阻止继续冒泡，
+        // 否则组件内镜像的本地 Escape 处理器（如 SearchPanel 逐级后退）会再触发一次 → 一次按键连跳两层
+        e.stopPropagation()
         // 真机：告知原生层"页面已消费 BACK"，避免原生再执行默认返回/退出
         try {
           ;(window as any).WaveForgeNative?.reportBackConsumed?.()
@@ -813,6 +996,8 @@ let scopeObserver: MutationObserver | null = null
 
 function setupScopeObserver(): void {
   scopeObserver = new MutationObserver((mutations) => {
+    // DOM/类变更 → 候选原始列表缓存失效（见 queryFocusable）
+    domGeneration += 1
     let changed = false
     let focusedRemoved = false
     for (const m of mutations) {
@@ -833,13 +1018,18 @@ function setupScopeObserver(): void {
       }
       for (const node of m.addedNodes) {
         if (!(node instanceof HTMLElement)) continue
+        const pushScope = (el: HTMLElement) => {
+          // 父+子节点同时带 data-tv-scope 的嵌套插入会重复命中，去重避免数组累积冗余
+          if (scopes.indexOf(el) < 0) {
+            scopes.push(el)
+            changed = true
+          }
+        }
         if (node.matches('[data-tv-scope]')) {
-          scopes.push(node)
-          changed = true
+          pushScope(node)
         }
         node.querySelectorAll('[data-tv-scope]').forEach((el) => {
-          scopes.push(el as HTMLElement)
-          changed = true
+          pushScope(el as HTMLElement)
         })
       }
       for (const node of m.removedNodes) {
@@ -847,6 +1037,8 @@ function setupScopeObserver(): void {
         if (focusedEl && node instanceof Node && node.contains(focusedEl)) {
           focusedEl = null
           focusedRemoved = true
+          // 焦点丢失后若不更新，原生层 volumeKeyCapture 会卡在 true，系统音量键被永久劫持
+          updateVolumeKeyCapture()
         }
         // 惰性剔除已断连的 scope，避免长会话累积对已卸载 DOM 的强引用
         for (let i = scopes.length - 1; i >= 0; i--) {
@@ -855,11 +1047,11 @@ function setupScopeObserver(): void {
       }
     }
     if (focusedRemoved) {
-      // 从聚焦轨迹里找「同域内仍存活」的上一个元素并恢复（弹窗里再弹一层又关闭的场景），
+      // 从聚焦轨迹里找「同域内仍存活且可见」的上一个元素并恢复（弹窗里再弹一层又关闭的场景），
       // 找不到才退回原来的「只隐藏焦点环」，此时下一次按键会落到域内第一个候选。
       const scope = currentScope()
       const restored = focusTrail.find(el => (
-        el.isConnected && (scope instanceof HTMLElement ? scope.contains(el) : true)
+        el.isConnected && isRendered(el) && (scope instanceof HTMLElement ? scope.contains(el) : true)
       ))
       if (restored) setTvFocus(restored)
       else updateRing()
@@ -872,7 +1064,10 @@ function setupScopeObserver(): void {
       }
     }
   })
-  scopeObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-tv-scope'] })
+  // 监听会影响"候选集合成员资格"的属性：data-tv-scope（聚焦域）、class（cursor-pointer/
+  // data-tv-focus 匹配、显隐）、disabled（按钮禁用）、href（链接）；其余样式变化由
+  // 每次导航时的实时过滤兜住，不进选择器语义
+  scopeObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-tv-scope', 'class', 'disabled', 'href', 'data-tv-focus'] })
 }
 
 // 初始时收录已存在的域
@@ -893,6 +1088,8 @@ export function initTv(): void {
   collectExistingScopes()
   setupScopeObserver()
   document.addEventListener('keydown', handleKeyDown, true)
+  // OK 的激活在 keyup 时触发（短按=click，长按=右键菜单），需要配对监听 keyup
+  document.addEventListener('keyup', handleKeyUp, true)
 
   // 首次聚焦
   focusFirst()

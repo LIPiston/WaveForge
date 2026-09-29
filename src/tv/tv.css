@@ -64,6 +64,18 @@ html.tv-mode .group:focus-within [class*='group-hover:opacity-0'] {
   opacity: 1 !important;
 }
 
+/* display 类切换的 hover 揭示（序号↔播放图标、封面 hover 播放遮罩等）：
+   焦点进入卡片时显示目标态，焦点在时隐藏态不再生效 */
+html.tv-mode .group:focus-within [class*='group-hover:flex'] {
+  display: flex !important;
+}
+html.tv-mode .group:focus-within [class*='group-hover:block'] {
+  display: block !important;
+}
+html.tv-mode .group:focus-within [class*='group-hover:hidden'] {
+  display: none !important;
+}
+
 html.tv-mode .group:focus-within [class*='group-hover:scale-'] {
   transform: none !important;
 }
@@ -112,6 +124,20 @@ html.tv-mode.wf-perf-normal .wm-particle,
 html.tv-mode.wf-perf-normal .wm-halo,
 html.tv-mode.wf-perf-normal .wm-spin-ring,
 html.tv-mode.wf-perf-normal .wm-orbit {
+  animation: none !important;
+}
+/* normal 档追加黑名单：跑马灯（迷你播放器长歌词滚动）/ 隐私波浪 / liquid 装饰
+   （glorious-* 由组件 reduced-motion 分支处理，JS 驱动的 rAF 动画 CSS 杀不掉） */
+html.tv-mode.wf-perf-efficiency .animate-\[scroll_12s_linear_infinite\],
+html.tv-mode.wf-perf-normal .animate-\[scroll_12s_linear_infinite\],
+html.tv-mode.wf-perf-efficiency .wf-privacy-wave,
+html.tv-mode.wf-perf-normal .wf-privacy-wave,
+html.tv-mode.wf-perf-efficiency .liquid-blob,
+html.tv-mode.wf-perf-normal .liquid-blob,
+html.tv-mode.wf-perf-efficiency .liquid-pulse,
+html.tv-mode.wf-perf-normal .liquid-pulse,
+html.tv-mode.wf-perf-efficiency .shimmer-effect,
+html.tv-mode.wf-perf-normal .shimmer-effect {
   animation: none !important;
 }
 

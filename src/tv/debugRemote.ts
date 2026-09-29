@@ -25,10 +25,11 @@ function syncBackend(enabled: boolean): void {
 
 function connectWs(): void {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
-  // 先确认 3008 是 TV 调试服务（未启动/被其它服务占用时不连 WS，避免反复重试刷屏）
+  // 先确认 3008 是 TV 调试服务（校验特征标记，任何占用 3008 的其它服务都不连，避免误发命令/反复重试）
   fetch('http://localhost:3008/', { cache: 'no-store' })
-    .then((r) => {
-      if (r.ok) connectWsDirect()
+    .then((r) => (r.ok ? r.text() : ''))
+    .then((html) => {
+      if (html.includes('WaveForge TV 调试台')) connectWsDirect()
     })
     .catch(() => { /* 调试服务未运行：不连接 */ })
 }
@@ -59,7 +60,14 @@ function connectWsDirect(): void {
               ? 13
               : 4
         if (code) {
-          window.dispatchEvent(new KeyboardEvent('keydown', { keyCode: code, which: code, bubbles: true, cancelable: true }))
+          // 派发到 document（capture 监听都在 document 上；派发到 window 的合成事件
+          // 传播路径不含 document，tvCore/mediaKeyBridge 收不到）。
+          // OK（13）需要 keydown+keyup 配对：tvCore 在 keyup 时才执行激活（支持长按右键）
+          const init = { keyCode: code, which: code, bubbles: true, cancelable: true }
+          document.dispatchEvent(new KeyboardEvent('keydown', init))
+          if (code === 13) {
+            setTimeout(() => document.dispatchEvent(new KeyboardEvent('keyup', init)), 30)
+          }
         }
       } else {
         // 播放/切歌/音量/设置等：复用遥控链路

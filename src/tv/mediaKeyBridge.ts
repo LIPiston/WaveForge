@@ -41,6 +41,8 @@ export function installMediaKeyBridge(): void {
   installed = true
   document.addEventListener('keydown', (e) => {
     if (!isTvMode()) return
+    // 长按媒体键时原生层每个 repeat 的 ACTION_DOWN 都会转发成 keydown：不滤掉会连切多首
+    if (e.repeat) return
     const action = KEY_ACTION_MAP[e.keyCode]
     if (!action) return
 

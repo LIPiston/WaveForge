@@ -88,6 +88,8 @@ export default function TvKeyboard() {
     return () => {
       document.removeEventListener('focusin', onFocusIn)
       setKeyboardActive(false)
+      // 卸载后兜底清掉退出动画定时器：避免组件已卸载还执行 setState
+      if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
     }
   }, [tvMode])
 
@@ -296,7 +298,7 @@ export default function TvKeyboard() {
         </button>
       </div>
 
-      {/* 当前输入预览 */}
+      {/* 当前输入预览：密码输入框用圆点掩码（TV 大屏明文回显会向客厅泄露） */}
       <div
         style={{
           color: 'rgba(255,255,255,0.85)',
@@ -310,9 +312,14 @@ export default function TvKeyboard() {
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
           textAlign: 'left',
+          letterSpacing: (target as HTMLInputElement)?.type === 'password' ? 2 : undefined,
         }}
       >
-        {target.value || '\u00A0'}
+        {target.value
+          ? (target as HTMLInputElement).type === 'password'
+            ? '•'.repeat(Math.min(64, target.value.length))
+            : target.value
+          : '\u00A0'}
       </div>
 
       {/* 字符网格（QWERTY 行排列） */}

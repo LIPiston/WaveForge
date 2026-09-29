@@ -80,7 +80,9 @@ export default function DebugPanels() {
   const showPerf = getDebugPanelVisible(DEBUG_PANEL_KEYS.perf)
   // 交互模式：PC 或手机远程遥控器连接后，与 PC 行为一致（可滚动/关闭/切换）；
   // 纯 TV 遥控器下仅展示，隐藏滚动条、关闭按钮与显示模式切换。
-  const interactive = !isTvModeActive() || useRemoteCursorMode()
+  // hook 必须无条件调用（此前写在 || 右侧，tv-mode 关闭时跳过调用是 hooks 顺序违规）
+  const remoteCursorMode = useRemoteCursorMode()
+  const interactive = !isTvModeActive() || remoteCursorMode
 
   useEffect(() => {
     // 面板可见时才跑测量/轮询：开发者模式默认开（供 3008 调试台热更新/遥控），

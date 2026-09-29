@@ -47,7 +47,7 @@ class MainActivity : Activity() {
         private const val TAG = "WaveForgeMain"
         private const val NODE_ASSETS_DIR = "nodejs-project"
         private const val PREF_TAG_KEY = "node_assets_version"
-        private const val ASSETS_VERSION = 79
+        private const val ASSETS_VERSION = 86
         private const val SERVER_URL = "http://localhost:3001/"
         private const val HEALTH_URL = "http://localhost:3001/health"
         // Node 启动标记：必须进程级唯一（nodejs-mobile 不支持重启、每次进程只允许一个）。
@@ -566,7 +566,7 @@ class MainActivity : Activity() {
                 if (!backConsumed.get() && !isFinishing) {
                     handleBackDefault()
                 }
-            }, 120)
+            }, 400)
             return true
         }
 
@@ -604,9 +604,12 @@ class MainActivity : Activity() {
 
     private fun forwardKeyToDom(keyCode: Int) {
         webView.post {
+            // 必须派发到 document：合成事件的传播路径只有目标节点自身（window 的父节点为 null），
+            // 而 JS 侧（tvCore 焦点导航 / mediaKeyBridge）的 keydown 监听全部注册在 document 上——
+            // 派发到 window 时 document 的 capture/bubble 监听器永远收不到（BACK 栈/媒体键整体失效）。
             webView.evaluateJavascript(
-                "window.dispatchEvent(new KeyboardEvent('keydown', {keyCode: $keyCode, which: $keyCode, bubbles: true, cancelable: true}));" +
-                    "window.dispatchEvent(new KeyboardEvent('keyup', {keyCode: $keyCode, which: $keyCode, bubbles: true, cancelable: true}));",
+                "document.dispatchEvent(new KeyboardEvent('keydown', {keyCode: $keyCode, which: $keyCode, bubbles: true, cancelable: true}));" +
+                    "document.dispatchEvent(new KeyboardEvent('keyup', {keyCode: $keyCode, which: $keyCode, bubbles: true, cancelable: true}));",
                 null
             )
         }

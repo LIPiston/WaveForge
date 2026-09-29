@@ -43,13 +43,17 @@ async function fetchRemoteStatus(): Promise<{
 function scheduleRetry(delayMs: number): void {
   if (closed) return
   if (retryTimer) clearTimeout(retryTimer)
-  retryTimer = setTimeout(() => void connect(), delayMs)
+  // 页面隐藏时延后重连（息屏/退后台不白烧重试），恢复可见后再试
+  const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  retryTimer = setTimeout(() => void connect(), hidden ? delayMs * 6 : delayMs)
 }
 
 /** 轮询遥控状态：维持光标模式（clientCount>0 = 手机已连上） */
 function startStatusPolling(): void {
   if (statusTimer) return
   const poll = async () => {
+    // 页面隐藏（TV 退后台/息屏）时跳过本轮 fetch，恢复可见后下一轮继续
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
     const st = await fetchRemoteStatus()
     if (st) setRemoteCursorMode((st.clientCount || 0) > 0)
   }

@@ -69,7 +69,9 @@ async function buildServerBundle() {
         "try { const __wfPath = require('path'); const __wfFs = require('fs');" +
         "const __wfCrashFile = __wfPath.join(__wfPath.dirname(process.argv[1] || process.cwd()), '..', 'tv-crash.log');" +
         "const __wfCrash = (__e) => { try { __wfFs.appendFileSync(__wfCrashFile, '[' + new Date().toISOString() + '] ' + ((__e && __e.stack) || String(__e)) + '\\n'); } catch (__x) {} }; " +
-        "process.on('uncaughtException', __wfCrash); " +
+        "process.on('uncaughtException', (__e) => { __wfCrash(__e); " +
+        "// uncaughtException 后 Node 处于未定义状态：端口可能还开着但服务半死，假活比崩溃更难排查——记录后退出\n" +
+        "setTimeout(() => process.exit(1), 300); }); " +
         "process.on('unhandledRejection', (__r) => __wfCrash(__r instanceof Error ? __r : new Error(String(__r)))); } catch (__e) {}",
     },
   })

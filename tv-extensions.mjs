@@ -49,9 +49,32 @@ function setDebugServerEnabled(enabled, { serverLogs, crashFile, distDir = null 
       }
       // 热更新：上传 dist 前端资源（index.html + assets/*）→ 替换 → 广播 reload 刷新页面
       if (url.pathname === '/update' && req.method === 'POST') {
+        // 请求体上限：该端口局域网可达，不设上限时超大 body 会把进程内存打爆
+        const MAX_UPDATE_BYTES = 160 * 1024 * 1024
+        const declared = Number(req.headers['content-length'] || 0)
+        if (Number.isFinite(declared) && declared > MAX_UPDATE_BYTES) {
+          res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ok: false, error: '更新包超过 160MB 上限' }))
+          return
+        }
+        let size = 0
+        let aborted = false
         let body = ''
-        req.on('data', (c) => { body += c })
+        req.on('data', (c) => {
+          if (aborted) return
+          size += c.length
+          if (size > MAX_UPDATE_BYTES) {
+            aborted = true
+            body = ''
+            res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' })
+            res.end(JSON.stringify({ ok: false, error: '更新包超过 160MB 上限' }))
+            req.destroy()
+            return
+          }
+          body += c
+        })
         req.on('end', () => {
+          if (aborted) return
           try {
             const { files } = JSON.parse(body)
             if (!Array.isArray(files) || !files.length || !distDir) {
@@ -317,9 +340,32 @@ function makeWallpaperHttpHandler(wallpapersDir) {
       return true
     }
     if (url.pathname === '/wallpaper/upload' && req.method === 'POST') {
+      // 大小上限：该入口可被局域网直接访问，不设上限时数 GB body 会把进程内存打爆
+      const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+      const declared = Number(req.headers['content-length'] || 0)
+      if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) {
+        res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ ok: false, error: '文件超过 25MB 上限' }))
+        return true
+      }
       const chunks = []
-      req.on('data', (c) => chunks.push(c))
+      let received = 0
+      let aborted = false
+      req.on('data', (c) => {
+        if (aborted) return
+        received += c.length
+        if (received > MAX_UPLOAD_BYTES) {
+          aborted = true
+          chunks.length = 0
+          res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ok: false, error: '文件超过 25MB 上限' }))
+          req.destroy()
+          return
+        }
+        chunks.push(c)
+      })
       req.on('end', () => {
+        if (aborted) return
         try {
           const buf = Buffer.concat(chunks)
           const contentType = req.headers['content-type'] || ''
@@ -351,7 +397,13 @@ function makeWallpaperHttpHandler(wallpapersDir) {
       return true
     }
     if (url.pathname.startsWith('/wallpapers/')) {
-      const name = url.pathname.split('/').pop() || ''
+      const name = sanitizeFileName(url.pathname.split('/').pop() || '')
+      // 防路径穿越（25567 局域网可达）：拒绝空名/分隔符/..
+      if (!name || name.includes('/') || name.includes('\\') || name.includes('..') || !/\.(jpe?g|png|webp|gif)$/i.test(name)) {
+        res.writeHead(400)
+        res.end('Bad Request')
+        return true
+      }
       const file = join(wallpapersDir, name)
       if (!existsSync(file)) {
         res.writeHead(404)
@@ -428,7 +480,12 @@ export function installTvExtensions({
 
   // SPA 读取已上传壁纸图片内容（导入 IndexedDB 用）
   app.get('/api/tv/wallpapers/:name', (req, res) => {
-    const name = req.params.name || ''
+    const name = String(req.params.name || '')
+    // 防路径穿越：Express 会 decodeURIComponent 路由参数，`..%2F` 会被解码成 `../`
+    if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) {
+      res.status(400).end('Bad Request')
+      return
+    }
     const file = join(wallpapersDir, name)
     if (!existsSync(file) || !/\.(jpe?g|png|webp|gif)$/i.test(name)) {
       res.status(404).end('Not Found')
