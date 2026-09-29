@@ -109,6 +109,31 @@ describe('QQ native Explore contracts', () => {
     expect(result[1].cards.map(item => item.id)).toEqual(['3'])
   })
 
+  it('keeps distinct live shelves that reuse the same shelfId/style apart', () => {
+    // 实测 page=2/direction=1 一次返回两个 id=207 style=1 的栏目：
+    // 只按 id+style 合并会把「听「X」的也在听」吞进「从你的红心歌曲开始探索」。
+    const heart = {
+      ...module('207', [card({ id: '1', feedKey: '200_0_1' })]),
+      style: 1,
+      title: '从你的红心歌曲开始探索',
+      titleTemplate: '{String}',
+    }
+    const alsoListen = {
+      ...module('207', [card({ id: '2', feedKey: '200_0_2' })]),
+      style: 1,
+      title: '听「宇多田光」的也在听',
+      titleTemplate: '听「{String}」的也在听',
+    }
+    expect(qqModuleIdentity(heart)).not.toBe(qqModuleIdentity(alsoListen))
+    const result = dedupeQQModules([heart, alsoListen])
+    expect(result).toHaveLength(2)
+    expect(result.map(item => item.title)).toEqual(['从你的红心歌曲开始探索', '听「宇多田光」的也在听'])
+    // 同一栏目换个种子名（title_content 变）仍应合并
+    const sameShelfNewSeed = { ...alsoListen, title: '听「米津玄師」的也在听' }
+    expect(qqModuleIdentity(alsoListen)).toBe(qqModuleIdentity(sameShelfNewSeed))
+    expect(dedupeQQModules([alsoListen, sameShelfNewSeed])).toHaveLength(1)
+  })
+
   it('keeps module instance identity separate from shelf merge identity', () => {
     const first = module('315', [card()])
     const repeated = { ...module('315', [card()]), instanceId: 'instance-layout-2' }

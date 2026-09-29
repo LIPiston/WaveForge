@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { ChevronDown, ChevronLeft, ChevronRight, ListMusic, MoreHorizontal, Pause, Play, SlidersHorizontal } from 'lucide-react'
 import type { Song } from '../../services/musicApi'
 import CachedImage from '../../components/CachedImage'
@@ -21,6 +21,10 @@ type QQRadarPlayerProps = {
   onPlaySong: (song: Song, songs: Song[], continuation: QQRadarContinuation) => void
   onRequestMore: (continuation: QQRadarContinuation) => Promise<{ songs: Song[]; page: number; hasMore?: boolean }>
   onTogglePlay: () => void
+  /** 刷歌模式右键：交给外层复用探索页右键菜单（含「音乐偏好设置」） */
+  onSongContextMenu?: (event: ReactMouseEvent, song: Song) => void
+  /** 右上角滑杆按钮：打开「我的音乐偏好」（与 App 同位置入口） */
+  onOpenPreference?: () => void
 }
 
 const SWIPE_THRESHOLD = 72
@@ -29,7 +33,7 @@ function songKey(song: Song) {
   return String(song.mid || song.id || `${song.name}:${song.artists.map(artist => artist.name).join('/')}`)
 }
 
-export default function QQRadarPlayer({ songs: initialSongs, initialIndex = 0, continuation: initialContinuation, playing, suspended = false, onClose, onPlaySong, onRequestMore, onTogglePlay }: QQRadarPlayerProps) {
+export default function QQRadarPlayer({ songs: initialSongs, initialIndex = 0, continuation: initialContinuation, playing, suspended = false, onClose, onPlaySong, onRequestMore, onTogglePlay, onSongContextMenu, onOpenPreference }: QQRadarPlayerProps) {
   const [songs, setSongs] = useState(initialSongs)
   const [index, setIndex] = useState(Math.min(Math.max(initialIndex, 0), Math.max(0, initialSongs.length - 1)))
   const [continuation, setContinuation] = useState(initialContinuation)
@@ -97,11 +101,11 @@ export default function QQRadarPlayer({ songs: initialSongs, initialIndex = 0, c
   if (!current) return null
   const artist = current.artists.map(item => item.name).join(' / ')
   return (
-    <div className="fixed inset-0 z-[320] flex min-h-screen flex-col overflow-hidden bg-[#111419] text-white" role="dialog" aria-modal="true" aria-label="QQ 刷歌模式">
+    <div className="fixed inset-0 z-[320] flex min-h-screen flex-col overflow-hidden bg-[#111419] text-white" role="dialog" aria-modal="true" aria-label="QQ 刷歌模式" onContextMenu={event => { if (!onSongContextMenu) return; event.preventDefault(); onSongContextMenu(event, current) }}>
       <div className="absolute inset-0 bg-black/35" />
       <div className="relative z-10 flex items-center justify-between px-6 py-5">
         <button type="button" onClick={onClose} aria-label="退出刷歌模式" className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.08] hover:bg-white/[0.15]"><ChevronDown className="h-6 w-6" /></button>
-        <div className="flex items-center gap-2"><button type="button" aria-label="刷歌偏好" className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.08]"><SlidersHorizontal className="h-5 w-5" /></button><button type="button" aria-label="刷歌更多操作" className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.08]"><MoreHorizontal className="h-5 w-5" /></button></div>
+        <div className="flex items-center gap-2"><button type="button" onClick={onOpenPreference} aria-label="音乐偏好设置" className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.08] hover:bg-white/[0.15]"><SlidersHorizontal className="h-5 w-5" /></button><button type="button" aria-label="刷歌更多操作" className="flex h-11 w-11 items-center justify-center rounded-full bg-white/[0.08]"><MoreHorizontal className="h-5 w-5" /></button></div>
       </div>
       <div className="relative z-10 flex min-h-0 flex-1 items-center justify-center px-6" onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerCancel={event => { pointerRef.current = null; event.currentTarget.releasePointerCapture?.(event.pointerId) }}>
         <div className="w-full max-w-[720px] select-none text-center">

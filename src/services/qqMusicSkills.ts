@@ -1,4 +1,7 @@
-const API_BASE = 'http://localhost:3001/api'
+import { getApiBase } from './apiConfig'
+import { openExternalLink } from '../utils/externalLink'
+
+const API_BASE = `${getApiBase()}`
 const OFFICIAL_KEY_URL = 'https://y.qq.com/n/ryqq_v2/qqmusic_skills'
 const SESSION_KEY = 'waveforge.qqmusicSkills.sessionKey'
 
@@ -52,7 +55,8 @@ export async function openQQMusicSkillKeyPage(): Promise<{ success: boolean; api
       return { success: false, error: error instanceof Error ? error.message : '打开领取窗口失败' }
     }
   }
-  window.open(OFFICIAL_KEY_URL, '_blank', 'noopener,noreferrer')
+  // 无桌面桥（TV/纯浏览器）：统一外链兜底（原生 ACTION_VIEW → window.open → 可见提示）
+  openExternalLink(OFFICIAL_KEY_URL)
   return { success: false }
 }
 

@@ -9,7 +9,7 @@ export type QQExploreAction =
   | { type: 'open-chart'; chartId: string }
   | { type: 'open-mv'; mvId: string }
   | { type: 'open-external'; url: string }
-  | { type: 'open-section'; section: 'playlists' | 'charts' | 'mvs' }
+  | { type: 'open-section'; section: 'playlists' | 'charts' | 'mvs' | 'artists' }
   | { type: 'open-preferences' }
   | { type: 'play-songs' }
   | { type: 'search'; query: string }
@@ -175,7 +175,14 @@ export function qqCardPlaylist(card: QQExploreCard): ExplorePlaylist | null {
 
 export function qqModuleIdentity(module: QQExploreModule): string {
   const shelfId = module.refresh?.shelfId || module.id
-  return `${module.source}:${shelfId}:${module.style}`
+  // 2026-09-27 实测修正：服务端会把**同一个 shelfId+style 复用给不同栏目** ——
+  // page=2/direction=1 一次返回两个 id=207 style=1：
+  //   「从你的红心歌曲开始探索」 title_template = '{String}'
+  //   「听「宇多田光」的也在听」  title_template = '听「{String}」的也在听'
+  // 只用 id+style 做键会把后者合并进前者（探索页只剩「红心歌曲」这一块）。
+  // 补上 titleTemplate：它是**稳定的栏目标识**（种子名在 title_content 里变），
+  // 因此同一栏目的重复分页仍会正确合并，不同栏目不会再被吞掉。
+  return `${module.source}:${shelfId}:${module.style}:${module.titleTemplate || ''}`
 }
 
 export function qqModuleInstanceIdentity(module: QQExploreModule): string {

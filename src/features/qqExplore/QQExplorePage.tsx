@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, ChevronRight, Disc3, Headphones, Heart, Loader2, MessageCircle, Play, Radio, RefreshCw, SlidersHorizontal, Sparkles, Trophy, X } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { AlertCircle, ChevronRight, Disc3, Gem, Headphones, Heart, ListMusic, Loader2, MessageCircle, Play, Radio, RefreshCw, SlidersHorizontal, Sparkles, Trophy, User, X } from 'lucide-react'
 import type { Song } from '../../services/musicApi'
 import type { ExploreChart, ExplorePayload, ExplorePlaylist } from '../../services/exploreApi'
 import type { MusicPlatform } from '../../services/platforms'
@@ -13,9 +13,14 @@ import { fetchQQGuessYouLikeBatch, getExploreCookie } from '../../services/explo
 import { applyFavoriteMutation, getFavoriteSongIdentifiers, getFavoriteUserId, loadFavoriteIdentifiers } from '../../services/favoriteStatusService'
 import { fetchQQExploreFeedbackOptions, fetchQQExplorePreferences, fetchQQRadarSongs, resolveQQExploreSong, resolveQQExploreSongs, saveQQExplorePreferences, submitQQExploreFeedback, type QQExploreFeedbackOption, type QQExplorePreferenceItem } from './api'
 import { qqCardPlaylist, qqModuleIdentity, qqModuleInstanceIdentity, isQQStarLightCard, isUnopenableQQCard, isHiddenQQMusicHallShelf, type QQExploreCard, type QQExploreModule, type QQMusicHallCard, type QQMusicHallShelf } from './model'
-import QQRadarPlayer, { type QQRadarContinuation } from './QQRadarPlayer'
+// 只保留类型：全屏刷歌界面已下线（QQRadarPlayer.tsx 保留备用，不再打包进页面）
+import type { QQRadarContinuation } from './QQRadarPlayer'
+import { useTvBack } from '../../tv/tvCore'
 import { qqExploreAccountKey, useQQExploreController } from './useQQExploreController'
+import { QQArtistsPage, QQChartsPage, QQListeningReportPanel, QQPlaylistSquarePage, QQZonePage, formatQQCount } from './QQHallPages'
+import { getListeningSummary } from '../../services/listeningLog'
 import { createTtlCache } from '../../utils/ttlCache'
+import { openExternalLink } from '../../utils/externalLink'
 
 // 视图被隐藏/重挂载（切模式再回来）时不要重复请求：猜你喜欢批量、推荐偏好、反馈选项都是
 // 只读且短时间不会变的账号数据，按账号/卡片 token 存一份短 TTL 结果即可。
@@ -60,10 +65,14 @@ interface QQExplorePageProps {
   onOpenPlaylists: () => void
   onOpenCharts: () => void
   onOpenMVs: () => void
-  onSongContextMenu: (event: React.MouseEvent, song: Song, songs: Song[]) => void
+  onSongContextMenu: (event: React.MouseEvent, song: Song, songs: Song[], radarMode?: boolean) => void
   onViewComments?: (song: Song) => void
   onAddToFavorites?: (song: Song) => void | Promise<boolean>
   onRemoveFromFavorites?: (song: Song) => void | Promise<boolean>
+  /** 宿主面板是否可见：false 时本页不消费 TV 返回键（冻结隐藏页吞键防护） */
+  active?: boolean
+  /** 外部入口（如传统模式侧栏九宫格）切换内部页签：token 变化即生效 */
+  externalTabSignal?: { tab: 'recommend' | 'hall'; token: number }
 }
 
 const ENTRY_LABELS: Record<string, string> = {
@@ -227,7 +236,7 @@ function FlowCard({ card, entitlement, loading, favoritesReady, favoritePending,
   const unavailable = Boolean(primarySong?.noCopyright)
   return (
     <button type="button" disabled={unavailable} onClick={onClick} onContextMenu={event => primarySong && onSongContextMenu(event, primarySong)} className="group relative w-full min-w-0 overflow-hidden rounded-lg border border-white/[0.08] bg-white/[0.045] text-left disabled:cursor-not-allowed disabled:opacity-50">
-      <span className="relative block">{card.coverUrl && <QQImage src={card.coverUrl} className="aspect-[4/3] w-full object-contain transition duration-500 group-hover:scale-[1.015]" role="card" priority="visible" />}{card.typeTag && <span className="absolute left-2 top-2 max-w-[70%] truncate rounded bg-black/48 px-2 py-1 text-[10px] font-medium text-white backdrop-blur-sm">{card.typeTag}</span>}<span className="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-lg transition group-hover:opacity-100"><Play className="h-3.5 w-3.5 fill-current" /></span></span>
+      <span className="relative block">{card.coverUrl && <QQImage src={card.coverUrl} className="aspect-[4/3] w-full object-contain transition duration-500 group-hover:scale-[1.015]" role="card" priority="visible" />}{card.typeTag && <span className="absolute left-2 top-2 max-w-[70%] truncate rounded bg-black/48 px-2 py-1 text-[10px] font-medium text-white">{card.typeTag}</span>}<span className="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-lg transition group-hover:opacity-100"><Play className="h-3.5 w-3.5 fill-current" /></span></span>
       <span className="block p-3"><span className="flex items-center gap-1.5"><span className="block min-w-0 truncate text-[13px] font-medium">{card.title}</span>{primarySong && <SongStateBadges song={primarySong} entitlement={entitlement} />}</span>{(card.reason || card.subtitle || card.content) && <span className="mt-1 block line-clamp-2 text-[11px] text-white/40">{card.reason || card.subtitle || card.content}</span>}<span className="mt-2 flex min-h-7 items-end gap-2"><span className="flex min-w-0 flex-1 flex-wrap gap-1">{(card.lowerTags.length > 0 ? card.lowerTags.map(tag => tag.tag) : card.countContent ? [card.countContent] : card.badges).slice(0, 3).map(label => <span key={label} className="max-w-full truncate rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/48">{label}</span>)}</span><FlowFavoriteCount count={card.favoriteCount} active={card.isFavorite} /></span></span>
       {loading && <span className="absolute inset-0 flex items-center justify-center bg-black/35"><Loader2 className="h-5 w-5 animate-spin" /></span>}
     </button>
@@ -263,6 +272,8 @@ export default function QQExplorePage({
   onViewComments,
   onAddToFavorites,
   onRemoveFromFavorites,
+  active = true,
+  externalTabSignal,
 }: QQExplorePageProps) {
   const flowAnchorRef = useRef<HTMLDivElement | null>(null)
   const previousLoadingMore = useRef(false)
@@ -285,9 +296,69 @@ export default function QQExplorePage({
   const guessGeneration = useRef(0)
   const [guessRefreshRevision] = useState(0)
   const [playingMV, setPlayingMV] = useState<{ id: string; name: string } | null>(null)
-  const [radarPlayer, setRadarPlayer] = useState<{ songs: Song[]; continuation: QQRadarContinuation } | null>(null)
-  // 刷歌播放器开过一次就保持挂载，只切显示/隐藏：关掉再开不该丢掉已加载的队列与进度。
-  const [radarPlayerOpen, setRadarPlayerOpen] = useState(false)
+  // 乐馆 tab + 二级页层级栈（怎么进怎么出：返回还原进入时的滚动位置）
+  const [qqTab, setQqTab] = useState<'recommend' | 'hall'>('recommend')
+  // 外部入口（传统模式侧栏九宫格）切换内部页签
+  useEffect(() => {
+    if (!externalTabSignal?.token) return
+    setQqTab(externalTabSignal.tab)
+  }, [externalTabSignal?.token])
+  // 听歌报告（本地统计）：简要卡 + 深入面板
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportSummary, setReportSummary] = useState<{ uniqueSongs: number; totalPlays: number; favorite: { name: string; artist: string; coverUrl: string; count: number } | null } | null>(null)
+  useEffect(() => {
+    setReportSummary(getListeningSummary())
+  }, [qqTab, reportOpen])
+  const [hallLayer, setHallLayer] = useState<{ kind: 'artists' | 'charts' | 'square' | 'zone'; zoneTitle?: string; presetCategory?: string } | null>(null)
+  const [hallNavKey, setHallNavKey] = useState(0)
+  const hallScrollStackRef = useRef<number[]>([])
+  const hallPendingScrollRef = useRef<number | null>(0)
+
+  const navigateHall = useCallback((mode: 'push' | 'restore') => {
+    const container = document.querySelector<HTMLElement>('.explore-scrollbar')
+    if (container) {
+      if (mode === 'push') hallScrollStackRef.current.push(container.scrollTop)
+      else hallPendingScrollRef.current = hallScrollStackRef.current.pop() ?? 0
+    }
+    setHallNavKey(key => key + 1)
+  }, [])
+
+  useLayoutEffect(() => {
+    const container = document.querySelector<HTMLElement>('.explore-scrollbar')
+    if (!container) return
+    const target = hallPendingScrollRef.current
+    hallPendingScrollRef.current = null
+    container.scrollTo({ top: target ?? 0, behavior: 'auto' })
+  }, [hallNavKey])
+
+  // TV 返回键 / Escape：乐馆二级页逐级退出（宿主面板隐藏时不消费，防冻结页吞键）
+  useTvBack(() => {
+    if (active === false) return false
+    if (qqTab === 'hall' && hallLayer) { navigateHall('restore'); setHallLayer(null); return true }
+    return false
+  }, [active, qqTab, hallLayer])
+
+  useEffect(() => {
+    if (!hallLayer || active === false) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { navigateHall('restore'); setHallLayer(null) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [hallLayer, navigateHall])
+
+  const switchQQTab = useCallback((tab: 'recommend' | 'hall') => {
+    setQqTab(tab)
+    if (tab === 'hall' && reportOpen) setReportOpen(false)
+    // 切回推荐时退出乐馆二级页（层级属于乐馆，避免两 tab 都空白）
+    if (tab === 'recommend' && hallLayer) {
+      hallScrollStackRef.current = []
+      hallPendingScrollRef.current = null
+      setHallLayer(null)
+      setHallNavKey(key => key + 1)
+    }
+  }, [hallLayer])
+  // 刷歌不再有独立全屏界面：队列直接进全局播放器（App 侧按 radar continuation 续取）
   const [preferencesOpen, setPreferencesOpen] = useState(false)
   // 偏好弹窗同样常驻挂载：保留用户未保存的勾选草稿，避免每次打开都重发请求并重置勾选。
   const [preferencesMounted, setPreferencesMounted] = useState(false)
@@ -648,6 +719,7 @@ export default function QQExplorePage({
     return () => window.removeEventListener('waveforge:qq-open-preferences', handleOpenPreferences)
   }, [openPreferences])
 
+
   useEffect(() => {
     const handleOpenRecommendationFeedback = (event: Event) => {
       const song = (event as CustomEvent<Song>).detail
@@ -705,12 +777,14 @@ export default function QQExplorePage({
       }
       if (card.action.type === 'play-radar') {
         const result = await fetchQQRadarSongs(card.action)
-        if (result.songs[0]) {
-          const continuation: QQRadarContinuation = { mode: 'radar', page: result.page, reqType: card.action.reqType, entranceSongs: card.action.entranceSongs }
-          setRadarPlayer({ songs: result.songs, continuation })
-          setRadarPlayerOpen(true)
-          onPlaySongs(result.songs[0], result.songs, true, continuation)
+        if (!result.songs[0]) {
+          setActionError('刷歌暂时没有返回可播放歌曲，请稍后再试')
+          return
         }
+        // 刷歌队列直接交给全局播放器：与普通探索点播同一条路径
+        // （播放页 + 队列续取沿用 App 的 radar continuation，右键仍可打开「音乐偏好设置」）
+        const continuation: QQRadarContinuation = { mode: 'radar', page: result.page, reqType: card.action.reqType, entranceSongs: card.action.entranceSongs }
+        onPlaySongs(result.songs[0], result.songs, true, continuation)
         return
       }
       if (card.action.type === 'play-songs') {
@@ -737,7 +811,7 @@ export default function QQExplorePage({
       if (card.action.type === 'open-external') {
         const bridge = window.electronAPI
         if (bridge?.openExternal) await bridge.openExternal(card.action.url)
-        else window.open(card.action.url, '_blank', 'noopener,noreferrer')
+        else openExternalLink(card.action.url)
         return
       }
       if (card.action.type === 'search') onOpenSearch(card.action.query)
@@ -795,7 +869,7 @@ export default function QQExplorePage({
     if (action.type === 'open-external') {
       const bridge = window.electronAPI
       if (bridge?.openExternal) await bridge.openExternal(action.url)
-      else window.open(action.url, '_blank', 'noopener,noreferrer')
+      else openExternalLink(action.url)
       return
     }
     setActionError('该内容只能在 QQ 音乐客户端中打开')
@@ -818,8 +892,61 @@ export default function QQExplorePage({
     return <QQExploreSkeleton />
   }
 
+  const hallEntryShelf = (snapshot?.musicHall || []).find(shelf => !shelf.title.trim())
+  const hallEntries = (hallEntryShelf?.cards || []).filter(card => ['歌手', '排行', '歌单'].includes(card.title))
+  const hallQuickLinks = (snapshot?.musicHall || []).find(shelf => shelf.title === '更多')?.cards || []
+  const hallShelves = (snapshot?.musicHall || [])
+    .map(shelf => ({ ...shelf, cards: shelf.cards.filter(isUsableQQMusicHallCard) }))
+    .filter(shelf => {
+      const title = shelf.title.trim()
+      if (!title || title === '更多') return false
+      if (['数字专辑', '明星空降', '直播', '听书', '热门节目', '听点不一样的'].includes(title)) return false
+      return true
+    })
+    .sort((left, right) => left.serverOrder - right.serverOrder)
+  const hallCharts: ExploreChart[] = [
+    ...(hallShelves.find(shelf => shelf.title === '排行榜')?.cards || [])
+      .filter(card => card.action.type === 'open-chart')
+      .map(card => ({ id: (card.action as { chartId: string }).chartId, name: card.title, group: '排行榜', coverUrl: card.coverUrl, platform: 'qq' as const, songs: [] })),
+    ...(publicContent?.charts || []).filter(chart => chart.platform === 'qq'),
+  ]
+  const HALL_QUICK_ENTRIES: Array<{ title: string; desc: string; Icon: typeof User; kind: 'artists' | 'charts' | 'square' }> = [
+    { title: '歌手', desc: '按分类找歌手 · 点歌手听热门歌曲', Icon: User, kind: 'artists' },
+    { title: '排行', desc: '官方榜单实时更新', Icon: Trophy, kind: 'charts' },
+    { title: '歌单', desc: '按分类逛海量歌单', Icon: ListMusic, kind: 'square' },
+  ]
+  const HALL_ZONE_TARGETS: Record<string, { kind: 'charts' | 'square' | 'zone' | 'artists'; presetCategory?: string }> = {
+    '巅峰榜专区': { kind: 'charts' },
+    'Billboard专区': { kind: 'charts' },
+    '腾飛联盟榜': { kind: 'charts' },
+    '欧美报刊亭': { kind: 'square', presetCategory: '欧美' },
+    '古典专区': { kind: 'square', presetCategory: '古典' },
+    '音乐灵感': { kind: 'square' },
+    '音乐人专区': { kind: 'artists' },
+    // 杜比全景声/臻品母带/臻品全景声/Hi-Res/黑胶 专区 → 官方歌单搜索（zone 页）
+  }
+  const recommendVisible = qqTab === 'recommend' && !hallLayer && !reportOpen
+  const hallVisible = qqTab === 'hall' && !hallLayer
+
   return (
     <div className="space-y-10 pb-8">
+      {/* 推荐 / 乐馆 顶部 tab（PC 版式） */}
+      <div className="flex items-center gap-2" role="tablist" aria-label="QQ 音乐探索视图">
+        {([['recommend', '推荐'], ['hall', '乐馆']] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={qqTab === key}
+            onClick={() => switchQQTab(key)}
+            className={`h-9 rounded-full px-5 text-sm transition ${qqTab === key ? 'bg-white font-medium text-black' : 'bg-white/[0.06] text-white/60 hover:bg-white/[0.12] hover:text-white/90'}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className={recommendVisible ? 'contents' : 'hidden'} aria-hidden={!recommendVisible}>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 text-xs font-medium text-white/42">
@@ -1077,12 +1204,158 @@ export default function QQExplorePage({
             <section><div className="mb-4 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Trophy className="h-5 w-5" style={{ color: accent }} /><h3 className="text-xl font-semibold">排行榜</h3></div><button type="button" onClick={onOpenCharts} className="text-sm text-white/45 hover:text-white">查看全部</button></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 min-[1900px]:grid-cols-4">{publicContent.charts.slice(0, 6).map(chart => <button key={chart.id} type="button" onClick={() => onOpenChart(chart)} className="group flex min-h-36 overflow-hidden rounded-lg border border-white/[0.07] bg-white/[0.04] text-left"><CachedImage src={chart.coverUrl} alt="" className="aspect-square w-36 shrink-0 object-cover" role="card" priority="visible" /><span className="min-w-0 flex-1 p-4"><span className="block truncate font-semibold">{chart.name}</span><span className="mt-2 block space-y-1">{chart.songs.slice(0, 3).map((song, index) => <span key={`${song.mid || song.id}-${index}`} className="block truncate text-xs text-white/45">{index + 1}. {song.name} · {song.artist}</span>)}</span></span></button>)}</div></section>
           )}
           {publicContent.newSongs.length > 0 && (
-            <section><div className="mb-4 flex items-center gap-2"><Disc3 className="h-5 w-5" style={{ color: accent }} /><h3 className="text-xl font-semibold">新歌推荐</h3></div><div className="grid gap-x-7 md:grid-cols-2 xl:grid-cols-3 min-[1900px]:grid-cols-4">{publicContent.newSongs.slice(0, 18).map(song => <button key={`${song.mid || song.id}-${song.name}`} type="button" onClick={() => onPlaySongs(song, publicContent.newSongs)} className="group flex min-w-0 items-center gap-3 border-b border-white/[0.055] py-3 text-left"><CachedImage src={song.album.picUrl} alt="" className="h-14 w-14 rounded-md object-cover" role="row" priority="visible" /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{song.name}</span><span className="mt-1 block truncate text-xs text-white/38">{song.artists.map(artist => artist.name).join(' / ')}</span></span><Play className="h-4 w-4 text-white/25 transition group-hover:text-white" /></button>)}</div></section>
+            <section><div className="mb-4 flex items-center gap-2"><Disc3 className="h-5 w-5" style={{ color: accent }} /><h3 className="text-xl font-semibold">新歌推荐</h3></div><div className="grid gap-x-7 md:grid-cols-2 xl:grid-cols-3 min-[1900px]:grid-cols-4">{publicContent.newSongs.slice(0, 18).map(song => <button key={`${song.mid || song.id}-${song.name}`} type="button" onClick={() => onPlaySongs(song, publicContent.newSongs)} onContextMenu={event => onSongContextMenu(event, song, publicContent.newSongs)} className="group flex min-w-0 items-center gap-3 border-b border-white/[0.055] py-3 text-left"><CachedImage src={song.album.picUrl} alt="" className="h-14 w-14 rounded-md object-cover" role="row" priority="visible" /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{song.name}</span><span className="mt-1 block truncate text-xs text-white/38">{song.artists.map(artist => artist.name).join(' / ')}</span></span><Play className="h-4 w-4 text-white/25 transition group-hover:text-white" /></button>)}</div></section>
           )}
           {publicContent.channels.length > 0 && (
             <section><div className="mb-4 flex items-center gap-2"><Radio className="h-5 w-5" style={{ color: accent }} /><h3 className="text-xl font-semibold">电台频道</h3></div><div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 min-[1900px]:grid-cols-7">{publicContent.channels.slice(0, 12).map(channel => <button key={channel.id} type="button" onClick={() => onOpenChannel(channel)} className="group relative aspect-square overflow-hidden rounded-lg border border-white/[0.07] bg-white/[0.035] text-left"><CachedImage src={channel.coverUrl} alt="" className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105" role="card" priority="visible" /><span className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent" /><span className="absolute inset-x-0 bottom-0 p-3"><span className="block line-clamp-2 text-sm font-medium">{channel.name}</span><span className="mt-1 block truncate text-xs text-white/45">{channel.group}</span></span></button>)}</div></section>
           )}
         </div>
+      )}
+
+        {/* 听歌报告简要卡（本地统计，点击深入） */}
+        <button
+          type="button"
+          onClick={() => { navigateHall('push'); setReportOpen(true) }}
+          className="group flex w-full items-center gap-4 rounded-[20px] border border-white/[0.08] bg-white/[0.035] p-5 text-left transition hover:bg-white/[0.07]"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block text-base font-semibold text-white/92">听歌报告</span>
+            <span className="mt-0.5 block truncate text-xs text-white/40">
+              {reportSummary && reportSummary.totalPlays > 0
+                ? `本周已听 ${reportSummary.uniqueSongs} 首 · 总播放 ${reportSummary.totalPlays} 次${reportSummary.favorite ? ` · 最爱《${reportSummary.favorite.name}》` : ''}`
+                : '本地暂无播放记录，去听几首歌曲吧'}
+            </span>
+          </span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-white/30 transition group-hover:text-white/70" />
+        </button>
+      </div>
+
+      {/* 听歌报告深入面板 */}
+      {reportOpen && (
+        <div key={`qq-report-${hallNavKey}`}>
+          <QQListeningReportPanel accent={accent} onBack={() => { navigateHall('restore'); setReportOpen(false) }} />
+        </div>
+      )}
+
+      {/* ── 乐馆（官方 App 同款内容，PC 版式）：快捷入口 / 板块 / 更多专区 ── */}
+      <div className={hallVisible ? 'contents' : 'hidden'} aria-hidden={!hallVisible}>
+        <div className="space-y-10 pb-8">
+          <div>
+            <div className="flex items-center gap-2 text-xs font-medium text-white/42">
+              <Disc3 className="h-4 w-4" style={{ color: accent }} />
+              QQ 音乐乐馆
+            </div>
+            <h2 className="mt-2 text-2xl font-semibold md:text-3xl">乐馆</h2>
+            {showDescription && <p className="mt-2 text-sm text-white/42">与 QQ 音乐客户端乐馆同源的板块与专区。</p>}
+          </div>
+
+          {/* 快捷入口：只保留 歌手 / 排行 / 歌单（星光/农场/商城等为客户端专属，按需求不展示） */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {HALL_QUICK_ENTRIES.map(({ title, desc, Icon, kind }) => (
+              <button
+                key={title}
+                type="button"
+                onClick={() => { navigateHall('push'); setHallLayer({ kind }) }}
+                className="group flex items-center gap-4 rounded-[20px] border border-white/[0.08] bg-white/[0.035] p-5 text-left transition hover:bg-white/[0.07]"
+              >
+                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full" style={{ background: `${accent}22`, color: accent }}>
+                  <Icon className="h-5 w-5" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-base font-semibold text-white/92">{title}</span>
+                  <span className="mt-0.5 block truncate text-xs text-white/40">{desc}</span>
+                </span>
+                <ChevronRight className="h-4 w-4 shrink-0 text-white/30 transition group-hover:text-white/70" />
+              </button>
+            ))}
+          </div>
+
+          {/* 板块（今日尖货/编辑甄选/排行榜/墙裂推荐/精选视频…；数字专辑/明星空降/直播已过滤） */}
+          {hallShelves.map(shelf => {
+            const isChartShelf = shelf.title === '排行榜'
+            return (
+              <section key={shelf.id} aria-label={shelf.title}>
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Disc3 className="h-5 w-5" style={{ color: accent }} />
+                    <h3 className="text-xl font-semibold">{shelf.title}</h3>
+                  </div>
+                  {isChartShelf && (
+                    <button type="button" onClick={() => { navigateHall('push'); setHallLayer({ kind: 'charts' }) }} className="text-sm text-white/45 hover:text-white">查看全部</button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 min-[1900px]:grid-cols-7">
+                  {shelf.cards.map(card => {
+                    const disabled = card.action.type === 'unsupported'
+                    return (
+                      <button
+                        key={`${card.id}-${card.title}`}
+                        type="button"
+                        disabled={disabled}
+                        title={disabled ? '该内容需要在 QQ 音乐客户端打开' : undefined}
+                        onClick={() => void executeMusicHallCard(card, shelf)}
+                        className="group w-full text-left disabled:cursor-not-allowed disabled:opacity-55"
+                      >
+                        <span className="relative block aspect-square overflow-hidden rounded-lg bg-white/[0.05]">
+                          <QQImage src={card.coverUrl} className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.03]" role="card" priority="visible" />
+                          {card.count && formatQQCount(card.count) && (
+                            <span className="absolute left-2 top-2 flex h-6 items-center gap-1 rounded-full bg-black/55 px-2 text-[11px] text-white/92">
+                              <Headphones className="h-3 w-3" />{formatQQCount(card.count)}
+                            </span>
+                          )}
+                          {card.action.type !== 'unsupported' && (
+                            <span className="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-lg transition group-hover:opacity-100">
+                              <Play className="h-3.5 w-3.5 fill-current" />
+                            </span>
+                          )}
+                        </span>
+                        <span className="mt-2 block line-clamp-2 text-sm font-medium text-white/88">{card.title}</span>
+                        {card.subtitle && <span className="mt-1 block truncate text-xs text-white/38">{cleanQQSubtitle(card.subtitle)}</span>}
+                      </button>
+                    )
+                  })}
+                </div>
+              </section>
+            )
+          })}
+
+          {/* 更多（官方 Quick Links 专区清单；音质/品牌专区映射为官方歌单搜索，榜单类专区映射排行榜） */}
+          {hallQuickLinks.length > 0 && (
+            <div>
+              <h3 className="mb-2 text-base font-semibold text-white/90">更多专区</h3>
+              <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.03]">
+                {hallQuickLinks.map((card, index) => {
+                  const target = HALL_ZONE_TARGETS[card.title] || { kind: 'zone' as const }
+                  return (
+                    <button
+                      key={`${card.id}-${card.title}`}
+                      type="button"
+                      onClick={() => { navigateHall('push'); setHallLayer({ kind: target.kind, zoneTitle: card.title, presetCategory: target.presetCategory }) }}
+                      className="flex w-full items-center gap-3 border-b border-white/[0.05] px-4 py-3.5 text-left transition last:border-b-0 hover:bg-white/[0.05]"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-sm text-white/85">{card.title}</span>
+                      <ChevronRight className="h-4 w-4 shrink-0 text-white/30" />
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 乐馆二级页（返回 = 回到进入时位置） */}
+      {hallLayer && (
+        <div className={qqTab === 'hall' ? 'contents' : 'hidden'} aria-hidden={qqTab !== 'hall'} key={`hall-layer-${hallNavKey}`}>
+          {hallLayer.kind === 'artists' && <QQArtistsPage accent={accent} onPlaySongs={onPlaySongs} onBack={() => navigateHall('restore')} />}
+          {hallLayer.kind === 'charts' && <QQChartsPage charts={hallCharts} accent={accent} onOpenChart={onOpenChart} onBack={() => navigateHall('restore')} />}
+          {hallLayer.kind === 'square' && <QQPlaylistSquarePage accent={accent} presetCategory={hallLayer.presetCategory} onOpenPlaylist={onOpenPlaylist} onBack={() => navigateHall('restore')} />}
+          {hallLayer.kind === 'zone' && <QQZonePage zoneTitle={hallLayer.zoneTitle || ''} accent={accent} onOpenPlaylist={onOpenPlaylist} onBack={() => navigateHall('restore')} />}
+        </div>
+      )}
+
+      {playingMV && (
+        <VideoPlayer mvId={playingMV.id} mvName={playingMV.name} platform="qq" onClose={() => setPlayingMV(null)} />
       )}
 
       {feedbackCard && (
@@ -1104,31 +1377,6 @@ export default function QQExplorePage({
         </div>
         </div>
       )}
-
-      {radarPlayer && (
-        // 常驻挂载 + display 切换：关掉再进入不会丢掉已加载队列/进度。
-        // 刷歌播放器不持有 HLS/视频，音频仍走全局播放引擎，冻结是安全的。
-        <div className={radarPlayerOpen ? 'contents' : 'hidden'}>
-          <QQRadarPlayer
-            songs={radarPlayer.songs}
-            continuation={radarPlayer.continuation}
-            playing={radarPlayerOpen && isPlaying && Boolean(currentSong && radarPlayer.songs.some(song => String(song.mid || song.id) === String(currentSong.mid || currentSong.id)))}
-            suspended={!radarPlayerOpen}
-            onClose={() => setRadarPlayerOpen(false)}
-            onPlaySong={(song, songs, continuation) => {
-              setRadarPlayer(previous => previous ? { ...previous, songs } : previous)
-              onPlaySongs(song, songs, true, continuation)
-            }}
-            onTogglePlay={onPlayPause}
-            onRequestMore={async continuation => {
-              const result = await fetchQQRadarSongs({ page: continuation.page + 1, reqType: continuation.reqType, entranceSongs: continuation.entranceSongs })
-              return { songs: result.songs, page: result.page, hasMore: result.hasMore }
-            }}
-          />
-        </div>
-      )}
-
-      {playingMV && <VideoPlayer mvId={playingMV.id} mvName={playingMV.name} platform="qq" onClose={() => setPlayingMV(null)} />}
 
       <QQMusicJourney
         configured={officialEnhanced}

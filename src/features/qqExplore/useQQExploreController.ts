@@ -118,6 +118,34 @@ export function useQQExploreController(loggedIn: boolean, userId?: string, authR
         writeCache(userId, next)
         return { ...previous, snapshot: next, initialLoading: false, refreshing: false, error: '' }
       })
+      // ── 首屏后补拉第 2 页（direction=1）──────────────────────────────
+      // 2026-09-27 实测：手机端「下拉加载」之后才出现的栏目 ——「听「X」的也在听」
+      // 「听「X」也会喜欢」「「你」的专属乐流」—— 全都在**第 2 页**；只拉首页时
+      // 探索页只有入口卡 + 首页栏目（实测首页是「心动的歌曲推荐」这类）。
+      // 这里补拉一页合并进来，用户不用先点「加载接下来 5 批」就能看到这些栏目。
+      try {
+        const extra = await fetchQQExploreFeed(
+          snapshot.feed.cursor,
+          snapshot.feed.modules.map(module => module.id),
+          snapshot.feed.modules.flatMap(module => module.cards.map(card => card.feedKey)).filter(Boolean),
+          null,
+          abortController.signal,
+        )
+        if (id !== generation.current) return
+        setState(previous => {
+          if (!previous.snapshot || id !== generation.current) return previous
+          const merged = dedupeQQModules([...previous.snapshot.feed.modules, ...extra.modules])
+          const mergedSnapshot: QQExploreSnapshot = {
+            ...previous.snapshot,
+            generatedAt: Date.now(),
+            feed: { modules: merged, cursor: extra.cursor, loadMark: extra.loadMark, hasMore: extra.hasMore },
+          }
+          writeCache(userId, mergedSnapshot)
+          return { ...previous, snapshot: mergedSnapshot }
+        })
+      } catch {
+        // 补拉失败不影响首屏；用户仍可点「加载接下来 5 批专属乐流」继续
+      }
     } catch (error) {
       if (id !== generation.current) return
       if (abortController.signal.aborted) {

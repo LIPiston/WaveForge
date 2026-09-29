@@ -119,3 +119,68 @@ export async function fetchQQRadarSongs(
 ): Promise<{ songs: Song[]; hasMore: boolean; page: number }> {
   return post('/radar', { ...params, needNum: 30 }, signal)
 }
+
+// ── QQ 歌曲黑名单（「不喜欢」，App 同款 music.feedback.FeedbackBlack）──────
+export interface QQDislikeEntry {
+  id: string
+  name: string
+  img: string
+  idType: number
+  time: number
+}
+
+export interface QQDislikeListData {
+  songs: QQDislikeEntry[]
+  singers: QQDislikeEntry[]
+  styles: QQDislikeEntry[]
+}
+
+/** 黑名单列表（不传 cmd 时歌曲/歌手/风格三张表全量返回）。 */
+export function fetchQQDislikeList(signal?: AbortSignal): Promise<QQDislikeListData> {
+  return post<QQDislikeListData>('/dislike/list', {}, signal)
+}
+
+export function addQQDislike(song: { songId?: string | number; songMid?: string; name?: string }, signal?: AbortSignal): Promise<{ success: boolean; id: string }> {
+  return post('/dislike/add', { songId: song.songId, songMid: song.songMid, name: song.name }, signal)
+}
+
+export function cancelQQDislike(song: { songId?: string | number; songMid?: string; name?: string }, signal?: AbortSignal): Promise<{ success: boolean; id: string }> {
+  return post('/dislike/cancel', { songId: song.songId, songMid: song.songMid, name: song.name }, signal)
+}
+
+export function fetchQQDislikeStyles(signal?: AbortSignal): Promise<{ styles: Array<{ id: string; name: string; idType: number; status: number }> }> {
+  return post('/dislike/styles', {}, signal)
+}
+
+export type QQDislikeKind = 'song' | 'singer' | 'style'
+
+/** 移除黑名单条目（按类型，条目原样回传列表返回的 id/name/idType）。 */
+export function removeQQDislikeEntry(kind: QQDislikeKind, entry: QQDislikeEntry, signal?: AbortSignal): Promise<{ success: boolean }> {
+  return post('/dislike/cancel-entry', { type: kind, entry }, signal)
+}
+
+// ── 音乐偏好（= App 刷歌页右上角设置 → 我的音乐偏好 H5 同款接口）────────────
+export interface QQUserProfile {
+  key: string
+  name: string
+  score: number
+  isBlack: boolean
+}
+
+export interface QQUserProfileData {
+  expired: boolean
+  updateTime: number
+  showsTitle: string
+  profiles: QQUserProfile[]
+}
+
+export function fetchQQUserProfile(signal?: AbortSignal): Promise<QQUserProfileData> {
+  return post<QQUserProfileData>('/profile/get', {}, signal)
+}
+
+export function saveQQUserProfile(
+  profiles: Array<{ key: string; score: number; isAdjust?: boolean; isBlack?: boolean }>,
+  signal?: AbortSignal,
+): Promise<{ saved: number }> {
+  return post('/profile/set', { profiles }, signal)
+}
