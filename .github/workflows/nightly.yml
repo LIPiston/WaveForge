@@ -160,6 +160,9 @@ jobs:
 
       - name: 安装 Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # 同 ci.yml：packages 默认值里的 legacy tools 包已被 Google 下架，会直接让 job 失败
+          packages: 'platform-tools'
 
       - name: 安装 NDK / CMake / 平台
         run: |
