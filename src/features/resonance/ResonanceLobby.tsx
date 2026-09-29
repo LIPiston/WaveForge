@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { DoorOpen, Loader2, Plus, Radio, RefreshCw, ShieldCheck, UserRound, Users, Wifi } from 'lucide-react'
 import CachedImage from '../../components/CachedImage'
+import { isTvModeActive } from '../../platform'
 import { platformLabel, type MusicPlatform } from '../../services/platforms'
 import {
   RESONANCE_MAX_MEMBERS,
@@ -302,16 +303,23 @@ export default function ResonanceLobby(props: ResonanceLobbyProps) {
           {error && <p className="mt-3 text-xs" style={{ color: '#ff8b9a' }} role="status">{error}</p>}
         </div>
 
-        <button
-          type="button"
-          disabled={busy || !activeIdentity?.nickname?.trim()}
-          onClick={() => onCreate({ mode, quota, partyQuota })}
-          className="mt-4 flex h-12 shrink-0 items-center justify-center gap-2 rounded-full text-base font-medium text-white transition disabled:opacity-55"
-          style={{ background: accent, boxShadow: `0 8px 24px ${accent}44` }}
-        >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          创建房间并开始
-        </button>
+        {/* 房主中转依赖桌面端 resonance 桥：TV 上隐藏创建入口（加入房间不受影响） */}
+        {!isTvModeActive() ? (
+          <button
+            type="button"
+            disabled={busy || !activeIdentity?.nickname?.trim()}
+            onClick={() => onCreate({ mode, quota, partyQuota })}
+            className="mt-4 flex h-12 shrink-0 items-center justify-center gap-2 rounded-full text-base font-medium text-white transition disabled:opacity-55"
+            style={{ background: accent, boxShadow: `0 8px 24px ${accent}44` }}
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            创建房间并开始
+          </button>
+        ) : (
+          <p className="mt-4 rounded-xl px-3 py-2 text-xs" style={{ background: chip, color: sub }}>
+            创建房间需要桌面端，电视端可以输入邀请码加入房间一起听。
+          </p>
+        )}
       </motion.section>
 
       {/* ── 加入房间 ── */}

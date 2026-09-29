@@ -152,9 +152,18 @@ function createResonanceHub(options = {}) {
     return send(member.ws, { t: 'env', env: envelope })
   }
 
+  /**
+   * 踢人：**先同步摘掉席位，再关 socket**。
+   * socket 的 'close' 要等对端把关闭帧确认回来（一次局域网往返，慢链路/高负载下更久），
+   * 期间 members.size 仍把被踢者算在内：房主读到的在线人数是过期的，满员时下一个加入者
+   * 还会被 4003 拒之门外。close 回调按 findPeerId(ws) 摘人，天然幂等，不会重复通知。
+   */
   function kick(peerId, reason = 'kicked') {
     const member = members.get(peerId)
     if (!member) return false
+    members.delete(peerId)
+    send(hostSocket, { t: 'peer-left', peerId, memberCount: members.size })
+    emit({ type: 'peer-left', peerId, memberCount: members.size })
     try { member.ws.close(4009, reason) } catch { /* ignore */ }
     return true
   }

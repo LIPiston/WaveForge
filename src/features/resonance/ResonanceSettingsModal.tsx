@@ -352,7 +352,32 @@ export default function ResonanceSettingsModal(props: ResonanceSettingsModalProp
                       const file = event.target.files?.[0]
                       if (!file) return
                       const reader = new FileReader()
-                      reader.onload = () => update('backgroundImage', String(reader.result || ''))
+                      reader.onload = async () => {
+                        const dataUrl = String(reader.result || '')
+                        if (!dataUrl) return
+                        // 同桌面壁纸的教训：base64 直存 localStorage 会撑爆 ~5MB 配额，
+                        // 导致全应用后续写入静默失败（其他数据莫名丢失）。
+                        // Electron 下落盘换 waveforge-media URL；无 Electron（浏览器调试）限制大小后降级。
+                        const electronApi = (window as any).electron?.wallpaper
+                        if (typeof electronApi?.saveCustomWallpaper === 'function') {
+                          try {
+                            const saved = await electronApi.saveCustomWallpaper({
+                              name: file.name,
+                              type: file.type || 'image',
+                              dataBase64: dataUrl.split(',')[1] || '',
+                            })
+                            if (saved?.success && saved.mediaUrl) {
+                              update('backgroundImage', saved.mediaUrl)
+                              return
+                            }
+                          } catch { /* 落盘失败走降级 */ }
+                        }
+                        if (dataUrl.length > 2 * 1024 * 1024) {
+                          window.dispatchEvent(new CustomEvent('showToast', { detail: { message: '图片过大（>1.5MB），请改用图片地址输入', type: 'warning' } }))
+                          return
+                        }
+                        update('backgroundImage', dataUrl)
+                      }
                       reader.readAsDataURL(file)
                     }}
                   />

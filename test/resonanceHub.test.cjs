@@ -129,6 +129,9 @@ test('共振中转：房主可踢人，成员会被断开', async (t) => {
 
   const closed = new Promise(resolve => member.ws.on('close', resolve))
   assert.equal(hub.kick(joined.peerId), true)
+  // 席位必须在 kick() 当帧就摘掉，不能等 socket 的 'close'：close 要等对端确认关闭帧（一次往返），
+  // CI 上出现过「客户端已经 close、服务端 memberCount 仍为 1」的竞态断言失败（慢机器上必现）。
+  assert.equal(hub.status().memberCount, 0)
   await closed
   assert.equal(hub.status().memberCount, 0)
 })
