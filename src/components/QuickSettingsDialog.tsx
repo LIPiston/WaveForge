@@ -30,7 +30,8 @@ import {
 } from '../utils/lyricStyle'
 import { setTransitionModeExclusive } from '../services/globalSettingsRegistry'
 import type { QuickSettingsSection } from '../services/quickSettingsStore'
-import QuickSettingsPreview, { type QuickSettingsPlaybackContext } from './QuickSettingsPreview'
+import type { QuickSettingsPlaybackContext } from './quickSettingsPlaybackContext'
+import QuickSettingsPreview from './QuickSettingsPreview'
 import { buildQuickSettingsPalette, toRgba } from './quickSettingsPalette'
 
 /**
@@ -162,21 +163,6 @@ const QUICK_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper
 
 /** 推子刻度尺的格数（纯装饰，`aria-hidden`）。 */
 const FADER_TICKS = 9
-
-/**
- * 下半块（分段 chip + 机架槽）的固定高度 —— 上半块监视器吃掉其余全部高度。
- *
- * 下限 274px 是**实测定出来的**，不是拍脑袋：`功能` 段最挤的一槽是 3 个控件
- * （实测卡片需要约 227px：3×52 控件 + 2×10 组距 + 51 卡头/内边距），
- * 加上 chip 行 29px 与两者之间的 10px 行距，再加 8px 余量 = 274。
- * 只要窗口高度 ≥ 约 700px 就不会出现滚动条；真正更矮的窗口由各槽自己的
- * `overflow-y-auto` 兜底（只让单槽滚，不会把整个弹窗撑出滚动条）。
- *
- * ⚠️ **这里必须是常量**。改回 `flex-1` 会让上半块的剩余高度随分段内容变化，
- * 切分段时预览忽大忽小（用户明确不接受）。要调整预览大小就调这个常量本身，
- * 或调上下两块之间的 gap / 面板内边距，不要动上半块的 `flex-1`。
- */
-const BOTTOM_BLOCK_HEIGHT = 'clamp(274px, 34vh, 306px)'
 
 const readLyricDisplayMode = (): LyricDisplayMode => {
   const saved = localStorage.getItem('lyricDisplayMode')
@@ -950,7 +936,7 @@ export default memo(function QuickSettingsDialog({
   const backgroundEffectOptions = (Object.keys(BACKGROUND_EFFECT_LABELS) as BackgroundEffect[])
     .map(effect => ({ value: effect as string, label: BACKGROUND_EFFECT_LABELS[effect] }))
 
-  /** 监视器四角托架（纯装饰），给它一块「仪器屏」的轮廓。 */
+  /** 监视器四角托架（纯装饰），给实时预览一块「仪器屏」的轮廓。 */
   const cornerBrackets = [
     'left-[-2px] top-[-2px] border-l-2 border-t-2 rounded-tl-[4px]',
     'right-[-2px] top-[-2px] border-r-2 border-t-2 rounded-tr-[4px]',
@@ -965,12 +951,25 @@ export default memo(function QuickSettingsDialog({
       exit={{ opacity: 0 }}
       transition={{ duration: 0.22, ease: 'easeOut' }}
       role="presentation"
-      className="fixed inset-0 z-[140] flex p-2 backdrop-blur-xl sm:p-3"
-      style={{ backgroundColor: isDaylight ? 'rgba(255,255,255,0.72)' : 'rgba(0,0,0,0.65)' }}
+      className="fixed inset-0 z-[140] flex items-stretch justify-center p-3 sm:items-center sm:p-6"
+      style={{
+        // 遮罩（弹窗外的背景）：压暗 + 高斯模糊 + 主色光晕三件套。
+        // 原先只有一层纯黑 0.65，在深色播放面上等于「弹窗浮在虚空里」（用户反馈"外面没背景"）。
+        backgroundColor: isDaylight ? 'rgba(242,243,247,0.74)' : 'rgba(8,9,13,0.7)',
+        backdropFilter: 'blur(26px) saturate(125%)',
+        WebkitBackdropFilter: 'blur(26px) saturate(125%)',
+      }}
       onMouseDown={handleOverlayMouseDown}
       onClick={handleBackdropClick}
     >
+      {/* 主色光晕：跟随封面主色，顶部最亮，避免整块遮罩死黑 */}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0"
+        style={{ background: `radial-gradient(120% 85% at 50% -10%, ${toRgba(accentHex, isDaylight ? 0.18 : 0.26)} 0%, transparent 60%)` }}
+      />
       <motion.div
+        data-tv-scope
         role="dialog"
         aria-modal="true"
         aria-label="播放设置"
@@ -978,7 +977,21 @@ export default memo(function QuickSettingsDialog({
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 18, scale: 0.98 }}
         transition={{ duration: 0.2, ease: 'easeOut' }}
-        className={`relative m-auto flex h-full max-h-[900px] w-full max-w-[1180px] flex-col overflow-hidden rounded-[18px] border shadow-[0_30px_90px_rgba(0,0,0,0.32)] ${panelBgClass} ${panelBorderClass}`}
+        className="relative m-auto flex max-h-[840px] w-full max-w-[1060px] flex-col overflow-hidden rounded-[20px] border"
+        data-qs-theme={isDaylight ? 'light' : 'dark'}
+        style={{
+          // 面板本体（弹窗内的背景）：渐变实底 + 高光边 + 分层投影。
+          // 原先是单色 bg-[#18181b] 压在同色遮罩上，几乎没有"抬起来"的层次感（用户反馈"里面也没背景"）。
+          background: isDaylight
+            ? 'linear-gradient(180deg, rgba(255,255,255,0.99) 0%, rgba(246,247,250,0.98) 100%)'
+            : 'linear-gradient(180deg, rgba(38,41,54,0.99) 0%, rgba(20,21,29,0.99) 100%)',
+          borderColor: isDaylight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.14)',
+          boxShadow: isDaylight
+            ? '0 40px 100px -28px rgba(15,18,30,0.42), inset 0 1px 0 rgba(255,255,255,0.9)'
+            : '0 44px 120px -28px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.1)',
+          backdropFilter: 'blur(40px) saturate(140%)',
+          WebkitBackdropFilter: 'blur(40px) saturate(140%)',
+        }}
         onClick={(event) => event.stopPropagation()}
       >
         <style>{`
@@ -1032,8 +1045,9 @@ export default memo(function QuickSettingsDialog({
           .qs-scroll-light::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.16); }
         `}</style>
 
-        {/* 顶栏：左侧 accent 短竖条 + 中文标题（下挂 mono 副题），右侧段序读数 + 方形关闭钮 */}
-        <div className={`flex shrink-0 items-center justify-between gap-4 border-b px-4 py-2.5 sm:px-5 ${dividerClass}`}>
+        {/* 顶栏：标题 + 分段 chip + 关闭。分段从底部搬到顶栏 —— 视线自上而下：先选段、再调项。
+            chip 保留 `aria-label = 分段名`（可见文本前面带 `01` 序号，可访问名不能带序号）。 */}
+        <header className={`flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2.5 border-b px-4 py-3 sm:px-5 ${dividerClass}`}>
           <div className="flex min-w-0 items-center gap-3">
             <span
               aria-hidden="true"
@@ -1053,12 +1067,55 @@ export default memo(function QuickSettingsDialog({
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-3">
+          <nav
+            aria-label="设置分段"
+            className="order-3 flex w-full flex-wrap items-center gap-1.5 sm:order-none sm:ml-4 sm:w-auto"
+          >
+            {sectionTabs.map((tab, tabIndex) => {
+              const active = activeSection === tab.id
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  aria-label={tab.label}
+                  aria-current={active ? 'true' : undefined}
+                  onClick={() => setActiveSection(tab.id)}
+                  className="relative flex shrink-0 items-center gap-2 overflow-hidden rounded-[9px] border px-3 py-[7px] transition-all active:scale-[0.97]"
+                  style={optionStyle(active)}
+                >
+                  {active ? (
+                    <span
+                      aria-hidden="true"
+                      className="absolute inset-y-[5px] left-[3px] w-[2px] rounded-full"
+                      style={{ backgroundColor: accentHex }}
+                    />
+                  ) : null}
+                  <span
+                    aria-hidden="true"
+                    className="font-mono text-[9px] font-semibold tabular-nums leading-none"
+                    style={{ color: active ? toRgba(accentHex, 0.95) : toRgba(secondary, 0.55) }}
+                  >
+                    {`0${tabIndex + 1}`}
+                  </span>
+                  <span className="text-[12.5px] font-medium leading-none">{tab.label}</span>
+                </button>
+              )
+            })}
+          </nav>
+
+          <div className="ml-auto flex shrink-0 items-center gap-2.5">
+            <span
+              aria-hidden="true"
+              className="hidden font-mono text-[9.5px] uppercase leading-none tabular-nums tracking-[0.2em] md:block"
+              style={{ color: toRgba(secondary, 0.65) }}
+            >
+              {`${String(sectionIndex + 1).padStart(2, '0')} / ${String(sectionTabs.length).padStart(2, '0')}`}
+            </span>
             <button
               type="button"
               onClick={onClose}
               aria-label="关闭播放设置"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border transition-colors"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] border transition-colors"
               style={{
                 borderColor: toRgba(secondary, 0.18),
                 backgroundColor: isDaylight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.04)',
@@ -1068,26 +1125,12 @@ export default memo(function QuickSettingsDialog({
               <X size={15} />
             </button>
           </div>
-        </div>
+        </header>
 
-        {/* 主体：**上半块 = 监视器，下半块 = 设置**（2026-09-25 第九轮）。
-            监视器必须在槽位上方：放右栏会让预览盒被拉成竖长条，与真机播放面（横版 16:9）
-            比例对不上，用户看不出自己改的到底长什么样。 */}
-        <div className="flex min-h-0 flex-1 flex-col gap-2.5 p-3 sm:gap-3">
-          {/* 上半块：监视器 = 居中的横版 16:9 屏幕（比例必须与真机播放面一致，
-              否则用户没法据此判断设置效果）+ 四角 accent 托架。
-              机箱**贴着屏幕**（`w-fit`）居中悬浮，不要通栏 —— 通栏会在两侧留下
-              六百多像素的空边框，看着像一块坏掉的仪表盘。
-              **高度 = 吃掉下半块固定高度之外的全部剩余**（`flex-1`）。
-              第九轮之前这里写死 `clamp(230px, 42vh, 420px)`，在用户窗口（1402×817）
-              下恒定只有 564×317，用户反馈「预览窗口怎么那么小」—— 那版是为了防止
-              「上半块 flex-1 → 尺寸随分段跳变」，但那是**下半块也跟着 flex-1** 造成的。
-              现在下半块改为固定高度（见 BOTTOM_BLOCK_HEIGHT），剩余高度就是一个
-              与分段无关的常量，预览既变大又稳定。
-              `min-h-[220px]` 是矮窗口的兜底：再小预览就失去「看一眼像不像」的意义。
-              屏幕用 `h-full aspect-video` 反推宽度；**不要**写 `w-full`，
-              那会算出 646px 高把机箱顶爆（`min-h-[320px]` 同理会毁掉比例，别再犯）。 */}
-          <div className="flex min-h-[220px] flex-1 items-center justify-center">
+        {/* 内容区：上半块是**实时预览监视器**（本弹窗的亮点，不可删），下半块是卡片网格。
+            监视器封顶高度、卡片区独立滚动 —— 预览不再随分段内容忽大忽小，也不会挤掉设置项。 */}
+        <div className="flex min-h-0 flex-1 flex-col gap-3 p-4 sm:gap-3.5 sm:p-5">
+          <div className="flex shrink-0 items-center justify-center" style={{ height: 'clamp(210px, 38vh, 380px)' }}>
             <div
               className="relative flex h-full shrink-0 items-center justify-center rounded-[16px] border p-3"
               style={{
@@ -1127,68 +1170,11 @@ export default memo(function QuickSettingsDialog({
             </div>
           </div>
 
-          {/* 下半块：分段 chip（原左侧竖向导轨的内容整个搬到这里）+ 并排的机架槽。
-              **高度固定**（`shrink-0` + BOTTOM_BLOCK_HEIGHT），这样上半块的
-              `flex-1` 才能稳定 —— 否则切分段时预览会忽大忽小。
-              窗口极矮时下限 274px 仍能容下最挤的槽（功能段 3 项），
-              真要更矮时才由每个槽自己的控件区滚动兜底。
-              chip 必须保留 `aria-label = 分段名`（可见文本前面带 `01` 序号，可访问名不能带序号）。 */}
-          <div
-            className="flex min-h-0 shrink-0 flex-col gap-2.5"
-            style={{ height: BOTTOM_BLOCK_HEIGHT }}
-          >
-            <div className="flex shrink-0 items-center gap-2">
-              <span
-                aria-hidden="true"
-                className="hidden font-mono text-[9px] uppercase leading-none tracking-[0.28em] sm:block"
-                style={{ color: toRgba(secondary, 0.55) }}
-              >
-                section
-              </span>
-              {sectionTabs.map((tab, tabIndex) => {
-                const active = activeSection === tab.id
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    aria-label={tab.label}
-                    aria-current={active ? 'true' : undefined}
-                    onClick={() => setActiveSection(tab.id)}
-                    className="relative flex shrink-0 items-center gap-2 overflow-hidden rounded-[8px] border px-3 py-[7px] transition-all active:scale-[0.97]"
-                    style={optionStyle(active)}
-                  >
-                    {active ? (
-                      <span
-                        aria-hidden="true"
-                        className="absolute inset-y-[5px] left-[3px] w-[2px] rounded-full"
-                        style={{ backgroundColor: accentHex }}
-                      />
-                    ) : null}
-                    <span
-                      aria-hidden="true"
-                      className="font-mono text-[9px] font-semibold tabular-nums leading-none"
-                      style={{ color: active ? toRgba(accentHex, 0.95) : toRgba(secondary, 0.55) }}
-                    >
-                      {`0${tabIndex + 1}`}
-                    </span>
-                    <span className="text-[12.5px] font-medium leading-none">{tab.label}</span>
-                  </button>
-                )
-              })}
-              <span aria-hidden="true" className="h-px min-w-3 flex-1" style={{ backgroundColor: toRgba(secondary, 0.16) }} />
-              <span
-                aria-hidden="true"
-                className="hidden font-mono text-[9.5px] uppercase leading-none tabular-nums tracking-[0.2em] sm:block"
-                style={{ color: toRgba(secondary, 0.65) }}
-              >
-                {`${String(sectionIndex + 1).padStart(2, '0')} / ${String(sectionTabs.length).padStart(2, '0')}`}
-              </span>
-            </div>
-
-            {/* 机架槽：横向并排、等宽（`flex-1 basis-0`），高度由父级拉伸 —— 同段各槽顶端/底端严格对齐。
-                槽数随分段变（外观 2 / 功能 4 / 播放 2），所以列表末尾不会再有
-                「内容没渲染全」的大片留白，原先把留白收尾的终止线（虚线 + accent 方点）也随之删掉。 */}
-            <div className="flex min-h-0 flex-1 gap-3">
+          <div className={`qs-scroll min-h-0 flex-1 overflow-y-auto ${isDaylight ? 'qs-scroll-light' : ''}`}>
+            <div className="grid grid-cols-1 gap-3 sm:gap-3.5 md:grid-cols-2 xl:grid-cols-3">
+            {/* 机架槽：栅格自适应列数（窄窗 1 列 / 中 2 列 / 宽 3 列），同段各槽顶端对齐。
+                槽数随分段变（外观 3 / 功能 4 / 播放 2），卡片高度由内容撑开 —— 不再有固定高度窗口，
+                高窗口也不会留大片空白。 */}
             {activeSection === 'appearance' ? (
               <>
                 {renderSlot(
@@ -1459,10 +1445,24 @@ export default memo(function QuickSettingsDialog({
                 )}
               </>
             )}
-
             </div>
           </div>
         </div>
+
+        {/* 页脚：说清"改动即时生效"，并给一个明确的完成出口 */}
+        <footer className={`flex shrink-0 items-center justify-between gap-3 border-t px-4 py-2.5 sm:px-5 ${dividerClass}`}>
+          <span className="text-[11.5px]" style={{ color: toRgba(secondary, 0.7) }}>
+            设置即时生效，改动会被记住
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-[9px] px-4 py-1.5 text-[12.5px] font-medium text-white transition-all hover:brightness-110 active:scale-[0.97]"
+            style={{ backgroundColor: accentHex, boxShadow: `0 4px 14px ${toRgba(accentHex, 0.35)}` }}
+          >
+            完成
+          </button>
+        </footer>
       </motion.div>
     </motion.div>
   )

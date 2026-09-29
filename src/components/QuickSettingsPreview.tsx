@@ -505,15 +505,26 @@ export default memo(function QuickSettingsPreview({
         <span>实时预览</span>
         {!isPlaying && <span className="normal-case tracking-normal opacity-70">· 已暂停</span>}
       </div>
+      {/* 右上角：模式 · 效果 + （MV 背景生效时的）状态徽标。
+          原先整块会换成「MV 背景」三个字，等于把模式信息顶掉、还多出一块突兀的实心盒子；
+          改为模式常显、MV 背景降级成一枚小徽标（信息不丢，视觉不抢）。 */}
       <div
-        className="absolute right-3 top-3 z-30 rounded-full border px-2.5 py-1 text-[10px] backdrop-blur-md"
+        className="absolute right-3 top-3 z-30 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] backdrop-blur-md"
         style={{
           color: chipText,
           borderColor: chipBorder,
           backgroundColor: chipBackground,
         }}
       >
-        {mvBackgroundActive ? 'MV 背景' : `${lyricDisplayModeLabel ?? '现代'} · ${EFFECT_LABEL[backgroundEffect]}`}
+        <span>{`${lyricDisplayModeLabel ?? '现代'} · ${EFFECT_LABEL[backgroundEffect]}`}</span>
+        {mvBackgroundActive ? (
+          <span
+            className="rounded-full px-1.5 py-[1px] text-[9px] uppercase tracking-[0.12em]"
+            style={{ backgroundColor: toRgba(accentColor, 0.2), color: chipText }}
+          >
+            MV 背景
+          </span>
+        ) : null}
       </div>
     </div>
   )

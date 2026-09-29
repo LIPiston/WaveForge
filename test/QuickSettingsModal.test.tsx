@@ -378,18 +378,19 @@ describe('播放设置预览 · 实时镜像', () => {
     fireEvent.click(trigger())
     fireEvent.click(screen.getByRole('button', { name: '外观' }))
 
-    const panelClass = () => (dialog() as HTMLElement).className
-    expect(panelClass()).toContain('bg-[#18181b]')
+    // 面板配色全部由 isDaylight 派生的内联渐变，用 data 属性暴露主题供断言
+    const panelTheme = () => (dialog() as HTMLElement).getAttribute('data-qs-theme')
+    expect(panelTheme()).toBe('dark')
 
     fireEvent.click(screen.getByRole('button', { name: '浅色' }))
 
     // 关键：面板**自己**必须立刻换肤。若面板配色取 prop `playerTheme`，就得等 App 收到
     // `playerThemeChanged` → setState → 重渲染弹窗才变色，用户看到的是"点了一下、过会儿才变"。
-    expect(panelClass()).toContain('bg-white')
+    expect(panelTheme()).toBe('light')
     expect(localStorage.getItem('playerTheme')).toBe('light')
 
     // 反向也要立刻生效，避免只做成单向
     fireEvent.click(screen.getByRole('button', { name: '深色' }))
-    expect(panelClass()).toContain('bg-[#18181b]')
+    expect(panelTheme()).toBe('dark')
   })
 })

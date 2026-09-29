@@ -1,7 +1,7 @@
 import { AnimatePresence } from 'framer-motion'
 import { createPortal } from 'react-dom'
 import QuickSettingsDialog from './QuickSettingsDialog'
-import type { QuickSettingsPlaybackContext } from './QuickSettingsPreview'
+import type { QuickSettingsPlaybackContext } from './quickSettingsPlaybackContext'
 import { closeQuickSettings, useQuickSettingsState } from '../services/quickSettingsStore'
 
 /**

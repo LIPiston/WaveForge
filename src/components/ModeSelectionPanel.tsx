@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { CSSProperties, MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
+import { useModeParked } from '../utils/modeLayer'
 import { Settings } from 'lucide-react'
 import ModeSelectionCards, { type ModeSelectionMode } from './ModeSelectionCards'
 import { useTvBack } from '../tv/tvCore'
@@ -87,6 +88,9 @@ export default function ModeSelectionPanel({
   onSelect,
   exploreAccentRgb = '49, 230, 139',
 }: ModeSelectionPanelProps) {
+  // 挂起（所属模式层被切走）时不渲染这个 portal：portal 挂在 body 上，不受挂起层
+  // visibility:hidden 约束，留着会盖住当前模式。只隐藏不卸载，切回来状态原样。
+  const parked = useModeParked()
   const [showCustomize, setShowCustomize] = useState(false)
   const [playerTheme, setPlayerTheme] = useState<'dark' | 'light'>(() => {
     const saved = localStorage.getItem('playerTheme')
@@ -179,6 +183,8 @@ export default function ModeSelectionPanel({
         : currentMode === 'resonance'
           ? 'radial-gradient(circle at 50% -32%, rgba(255,90,112,0.34), transparent 58%), linear-gradient(135deg, rgb(38,17,26), rgb(8,7,14))'
           : 'radial-gradient(circle at 50% -32%, rgba(59,130,246,0.34), transparent 58%), linear-gradient(135deg, rgb(9,22,42), rgb(5,7,14))'
+
+  if (parked) return null
 
   return createPortal(
     <motion.div

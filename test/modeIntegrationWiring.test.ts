@@ -1,7 +1,46 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8')
+
+/** App.tsx 里五个同级整屏模式层容器（key="xxx-mode"）。新增模式层时必须一并登记。 */
+const MODE_LAYER_KEYS = ['explore-mode', 'desktop-mode', 'resonance-mode', 'traditional-mode', 'minimal-mode']
+
+/** 从标签起始 '<' 扫到该标签的结束 '>'（跳过 {} / () / [] 与字符串里的 '>'） */
+function findTagEnd(text: string, tagStart: number): number {
+  let depth = 0
+  let quote: string | null = null
+  for (let i = tagStart; i < text.length; i += 1) {
+    const char = text[i]
+    if (quote) {
+      if (char === '\\') i += 1
+      else if (char === quote) quote = null
+      continue
+    }
+    if (char === '"' || char === "'" || char === '`') quote = char
+    else if (char === '{' || char === '(' || char === '[') depth += 1
+    else if (char === '}' || char === ')' || char === ']') depth -= 1
+    else if (char === '>' && depth === 0) return i
+  }
+  throw new Error('未找到标签结束符')
+}
+
+/** 取出每个模式层容器的起始标签文本 */
+function readModeLayerTags(app: string): Array<{ key: string; tag: string }> {
+  return MODE_LAYER_KEYS.map(key => {
+    const keyAt = app.indexOf(`key="${key}"`)
+    expect(keyAt, `${key} 层不存在`).toBeGreaterThan(-1)
+    const tagStart = app.lastIndexOf('<', keyAt)
+    return { key, tag: app.slice(tagStart, findTagEnd(app, tagStart) + 1) }
+  })
+}
+
+/** 扫描 App.tsx 里实际存在的模式层 key（新增模式层时用于强制登记） */
+function discoverModeLayerKeys(app: string): string[] {
+  const keys = new Set<string>()
+  for (const match of app.matchAll(/key="([a-z][a-z0-9-]*-mode)"/g)) keys.add(match[1])
+  return [...keys].sort()
+}
 
 describe('mode integration wiring', () => {
   it('keeps traditional playback controls and navigation reachable on narrower layouts', () => {
@@ -26,6 +65,94 @@ describe('mode integration wiring', () => {
     expect(app).toContain("const parkedExplore = visitedModes.has('explore')")
     expect(app).toContain('const exploreSuspended = exploreKeptAlive || parkedExplore')
     expect(app).toContain('motionSuspended={exploreSuspended}')
+  })
+
+  it('hides every parked mode layer so it cannot cover the active mode', () => {
+    const app = source('App.tsx')
+    // 新增模式层必须一并登记：这里动态扫描 App.tsx 里所有 `key="xxx-mode"` 容器，
+    // 数量/名称对不上就失败——否则新层会绕过下面「必须走 modeLayerStyle」的检查，
+    // 「挂起层盖住当前模式」那类事故就会再发生一次。
+    expect(discoverModeLayerKeys(app), '新增视图模式层：请登记到 MODE_LAYER_KEYS，并用 modeLayerStyle 处理挂起')
+      .toEqual([...MODE_LAYER_KEYS].sort())
+
+    const tags = readModeLayerTags(app)
+    const tagOf = (key: string) => tags.find(item => item.key === key)!.tag
+
+    // 五个模式层是同级整屏容器，靠 z-index 分层、靠 DOM 顺序兜底。挂起层（切走但保留挂载）
+    // 必须「z-index 降到 1 + visibility: hidden」同时成立——只做其中一个，挂起层仍会画在
+    // 当前模式之上：简约层自带不透明黑底（bg-black）且 DOM 顺序在最后，漏掉隐藏就是
+    // 「从简约切到传统/探索/桌面后整屏黑屏，且所有点击被它吞掉」。
+    // 层叠样式必须来自共享的 modeLayerStyle，禁止在这些容器上手写 z-index / visibility。
+    for (const { key, tag } of tags) {
+      expect(tag, `${key} 的层叠样式必须走 modeLayerStyle`).toContain('modeLayerStyle(')
+      expect(tag, `${key} 不应手写 z-index`).not.toMatch(/\bzIndex\s*:/)
+      expect(tag, `${key} 不应手写 visibility`).not.toMatch(/\bvisibility\s*:/)
+    }
+
+    // 挂起态要真的接上：这四个层会被保留挂载，接错变量等于没隐藏
+    expect(tagOf('explore-mode')).toContain('suspended: exploreSuspended')
+    expect(tagOf('desktop-mode')).toContain('suspended: parkedDesktop')
+    expect(tagOf('traditional-mode')).toContain('suspended: traditionalSuspended')
+    expect(tagOf('minimal-mode')).toContain('suspended: parkedMinimal')
+    // 简约层作为播放页覆盖探索页时才抬高到最上层（与挂起互斥）
+    expect(tagOf('minimal-mode')).toContain('overlayAbove: exploreKeptAlive')
+
+    // 挂起层不能跑重活：MV 背景解码也走同一个 hidden 通道（gameModeFrozen 同属「完全不可见」）
+    expect(app).toContain('hidden={lyricDisplayMode === \'video\' || showHome || parkedMinimal || gameModeFrozen}')
+  })
+
+  it('keeps playback-surface portals from escaping a parked mode layer', () => {
+    const app = source('App.tsx')
+    const lines = app.split('\n')
+    // 简约播放面的顶部歌词样式下拉、看歌控件是 portal 到 body 的：portal 逃出了挂起层的
+    // visibility:hidden，留在原地就会盖在当前模式顶部——现象是「桌面模式下顶部下拉本该切模式，
+    // 出来的却是歌词样式面板」，以及看歌控件浮在桌面上。
+    // 合法例外只有两个：MaybePortal 自身实现（只做「渲染到 body / 原地渲染」的分发）、
+    // App 级 Toast 容器（顶层常驻，不属于任何模式层，任何模式下都该显示）。
+    const escapes = lines
+      .map((line, index) => ({ line, no: index + 1, near: lines.slice(index, index + 6).join('\n') }))
+      .filter(({ line }) => /createPortal\(|MaybePortal active=\{/.test(line))
+      .filter(({ line, near }) => !line.includes('{children}') && !near.includes('toasts.map'))
+    expect(
+      escapes.length,
+      `portal 逃逸点数量变了（当前在 App.tsx 第 ${escapes.map(item => item.no).join('/')} 行）：新增逃逸点要么带 !parkedMinimal，要么（真全局层）登记进本用例的例外`,
+    ).toBe(3)
+    for (const { line, no } of escapes) {
+      expect(line, `App.tsx:${no} 的 portal 逃逸必须带挂起条件 !parkedMinimal`).toContain('parkedMinimal')
+    }
+    // 光不渲染还不够：面板 open 状态也必须在挂起时复位，否则切回播放页会自己展开一次
+    expect(app).toContain('if (!parkedMinimal) return')
+    expect(app).toContain('setShowLyricModePanel(false)')
+  })
+
+  it('keeps every mode-internal portal behind the parked gate', () => {
+    const app = source('App.tsx')
+    // 1) 每个模式层容器都要提供挂起状态（Provider 数量 = 模式层数量），否则层内浮层读不到
+    const providers = app.match(/<ModeParkedContext\.Provider value=\{[^}]+\}>/g) || []
+    expect(providers.length, '每个模式层容器都要包一层 ModeParkedContext.Provider（见 src/utils/modeLayer.ts）')
+      .toBe(MODE_LAYER_KEYS.length)
+    for (const value of ['exploreSuspended', 'parkedDesktop', 'traditionalSuspended', 'parkedMinimal']) {
+      expect(providers.some(item => item.includes(value)), `模式层容器缺少挂起值 ${value}`).toBe(true)
+    }
+
+    // 2) 层内 portal 到 body 的浮层必须自己让位：CSS 的 visibility 管不到 portal（它在 DOM 上是
+    //    body 的子节点，不是挂起层的后代）。踩过的坑：顶部歌词样式下拉盖住桌面模式的模式选择入口、
+    //    从桌面模式切走后天气详情弹窗仍留在屏幕上。
+    const allowList: Record<string, string> = {
+      'App.tsx': 'App 内的 portal 用 !parkedMinimal 显式守住（见上一条用例）',
+      'components/RemoteCursor.tsx': 'App 顶层 TV 遥控光标，任意模式都该显示',
+      'components/SimilarSongsPanel.tsx': 'App 顶层全局弹层，不属于任何模式层',
+      'components/ImmersiveControls.tsx': 'portal 到层内封面下方锚点（getElementById(anchorId)，墙纸/辉煌模式同层元素），挂起层的 visibility 已覆盖，未逃出模式层',
+      'components/QuickSettingsHost.tsx': 'App 顶层全局弹层（与调音室同为全模式共享，见 App.tsx 挂载点注释），不挂在任何模式层内，useModeParked 恒为 false',
+      'services/waveforge-engine-v3/ui/components/SpatialWorldView.tsx': 'portal 到自身容器，仍在模式层内',
+    }
+    const read = (relative: string) => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8')
+    const offenders = (readdirSync(new URL('../src', import.meta.url), { recursive: true }) as string[])
+      .map(entry => entry.split('\\').join('/'))
+      .filter(entry => entry.endsWith('.tsx') && !allowList[entry])
+      .filter(entry => read(entry).includes('createPortal('))
+      .filter(entry => !read(entry).includes('useModeParked'))
+    expect(offenders, `这些文件 portal 到 body 却没读挂起状态，切模式后会盖住当前模式：${offenders.join('、')}`).toEqual([])
   })
 
   it('keeps Explore song selection in place with its mini player', () => {

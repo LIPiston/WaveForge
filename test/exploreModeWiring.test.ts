@@ -107,14 +107,17 @@ describe('Explore mode wiring regressions', () => {
     expect(background).toContain("setPaintedSlots(prev => prev[slot] ? prev : { ...prev, [slot]: true })")
   })
 
-  // MV 背景层在首页/看歌盖住它时仍常驻挂载。这里锁死「被遮挡就交给同一个 hidden 通道」：
-  // 只有复用 hidden（暂停 + 保留缓冲 + 返回时按音频时钟硬同步），才能同时满足
-  // ① 不在不可见时白解码 1080P；② 看歌↔歌词页来回切无缝接上且 MV 实时对准。
+  // MV 背景层在首页/看歌/挂起的简约层盖住它时仍常驻挂载。这里锁死「被遮挡就交给同一个
+  // hidden 通道」：只有复用 hidden（暂停 + 保留缓冲 + 返回时按音频时钟硬同步），才能同时
+  // 满足 ① 不在不可见时白解码 1080P；② 看歌↔歌词页来回切无缝接上且 MV 实时对准。
   // 若把 showHome 从这里去掉 → MV 会在首页背后持续解码（性能回归）；
-  // 若改成卸载而非 hidden → 切回来要重新搜索拉流（体验回归）。
+  // 若改成卸载而非 hidden → 切回来要重新搜索拉流（体验回归）；
+  // parkedMinimal（切到传统/探索/桌面后整个简约层被挂起隐藏）同理属于「完全不可见」。
+  // gameModeFrozen（游戏模式把主窗隐藏到托盘）也是「完全不可见」：整块画面没人看，
+  // 1080P 解码 + 1.5s 对齐轮询不该继续跑，必须走同一个 hidden 通道。
   it('treats a covering surface as the same temporary cover as watch mode for the MV layer', () => {
     const source = component('../App.tsx').replace(/\r\n/g, '\n')
-    expect(source).toContain("hidden={lyricDisplayMode === 'video' || showHome}")
+    expect(source).toContain("hidden={lyricDisplayMode === 'video' || showHome || parkedMinimal || gameModeFrozen}")
     // 电台/播客统一走 mvBackgroundSuppressed（= isAppleRadioPlayback || podcastPlayback）：
     // MV 图层挂载与此开关必须同源，否则会出现"歌词页透明等 MV、MV 却没挂载"的黑屏。
     expect(source).toContain('const mvBackgroundSuppressed = isAppleRadioPlayback || podcastPlayback')

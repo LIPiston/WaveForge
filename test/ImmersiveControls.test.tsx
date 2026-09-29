@@ -10,6 +10,8 @@ let remoteCursorMode = false
 vi.mock('../src/tv/tvCore', () => ({
   useTvMode: () => tvMode,
   useRemoteCursorMode: () => remoteCursorMode,
+  // StemMixerPopover 的 BACK 处理（TV 长按菜单轮次引入）：测试环境空实现
+  useTvBack: () => undefined,
 }))
 
 vi.mock('../src/components/QuickSettings', () => ({
