@@ -23,6 +23,12 @@ import { motion } from 'framer-motion'
 import {
   Check, ChevronRight, Compass, Disc3, ExternalLink, Heart, Home, LayoutGrid, Library, ListMusic, Loader2, LogIn, MoreHorizontal, Play, Plus, Radio, Sparkles, Trophy, UserRound, X,
 } from 'lucide-react'
+import {
+  MOTION_LOAD_MARGIN,
+  MOTION_PLAY_MARGIN,
+  MOTION_RETAIN_MARGIN,
+  observeVisibility,
+} from '../utils/visibilityObserver'
 import type { SongSelectHandler } from '../types/playbackNavigation'
 import type { Song } from '../services/musicApi'
 import {
@@ -71,6 +77,7 @@ import { HorizontalShelf } from './apple-explore/HorizontalShelf'
 import { resolveAppleCardMeta } from './apple-explore/cardMeta'
 import CachedImage from './CachedImage'
 import AnimatedArtworkCover from './AnimatedArtworkCover'
+import { openExternalLink } from '../utils/externalLink'
 
 /** 把列表按每组 size 个切成"列"（官网歌曲轨是每列固定行数的横向分列布局）。 */
 function chunkBy<T>(items: T[], size: number): T[][] {
@@ -101,9 +108,10 @@ const MotionSuspendContext = createContext(false)
 /** 动态封面（web powerswoosh 同款）：HLS 流 → hls.js 播放；失败/无则静态帧/静态图 */
 function DynamicCover({ item, className, iconClassName }: { item: AppleWebItem; className?: string; iconClassName?: string }) {
   const suspended = useContext(MotionSuspendContext)
-  // suspended 只暂停/恢复已有 video（经 ref 读取），不进初始化 effect 依赖：
-  // 否则播放页覆盖探索页、切歌局部刷新等每次挂起都会销毁重建 HLS，
-  // 表现为"封面闪一下、动态封面从头播放"。
+  // 挂起（播放页覆盖探索页 / 面板冻结）时要回收媒体，而不只是 pause：
+  // pause 会留下 hls 实例 + MSE 缓冲 + 解码器。所以 suspended 进初始化 effect 依赖，
+  // 冻结时走 cleanup 销毁引擎、清 src，解冻后重建。代价是切回来会从首帧重播
+  //（poster 先顶上），这是「看不见就不占资源」换来的既定取舍。
   const suspendedRef = useRef(suspended)
   const [videoFailed, setVideoFailed] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -118,7 +126,7 @@ function DynamicCover({ item, className, iconClassName }: { item: AppleWebItem; 
   }, [suspended])
 
   useEffect(() => {
-    if (!motionHls || videoFailed) return
+    if (!motionHls || videoFailed || suspended) return
     let hls: { destroy: () => void; __visibilityCleanup?: () => void } | null = null
     let cancelled = false
     ;(async () => {
@@ -126,7 +134,7 @@ function DynamicCover({ item, className, iconClassName }: { item: AppleWebItem; 
         const { default: Hls } = await import('hls.js')
         if (cancelled || !videoRef.current) return
         if (!Hls.isSupported()) { setVideoFailed(true); return }
-        const inst = new Hls({ autoStartLoad: true, capLevelToPlayerSize: true, maxBufferLength: 12, backBufferLength: 0 })
+        const inst = new Hls({ autoStartLoad: true, capLevelToPlayerSize: true, maxBufferLength: 8, backBufferLength: 0 })
         hls = inst
         inst.loadSource(motionHls)
         inst.attachMedia(videoRef.current)
@@ -154,8 +162,14 @@ function DynamicCover({ item, className, iconClassName }: { item: AppleWebItem; 
       cancelled = true
       try { hls?.__visibilityCleanup?.() } catch { /* 忽略 */ }
       try { hls?.destroy() } catch { /* 忽略 */ }
+      const video = videoRef.current
+      if (video) {
+        video.pause()
+        video.removeAttribute('src')
+        video.load()
+      }
     }
-  }, [motionHls, videoFailed])
+  }, [motionHls, videoFailed, suspended])
 
   if (motionHls && !videoFailed) {
     return (
@@ -226,9 +240,18 @@ function MotionArtworkCover({ item, storefront, className, iconClassName }: {
   iconClassName?: string
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
-  // 一旦可见过就保持“可见资格”：IO 在货架/动画容器里可能来回抖动，
-  // 播放资格若跟随闪烁会反复 pause 冻在海报帧。取流与播放都用粘性标记。
-  const [everVisible, setEverVisible] = useState(false)
+  // 三档可见性，全部走共享 observer（同 margin 全页只建一个实例）：
+  //  - loadVisible(400px)：一次性闩锁，只决定「要不要去查这张卡的动态封面数据」（结果有会话缓存，便宜）；
+  //  - playVisible(150px)：**当前**是否在视口附近 → 决定播放/暂停；
+  //  - retainVisible(1200px)：当前是否离视口不远 → 决定保留还是回收 HLS 管线。
+  //
+  // 旧实现把 400px 的「曾经可见」粘性标记直接当播放资格（active = pageVisible && everVisible && !suspended），
+  // 于是滚过去的卡片永远算 active：货架上几十条 768×768 视频会在后台一直解码，
+  // 切到别的平台后也只是 pause、MSE 缓冲与解码器全部留着——实测这就是「封面一多电脑就卡」的主因。
+  // 现在「加载过」和「正在播」彻底分开：粘性只留给数据查询，播放与媒体保留都看当前距离。
+  const [loadVisible, setLoadVisible] = useState(false)
+  const [playVisible, setPlayVisible] = useState(false)
+  const [retainVisible, setRetainVisible] = useState(false)
   const [pageVisible, setPageVisible] = useState(() => typeof document === 'undefined' || !document.hidden)
     const [motion, setMotion] = useState<{ video?: string; poster?: string } | null | undefined>(
     item.motionArtworkUrl ? { video: item.motionArtworkUrl, poster: item.motionPosterUrl } : undefined,
@@ -240,7 +263,10 @@ function MotionArtworkCover({ item, storefront, className, iconClassName }: {
   useEffect(() => {
     setMotion(item.motionArtworkUrl ? { video: item.motionArtworkUrl, poster: item.motionPosterUrl } : undefined)
   }, [itemKey, item.motionArtworkUrl, item.motionPosterUrl])
-  const active = pageVisible && everVisible && !motionSuspended
+  const active = pageVisible && playVisible && !motionSuspended
+  // 面板冻结（切到别的平台、播放页覆盖）或滚出 1200px：连媒体一起回收，切回来按 URL 重建。
+  // 重建到首帧之间显示 poster（本就叠在静态封面上，视觉上是一次淡替而非黑框）。
+  const retainMedia = !motionSuspended && (playVisible || retainVisible)
 
   useEffect(() => {
     const onVisibility = () => setPageVisible(!document.hidden)
@@ -251,21 +277,28 @@ function MotionArtworkCover({ item, storefront, className, iconClassName }: {
   useEffect(() => {
     const node = hostRef.current
     if (!node) return
-    const observer = new IntersectionObserver(entries => {
-      if (entries[0]?.isIntersecting) setEverVisible(true)
-    }, { rootMargin: '400px', threshold: 0 })
-    observer.observe(node)
-    return () => observer.disconnect()
+    const stopObserving = [
+      observeVisibility(node, MOTION_LOAD_MARGIN, { onEnter: () => setLoadVisible(true) }),
+      observeVisibility(node, MOTION_PLAY_MARGIN, {
+        onEnter: () => setPlayVisible(true),
+        onExit: () => setPlayVisible(false),
+      }),
+      observeVisibility(node, MOTION_RETAIN_MARGIN, {
+        onEnter: () => setRetainVisible(true),
+        onExit: () => setRetainVisible(false),
+      }),
+    ]
+    return () => { for (const stop of stopObserving) stop() }
   }, [])
 
   useEffect(() => {
-    if (!everVisible || motion !== undefined || !motionResourceId || !isMotionResourceType(item.type)) return
+    if (!loadVisible || motion !== undefined || !motionResourceId || !isMotionResourceType(item.type)) return
     let cancelled = false
     void loadResourceMotion(item.type, motionResourceId, storefront).then(result => {
       if (!cancelled) setMotion(result)
     }).catch(() => { if (!cancelled) setMotion(null) })
     return () => { cancelled = true }
-  }, [everVisible, item.type, motion, motionResourceId, storefront])
+  }, [loadVisible, item.type, motion, motionResourceId, storefront])
 
   return (
     <div
@@ -280,6 +313,7 @@ function MotionArtworkCover({ item, storefront, className, iconClassName }: {
           posterUrl={motion.poster}
           staticCoverUrl={item.artworkUrl}
           active={active}
+          retainMedia={retainMedia}
           className="absolute inset-0 h-full w-full"
           objectFit="cover"
           onError={() => setMotion(null)}
@@ -1072,7 +1106,8 @@ export function AppleExplorePanel({
     if (!url) return
     const bridge = (window as any).electron
     if (bridge?.openExternal) void bridge.openExternal(url)
-    else window.open(url, '_blank', 'noopener')
+    // TV/纯浏览器统一兜底：原生 ACTION_VIEW → window.open → 可见提示（TV WebView 的 window.open 无反应）
+    else openExternalLink(url)
   }, [])
 
   const activateItem = useCallback((item: AppleWebItem, items: AppleWebItem[] = [item]) => {
@@ -1127,6 +1162,9 @@ export function AppleExplorePanel({
   }, [onOpenAlbum, onOpenArtistPanel, openAlbumDrawer, openArtistDrawer, openExploreTarget, openPlaylistPanel, openPost, openRadioShow, openRoom, openStation, playItemWithQueue, playVideo])
 
   useTvBack(() => {
+    // 面板被宿主隐藏（切到别的平台页签，className='hidden' 仍挂载）时不再消费 BACK：
+    // 否则会吃掉别的页签上的返回键，去关一个用户看不见的抽屉（同 AppleSearchBrowse 的守卫）。
+    if (motionSuspended) return false
     if (albumDrawer) setAlbumDrawer(null)
     else if (stationDetail) setStationDetail(null)
     else if (radioShowDetail) setRadioShowDetail(null)
@@ -1136,7 +1174,7 @@ export function AppleExplorePanel({
     else if (layers.length > 0) goToDepth(layers.length - 1)
     else return false
     return true
-  }, [albumDrawer, stationDetail, radioShowDetail, postDetail, chartDetail, artistDrawer, layers.length, goToDepth])
+  }, [motionSuspended, albumDrawer, stationDetail, radioShowDetail, postDetail, chartDetail, artistDrawer, layers.length, goToDepth])
 
   // ── 卡片子组件 ──
 
@@ -1217,7 +1255,7 @@ export function AppleExplorePanel({
             <MotionArtworkCover item={item} storefront={storefront} className={`${portrait ? 'aspect-[3/4]' : 'aspect-[540/310]'} w-full`} />
           )}
           {!textFirst && item.badge && (
-            <span className="absolute left-3 top-3 z-10 rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium text-white/90 backdrop-blur-md">
+            <span className="absolute left-3 top-3 z-10 rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium text-white/90">
               {item.badge}
             </span>
           )}
@@ -1299,7 +1337,7 @@ export function AppleExplorePanel({
           <div className="flex items-end justify-between gap-4">
             <div className="min-w-0">
               {section.title && (
-                <span className="mb-1.5 inline-block rounded-md bg-black/55 px-2 py-0.5 text-[11px] font-medium text-white/85 backdrop-blur-md">
+                <span className="mb-1.5 inline-block rounded-md bg-black/55 px-2 py-0.5 text-[11px] font-medium text-white/85">
                   {section.title}
                 </span>
               )}
@@ -1570,7 +1608,7 @@ export function AppleExplorePanel({
                 else if (isLibraryResource) void saveToLibrary(item)
                 else void toggleFavorite(item)
               }}
-              className={`absolute right-1.5 top-1.5 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white/85 opacity-0 backdrop-blur-md transition group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 [@media(hover:none)]:opacity-100 disabled:cursor-default`}
+              className={`absolute right-1.5 top-1.5 flex h-8 w-8 items-center justify-center rounded-full bg-black/55 text-white/85 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 [@media(hover:none)]:opacity-100 disabled:cursor-default`}
             >
               {isPlaylist
                 ? isSaved ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />
@@ -1982,7 +2020,7 @@ export function AppleExplorePanel({
                         <MusicGlyph className="h-7 w-7 opacity-40" />
                       </div>
                     )}
-                    <span className="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white/85 opacity-0 [@media(hover:none)]:opacity-100 backdrop-blur-md transition group-hover:opacity-100">
+                    <span className="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full bg-black/50 text-white/85 opacity-0 [@media(hover:none)]:opacity-100 transition group-hover:opacity-100">
                       <Play className="h-4 w-4 fill-current" />
                     </span>
                   </div>
@@ -2797,6 +2835,7 @@ export function AppleExplorePanel({
           onSongSelect={onSongSelect}
           playbackOrigin={appleOrigin({ category: true })}
           onOpenItem={activateItem}
+          onSongContextMenu={openSongMenu}
           onOpenPlaylist={(playlist) =>
             openPlaylistPanel({
               id: playlist.id,

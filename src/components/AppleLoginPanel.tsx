@@ -460,6 +460,12 @@ export default function AppleLoginPanel({ accentColor = '#fa2d48', onClose, onLo
               className={inputClass}
               autoComplete="off"
             />
+            {/* TV 软键盘逐字输入 200 字符 token 不现实：提示用手机遥控器输入 */}
+            {!hasNativeLogin && (
+              <p className="mt-1.5 text-[11px] text-white/40">
+                电视端建议先连接手机遥控器：点此输入框后在手机上直接粘贴 Token，避免用遥控器逐字输入。
+              </p>
+            )}
           </div>
           <div ref={storefrontRef} className="relative">
             <label className="mb-1.5 block text-xs font-medium text-white/60">商店（Storefront）</label>

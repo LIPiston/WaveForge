@@ -18,6 +18,20 @@ import SongContextMenu from './SongContextMenu'
 import { getUserPlaylists } from '../services/playlistService'
 import { getReadableAccentColor } from '../utils/desktopAccentColor'
 
+/**
+ * 相似歌手头像地址。各平台字段命名不一（QQ: singer_pic / pic_url；网易云: img1v1Url / picUrl），
+ * 「相似歌手」标签页与「歌手详情」页内嵌列表必须用同一套兜底，否则同一份数据一处有图一处空。
+ * 都没有时用 QQ 歌手 mid 拼图床地址兜底。
+ */
+function resolveSimilarArtistPic(artist: any): string {
+  const raw = artist?.pic_url || artist?.picurl || artist?.img1v1Url || artist?.picUrl
+    || artist?.artistPic || artist?.singer_pic || artist?.headPic || artist?.singerPic
+    || artist?.pic || artist?.avatarUrl || ''
+  if (raw) return String(raw)
+  const mid = String(artist?.singer_mid || artist?.mid || '').trim()
+  return mid ? `https://y.gtimg.cn/music/photo_new/T001R300x300M000${mid}.jpg` : ''
+}
+
 type TabType = 'hotSongs' | 'allSongs' | 'albums' | 'videos' | 'similarArtists' | 'info'
 
 const formatDuration = (ms: number) => {
@@ -1647,11 +1661,10 @@ export default function ArtistDetailModal({
             {activeTab === 'similarArtists' && (
               <div className={`${textPrimary} space-y-4`}>
                 {similarArtists.length > 0 ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-5 gap-y-7 px-2 py-3">
                     {similarArtists.map((sa: any, i: number) => {
                       const name = sa.name || sa.artistName || ''
-                      // QQ: sa.pic_url || sa.picurl; 网易云: sa.img1v1Url || sa.picUrl
-                      const pic = sa.pic_url || sa.picurl || sa.img1v1Url || sa.picUrl || sa.artistPic || sa.singer_pic || sa.headPic || sa.singerPic || sa.pic || sa.avatarUrl || ''
+                      const pic = resolveSimilarArtistPic(sa)
                       const saId = sa.id || sa.artistId || sa.singer_id || 0
                       const saMid = sa.mid || sa.singer_mid || ''
                       return (
@@ -1663,16 +1676,16 @@ export default function ArtistDetailModal({
                               onOpenArtist(id, platform)
                             }
                           }}
-                          className="flex flex-col items-center gap-2 p-3 rounded-xl transition-colors hover:bg-white/10 text-left"
+                          className="group flex flex-col items-center gap-3 rounded-2xl p-4 transition-colors hover:bg-white/10"
                         >
-                          <div className="w-20 h-20 rounded-full overflow-hidden bg-white/10 shrink-0">
+                          <div className="h-32 w-32 shrink-0 overflow-hidden rounded-full bg-white/10 shadow-lg transition-transform duration-200 group-hover:scale-[1.04]">
                             {pic ? (
-                              <img src={getProxiedImageUrl(pic, 150)} alt={name} className="w-full h-full object-cover" />
+                              <img src={getProxiedImageUrl(pic, 300)} alt={name} className="w-full h-full object-cover" />
                             ) : (
-                              <div className="w-full h-full flex items-center justify-center"><Music className="w-6 h-6 text-white/40" /></div>
+                              <div className="w-full h-full flex items-center justify-center"><Music className="w-8 h-8 text-white/40" /></div>
                             )}
                           </div>
-                          <span className={`text-xs text-center truncate w-full ${textSecondary}`}>{name}</span>
+                          <span className={`w-full truncate text-center text-[15px] font-medium ${textPrimary}`}>{name}</span>
                         </button>
                       )
                     })}
@@ -1749,7 +1762,7 @@ export default function ArtistDetailModal({
                     <div className="grid grid-cols-4 gap-3">
                       {similarArtists.map((sa: any, i: number) => {
                         const name = sa.name || sa.artistName || ''
-                        const pic = sa.picUrl || sa.img1v1Url || sa.artistPic || ''
+                        const pic = resolveSimilarArtistPic(sa)
                         const saId = sa.id || sa.artistId || 0
                         const saMid = sa.mid || ''
                         return (

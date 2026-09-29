@@ -60,6 +60,8 @@ interface AppleMusicSearchPageProps {
   playbackOrigin?: import('../types/playbackNavigation').PlaybackOrigin
   onOpenItem?: (item: AppleWebItem, items: AppleWebItem[]) => void
   onOpenPlaylist?: (playlist: { id: string; name: string; coverImgUrl: string; trackCount: number; creator: string; platform: 'apple' }) => void
+  /** 歌曲行右键（宿主负责 preventDefault 与打开菜单；只对可播放的歌曲 item 回调） */
+  onSongContextMenu?: (event: React.MouseEvent, item: AppleWebItem, items: AppleWebItem[]) => void
   renderLanding?: () => React.ReactNode
 }
 
@@ -88,6 +90,7 @@ export default function AppleMusicSearchPage({
   playbackOrigin,
   onOpenItem,
   onOpenPlaylist,
+  onSongContextMenu,
   renderLanding,
 }: AppleMusicSearchPageProps) {
   const [term, setTerm] = useState('')
@@ -194,6 +197,13 @@ export default function AppleMusicSearchPage({
     onOpenItem?.(toWebItem(item), siblings.map(toWebItem))
   }
 
+  /** 歌曲行右键：仅歌曲类型且可播放（有 playId）时回调，复用探索页 openSongMenu 的转换链 */
+  const handleSongContextMenu = (event: React.MouseEvent, item: AppleSearchSectionItem, siblings: AppleSearchSectionItem[]) => {
+    if (!onSongContextMenu || item.type !== 'songs' || !item.playId) return
+    const webSongs = siblings.filter(entry => entry.type === 'songs' && entry.playId).map(toWebItem)
+    onSongContextMenu(event, toWebItem(item), webSongs.length > 0 ? webSongs : [toWebItem(item)])
+  }
+
   // ── 卡片实现（渲染函数，非内联组件：内联组件每次渲染都是新类型，会重建整棵子树） ──
 
   const renderTopResultCard = (item: AppleSearchSectionItem, siblings: AppleSearchSectionItem[]) => (
@@ -203,6 +213,7 @@ export default function AppleMusicSearchPage({
       data-tv-focus
       className={`group flex cursor-pointer items-center gap-3 overflow-hidden rounded-xl border px-3 py-2 outline-none transition focus-visible:ring-2 focus-visible:ring-[#fa2d48] ${isDark ? 'border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.07]' : 'border-black/[0.07] bg-black/[0.03] hover:bg-black/[0.06]'}`}
       onClick={() => activate(item, siblings)}
+      onContextMenu={event => handleSongContextMenu(event, item, siblings)}
       onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(item, siblings) } }}
     >
       <div className="relative h-[60px] w-[60px] shrink-0 overflow-hidden rounded-lg">
@@ -324,6 +335,7 @@ export default function AppleMusicSearchPage({
       draggable={false}
       className={`group flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 outline-none transition focus-visible:ring-2 focus-visible:ring-[#fa2d48] ${isDark ? 'hover:bg-white/[0.05]' : 'hover:bg-black/[0.04]'}`}
       onClick={() => activate(item, siblings)}
+      onContextMenu={event => handleSongContextMenu(event, item, siblings)}
       onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(item, siblings) } }}
     >
       <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-md">
