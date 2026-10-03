@@ -700,7 +700,8 @@ const DANMAKU_POOL_CAP = 200
 /** 发表框快捷表情：两平台正文都是纯文本，unicode emoji 双端通用 */
 const COMPOSER_EMOJIS = ['😂', '❤️', '😭', '😍', '🥹', '😅', '🤔', '👍', '🔥', '🎵', '🎶', '✨', '🙌', '👀', '🫶', '🌙']
 
-export default function CommentModal({
+// memo：弹窗打开期间 App 高频重渲染不再整弹窗跟着调和；回调 prop 在调用侧已稳定化。
+export default memo(function CommentModal({
   isOpen,
   onClose,
   song = null,
@@ -1886,6 +1887,17 @@ export default function CommentModal({
     window.setTimeout(() => inputRef.current?.focus(), 60)
   }, [])
 
+  // 虚拟列表行回调走 latest-ref 稳定身份：rowProps 每次渲染都会重建，若回调是内联
+  // 新函数，memo(CommentItem) 的浅比较恒失败，可见评论行全部跟着重渲染。
+  const commentRowHandlersRef = useRef({ handleLike, beginReply, toggleReplies, handleOpenCommentUser, loadComments })
+  commentRowHandlersRef.current = { handleLike, beginReply, toggleReplies, handleOpenCommentUser, loadComments }
+  const handleRowLike = useCallback((comment: Comment) => void commentRowHandlersRef.current.handleLike(comment), [])
+  const handleRowReply = useCallback((target: ReplyTarget) => commentRowHandlersRef.current.beginReply(target), [])
+  const handleRowDelete = useCallback((comment: Comment) => setPendingDeleteComment(comment), [])
+  const handleRowToggleReplies = useCallback((comment: Comment) => void commentRowHandlersRef.current.toggleReplies(comment), [])
+  const handleRowOpenUser = useCallback((comment: Comment) => commentRowHandlersRef.current.handleOpenCommentUser(comment), [])
+  const handleRowLoadMore = useCallback(() => void commentRowHandlersRef.current.loadComments(false), [])
+
   const submitComposer = () => {
     if (replyingTo) void handleReply(replyingTo)
     else void handleSubmitComment()
@@ -2052,13 +2064,13 @@ export default function CommentModal({
           isDark,
           accent,
           showRank: showRankForTab,
-          onLike: (target) => void handleLike(target),
-          onReply: (target) => beginReply(target),
-          onDelete: (target) => setPendingDeleteComment(target),
-          onToggleReplies: (target) => void toggleReplies(target),
-          onOpenUser: (target) => handleOpenCommentUser(target),
+          onLike: handleRowLike,
+          onReply: handleRowReply,
+          onDelete: handleRowDelete,
+          onToggleReplies: handleRowToggleReplies,
+          onOpenUser: handleRowOpenUser,
           isLoadingMore,
-          onLoadMore: () => void loadComments(false),
+          onLoadMore: handleRowLoadMore,
         }}
       />
     )
@@ -2633,3 +2645,4 @@ export default function CommentModal({
     </AnimatePresence>
   )
 }
+)

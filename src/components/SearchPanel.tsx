@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent } from 'react'
+﻿import { memo, useState, useEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Search, X, Music, History, Clock, User, Disc, Sparkles, TrendingUp, ListMusic, ArrowUpRight, Play } from 'lucide-react'
 import { searchSongs, searchSuggest, searchArtists, searchAlbums, searchQuick, searchPlaylists, Song, Artist, Album, SearchSuggestion, getProxiedImageUrl, loadAlbumCovers, resolveSongAlbumIdentifier, searchHot } from '../services/musicApi'
@@ -119,7 +119,8 @@ function setLruCache<K, V>(cache: Map<K, V>, key: K, value: V, maxEntries: numbe
   }
 }
 
-export default function SearchPanel({
+// memo：面板打开期间 App 高频重渲染不再整面板跟着调和；回调 prop 在调用侧已稳定化。
+export default memo(function SearchPanel({
   onSongSelect,
   onClose,
   restorePlaybackOrigin,
@@ -1592,7 +1593,7 @@ export default function SearchPanel({
                 {displayedResults.map((song, index) => {
                   const isCurrentSong = isSameSong(song, currentSong)
                   return (
-                <motion.div
+                <div
                   key={`search-result-${song.platform}-${song.mid || song.id}-${index}`}
                   data-song-index={index}
                   data-song-id={song.id || song.mid}
@@ -1684,7 +1685,7 @@ export default function SearchPanel({
                   <div className={`${textPrimary}/40 text-[13px] tabular-nums flex-shrink-0`}>
                     {formatDuration(song.duration)}
                   </div>
-                </motion.div>
+                </div>
                 )})}
                 
                 {/* 触底自动续载的兜底提示（滚动到底仍未触发时也可点击） */}
@@ -2004,3 +2005,4 @@ export default function SearchPanel({
     </>
   )
 }
+)

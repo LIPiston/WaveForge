@@ -160,6 +160,8 @@ let backendPollTimer: number | null = null
 let backendPollFailures = 0
 
 async function pollBackendLogs(): Promise<void> {
+  // 页面隐藏（TV 退后台/息屏）时跳过本轮 fetch，恢复可见后下一轮继续（与 remoteBridge 同策略）
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
   try {
     const res = await fetch('http://localhost:3001/api/tv/logs', { cache: 'no-store' })
     if (!res.ok) {

@@ -10,6 +10,7 @@
  */
 import { createRemoteServer, getLanIPv4Addresses } from './desktop/remote-server.cjs'
 import { createReadStream, existsSync, mkdirSync, readdirSync, statSync, writeFileSync, readFileSync, appendFileSync } from 'fs'
+import * as fsPromises from 'fs/promises'
 import { createServer } from 'http'
 import { WebSocketServer } from 'ws'
 import { dirname, join, sep } from 'path'
@@ -458,19 +459,21 @@ export function installTvExtensions({
   })
 
   // SPA 读取已上传壁纸列表（手机上传 → 本地存储 → 这里列出，SPA 导入 IndexedDB）
-  app.get('/api/tv/wallpapers', (req, res) => {
+  app.get('/api/tv/wallpapers', async (req, res) => {
     try {
       if (!existsSync(wallpapersDir)) {
         res.json({ wallpapers: [] })
         return
       }
-      const wallpapers = readdirSync(wallpapersDir)
+      // 异步列目录 + stat：请求路径上不再同步阻塞事件循环
+      const names = await fsPromises.readdir(wallpapersDir)
+      const wallpapers = (await Promise.all(names
         .filter((name) => /\.(jpe?g|png|webp|gif)$/i.test(name))
-        .map((name) => ({
+        .map(async (name) => ({
           name,
           url: '/api/tv/wallpapers/' + encodeURIComponent(name),
-          uploadTime: statSync(join(wallpapersDir, name)).mtimeMs,
-        }))
+          uploadTime: (await fsPromises.stat(join(wallpapersDir, name))).mtimeMs,
+        }))))
         .sort((a, b) => a.uploadTime - b.uploadTime)
       res.json({ wallpapers })
     } catch (err) {

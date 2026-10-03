@@ -175,7 +175,11 @@ function LyricText({ text, words, playing, lineStart, lineDuration, color, fille
     }
   }, [playing, text, words?.length])
   const progress = getInterpolatedDesktopProgress(realtime, playing)
-  const convertedText = traditional ? toTraditional(text) : text
+  // 按内容记忆繁体转换：本组件被 30fps 本地时钟驱动重渲染，同一行文本每帧重跑 OpenCC 纯属浪费
+  const convertedText = useMemo(
+    () => (traditional ? toTraditional(text) : text),
+    [traditional, text],
+  )
   const normalizedWords = useMemo(
     () => prepareLyricWords({ time: lineStart, text, words: words || [] }),
     [words, text, lineStart],
@@ -393,6 +397,15 @@ export default function DesktopLyricsApp() {
     : (romaji || translation)
   const showSecondary = Boolean(secondaryText)
   const showExtraAnnotation = !settings.doubleLine && Boolean(translation || romaji)
+  // 按内容记忆繁体转换，避免父组件每次 state tick 都重跑 OpenCC
+  const convertedSecondaryText = useMemo(
+    () => (settings.traditionalEnabled ? toTraditional(secondaryText) : secondaryText),
+    [settings.traditionalEnabled, secondaryText],
+  )
+  const convertedTranslationText = useMemo(
+    () => (settings.traditionalEnabled ? toTraditional(translation) : translation),
+    [settings.traditionalEnabled, translation],
+  )
 
   const beginDrag = (event: ReactPointerEvent) => {
     if (settings.locked || event.button !== 0 || (event.target as HTMLElement).closest('button,input,.dl-settings-panel,.dl-resize')) return
@@ -486,12 +499,10 @@ export default function DesktopLyricsApp() {
           )}
         </div>
         {showSecondary && (
-          <div className="dl-secondary">
-            {settings.traditionalEnabled ? toTraditional(secondaryText) : secondaryText}
-          </div>
+          <div className="dl-secondary">{convertedSecondaryText}</div>
         )}
         {showExtraAnnotation && translation && romaji && (
-          <div className="dl-tertiary">{settings.traditionalEnabled ? toTraditional(translation) : translation}</div>
+          <div className="dl-tertiary">{convertedTranslationText}</div>
         )}
       </section>
 

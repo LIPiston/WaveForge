@@ -1446,6 +1446,11 @@ async function fetchCatalogStationsSection(storefront: string): Promise<AppleWeb
 export async function fetchAppleRadioPage(storefront?: string): Promise<AppleWebPage> {
   const sf = storefront || getStorefront()
   const loggedIn = Boolean(getAppleCredentials().developerToken && getAppleCredentials().mediaUserToken)
+  // 两个上游相互独立，并行发出（编辑页与「最近收听的电台」不再串行排队）；
+  // 提前挂上 catch，编辑页失败时 recentPromise 不会变成 unhandled rejection。
+  const recentPromise: Promise<AppleWebSection | null> = loggedIn
+    ? fetchRecentRadioSection().catch(() => null)
+    : Promise.resolve(null)
   const editorial = await fetchEditorialPage('radio', sf)
   /** 「最近收听的电台」放到「探索更多」之前（官网该区块在列表末尾、探索更多上方）。 */
   const withRecentAtEnd = (sections: AppleWebSection[], recent: AppleWebSection | null): AppleWebSection[] => {
@@ -1455,7 +1460,7 @@ export async function fetchAppleRadioPage(storefront?: string): Promise<AppleWeb
     return [...sections.slice(0, exploreIndex), recent, ...sections.slice(exploreIndex)]
   }
   if (editorial.sections.length > 0) {
-    const recentSection = loggedIn ? await fetchRecentRadioSection().catch(() => null) : null
+    const recentSection = await recentPromise
     // 官网广播页没有独立大 banner（首屏即「推荐单集」横向货架），因此不再返回 hero。
     return {
       sections: withRecentAtEnd(editorial.sections, recentSection),
@@ -1465,7 +1470,7 @@ export async function fetchAppleRadioPage(storefront?: string): Promise<AppleWeb
     }
   }
   const [recent, stations] = await Promise.allSettled([
-    loggedIn ? fetchRecentRadioSection() : Promise.resolve(null),
+    recentPromise,
     fetchCatalogStationsSection(sf),
   ])
   const sections: AppleWebSection[] = []

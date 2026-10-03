@@ -2300,6 +2300,8 @@ async function fetchSodaPlaybackMembership(cookieText) {
       })
       const data = (json && json.data) || json || {}
       const profile = sodaProfileFromMeData(data)
+      // profile 三要素随缓存对象一起返回：/api/soda/status 直接复用，
+      // 不必对同一端点 /luna/pc/me 再串行打一次（缓存 TTL 仅 10s，头像/昵称陈旧度可忽略）
       return sodaApplyMembershipObservation(cacheKey, {
         membershipKnown: !!profile.membershipKnown,
         vipType: Number(profile.vipType) || 0,
@@ -2310,6 +2312,8 @@ async function fetchSodaPlaybackMembership(cookieText) {
         expiresAt: Number(profile.expiresAt) || 0,
         sessionValidated: !!profile.profileReady,
         userId: profile.userId || '',
+        nickname: profile.nickname || '',
+        avatar: profile.avatar || '',
         entitlementSource: 'official-pc-me',
       })
     } catch (err) {
@@ -3051,14 +3055,24 @@ async function handleSodaStatus(cookieText) {
         error: membership.error || 'QISHUI_SESSION_INVALID',
       })
     }
-    const profileSource = await sodaWebRequestJson('/luna/pc/me', sodaPcAppParams({}, cookie), cookie, {
-      bases: [QISHUI_WEB_PC_API_BASE],
-      noDefaultParams: true,
-      sessionOnly: true,
-      pcApp: true,
-      timeoutMs: 6500,
-    })
-    const profile = sodaProfileFromMeData((profileSource && profileSource.data) || profileSource || {})
+    // profile 数据在 fetchSodaPlaybackMembership 内已随 /luna/pc/me 一次取回并随缓存返回；
+    // 三要素齐全时不再二次串行请求同一端点（status 是前端打开/刷新的必经接口，
+    // 原先缓存未命中时总延迟约翻倍）。
+    let profile = {
+      userId: membership.userId || '',
+      nickname: membership.nickname || '',
+      avatar: membership.avatar || '',
+    }
+    if (!profile.userId && !profile.nickname && !profile.avatar) {
+      const profileSource = await sodaWebRequestJson('/luna/pc/me', sodaPcAppParams({}, cookie), cookie, {
+        bases: [QISHUI_WEB_PC_API_BASE],
+        noDefaultParams: true,
+        sessionOnly: true,
+        pcApp: true,
+        timeoutMs: 6500,
+      })
+      profile = sodaProfileFromMeData((profileSource && profileSource.data) || profileSource || {})
+    }
     return {
       provider: 'qishui',
       label: '汽水音乐',

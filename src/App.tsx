@@ -4337,6 +4337,10 @@ function App() {
   // 过渡期"先行淡入的下一首歌词"层上报的焦点行：视觉切换帧交给正式歌词树做锚点，
   // 避免"先锚第一句再跳回正确句"的闪跳（切歌瞬间引擎时间线可能还差一帧）。
   const incomingLyricIndexRef = useRef(-1)
+  // 稳定引用（只写 ref）：避免每次渲染新建回调击穿 TransitionIncomingLyrics 的 memo
+  const handleIncomingLyricIndexChange = useCallback((index: number) => {
+    incomingLyricIndexRef.current = index
+  }, [])
   // 过渡结束即失效：避免下一轮过渡误用上一轮的行号
   useEffect(() => {
     if (!lyricsManagedSwitch) incomingLyricIndexRef.current = -1
@@ -4363,6 +4367,12 @@ function App() {
       && (transitionStrategy === 'smart-rendered' || transitionStrategy === 'smart-rendered-v2' || transitionStrategy === 'smart-rendered-qq')
     return renderedTransitionActive ? transitionTargetTimeRef.current : Number.NaN
   }, [transitionState, transitionStrategy])
+  // 稳定引用包装：BilibiliMvBackground 已 memo，函数 prop 身份必须稳定；
+  // 底层实现随 transitionState/strategy 合法变化时经 ref 转发，memo 判等不受影响。
+  const mvPlaybackTimeGettersRef = useRef({ playback: getMvPlaybackTimeSeconds, transitionTarget: getMvTransitionTargetTimeSeconds })
+  mvPlaybackTimeGettersRef.current = { playback: getMvPlaybackTimeSeconds, transitionTarget: getMvTransitionTargetTimeSeconds }
+  const getMvPlaybackTimeSecondsStable = useCallback(() => mvPlaybackTimeGettersRef.current.playback(), [])
+  const getMvTransitionTargetTimeSecondsStable = useCallback(() => mvPlaybackTimeGettersRef.current.transitionTarget(), [])
   // 看歌模式下视频为唯一时间线：automix/无缝/交叉过渡全部失效
   const effectiveTransitionStrategy = lyricDisplayMode === 'video' ? 'none' : transitionStrategy
   // AutoMix 过渡时，播放页过渡指示显示 AutoMix 以与无缝衔接(Gapless)区分
@@ -4501,10 +4511,10 @@ function App() {
     setSelectedAlbumId(null)
   }
 
-  const closeCommentModal = () => {
+  const closeCommentModal = useCallback(() => {
     setShowCommentModal(false)
     setSelectedCommentSong(null)
-  }
+  }, [])
 
   // 完全关闭歌手/专辑弹窗并清空导航栈。
   // 与 close*Detail（返回上一级）不同：选中歌曲、查看评论等场景要的是"彻底关闭"，
@@ -4593,6 +4603,12 @@ function App() {
       setDetailPlaylistLoading(false)
     }
   }
+  // 评论弹窗：memo(CommentModal) 配套稳定回调（声明在 handleOpenPlaylistFromDetail 之后，避免 TDZ）
+  const commentOpenPlaylistRef = useRef(handleOpenPlaylistFromDetail)
+  commentOpenPlaylistRef.current = handleOpenPlaylistFromDetail
+  const commentOpenPlaylistStable = useCallback((playlist: { id: string; platform?: MusicPlatform }) => {
+    void commentOpenPlaylistRef.current(playlist.id, playlist.platform || 'netease')
+  }, [])
 
   // 处理歌曲选择
   const handleSongSelect = async (song: Song, playlistFromSource?: Song[], origin?: PlaybackOrigin, sourceIndex?: number) => {
@@ -6608,6 +6624,21 @@ function App() {
   const watchEngineMutedRef = useRef(false)
   /** MV 背景当前播放的视频状态（切到看歌时复用已加载的流，避免重新缓冲卡顿） */
   const mvBackgroundStateRef = useRef<{ songKey: string; bvid: string; cid: number; videoUrl: string; cacheKey: string; type?: string } | null>(null)
+  // 稳定引用：BilibiliMvBackground 已 memo，这两个函数 prop 必须身份稳定
+  // （实现体只读写 ref，无闭包状态，useCallback [] 安全）。
+  const getMvAudioElementStable = useCallback(() => {
+    const el = audioPlayerRef.current.getAudioElement()
+    // WebView2 播放面：MV 背景同步时间源走 bridge（代理视图）
+    if (audioPlayerRef.current.isExternalPlaybackActive?.()) {
+      externalAudioViewRef.current = el
+      return externalAudioProxyRef.current
+    }
+    return el
+  }, [])
+  const handleMvBackgroundPlayStateChange = useCallback((s: { songKey: string; bvid: string; cid: number; videoUrl: string; cacheKey: string; type?: string; currentTime: number } | null) => {
+    // null = MV 背景已卸载/切歌/失败：清空复用缓存，避免切看歌时用上过期视频
+    mvBackgroundStateRef.current = s ? { songKey: s.songKey, bvid: s.bvid, cid: s.cid, videoUrl: s.videoUrl, cacheKey: s.cacheKey, type: s.type } : null
+  }, [])
   const [watchInitialVideo, setWatchInitialVideo] = useState<SongOwnedHandoff<{ bvid: string; cid: number; videoUrl: string; cacheKey: string; type?: string; currentTime: number }> | null>(null)
   /** HTMLAudioElement 音量渐变（等功率线性，避免双声爆音） */
   const fadeElementVolume = (el: HTMLAudioElement | null | undefined, from: number, to: number, ms: number): Promise<void> =>
@@ -7455,15 +7486,18 @@ function App() {
     return () => window.removeEventListener('waveforge:show-similar-songs', handler)
   }, [])
 
-  // 相似歌曲直接切歌（网易云灯泡行为）：右键菜单/轮盘派发
+  // 相似歌曲直接切歌（网易云灯泡行为）：右键菜单/轮盘派发。
+  // handler 走 latest-ref：App 高频重渲染时避免反复退订/重订 window 监听。
+  const playSimilarEventRef = useRef<(event: Event) => void>(() => undefined)
+  playSimilarEventRef.current = (event) => {
+    const detail = (event as CustomEvent<Song | null | undefined>).detail
+    void playSimilarNow(detail || playlist[currentIndexRef.current] || null)
+  }
   useEffect(() => {
-    const handler = (event: Event) => {
-      const detail = (event as CustomEvent<Song | null | undefined>).detail
-      void playSimilarNow(detail || playlist[currentIndexRef.current] || null)
-    }
+    const handler = (event: Event) => playSimilarEventRef.current(event)
     window.addEventListener('waveforge:play-similar-song', handler)
     return () => window.removeEventListener('waveforge:play-similar-song', handler)
-  })
+  }, [])
 
   // 共振挂起时，全局右键菜单多一项「推送至共振（一起听）」→ 这里把歌交给房间。
   // 房主当场决定：能加就设成下一曲，不能加就挂进预排队。
@@ -8944,6 +8978,18 @@ function App() {
   const closeSongDetail = useCallback(() => setShowSongDetail(false), [])
   const closeSimilarSongs = useCallback(() => setShowSimilarSongs(false), [])
 
+  // 搜索面板：memo(SearchPanel) 配套稳定回调（面板打开期间 App 重渲染不再击穿）
+  const closeSearchPanel = useCallback(() => {
+    setShowSearch(false)
+    setRestorePlaybackOrigin(null)
+  }, [])
+  const consumeRestoreOrigin = useCallback(() => setRestorePlaybackOrigin(null), [])
+  const searchOpenPlaylistRef = useRef(handleOpenPlaylistFromDetail)
+  searchOpenPlaylistRef.current = handleOpenPlaylistFromDetail
+  const searchOpenPlaylistStable = useCallback((playlist: { id: string; platform?: MusicPlatform }) => {
+    void searchOpenPlaylistRef.current(playlist.id, playlist.platform || 'netease')
+  }, [])
+
   // 歌手/专辑弹窗选中歌曲需先清空导航栈（dismiss*），与 handleSongSelect 内部
   // 仅 setShow*Detail(false) 不同，不能直接复用 viewCallbacks.onSongSelect。
   // 经 handleSongSelectRef 取最新实现，避免 [] 依赖闭包捕获过期函数。
@@ -9752,17 +9798,9 @@ function App() {
             platform={currentSong.platform}
             songId={currentSong.id || currentSong.mid}
             isPlaying={isPlaying}
-            getAudioElement={() => {
-              const el = audioPlayerRef.current.getAudioElement()
-              // WebView2 播放面：MV 背景同步时间源走 bridge（代理视图）
-              if (audioPlayerRef.current.isExternalPlaybackActive?.()) {
-                externalAudioViewRef.current = el
-                return externalAudioProxyRef.current
-              }
-              return el
-            }}
-            getPlaybackTimeSeconds={getMvPlaybackTimeSeconds}
-            getTransitionTargetTimeSeconds={getMvTransitionTargetTimeSeconds}
+            getAudioElement={getMvAudioElementStable}
+            getPlaybackTimeSeconds={getMvPlaybackTimeSecondsStable}
+            getTransitionTargetTimeSeconds={getMvTransitionTargetTimeSecondsStable}
             playerTheme={playerTheme}
             upcomingSongs={watchUpcomingSongs}
             enabled={mvBackgroundEnabled && !mvBackgroundSuppressed}
@@ -9791,10 +9829,7 @@ function App() {
             songTrackKey={currentSong ? getSongKey(currentSong) : ''}
             onFallbackChange={setMvBackgroundFallback}
             onReadyChange={setMvBackgroundReady}
-            onPlayStateChange={(s: { songKey: string; bvid: string; cid: number; videoUrl: string; cacheKey: string; type?: string; currentTime: number } | null) => {
-              // null = MV 背景已卸载/切歌/失败：清空复用缓存，避免切看歌时用上过期视频
-              mvBackgroundStateRef.current = s ? { songKey: s.songKey, bvid: s.bvid, cid: s.cid, videoUrl: s.videoUrl, cacheKey: s.cacheKey, type: s.type } : null
-            }}
+            onPlayStateChange={handleMvBackgroundPlayStateChange}
           />
         )}
             {/* 渐变遮罩层 */}
@@ -11026,7 +11061,7 @@ function App() {
                             backgroundEffect={backgroundEffect}
                             playerTheme={playerTheme}
                             lyricStyleMode={lyricStyleMode}
-                            onActiveIndexChange={index => { incomingLyricIndexRef.current = index }}
+                            onActiveIndexChange={handleIncomingLyricIndexChange}
                           />
                         )}
                       </div>
@@ -11264,11 +11299,8 @@ function App() {
             <LazySearchPanel
             onSongSelect={viewCallbacks.onSongSelect}
             restorePlaybackOrigin={restorePlaybackOrigin}
-            onClose={() => {
-              setShowSearch(false)
-              setRestorePlaybackOrigin(null)
-            }}
-            onRestoreConsumed={() => setRestorePlaybackOrigin(null)}
+            onClose={closeSearchPanel}
+            onRestoreConsumed={consumeRestoreOrigin}
             playerTheme={playerTheme}
             neteaseVip={neteaseVip}
             qqVip={qqVip}
@@ -11285,7 +11317,7 @@ function App() {
             onViewComments={viewCallbacks.onViewComments}
             onOpenArtist={viewCallbacks.onOpenArtist}
             onOpenAlbum={viewCallbacks.onOpenAlbum}
-            onOpenPlaylist={(playlist) => { void handleOpenPlaylistFromDetail(playlist.id, playlist.platform || 'netease') }}
+            onOpenPlaylist={searchOpenPlaylistStable}
             onCopyInfo={viewCallbacks.onCopyInfo}
             />
           )}
@@ -11398,7 +11430,7 @@ function App() {
               song={selectedCommentSong}
               playerTheme={playerTheme}
               accentColor={playbackCoverColor}
-              onOpenPlaylist={(playlist) => { void handleOpenPlaylistFromDetail(playlist.id, 'netease') }}
+              onOpenPlaylist={commentOpenPlaylistStable}
             />
           )}
         </AnimatePresence>

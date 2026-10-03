@@ -267,11 +267,19 @@ def _create_riser(channels, samples, sample_rate, beat_durations, intensity, ref
     return np.repeat(riser, channels, axis=0).astype(np.float32) * level
 
 
+_GENERATOR_CACHE = {'gen': None, 'torch': None}
+
+
 def load_generator():
     """加载 DJTransGAN 预训练生成器（模型/权重都较大，仅加载一次，常驻进程）。"""
     import torch
     from djtransgan.model import get_generator
     from djtransgan.utils import load_pt
+
+    # 进程级缓存：worker 进程常驻复用（render-runtime ensureWorker），
+    # automation + render 一次完整 AI 混音会连续两次调用，不缓存则重复反序列化数百 MB 权重。
+    if _GENERATOR_CACHE['gen'] is not None:
+        return _GENERATOR_CACHE['gen'], _GENERATOR_CACHE['torch']
 
     gen = get_generator()
     weight_path = os.path.join(REPO_DIR, 'pretrained', 'djtransgan_minmax.pt')
@@ -279,6 +287,8 @@ def load_generator():
         raise RuntimeError(f'DJTransGAN 预训练权重不存在: {weight_path}')
     gen.load_state_dict(load_pt(weight_path))
     gen.eval()
+    _GENERATOR_CACHE['gen'] = gen
+    _GENERATOR_CACHE['torch'] = torch
     return gen, torch
 
 

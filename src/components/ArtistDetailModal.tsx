@@ -1680,7 +1680,7 @@ export default function ArtistDetailModal({
                         >
                           <div className="h-32 w-32 shrink-0 overflow-hidden rounded-full bg-white/10 shadow-lg transition-transform duration-200 group-hover:scale-[1.04]">
                             {pic ? (
-                              <img src={getProxiedImageUrl(pic, 300)} alt={name} className="w-full h-full object-cover" />
+                              <img src={getProxiedImageUrl(pic, 300)} alt={name} className="w-full h-full object-cover" loading="lazy" decoding="async" />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center"><Music className="w-8 h-8 text-white/40" /></div>
                             )}
@@ -1777,7 +1777,7 @@ export default function ArtistDetailModal({
                             className="flex flex-col items-center gap-1.5 p-2 rounded-xl transition-colors hover:bg-white/10"
                           >
                             <div className="w-16 h-16 rounded-full overflow-hidden bg-white/10">
-                              {pic ? <img src={getProxiedImageUrl(pic, 150)} alt={name} className="w-full h-full object-cover" /> : <Music className="w-6 h-6 m-auto text-white/40" />}
+                              {pic ? <img src={getProxiedImageUrl(pic, 150)} alt={name} className="w-full h-full object-cover" loading="lazy" decoding="async" /> : <Music className="w-6 h-6 m-auto text-white/40" />}
                             </div>
                             <span className={`text-xs truncate w-full text-center ${textSecondary}`}>{name}</span>
                           </button>

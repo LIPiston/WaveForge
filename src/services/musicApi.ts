@@ -4,6 +4,7 @@ import type { EntitlementTier } from '../utils/musicEntitlements'
 import { getApiBase } from './apiConfig'
 import { resolveArtworkUrl } from './artwork'
 import { createTtlCache } from '../utils/ttlCache'
+import { debugLog } from '../utils/debugLog'
 const API_BASE = getApiBase()
 
 // 统一请求超时：此前仅歌词链路有超时，搜索/详情/歌单写操作全部裸 fetch，
@@ -675,13 +676,13 @@ export async function searchArtists(keywords: string, platform: MusicPlatform = 
     const devMode = localStorage.getItem('developerMode') === 'true'
     if (platform === 'qq') {
       const url = `${API_BASE}/qq/search?keywords=${encodeURIComponent(keywords)}&type=singer&devMode=${devMode}`
-      const response = await fetch(url)
+      const response = await fetchT(url)
       const data = await response.json()
-      console.log(`📊 [搜索歌手-QQ] 返回数据keys:`, Object.keys(data))
-      console.log(`📊 [搜索歌手-QQ] singers字段:`, data.singers ? `存在(${data.singers.length}个)` : '不存在')
+      debugLog(`📊 [搜索歌手-QQ] 返回数据keys:`, Object.keys(data))
+      debugLog(`📊 [搜索歌手-QQ] singers字段:`, data.singers ? `存在(${data.singers.length}个)` : '不存在')
       
       if (data.singers && data.singers.length > 0) {
-        console.log(`📊 [搜索歌手-QQ] 前3个歌手:`, data.singers.slice(0, 3).map((s: any) => ({
+        debugLog(`📊 [搜索歌手-QQ] 前3个歌手:`, data.singers.slice(0, 3).map((s: any) => ({
           id: s.singer_id,
           mid: s.singer_mid,
           name: s.singer_name
@@ -701,13 +702,13 @@ export async function searchArtists(keywords: string, platform: MusicPlatform = 
     }
     
     const url = `${API_BASE}/netease/search?keywords=${encodeURIComponent(keywords)}&type=100&devMode=${devMode}`
-    const response = await fetch(url)
+    const response = await fetchT(url)
     const data = await response.json()
-    console.log(`📊 [搜索歌手-网易云] 返回数据keys:`, Object.keys(data))
-    console.log(`📊 [搜索歌手-网易云] result.artists字段:`, data.result?.artists ? `存在(${data.result.artists.length}个)` : '不存在')
+    debugLog(`📊 [搜索歌手-网易云] 返回数据keys:`, Object.keys(data))
+    debugLog(`📊 [搜索歌手-网易云] result.artists字段:`, data.result?.artists ? `存在(${data.result.artists.length}个)` : '不存在')
     
     if (data.result?.artists && data.result.artists.length > 0) {
-      console.log(`📊 [搜索歌手-网易云] 前3个歌手:`, data.result.artists.slice(0, 3).map((s: any) => ({
+      debugLog(`📊 [搜索歌手-网易云] 前3个歌手:`, data.result.artists.slice(0, 3).map((s: any) => ({
         id: s.id,
         name: s.name
       })))
@@ -1160,7 +1161,7 @@ function parseQQKanaMetadata(kanaText: string): Map<string, {startTime: number, 
   
   const kanaData = kanaMatch[1]
   
-  console.log('🔍 QQ音乐 Kana 原始数据:', kanaData.substring(0, 500))
+  debugLog('🔍 QQ音乐 Kana 原始数据:', kanaData.substring(0, 500))
   
   // 解析格式: 1字1符(12345,100)带(12445,150)时...
   // 1 是普通字符的分隔符
@@ -1214,10 +1215,10 @@ function parseQQKanaMetadata(kanaText: string): Map<string, {startTime: number, 
 function parseQQKanaLyric(lrcText: string, qrcText: string): LyricLine[] {
   if (!lrcText) return []
   
-  console.log('📋 QQ音乐歌词数据:')
-  console.log('  - lrcText长度:', lrcText.length)
-  console.log('  - qrcText长度:', qrcText.length)
-  console.log('  - qrcText前500字符:', qrcText.substring(0, 500))
+  debugLog('📋 QQ音乐歌词数据:')
+  debugLog('  - lrcText长度:', lrcText.length)
+  debugLog('  - qrcText长度:', qrcText.length)
+  debugLog('  - qrcText前500字符:', qrcText.substring(0, 500))
   
   // 从 qrc 中提取 kana 时间映射
   const kanaMap = parseQQKanaMetadata(qrcText)
@@ -1659,7 +1660,7 @@ export async function getLyrics(
 
         
         // 流式回调：立即显示基础歌词
-        console.log(`  [Lyrics] 源: ${firstResult.source}, 逐字: ${hasWordByWord}, 罗马音: ${hasRoman}, 翻译: ${hasTranslation}, text: '${currentLyrics[0]?.text || ''}'`); if (onProgress) {
+        debugLog(`  [Lyrics] 源: ${firstResult.source}, 逐字: ${hasWordByWord}, 罗马音: ${hasRoman}, 翻译: ${hasTranslation}, text: '${currentLyrics[0]?.text || ''}'`); if (onProgress) {
           onProgress(currentLyrics, firstResult.source, hasWordByWord, {
             logs: [...apiLogs],
             finalSources: { ...finalSourceTracking },
@@ -1814,7 +1815,7 @@ export async function getLyrics(
         } catch { /* 静默：借不到逐字不影响正文与其它能力 */ }
       }
 
-      console.log(`  [Lyrics] 组合完成: 骨架=${baseResult.source}, 逐字=${hasWordByWord}, 罗马音=${hasRoman}, 翻译=${hasTranslation}`)
+      debugLog(`  [Lyrics] 组合完成: 骨架=${baseResult.source}, 逐字=${hasWordByWord}, 罗马音=${hasRoman}, 翻译=${hasTranslation}`)
       // Apple 曲目歌词诊断：转发到后台控制台，便于确认逐字/翻译/罗马音来源
       if (isApplePlatform) {
         try {
@@ -1835,44 +1836,44 @@ export async function getLyrics(
       }
       
       // 输出格式化的API日志总结
-      console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-      console.log('📊 歌词 API 调用汇总')
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+      debugLog('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+      debugLog('📊 歌词 API 调用汇总')
+      debugLog('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
       
       apiLogs.forEach(log => {
         const statusIcon = log.status === 'success' ? '✅' : log.status === 'empty' ? '⚠️' : '❌'
-        console.log(`${statusIcon} ${log.source}`)
+        debugLog(`${statusIcon} ${log.source}`)
         
         if (log.status === 'success') {
           const wwIcon = log.hasWordByWord ? '✓' : '✗'
           const romIcon = log.hasRoman ? '✓' : '✗'
           const transIcon = log.hasTranslation ? '✓' : '✗'
-          console.log(`   逐字: ${wwIcon}  |  罗马音: ${romIcon}  |  翻译: ${transIcon}`)
-          console.log(`   ${log.lineCount} 行\n`)
+          debugLog(`   逐字: ${wwIcon}  |  罗马音: ${romIcon}  |  翻译: ${transIcon}`)
+          debugLog(`   ${log.lineCount} 行\n`)
         } else if (log.status === 'empty') {
-          console.log('   暂无信息\n')
+          debugLog('   暂无信息\n')
         } else if (log.status === 'failed') {
-          console.log(`   错误: ${log.errorMessage}\n`)
+          debugLog(`   错误: ${log.errorMessage}\n`)
         }
       })
       
       if (finalSourceTracking.wordByWord || finalSourceTracking.roman || finalSourceTracking.translation) {
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-        console.log('🎯 最终来源')
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+        debugLog('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+        debugLog('🎯 最终来源')
+        debugLog('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
         
         if (finalSourceTracking.wordByWord) {
-          console.log(`逐字: ${finalSourceTracking.wordByWord}`)
+          debugLog(`逐字: ${finalSourceTracking.wordByWord}`)
         }
         if (finalSourceTracking.roman) {
-          console.log(`罗马音: ${finalSourceTracking.roman}`)
+          debugLog(`罗马音: ${finalSourceTracking.roman}`)
         }
         if (finalSourceTracking.translation) {
-          console.log(`翻译: ${finalSourceTracking.translation}`)
+          debugLog(`翻译: ${finalSourceTracking.translation}`)
         }
-        console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+        debugLog('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
       } else {
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+        debugLog('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
       }
       
       return currentLyrics
@@ -2213,7 +2214,7 @@ async function getAMLLTTMLLyrics(id: number | string, platform: MusicPlatform): 
   if (primary) {
     const hasTranslation = primary.lyrics.some(line => line.translation)
     const hasRoman = primary.lyrics.some(line => line.roman)
-    console.log(`  [AMLL TTML DB] ✅ ${primary.endpoint}: 逐字 ✓ | 翻译 ${hasTranslation ? '✓' : '✗'} | 罗马音 ${hasRoman ? '✓' : '✗'} | ${primary.lyrics.length}行 | ${Date.now() - startTime}ms`)
+    debugLog(`  [AMLL TTML DB] ✅ ${primary.endpoint}: 逐字 ✓ | 翻译 ${hasTranslation ? '✓' : '✗'} | 罗马音 ${hasRoman ? '✓' : '✗'} | ${primary.lyrics.length}行 | ${Date.now() - startTime}ms`)
     return primary.lyrics
   }
 
@@ -2227,12 +2228,12 @@ async function getAMLLTTMLLyrics(id: number | string, platform: MusicPlatform): 
       },
     ])
     if (fallback) {
-      console.log(`  [AMLL TTML DB] ✅ ${fallback.endpoint}: ${fallback.lyrics.length}行 | ${Date.now() - startTime}ms`)
+      debugLog(`  [AMLL TTML DB] ✅ ${fallback.endpoint}: ${fallback.lyrics.length}行 | ${Date.now() - startTime}ms`)
       return fallback.lyrics
     }
   }
 
-  console.log(`  [AMLL TTML DB] 暂无对应 TTML，耗时: ${Date.now() - startTime}ms`)
+  debugLog(`  [AMLL TTML DB] 暂无对应 TTML，耗时: ${Date.now() - startTime}ms`)
   return []
 }
 
@@ -2257,7 +2258,7 @@ async function getLrclibLyrics(songName: string, artistName: string, duration?: 
     })
     
     if (!response.ok) {
-      console.log(`  [Lrclib] HTTP ${response.status}, 耗时: ${Date.now() - startTime}ms`)
+      debugLog(`  [Lrclib] HTTP ${response.status}, 耗时: ${Date.now() - startTime}ms`)
       return []
     }
     
@@ -2268,17 +2269,17 @@ async function getLrclibLyrics(songName: string, artistName: string, duration?: 
     const lyricText = data.syncedLyrics || data.plainLyrics || ''
     
     if (!lyricText) {
-      console.log(`  [Lrclib] ❌ 无歌词, 耗时: ${Date.now() - startTime}ms`)
+      debugLog(`  [Lrclib] ❌ 无歌词, 耗时: ${Date.now() - startTime}ms`)
       return []
     }
     
     // 解析为标准 LRC 格式
     const parsed = parseLyric(lyricText)
     const hasSync = !!data.syncedLyrics
-    console.log(`  [Lrclib] ✅ 找到歌词 (${hasSync ? '同步' : '纯文本'}), ${parsed.length}行, 耗时: ${Date.now() - startTime}ms`)
+    debugLog(`  [Lrclib] ✅ 找到歌词 (${hasSync ? '同步' : '纯文本'}), ${parsed.length}行, 耗时: ${Date.now() - startTime}ms`)
     return parsed
   } catch (error) {
-    console.log(`  [Lrclib] ❌ ${error instanceof Error ? error.message : '未找到'}, 耗时: ${Date.now() - startTime}ms`)
+    debugLog(`  [Lrclib] ❌ ${error instanceof Error ? error.message : '未找到'}, 耗时: ${Date.now() - startTime}ms`)
     return []
   }
 }
@@ -2417,7 +2418,7 @@ async function getArtistDetailUncached(id: number | string, platform: MusicPlatf
     if (platform === 'qq') {
       const response = await fetchT(`${API_BASE}/qq/artist?mid=${id}`)
       const data = await response.json()
-      console.log(`[前端-歌手详情] 📊 QQ音乐返回数据keys:`, Object.keys(data))
+      debugLog(`[前端-歌手详情] 📊 QQ音乐返回数据keys:`, Object.keys(data))
       // 网关把上游错误包成 {error:...}：不校验就构造出 name:undefined 的壳对象并被写进详情缓存，
       // 之后 5 分钟详情页渲染空白（网易分支有校验，这里补齐）
       if (!data || data.error || !data.singer_name) {
@@ -2440,7 +2441,7 @@ async function getArtistDetailUncached(id: number | string, platform: MusicPlatf
     }
     const response = await fetchT(`${API_BASE}/netease/artist?id=${id}`)
     const data = await response.json()
-    console.log(`[前端-歌手详情] 📊 网易云返回数据keys:`, Object.keys(data))
+    debugLog(`[前端-歌手详情] 📊 网易云返回数据keys:`, Object.keys(data))
     
     if (!data.artist) {
       console.error(`[前端-歌手详情] ❌ 网易云返回数据中没有artist字段!`)
@@ -2448,10 +2449,10 @@ async function getArtistDetailUncached(id: number | string, platform: MusicPlatf
       return null
     }
     
-    console.log(`[前端-歌手详情] 📊 artist字段keys:`, Object.keys(data.artist))
-    console.log(`[前端-歌手详情] 📊 alias: ${data.artist.alias ? JSON.stringify(data.artist.alias) : '无数据'}`)
-    console.log(`[前端-歌手详情] 📊 briefDesc: ${data.artist.briefDesc ? '有数据(' + data.artist.briefDesc.length + '字符)' : '无数据'}`)
-    console.log(`[前端-歌手详情] 📊 intro: ${data.artist.intro ? '有数据(' + data.artist.intro.length + '章节)' : '无数据'}`)
+    debugLog(`[前端-歌手详情] 📊 artist字段keys:`, Object.keys(data.artist))
+    debugLog(`[前端-歌手详情] 📊 alias: ${data.artist.alias ? JSON.stringify(data.artist.alias) : '无数据'}`)
+    debugLog(`[前端-歌手详情] 📊 briefDesc: ${data.artist.briefDesc ? '有数据(' + data.artist.briefDesc.length + '字符)' : '无数据'}`)
+    debugLog(`[前端-歌手详情] 📊 intro: ${data.artist.intro ? '有数据(' + data.artist.intro.length + '章节)' : '无数据'}`)
     const result = {
       id: data.artist.id,
       name: data.artist.name,
@@ -2466,9 +2467,9 @@ async function getArtistDetailUncached(id: number | string, platform: MusicPlatf
       platform: 'netease' as const
     }
     
-    console.log(`[前端-歌手详情] 📊 最终返回的Artist对象keys:`, Object.keys(result))
-    console.log(`[前端-歌手详情] 📊 description字段: ${result.description ? '有(' + result.description.length + '字符)' : '无'}`)
-    console.log(`[前端-歌手详情] 📊 intro字段: ${result.intro ? '有(' + result.intro.length + '章节)' : '无'}`)
+    debugLog(`[前端-歌手详情] 📊 最终返回的Artist对象keys:`, Object.keys(result))
+    debugLog(`[前端-歌手详情] 📊 description字段: ${result.description ? '有(' + result.description.length + '字符)' : '无'}`)
+    debugLog(`[前端-歌手详情] 📊 intro字段: ${result.intro ? '有(' + result.intro.length + '章节)' : '无'}`)
     return result
   } catch (error) {
     console.error('[前端-歌手详情] ❌ 异常错误:', error)
@@ -2514,7 +2515,7 @@ async function getArtistTopSongsUncached(id: number | string, platform: MusicPla
     if (platform === 'qq') {
       const response = await fetchT(`${API_BASE}/qq/artist/songs?mid=${id}`)
       const data = await response.json()
-      console.log('📊 [getArtistTopSongs] QQ音乐返回数据keys:', Object.keys(data))
+      debugLog('📊 [getArtistTopSongs] QQ音乐返回数据keys:', Object.keys(data))
       
       const songs = (data.songs || []).slice(0, 50).map((item: any) => {
         const song = {
@@ -2640,7 +2641,7 @@ async function getAlbumDetailUncached(id: number | string, platform: MusicPlatfo
       const response = await fetchT(`${API_BASE}/qq/album?mid=${id}`)
       const data = await response.json()
       
-      console.log('[前端-专辑详情] QQ音乐专辑数据:', {
+      debugLog('[前端-专辑详情] QQ音乐专辑数据:', {
         albumName: data.albumName,
         pub_time: data.pub_time,
         desc: data.desc ? `有数据(${data.desc.length}字符)` : '无数据',
@@ -3330,7 +3331,7 @@ export async function getSimilarSongs(
     const cookie = getPlatformCookie(platform, options.cookie)
     // QQ 需要 numeric id，网易云需要 string id，统一用 id 参数名
     const url = `${API_BASE}/${platform}/song/similar?id=${encodeURIComponent(id)}&cookie=${encodeURIComponent(cookie)}`
-    const response = await fetch(url)
+    const response = await fetchT(url)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取相似歌曲失败')
     return data
@@ -3350,7 +3351,7 @@ export async function getSimilarArtists(
     const cookie = getPlatformCookie(platform, options.cookie)
     const paramKey = platform === 'qq' ? 'mid' : 'id'
     const url = `${API_BASE}/${platform}/artist/similar?${paramKey}=${encodeURIComponent(id)}&cookie=${encodeURIComponent(cookie)}`
-    const response = await fetch(url)
+    const response = await fetchT(url)
     const data = await response.json()
     if (!response.ok) throw new Error(data?.error || '获取相似歌手失败')
     return data

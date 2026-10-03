@@ -1207,6 +1207,11 @@ const PathRail: React.FC<{ sequencer: SequencerState; accentColor: string }> = (
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [latest, latest?.frames]);
 
+    // geometry 为命令式创建（不经 R3F 自动 dispose），换段/卸载时手动释放，避免 GPU 缓冲累积
+    useEffect(() => () => {
+        geometry?.dispose();
+    }, [geometry]);
+
     if (!geometry) return null;
     return (
         <mesh geometry={geometry}>

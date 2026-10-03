@@ -371,8 +371,13 @@ function appendCookie(url: string): string {
   return `${url}${separator}cookie=${encodeURIComponent(cookie)}`
 }
 
+// 默认 20s 超时（与 musicApi.fetchT 同标准）：后端 3001 卡死/代理悬挂时调用方不至于永久 pending；
+// 调用点传入的 signal 优先。
+const BILIBILI_FETCH_TIMEOUT_MS = 20_000
+
 async function fetchJson<T = unknown>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(appendCookie(url), init)
+  const signal = init?.signal ?? AbortSignal.timeout(BILIBILI_FETCH_TIMEOUT_MS)
+  const res = await fetch(appendCookie(url), { ...init, signal })
   if (!res.ok) {
     let message = `HTTP ${res.status}`
     try {
@@ -388,7 +393,8 @@ async function fetchJson<T = unknown>(url: string, init?: RequestInit): Promise<
 
 /** 不因非 2xx 抛错的 JSON 请求（个人主页登录受限接口：未登录时返回 code:-101 供前端判断） */
 async function fetchJsonLoose<T = unknown>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(appendCookie(url), init)
+  const signal = init?.signal ?? AbortSignal.timeout(BILIBILI_FETCH_TIMEOUT_MS)
+  const res = await fetch(appendCookie(url), { ...init, signal })
   const text = await res.text()
   try {
     return JSON.parse(text) as T

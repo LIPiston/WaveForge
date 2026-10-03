@@ -4408,48 +4408,44 @@ app.get('/api/netease/artist', async (req, res) => {
 
     const artist = artistResult.body.artist
     const hotSongs = artistResult.body.hotSongs || []
-    // 2. 获取艺人详细信息（briefDesc）- 带重试
-    try {
-      const detailResult = await retryApiCall(() => NeteaseAPI.artist_detail({ id: id }))
-      if (detailResult.status === 200 && detailResult.body && detailResult.body.data) {
-        if (detailResult.body.data.briefDesc) {
-          artist.briefDesc = detailResult.body.data.briefDesc
-        } else {
-        }
-      } else {
+    // 2/3/4. 艺人详情（briefDesc）、介绍（intro）、粉丝数——三个请求互不依赖，
+    // 并行发出（原先串行 await，每次打开歌手页白付 3 次往返 × 各自最多 3 次重试延迟）。
+    // 合并顺序仍保持 detail → desc，desc 的 briefDesc 兜底逻辑不变。
+    const [detailResult, descResult, followResult] = await Promise.all([
+      retryApiCall(() => NeteaseAPI.artist_detail({ id })).catch((error) => {
+        console.error('[网易云艺人详情] ❌ 步骤2异常（已重试3次）:', error.message)
+        return null
+      }),
+      retryApiCall(() => NeteaseAPI.artist_desc({ id })).catch((error) => {
+        console.error('[网易云艺人详情] ❌ 步骤3异常（已重试3次）:', error.message)
+        return null
+      }),
+      retryApiCall(() => NeteaseAPI.artist_follow_count({ id })).catch(() => null),
+    ])
+
+    // 获取艺人详细信息（briefDesc）
+    if (detailResult && detailResult.status === 200 && detailResult.body && detailResult.body.data) {
+      if (detailResult.body.data.briefDesc) {
+        artist.briefDesc = detailResult.body.data.briefDesc
       }
-    } catch (error) {
-      console.error('[网易云艺人详情] ❌ 步骤2异常（已重试3次）:', error.message)
     }
 
-    // 3. 获取艺人介绍（intro）- 带重试
-    try {
-      const descResult = await retryApiCall(() => NeteaseAPI.artist_desc({ id: id }))
-      if (descResult.status === 200 && descResult.body) {
-        if (descResult.body.introduction) {
-          artist.intro = descResult.body.introduction
-        } else {
-        }
-        
-        // 如果没有 briefDesc，使用 briefDesc
-        if (!artist.briefDesc && descResult.body.briefDesc) {
-          artist.briefDesc = descResult.body.briefDesc
-        }
-      } else {
+    // 获取艺人介绍（intro）
+    if (descResult && descResult.status === 200 && descResult.body) {
+      if (descResult.body.introduction) {
+        artist.intro = descResult.body.introduction
       }
-    } catch (error) {
-      console.error('[网易云艺人详情] ❌ 步骤3异常（已重试3次）:', error.message)
+
+      // 如果没有 briefDesc，使用 briefDesc
+      if (!artist.briefDesc && descResult.body.briefDesc) {
+        artist.briefDesc = descResult.body.briefDesc
+      }
     }
 
-    // 4. 获取粉丝数 - 带重试
+    // 获取粉丝数
     let fans = 0
-    try {
-      const followResult = await retryApiCall(() => NeteaseAPI.artist_follow_count({ id: id }))
-      if (followResult.status === 200 && followResult.body && followResult.body.data) {
-        fans = followResult.body.data.fansCnt || 0
-      } else {
-      }
-    } catch (error) {
+    if (followResult && followResult.status === 200 && followResult.body && followResult.body.data) {
+      fans = followResult.body.data.fansCnt || 0
     }
     console.log('[网易云艺人详情] 🎉 返回数据: artist keys=', Object.keys(artist).join(', '))
     

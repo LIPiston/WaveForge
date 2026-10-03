@@ -202,10 +202,16 @@ class AnalysisWorker:
             except Exception as e:
                 raise RuntimeError(f"Beat This analysis failed: {safe_error(e)}") from e
             
+            # 整曲只解码一次，特征提取与静音检测复用（原先各自 librosa.load，
+            # 连同 tracker 内部一次共 3 次全量解码；解码是分析链路最贵的磁盘/CPU 开销）
+            audio_y, audio_sr = (None, None)
+            if LIBROSA_AVAILABLE:
+                audio_y, audio_sr = librosa.load(audio_path, sr=22050, mono=True)
+
             # Extract beat-synchronous features if we have beats
             if result['beats'] and LIBROSA_AVAILABLE:
                 try:
-                    result['beatFeatures'] = self._extract_beat_features(audio_path, result['beats'])
+                    result['beatFeatures'] = self._extract_beat_features(audio_path, result['beats'], audio=audio_y, sr=audio_sr)
                     result['sections'] = self._detect_sections(result['beatFeatures'], result['duration'])
                 except Exception as e:
                     print(f"Feature extraction failed: {safe_error(e)}", file=sys.stderr)
@@ -213,7 +219,7 @@ class AnalysisWorker:
             # Detect silence regions
             if LIBROSA_AVAILABLE:
                 try:
-                    intro, outro = self._detect_silence(audio_path)
+                    intro, outro = self._detect_silence(audio_path, audio=audio_y, sr=audio_sr)
                     result['introSilence'] = intro
                     result['outroSilence'] = outro
                 except Exception as e:
@@ -229,10 +235,14 @@ class AnalysisWorker:
                 'provider': 'error'
             }
     
-    def _extract_beat_features(self, audio_path, beats):
+    def _extract_beat_features(self, audio_path, beats, audio=None, sr=None):
         """Extract beat-synchronous features for transition planning"""
         try:
-            y, sr = librosa.load(audio_path, sr=22050, mono=True)
+            # audio/sr 由调用方传入（整曲只解码一次）；未传入时退回自行加载（兼容旧调用）
+            if audio is None or sr is None:
+                y, sr = librosa.load(audio_path, sr=22050, mono=True)
+            else:
+                y, sr = audio, sr
             hop_length = 512
             beat_frames = librosa.time_to_frames(beats, sr=sr, hop_length=hop_length)
             chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length)
@@ -332,10 +342,14 @@ class AnalysisWorker:
             })
         return sections
     
-    def _detect_silence(self, audio_path, threshold_db=-40):
+    def _detect_silence(self, audio_path, threshold_db=-40, audio=None, sr=None):
         """Detect intro and outro silence"""
         try:
-            y, sr = librosa.load(audio_path, sr=22050, mono=True)
+            # audio/sr 由调用方传入（整曲只解码一次）；未传入时退回自行加载（兼容旧调用）
+            if audio is None or sr is None:
+                y, sr = librosa.load(audio_path, sr=22050, mono=True)
+            else:
+                y, sr = audio, sr
             
             # Compute RMS energy
             rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]

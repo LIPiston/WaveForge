@@ -3828,12 +3828,26 @@ function findWallpaperEngineUserConfig(config) {
   ))
 }
 
+// config.json 的读取+解析按 mtime 缓存：WE 的 config.json 可达数十 KB（含全部已装壁纸索引），
+// watcher 每 10s tick 重读+JSON.parse 纯属浪费；mtime 未变化时复用上次解析结果。
+let weConfigCache = { path: null, mtimeMs: -1, config: null }
+
+async function readWallpaperEngineConfigCached(configPath) {
+  const stats = await fs.promises.stat(configPath)
+  if (weConfigCache.path === configPath && weConfigCache.mtimeMs === stats.mtimeMs && weConfigCache.config) {
+    return weConfigCache.config
+  }
+  const config = JSON.parse(await fs.promises.readFile(configPath, 'utf8'))
+  weConfigCache = { path: configPath, mtimeMs: stats.mtimeMs, config }
+  return config
+}
+
 async function getWallpaperEngineSource() {
   try {
     const configPath = await getWallpaperEngineConfigPath()
     if (!configPath) return null
 
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+    const config = await readWallpaperEngineConfigCached(configPath)
     const userConfig = findWallpaperEngineUserConfig(config)
     const selected = userConfig?.general?.wallpaperconfig?.selectedwallpapers
     if (!selected || typeof selected !== 'object') return null
