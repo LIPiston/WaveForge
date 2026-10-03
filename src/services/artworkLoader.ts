@@ -283,21 +283,8 @@ export function clearArtworkMemoryCache(): void {
   publishArtworkEpoch()
 }
 
-/**
- * 清空后端（3001）图片代理进程内的 LRU 缓存。
- *
- * 该缓存有 128MB 上限、6 小时 TTL，此前没有任何前端清理入口——用户在设置里
- * 「清理所有缓存」后，代理仍会直接回放旧封面。失败时静默降级：清理属于尽力而为，
- * 缓存会按 TTL 自行过期，不该因此让整个清理流程报错。
- */
-export async function clearBackendImageCache(): Promise<void> {
-  try {
-    const response = await fetch(`${getApiBase()}/cache/image/clear`, { method: 'POST' })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  } catch {
-    // 后端未运行/旧版本时忽略：本地缓存已清，代理缓存会随 TTL 过期
-  }
-}
+// 服务端缓存清理（图片代理 / 歌词 / 汽水解密）已迁到 services/serverCacheAdmin.ts：
+// 那些缓存与封面无关，放在本文件里语义不符，且新增的「清理全部」需要一并触达。
 
 if (typeof window !== 'undefined') {
   window.addEventListener('waveforge-auth-changed', refreshArtworkAfterAuthChange)

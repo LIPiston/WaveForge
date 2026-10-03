@@ -1,11 +1,23 @@
+/**
+ * 过期扫描的最小间隔。set 在图片代理里最多 32 并发在飞，而每次插入都全表遍历
+ * （maxEntries 上限内最多 800 条）纯属浪费——过期条目在 get 时本就会被惰性剔除。
+ * 容量淘汰不受此节流影响，见 set()。
+ */
+export const DEFAULT_PRUNE_INTERVAL_MS = 10_000
+
 export class ByteLruCache {
-  constructor({ maxBytes, maxEntries, ttlMs }) {
+  constructor({ maxBytes, maxEntries, ttlMs, pruneIntervalMs = DEFAULT_PRUNE_INTERVAL_MS }) {
     for (const [name, value] of Object.entries({ maxBytes, maxEntries, ttlMs })) {
       if (!Number.isFinite(value) || value <= 0) throw new TypeError(`${name} must be a positive finite number`)
+    }
+    if (!Number.isFinite(pruneIntervalMs) || pruneIntervalMs < 0) {
+      throw new TypeError('pruneIntervalMs must be a non-negative finite number')
     }
     this.maxBytes = maxBytes
     this.maxEntries = maxEntries
     this.ttlMs = ttlMs
+    this.pruneIntervalMs = pruneIntervalMs
+    this.lastPruneAt = Number.NEGATIVE_INFINITY
     this.entries = new Map()
     this.totalBytes = 0
     this.hits = 0
@@ -34,18 +46,22 @@ export class ByteLruCache {
 
   set(key, value, bytes, now = Date.now()) {
     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new TypeError('bytes must be a non-negative safe integer')
-    this.prune(now)
+    this.maybePruneExpired(now)
     this.delete(key)
     if (bytes > this.maxBytes) return false
     this.entries.set(key, { value, bytes, at: now })
     this.totalBytes += bytes
-    while (this.entries.size > this.maxEntries || this.totalBytes > this.maxBytes) {
-      const oldest = this.entries.keys().next().value
-      if (oldest === undefined) break
-      this.delete(oldest)
-      this.evictions += 1
-    }
+    // 容量淘汰刻意不节流：这段是 O(淘汰数) 而非 O(n)，且必须每次精确执行，
+    // 否则 totalBytes/maxEntries 的硬上限会短暂失效。
+    this.evictOverCapacity()
     return true
+  }
+
+  /** 按 pruneIntervalMs 节流地回收过期条目；窗口内跳过，交给 get 的惰性判断兜底。 */
+  maybePruneExpired(now = Date.now()) {
+    if (now - this.lastPruneAt < this.pruneIntervalMs) return 0
+    this.lastPruneAt = now
+    return this.pruneExpired(now)
   }
 
   delete(key) {
@@ -67,8 +83,8 @@ export class ByteLruCache {
     return removed
   }
 
-  prune(now = Date.now()) {
-    let removed = this.pruneExpired(now)
+  evictOverCapacity() {
+    let removed = 0
     while (this.entries.size > this.maxEntries || this.totalBytes > this.maxBytes) {
       const oldest = this.entries.keys().next().value
       if (oldest === undefined) break
@@ -76,6 +92,14 @@ export class ByteLruCache {
       this.evictions += 1
       removed += 1
     }
+    return removed
+  }
+
+  /** 立即做一次完整的过期扫描 + 容量收敛（不节流）。 */
+  prune(now = Date.now()) {
+    this.lastPruneAt = now
+    let removed = this.pruneExpired(now)
+    removed += this.evictOverCapacity()
     return removed
   }
 
@@ -91,6 +115,7 @@ export class ByteLruCache {
       maxEntries: this.maxEntries,
       maxBytes: this.maxBytes,
       ttlMs: this.ttlMs,
+      pruneIntervalMs: this.pruneIntervalMs,
       hits: this.hits,
       misses: this.misses,
       evictions: this.evictions,

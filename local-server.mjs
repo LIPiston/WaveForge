@@ -4,7 +4,6 @@ import { fileURLToPath } from 'url'
 import { dirname, join, extname, resolve, sep } from 'path'
 import { readdir, stat, readFile } from 'fs/promises'
 import { existsSync, createReadStream, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
-import { Readable } from 'stream'
 import dns from 'node:dns'
 import os from 'node:os'
 import { execFile } from 'child_process'
@@ -28,13 +27,14 @@ import { decryptQrc } from './server/qrc-decoder.mjs'
 import { getCommentMutationMessage, isCommentMutationSuccessful } from './server/comment-api-utils.mjs'
 import { registerHazardRoutes } from './server/hazard-api.mjs'
 import { registerLocationRoutes } from './server/location-api.mjs'
-import { registerBilibiliRoutes } from './server/bilibili-api.mjs'
+import { registerBilibiliRoutes, clearBilibiliCaches } from './server/bilibili-api.mjs'
 // 汽水音乐（/api/soda/*）：登录态由前端每次请求的 cookie 参数传入，后端绝不持久化
 import { registerSodaRoutes } from './server/qishui-api.mjs'
 // 汽水加密音频解密代理（/api/soda/audio）：CENC 流服务端解密为可播 FLAC/m4a
-import { registerSodaAudioProxy } from './server/qishui-audio-decryptor.mjs'
+import { registerSodaAudioProxy, clearSodaDecryptCache, getSodaDecryptCacheStats } from './server/qishui-audio-decryptor.mjs'
 import { registerAppleArtworkRoutes } from './server/apple-artwork-api.mjs'
 import { registerImageProxyRoutes } from './server/image-proxy.mjs'
+import { fetchStreamWithIdleTimeout, parseByteRange, StreamProxyError } from './server/stream-proxy-utils.mjs'
 import { isAuthorizedLocalRequest, LOCAL_SERVICE_HEADER } from './server/local-service-auth.mjs'
 import { LOCAL_API_PROTOCOL_VERSION, LOCAL_API_SERVICE } from './server/local-api-health.mjs'
 import { registerNeteaseNativeExploreRoutes } from './server/netease-native-explore.mjs'
@@ -1423,6 +1423,12 @@ async function isBlockedFetchUrl(rawUrl) {
 
 // 音频播放代理：浏览器直接访问 QQ/网易云临时地址时可能被 CDN 以 403 拒绝，
 // 由本地服务代为携带站点请求头，并透传 Range 以支持流式播放和拖动进度。
+const AUDIO_PROXY_HEADER_TIMEOUT_MS = 15_000
+// 空闲超时而非整体时长上限：慢速但持续推进的长音轨不能被误杀，只掐真正卡死的连接。
+// 没有这道守卫时，上游 CDN 挂住不动会让 socket 与渲染端 <audio> 一起永久转圈
+// （唯一的终止条件曾是客户端自己断开）。
+const AUDIO_PROXY_IDLE_TIMEOUT_MS = 15_000
+const AUDIO_PROXY_MAX_BYTES = 512 * 1024 * 1024
 app.get('/api/audio', async (req, res) => {
   try {
     const { url } = req.query
@@ -1435,7 +1441,19 @@ app.get('/api/audio', async (req, res) => {
       Accept: 'audio/*,application/octet-stream;q=0.9,*/*;q=0.8',
       ...(req.headers.range ? { Range: req.headers.range } : {}),
     }
-    const response = await fetch(url, { headers, redirect: 'follow' })
+    let response, upstream
+    try {
+      ({ response, stream: upstream } = await fetchStreamWithIdleTimeout(url, {
+        headers,
+        headerTimeoutMs: AUDIO_PROXY_HEADER_TIMEOUT_MS,
+        idleTimeoutMs: AUDIO_PROXY_IDLE_TIMEOUT_MS,
+        maxBytes: AUDIO_PROXY_MAX_BYTES,
+      }))
+    } catch (error) {
+      const status = error instanceof StreamProxyError ? error.status : 502
+      console.error('[AudioProxy] upstream request failed:', error?.message || error)
+      return res.status(status).set('Access-Control-Allow-Origin', '*').send(`Audio upstream error: ${error?.message || error}`)
+    }
     if (!response.ok && response.status !== 206) {
       return res.status(response.status).set('Access-Control-Allow-Origin', '*').send(`Audio upstream returned ${response.status}`)
     }
@@ -1451,12 +1469,14 @@ app.get('/api/audio', async (req, res) => {
       if (value) passthroughHeaders[name.replace(/(^|-)([a-z])/g, (_, prefix, char) => prefix + char.toUpperCase())] = value
     }
     res.status(response.status).set(passthroughHeaders)
-    if (!response.body) return res.end()
+    if (!upstream) return res.end()
     // 客户端断开（seek/切歌 abort）时必须同时销毁上游流：只 unpipe 的话上游 fetch
     // 会继续下载整段音频，Range 拖动场景下占满带宽与连接
-    const upstream = Readable.fromWeb(response.body)
     res.on('close', () => { upstream.destroy() })
-    upstream.on('error', () => res.destroy()).pipe(res)
+    upstream.on('error', (error) => {
+      if (error instanceof StreamProxyError) console.warn('[AudioProxy] upstream stream aborted:', error.message)
+      res.destroy()
+    }).pipe(res)
   } catch (error) {
     console.error('[AudioProxy] upstream request failed:', error?.message || error)
     if (!res.headersSent) res.status(502).set('Access-Control-Allow-Origin', '*').send('Failed to load audio')
@@ -9822,11 +9842,18 @@ app.get('/api/wallpaper-engine/media', async (req, res) => {
       'webp': 'image/webp'
     }[ext] || 'application/octet-stream'
 
-    if (range) {
-      // 支持视频流的 Range 请求
-      const parts = range.replace(/bytes=/, '').split('-')
-      const start = parseInt(parts[0], 10)
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1
+    // 用公共解析器而不是就地 split：就地实现把后缀范围 bytes=-N 当成 0-N，
+    // 取到的是文件开头而非结尾（parts[0] 为空时 start 还会变成 NaN，createReadStream 同步抛错）。
+    const parsedRange = parseByteRange(range, fileSize)
+
+    if (parsedRange === 'unsatisfiable') {
+      res.writeHead(416, {
+        'Content-Range': `bytes */${fileSize}`,
+        'Accept-Ranges': 'bytes'
+      })
+      res.end()
+    } else if (parsedRange) {
+      const { start, end } = parsedRange
       const chunksize = (end - start) + 1
       const fileStream = createReadStream(mediaPath, { start, end })
 
@@ -12261,6 +12288,54 @@ app.post('/api/apple/license', async (req, res) => {
   } catch (error) {
     console.error('[Apple License 代理] 失败:', error.message || error)
     res.status(502).json({ error: error.message || 'Apple license 请求失败' })
+  }
+})
+
+// 服务端内存缓存统一清理（设置页「清理缓存」调用）。
+// 这些缓存此前全都没有清理入口：用户点「清理全部」后，汽水解密缓存最多仍占 256MB、
+// 图片代理 128MB，歌词/播放地址缓存同样留在 local-server 进程里。
+// 刻意**不**清汽水那些 TTL 缓存（搜索/播放信息/会员/歌词查询等）：它们同时承担上游
+// 限流与风控保护，清掉只会让下一次请求重新打上游，反而更容易触发更严的风控。
+// scope: all（默认）| images | lyrics
+app.post('/api/cache/server/clear', (req, res) => {
+  try {
+    const scope = String(req.query?.scope || 'all')
+    const cleared = {}
+    if (scope === 'all' || scope === 'images') {
+      imageProxy.cache.clear()
+      cleared.imageCache = true
+    }
+    if (scope === 'all' || scope === 'lyrics') {
+      cleared.neteaseLyrics = neteaseLyricCache.size
+      cleared.qqLyrics = qqLyricCache.size
+      neteaseLyricCache.clear()
+      qqLyricCache.clear()
+    }
+    if (scope === 'all') {
+      cleared.sodaDecrypt = clearSodaDecryptCache()
+      cleared.bilibili = clearBilibiliCaches()
+    }
+    res.json({ success: true, scope, cleared })
+  } catch (error) {
+    console.error('[Cache] 清理服务端缓存失败:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+app.get('/api/cache/server/stats', (req, res) => {
+  try {
+    res.json({
+      success: true,
+      stats: {
+        imageCache: imageProxy.cache.stats(),
+        neteaseLyrics: neteaseLyricCache.size,
+        qqLyrics: qqLyricCache.size,
+        sodaDecrypt: getSodaDecryptCacheStats(),
+      },
+    })
+  } catch (error) {
+    console.error('[Cache] 读取服务端缓存统计失败:', error)
+    res.status(500).json({ error: error.message })
   }
 })
 

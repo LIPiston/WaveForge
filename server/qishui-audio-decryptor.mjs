@@ -22,7 +22,9 @@
  *  - 先整包缓冲再解密（稳定优先，同参考实现 getQishuiDecryptedAudio 的 arrayBuffer 策略；
  *    CENC 的 sample 表在 moov 内、mdat 可前可后，逐 sample 解密天然要求全量数据）；
  *  - 解密结果按 SHA1(cleanUrl+auth) 做有界内存 LRU 缓存：<audio> seek 会反复发
- *    Range 请求，缓存避免重复下载+解密；总字节数封顶防内存膨胀；
+ *    Range 请求，缓存避免重复下载+解密；总字节数封顶防内存膨胀，并带 20 分钟惰性
+ *    过期；同一 URL 的并发首请求走单飞合并，不会各自完整重算一遍；
+ *    提供 POST /api/cache/soda/clear 与 GET /api/cache/soda/stats 供设置页清理/观测。
  *  - 上游请求带 UA/Referer（汽水/抖音系域名补 Referer）与整体超时；
  *  - 轻量 SSRF 校验：仅放行公网 http(s) 目标（私网/环回/链路本地字面地址与 DNS 解析
  *    结果均拒绝），与仓库 /api/cover 的防护口径一致；
@@ -34,6 +36,8 @@
 
 import crypto from 'node:crypto'
 import dns from 'node:dns'
+import { parseByteRange } from './stream-proxy-utils.mjs'
+import { BoundedAsyncCache } from './bounded-async-cache.mjs'
 
 // ─────────────────────────── mp4 box 解析（移植 mp4-box.js） ───────────────────────────
 
@@ -647,63 +651,68 @@ async function fetchSodaEncryptedStream(cleanUrl) {
 
 const SODA_DECRYPT_CACHE_MAX_BYTES = 256 * 1024 * 1024
 const SODA_DECRYPT_CACHE_MAX_ENTRIES = 12
-const sodaDecryptCache = new Map()
-let sodaDecryptCacheBytes = 0
+// 解密结果是整轨音频、常驻内存；长时间没再听的曲目没有保留价值，惰性过期回收即可
+const SODA_DECRYPT_CACHE_TTL_MS = 20 * 60 * 1000
+// 同 key 并发首请求走单飞合并：解密是逐 sample createDecipheriv + 整文件重组，
+// 重复一遍等于把整轨重新下载并重算一次（同时开两个 Range 请求就会触发）
+const sodaDecryptCache = new BoundedAsyncCache({
+  maxEntries: SODA_DECRYPT_CACHE_MAX_ENTRIES,
+  maxBytes: SODA_DECRYPT_CACHE_MAX_BYTES,
+  ttlMs: SODA_DECRYPT_CACHE_TTL_MS,
+  sizeOf: payload => payload?.buffer?.length || 0,
+})
 
 function sodaDecryptCacheKey(cleanUrl, credential) {
   return crypto.createHash('sha1').update(cleanUrl + '\n' + credential).digest('hex')
 }
 
-function rememberDecryptedAudio(key, payload) {
-  if (!payload || !Buffer.isBuffer(payload.buffer)) return
-  if (payload.buffer.length > SODA_DECRYPT_CACHE_MAX_BYTES) return
-  const existing = sodaDecryptCache.get(key)
-  if (existing) {
-    sodaDecryptCacheBytes -= existing.buffer.length
-    sodaDecryptCache.delete(key)
-  }
-  sodaDecryptCache.set(key, Object.assign({ at: Date.now() }, payload))
-  sodaDecryptCacheBytes += payload.buffer.length
-  while (
-    (sodaDecryptCacheBytes > SODA_DECRYPT_CACHE_MAX_BYTES || sodaDecryptCache.size > SODA_DECRYPT_CACHE_MAX_ENTRIES) &&
-    sodaDecryptCache.size > 1
-  ) {
-    const oldest = [...sodaDecryptCache.entries()].sort((a, b) => (a[1].at || 0) - (b[1].at || 0))[0]
-    if (!oldest) break
-    sodaDecryptCacheBytes -= oldest[1].buffer.length
-    sodaDecryptCache.delete(oldest[0])
-  }
-}
-
 async function getSodaDecryptedAudio(cleanUrl, credential) {
   const key = sodaDecryptCacheKey(cleanUrl, credential)
-  const cached = sodaDecryptCache.get(key)
-  if (cached) {
-    cached.at = Date.now()
-    return cached
-  }
-  const encryptedBuffer = await fetchSodaEncryptedStream(cleanUrl)
-  const result = decryptSodaTrack({ encryptedBuffer, spadeA: credential })
-  const payload = { buffer: result.buffer, contentType: result.contentType, extension: result.extension }
-  rememberDecryptedAudio(key, payload)
-  return payload
+  return sodaDecryptCache.getOrCreate(key, async () => {
+    const encryptedBuffer = await fetchSodaEncryptedStream(cleanUrl)
+    const result = decryptSodaTrack({ encryptedBuffer, spadeA: credential })
+    return { buffer: result.buffer, contentType: result.contentType, extension: result.extension }
+  })
+}
+
+/**
+ * 清空解密缓存（设置页「清理缓存」用）。
+ * 此前这个缓存没有任何入口能触达，用户点「清理全部」后它仍占着最多 256MB 内存。
+ */
+export function clearSodaDecryptCache() {
+  const stats = sodaDecryptCache.stats()
+  sodaDecryptCache.clear()
+  return { success: true, cleared: stats.entries, freedBytes: stats.bytes }
+}
+
+export function pruneSodaDecryptCache(now = Date.now()) {
+  return sodaDecryptCache.pruneExpired(now)
+}
+
+export function getSodaDecryptCacheStats() {
+  return sodaDecryptCache.stats()
 }
 
 // ─────────────────────────── 响应输出（Range 206 / 全量 200，移植 sendAudioBuffer） ───────────────────────────
 
 function sendSodaAudioBuffer(res, buffer, contentType, rangeHeader) {
   const total = buffer.length
-  const match = /^bytes=(\d*)-(\d*)$/i.exec(String(rangeHeader || ''))
-  if (match) {
-    let start = match[1] ? Number(match[1]) : 0
-    let end = match[2] ? Number(match[2]) : total - 1
-    if (!Number.isFinite(start) || start < 0) start = 0
-    if (!Number.isFinite(end) || end >= total) end = total - 1
-    if (start > end || start >= total) {
-      res.writeHead(416, { 'Content-Range': 'bytes */' + total })
-      res.end()
-      return
-    }
+  // 交给公共解析器：就地正则无法区分 bytes=-N（后缀）与 bytes=0-N，
+  // 会把「最后 N 字节」错发成「开头 N 字节」。
+  const range = parseByteRange(rangeHeader, total)
+  if (range === 'unsatisfiable') {
+    res.writeHead(416, {
+      'Content-Type': contentType || 'audio/mp4',
+      'Access-Control-Allow-Origin': '*',
+      'Accept-Ranges': 'bytes',
+      'Content-Range': 'bytes */' + total,
+      'Cache-Control': 'no-store',
+    })
+    res.end()
+    return
+  }
+  if (range) {
+    const { start, end } = range
     res.writeHead(206, {
       'Content-Type': contentType || 'audio/mp4',
       'Access-Control-Allow-Origin': '*',
@@ -752,6 +761,25 @@ export function registerSodaAudioProxy(app) {
       }
       const status = Number(err && err.statusCode) === 400 ? 400 : 502
       res.status(status).json({ error: '汽水音频解密代理失败：' + message })
+    }
+  })
+
+  // 缓存管理路由，形状对齐图片代理的 /api/cache/image/clear 与 /api/cache/image/stats
+  app.post('/api/cache/soda/clear', (req, res) => {
+    try {
+      res.json(clearSodaDecryptCache())
+    } catch (error) {
+      console.error('[Soda/AudioProxy] 清理缓存失败:', error)
+      res.status(500).json({ error: error.message })
+    }
+  })
+
+  app.get('/api/cache/soda/stats', (req, res) => {
+    try {
+      res.json({ success: true, stats: getSodaDecryptCacheStats() })
+    } catch (error) {
+      console.error('[Soda/AudioProxy] 读取缓存统计失败:', error)
+      res.status(500).json({ error: error.message })
     }
   })
 }

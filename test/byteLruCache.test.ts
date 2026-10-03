@@ -38,6 +38,45 @@ describe('ByteLruCache', () => {
     expect(cache.prune(11)).toBe(1)
     expect(cache.stats()).toMatchObject({ size: 0, bytes: 0, hits: 1, misses: 1, expirations: 1 })
   })
+
+  it('节流过期扫描，但过期条目在 get 时依然不可见', () => {
+    const cache = new ByteLruCache({ maxBytes: 100, maxEntries: 10, ttlMs: 10, pruneIntervalMs: 10_000 })
+    cache.set('a', 'A', 4, 0)
+    // 节流窗口内的 set 不再全表扫描：过期条目暂时留在 Map 里
+    cache.set('b', 'B', 4, 5)
+    expect(cache.size).toBe(2)
+    // 但 get 的惰性判断保证不会把过期值当命中返回
+    expect(cache.get('a', 100)).toBeNull()
+    expect(cache.size).toBe(1)
+  })
+
+  it('超过 pruneIntervalMs 后 set 顺带回收过期条目', () => {
+    const cache = new ByteLruCache({ maxBytes: 100, maxEntries: 10, ttlMs: 10, pruneIntervalMs: 50 })
+    cache.set('a', 'A', 4, 0)
+    cache.set('stale', 'S', 4, 0)
+    expect(cache.size).toBe(2)
+    // 0 → 100 已超过 50ms 窗口：这次 set 先做一次过期扫描
+    cache.set('c', 'C', 4, 100)
+    expect(cache.stats(100).expirations).toBe(2)
+    expect(cache.size).toBe(1)
+  })
+
+  it('容量淘汰不受节流影响，每次都精确执行', () => {
+    const cache = new ByteLruCache({ maxBytes: 10, maxEntries: 10, ttlMs: 1_000, pruneIntervalMs: 10_000 })
+    cache.set('a', 'A', 4, 0)
+    cache.set('b', 'B', 4, 0)
+    cache.set('c', 'C', 4, 0)
+    expect(cache.bytes).toBeLessThanOrEqual(10)
+    expect(cache.size).toBeLessThanOrEqual(10)
+  })
+
+  it('pruneIntervalMs 为 0 时退化为每次插入都扫描（兼容旧行为）', () => {
+    const cache = new ByteLruCache({ maxBytes: 100, maxEntries: 10, ttlMs: 10, pruneIntervalMs: 0 })
+    cache.set('a', 'A', 4, 0)
+    cache.set('b', 'B', 4, 20)
+    expect(cache.stats(20).expirations).toBe(1)
+    expect(cache.size).toBe(1)
+  })
 })
 
 

@@ -20,6 +20,25 @@ const userPlaylistsPending = new Map<string, Promise<any[]>>()
 const MAX_USER_PLAYLIST_CACHE_ENTRIES = 16
 const USER_PLAYLIST_CACHE_VERSION = 'v5-like-username'
 let cacheGeneration = 0
+// 持久层失效是异步的，而紧随其后的 getUserPlaylists 会从 IndexedDB 读回尚未删除的
+// 旧列表（TTL 1h）并写回内存，表现为「删掉的歌单又回来 / 新建的不出现 / 改名回退」。
+// 把在途的失效 Promise 记下来，读持久层前先等它落地。
+const pendingPlaylistInvalidations = new Set<Promise<void>>()
+
+function trackPlaylistInvalidation(task: Promise<unknown>, label: string): void {
+  const tracked: Promise<void> = Promise.resolve(task)
+    .then(() => undefined)
+    .catch(error => { console.warn(label, error) })
+    .finally(() => { pendingPlaylistInvalidations.delete(tracked) })
+  pendingPlaylistInvalidations.add(tracked)
+}
+
+async function awaitPendingPlaylistInvalidations(): Promise<void> {
+  // 循环而不是单次 Promise.all：等待期间可能又有新的失效被登记进来
+  while (pendingPlaylistInvalidations.size > 0) {
+    await Promise.all([...pendingPlaylistInvalidations])
+  }
+}
 
 async function fetchWithTimeout(url: string, timeoutMs = 15_000): Promise<Response> {
   const controller = new AbortController()
@@ -186,8 +205,10 @@ export function invalidateUserPlaylistsCache(
   for (const key of [...userPlaylistsPending.keys()]) {
     if (key.startsWith(prefix)) userPlaylistsPending.delete(key)
   }
-  void Promise.resolve(indexedDBCache.clearPlaylistsForPlatform(platform))
-    .catch(error => console.warn('使持久化歌单缓存失效失败:', error))
+  trackPlaylistInvalidation(
+    indexedDBCache.clearPlaylistsForPlatform(platform),
+    '使持久化歌单缓存失效失败:',
+  )
 }
 
 export function updateCachedUserPlaylists(
@@ -218,8 +239,12 @@ function invalidatePlatformPlaylistCaches(platform: MusicPlatform): void {
   }
   // 只清内存不够：紧随其后的刷新会从 IndexedDB 读回旧列表（TTL 1h）并写回内存，
   // 表现为「删掉的歌单又回来 / 新建的不出现 / 改名回退」。持久层一并失效。
-  void Promise.resolve(indexedDBCache.clearPlaylists())
-    .catch(error => console.warn('失效歌单持久缓存失败:', error))
+  // 按平台前缀清而不是整库清空：内存清理是平台作用域的，整库清空会顺带废掉
+  // 其他平台仍然有效的持久缓存（下一步刷新就得全部重新联网拉）。
+  trackPlaylistInvalidation(
+    indexedDBCache.clearPlaylistsForPlatform(platform),
+    '失效歌单持久缓存失败:',
+  )
 }
 
 // 登出 / 切号：所有平台的歌单缓存都不再可信（缓存键里的账号凭据可能已变或已被清），
@@ -227,8 +252,7 @@ function invalidatePlatformPlaylistCaches(platform: MusicPlatform): void {
 if (typeof window !== 'undefined') {
   window.addEventListener('waveforge-auth-changed', () => {
     clearUserPlaylistsMemoryCache()
-    void Promise.resolve(indexedDBCache.clearPlaylists())
-      .catch(() => undefined)
+    trackPlaylistInvalidation(indexedDBCache.clearPlaylists(), '清空歌单持久缓存失败:')
   })
 }
 
@@ -523,12 +547,18 @@ export async function getUserPlaylists(
 
   const request = (async () => {
     if (!bypassCache) {
+      // 先等在途的持久层失效落地，否则会读回刚被判定为过期的旧列表
+      await awaitPendingPlaylistInvalidations()
       try {
         const persisted = await indexedDBCache.getCachedPlaylist<any[]>(cacheKey, platform)
         if (persisted && isCacheableUserPlaylists(platform, persisted)) {
-          const normalizedPersisted = platform === 'qq' ? normalizeCachedQQPlaylistNames(persisted, username) : persisted
-          if (requestGeneration === cacheGeneration) cacheUserPlaylists(cacheKey, normalizedPersisted)
-          return normalizedPersisted
+          // 读取途中若发生了失效（删/建/改名歌单），这份数据已经不可信：不要写回内存，
+          // 也不要返回，直接落到下面的网络请求重新拉。
+          if (requestGeneration === cacheGeneration) {
+            const normalizedPersisted = platform === 'qq' ? normalizeCachedQQPlaylistNames(persisted, username) : persisted
+            cacheUserPlaylists(cacheKey, normalizedPersisted)
+            return normalizedPersisted
+          }
         }
       } catch (error) {
         console.warn('读取持久化歌单缓存失败，将从服务器刷新:', error)

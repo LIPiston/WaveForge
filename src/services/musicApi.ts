@@ -34,6 +34,11 @@ const getPlatformCookie = (platform: MusicPlatform, explicitCookie?: string) => 
 
 const SONG_URL_CACHE_TTL = 5 * 60 * 1000
 const SONG_URL_NEGATIVE_CACHE_TTL = 25 * 1000
+// 上游签名 URL 的真实有效期（网易云 data[0].expi，单位秒）可能明显短于 5 分钟。
+// 把已失效的签名当成有效缓存命中，会白白吃一次播放失败再走 invalidate/恢复流程，
+// 所以要按上游给的有效期收窄，并留出缓冲（取到 URL 到真正开播之间还有排队/预载耗时）。
+const SONG_URL_SAFETY_MARGIN_MS = 30 * 1000
+const SONG_URL_MIN_POSITIVE_TTL_MS = 15 * 1000
 const SONG_URL_FETCH_TIMEOUT = 26 * 1000
 const SONG_URL_CACHE_MAX_ENTRIES = 256
 const songUrlCache = new Map<string, { url: string | null; expiresAt: number }>()
@@ -42,6 +47,20 @@ const songUrlRefreshPending = new Map<string, Promise<string | null>>()
 const songUrlRefreshUntil = new Map<string, number>()
 const songUrlInvalidationVersions = new Map<string, number>()
 let songUrlCacheGeneration = 0
+
+/**
+ * 由上游声明的签名有效期推导缓存时长：min(5 分钟, expi - 缓冲)，并设下限避免抖动。
+ * 上游未给（或给了非法值）时沿用默认 5 分钟。
+ */
+export const resolveSongUrlTtl = (expiresInSeconds: unknown): number => {
+  if (typeof expiresInSeconds !== 'number' || !Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
+    return SONG_URL_CACHE_TTL
+  }
+  return Math.max(
+    SONG_URL_MIN_POSITIVE_TTL_MS,
+    Math.min(SONG_URL_CACHE_TTL, expiresInSeconds * 1000 - SONG_URL_SAFETY_MARGIN_MS),
+  )
+}
 
 // 艺人/专辑详情：详情面板来回开关（从播放页回退、切页签）时同一份数据会被反复请求。
 // 短 TTL + 不缓存空结果，避免把一次失败或「确实没有」也钉死。
@@ -58,6 +77,11 @@ export const clearArtistAlbumDetailCache = () => {
   artistTopSongsCache.clear()
   albumDetailCache.clear()
   albumSongsCache.clear()
+}
+
+/** 搜索热词缓存此前没有任何清理入口（只有 10 分钟 TTL 自然过期）。 */
+export const clearHotSearchCache = () => {
+  hotSearchCache.clear()
 }
 if (typeof window !== 'undefined') {
   window.addEventListener('waveforge-auth-changed', clearArtistAlbumDetailCache)
@@ -93,7 +117,7 @@ const fingerprint = (value: string) => {
   return (hash >>> 0).toString(36)
 }
 
-const cacheSongUrl = (key: string, url: string | null) => {
+const cacheSongUrl = (key: string, url: string | null, ttlMs?: number) => {
   const now = Date.now()
   for (const [cachedKey, entry] of songUrlCache) {
     if (entry.expiresAt <= now) songUrlCache.delete(cachedKey)
@@ -101,7 +125,7 @@ const cacheSongUrl = (key: string, url: string | null) => {
   songUrlCache.delete(key)
   songUrlCache.set(key, {
     url,
-    expiresAt: now + (url ? SONG_URL_CACHE_TTL : SONG_URL_NEGATIVE_CACHE_TTL),
+    expiresAt: now + (url ? (ttlMs ?? SONG_URL_CACHE_TTL) : SONG_URL_NEGATIVE_CACHE_TTL),
   })
   while (songUrlCache.size > SONG_URL_CACHE_MAX_ENTRIES) {
     const oldestKey = songUrlCache.keys().next().value
@@ -813,6 +837,8 @@ export async function getSongUrl(id: number | string, platform: MusicPlatform = 
     try {
       let apiUrl: string
       let readUrl: (data: any) => string | null
+      // 仅网易云响应带回签名有效期（data[0].expi，秒）；其余平台没有可用字段，保持默认 TTL
+      let readTtlMs: (data: any) => number = () => SONG_URL_CACHE_TTL
       if (platform === 'qq') {
         const cookie = localStorage.getItem('qq_cookie') || localStorage.getItem('qqCookie') || ''
         const { preference, isVip } = getAudioQualityRequest('qq')
@@ -849,6 +875,8 @@ export async function getSongUrl(id: number | string, platform: MusicPlatform = 
         const { preference, isVip } = getAudioQualityRequest('netease')
         apiUrl = `${API_BASE}/netease/song/url?id=${encodeURIComponent(String(id))}&quality=${encodeURIComponent(preference)}&vip=${isVip ? 'true' : 'false'}&fallback=${crossPlatformFallback ? 'true' : 'false'}${cookie ? '&cookie=' + encodeURIComponent(cookie) : ''}`
         readUrl = data => data.data?.[0]?.url || null
+        // 服务端用 ...result.body 原样转发上游响应，expi 一直就在响应里，只是此前没被读取
+        readTtlMs = data => resolveSongUrlTtl(data?.data?.[0]?.expi)
       }
 
       const response = await fetchSongUrlResponse(apiUrl)
@@ -869,7 +897,7 @@ export async function getSongUrl(id: number | string, platform: MusicPlatform = 
       if (url && platform === 'netease' && data.fallback) {
         console.info(`[API] Netease song ${id} is using fallback audio from ${data.source || 'automatic match'}`)
       }
-      cacheSongUrl(cacheKey, url)
+      cacheSongUrl(cacheKey, url, url ? readTtlMs(data) : undefined)
       return url
     } catch (error) {
       if (requestGeneration !== songUrlCacheGeneration) {
@@ -981,7 +1009,7 @@ function normalizeYrcWords(words: LyricWord[]): LyricWord[] {
 
 // 解析逐字歌词
 // 格式: [16210,3460](16210,670,0)还(16880,410,0)没...
-function parseYrc(yrcText: string): LyricLine[] {
+export function parseYrc(yrcText: string): LyricLine[] {
   if (!yrcText) return []
   
 

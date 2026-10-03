@@ -7,6 +7,7 @@ import type { MusicPlatform } from './platforms'
 import { indexedDBCache } from './indexedDBCache'
 import { clearUserPlaylistsMemoryCache } from './playlistService'
 import { clearArtworkMemoryCache } from './artworkLoader'
+import { clearBackendImageCache, clearBackendServerCaches } from './serverCacheAdmin'
 import { getCacheLimits } from '../tv/perfMode'
 
 interface CacheItem {
@@ -650,6 +651,8 @@ class CacheManager {
       this.clearCovers()
       clearArtworkMemoryCache()
       await indexedDBCache.clearCovers()
+      // 服务端图片代理缓存（128MB/6h）此前完全够不着：本地清干净后代理仍会回放旧封面
+      await clearBackendImageCache()
     })
     if (targets.playlists) await cleanTarget('歌单列表', async () => {
       this.clearPlaylists()
@@ -659,6 +662,8 @@ class CacheManager {
     if (targets.lyrics) await cleanTarget('歌词', async () => {
       window.dispatchEvent(new Event('waveforge:lyrics-cache-cleared'))
       await indexedDBCache.clearLyrics()
+      // 服务端同样持有歌词缓存（网易云/QQ 各 30 分钟 TTL）
+      await clearBackendServerCaches('lyrics')
     })
     if (targets.metadata) await cleanTarget('歌曲信息', () => this.clearMetadata())
     if (targets.errorLogs) await cleanTarget('错误日志', () => this.clearErrorLogs())

@@ -90,6 +90,7 @@ export async function largeCacheSet(key: string, value: unknown, ttlMs?: number)
         tx.onerror = () => reject(tx.error)
         tx.onabort = () => reject(tx.error)
       })
+      await sweepLargeCache(db).catch(() => undefined)
       return
     } catch {
       // IDB 写失败（隐私模式/磁盘满）→ 降级 localStorage，写不下就算了
@@ -115,5 +116,77 @@ export async function largeCacheDelete(key: string): Promise<void> {
     })
   } catch {
     // 忽略
+  }
+}
+
+// 条目上限 + 过期回收。这个缓存此前没有任何淘汰策略，只靠「同键覆盖写」：
+// ExploreView 存的是聚合 payload 与封面墙列表（可达 MB 级），键随账号/日期变化，
+// 长期使用会无界增长（IDB 配额吃满会波及同源其他写入）。
+const MAX_ENTRIES = 40
+const SWEEP_INTERVAL_MS = 60_000
+let lastSweepAt = 0
+
+/** 回收已过期条目，并在超过条目上限时按 savedAt 删最旧的。尽力而为，绝不抛出。 */
+async function sweepLargeCache(db: IDBDatabase): Promise<void> {
+  const now = Date.now()
+  if (now - lastSweepAt < SWEEP_INTERVAL_MS) return
+  lastSweepAt = now
+  const entries = await new Promise<Array<{ key: IDBValidKey; savedAt: number }>>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly')
+    const request = tx.objectStore(STORE).openCursor()
+    const found: Array<{ key: IDBValidKey; savedAt: number }> = []
+    request.onsuccess = () => {
+      const cursor = request.result
+      if (!cursor) {
+        resolve(found)
+        return
+      }
+      const value = cursor.value as { savedAt?: number; expiresAt?: number } | undefined
+      if (value?.expiresAt && now > value.expiresAt) cursor.delete()
+      else found.push({ key: cursor.primaryKey, savedAt: Number(value?.savedAt) || 0 })
+      cursor.continue()
+    }
+    request.onerror = () => reject(request.error)
+  })
+  if (entries.length <= MAX_ENTRIES) return
+  entries.sort((a, b) => a.savedAt - b.savedAt)
+  const doomed = entries.slice(0, entries.length - MAX_ENTRIES)
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    for (const entry of doomed) tx.objectStore(STORE).delete(entry.key)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.onabort = () => reject(tx.error)
+  })
+}
+
+/**
+ * 清空整个大对象缓存（设置页「清理全部」调用）。
+ * 本库（WaveForgeLargeCache）与 indexedDBCache 的 WaveForgeCache 是两个不同的库，
+ * 清另一边不会连带清掉这里——此前「清理全部」完全够不着它。
+ */
+export async function largeCacheClearAll(): Promise<number> {
+  const db = await openDb()
+  if (!db) return 0
+  try {
+    const keys = await new Promise<IDBValidKey[]>((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readonly')
+      const request = tx.objectStore(STORE).getAllKeys()
+      request.onsuccess = () => resolve(request.result || [])
+      request.onerror = () => reject(request.error)
+    })
+    if (keys.length > 0) {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite')
+        for (const key of keys) tx.objectStore(STORE).delete(key)
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      })
+    }
+    lastSweepAt = 0
+    return keys.length
+  } catch {
+    return 0
   }
 }

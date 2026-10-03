@@ -61,6 +61,18 @@ const DANMAKU_CACHE_MAX_ENTRIES = 256
 const OFFICIAL_VERIFY_CACHE_MAX_ENTRIES = 2048
 const STREAM_REQUEST_TIMEOUT_MS = 30_000
 
+/**
+ * 清空 B 站侧的内存缓存（播放地址 / 字幕 / 弹幕）。
+ * 供设置页「清理缓存」调用：这些缓存此前没有任何清理入口。
+ */
+export function clearBilibiliCaches() {
+  const cleared = streamCache.size + subtitleJsonCache.size + danmakuCache.size
+  streamCache.clear()
+  subtitleJsonCache.clear()
+  danmakuCache.clear()
+  return { success: true, cleared }
+}
+
 // ===== 基础工具 =====
 
 function getMixinKey(orig) {
@@ -347,17 +359,32 @@ export function registerBilibiliRoutes(app) {
       const effectiveTarget = Math.min(requestedQn, maxAccept)
       const video = pickVideo(effectiveTarget)
 
-      // 音频流：优先最高码率（30280/30250 > 30232 > 30216）；杜比/无损在 dash.dolby / dash.flac
+      // 音频流：audioTrack 参数选择音轨类型（用户实测：B 站 Hi-Res 徽章可点切音效）：
+      // flac=Hi-Res 无损（dash.flac）｜dolby=杜比全景声（dash.dolby）｜默认最高码率普通轨
       const audioStreams = Array.isArray(data.dash?.audio) ? data.dash.audio : []
-      const pickAudio = () => {
-        const sorted = [...audioStreams].sort((a, b) => b.id - a.id || b.bandwidth - a.bandwidth)
-        return sorted[0] || null
+      const audioTrack = String(req.query.audioTrack || '').toLowerCase()
+      let audio = null
+      if (audioTrack === 'flac' && data.dash?.flac?.baseUrl) {
+        audio = { baseUrl: data.dash.flac.baseUrl, base_url: data.dash.flac.baseUrl || data.dash.flac.baseUrl, size: data.dash.flac.size || 0, id: 30251 }
+      } else if (audioTrack === 'dolby' && data.dash?.dolby?.baseUrl) {
+        audio = { baseUrl: data.dash.dolby.baseUrl, base_url: data.dash.dolby.baseUrl, size: data.dash.dolby.size || 0, id: 30250 }
+      } else {
+        // dash.flac.audio / dash.dolby.audio 是数组形态（新版 API），兜底取之
+        const flacAlt = Array.isArray(data.dash?.flac?.audio) ? data.dash.flac.audio[0] : null
+        const dolbyAlt = Array.isArray(data.dash?.dolby?.audio) ? data.dash.dolby.audio[0] : null
+        if (audioTrack === 'flac' && flacAlt?.baseUrl) {
+          audio = { baseUrl: flacAlt.baseUrl, base_url: flacAlt.baseUrl, size: flacAlt.size || 0, id: 30251 }
+        } else if (audioTrack === 'dolby' && dolbyAlt?.baseUrl) {
+          audio = { baseUrl: dolbyAlt.baseUrl, base_url: dolbyAlt.baseUrl, size: dolbyAlt.size || 0, id: 30250 }
+        } else {
+          const sorted = [...audioStreams].sort((a, b) => b.id - a.id || b.bandwidth - a.bandwidth)
+          audio = sorted[0] || null
+        }
       }
-      const audio = pickAudio()
 
       if (!video || !audio) return res.status(502).json({ code: -10403, error: '该视频当前无可播放流（可能仅大会员专享）' })
 
-      const cacheKey = `bili_${bvid}_${cid}_${video.id}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+      const cacheKey = `bili_${bvid}_${cid}_${video.id}_${audioTrack || 'std'}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
       streamCache.set(cacheKey, {
         urls: [video.baseUrl || video.base_url || '', audio.baseUrl || audio.base_url || ''],
         sizes: [video.size || 0, audio.size || 0],

@@ -1306,11 +1306,19 @@ function App() {
       }
     }
 
+    // 设置页「清理全部」：预载缓存此前没有任何外部清理入口，只能等 5 分钟 TTL /
+    // 上限 30 条的定期回收自然收敛。
+    const clearPreloadCache = () => {
+      preloadCacheRef.current.clear()
+    }
+
     window.addEventListener(AUDIO_QUALITY_SETTINGS_EVENT, invalidatePreloadedAudioUrls)
     window.addEventListener('waveforge-auth-changed', invalidatePreloadedAudioUrls)
+    window.addEventListener('waveforge:url-cache-cleared', clearPreloadCache)
     return () => {
       window.removeEventListener(AUDIO_QUALITY_SETTINGS_EVENT, invalidatePreloadedAudioUrls)
       window.removeEventListener('waveforge-auth-changed', invalidatePreloadedAudioUrls)
+      window.removeEventListener('waveforge:url-cache-cleared', clearPreloadCache)
     }
   }, [])
 

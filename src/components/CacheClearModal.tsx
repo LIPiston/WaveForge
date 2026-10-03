@@ -3,7 +3,10 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, Trash2, FolderOpen, ListMusic, AlertCircle, HardDrive, Clock, Check, Image as ImageIcon } from 'lucide-react'
 import { cacheManager } from '../services/cacheManager'
 import { indexedDBCache } from '../services/indexedDBCache'
-import { clearArtworkMemoryCache, clearBackendImageCache } from '../services/artworkLoader'
+import { clearArtworkMemoryCache } from '../services/artworkLoader'
+import { clearBackendImageCache, clearBackendServerCaches } from '../services/serverCacheAdmin'
+import { clearSongUrlCache, clearArtistAlbumDetailCache, clearHotSearchCache } from '../services/musicApi'
+import { largeCacheClearAll } from '../services/largeObjectCache'
 import { clearUserPlaylistsMemoryCache } from '../services/playlistService'
 import { clearCoverPaletteCache } from '../utils/coverPalette'
 import { clearAllMvMatchCache } from '../services/bilibiliApi'
@@ -205,6 +208,8 @@ export default function CacheClearModal({ show, onClose, playerTheme = 'dark' }:
   const handleClearLyrics = async () => runTarget('歌词', async () => {
     window.dispatchEvent(new Event('waveforge:lyrics-cache-cleared'))
     await indexedDBCache.clearLyrics()
+    // 服务端也持有歌词缓存（网易云 / QQ，各 30 分钟 TTL）：只清前端等于没清干净
+    await clearBackendServerCaches('lyrics')
   }, '歌词缓存清理成功')
 
   const handleClearMetadata = async () => runTarget('歌曲信息', () => cacheManager.clearMetadata(), '歌曲信息缓存清理成功')
@@ -275,7 +280,18 @@ export default function CacheClearModal({ show, onClose, playerTheme = 'dark' }:
       await clearTarget('MV 匹配', () => { clearAllMvMatchCache(); return Promise.resolve() })
       await clearTarget('收听统计', () => { clearDesktopMusicActivity(); return Promise.resolve() })
       await clearTarget('IndexedDB', () => indexedDBCache.clearAll())
-      await clearTarget('后端图片代理', () => clearBackendImageCache())
+      // 'all' 已包含图片代理缓存，不必再单独打一次 /cache/image/clear
+      await clearTarget('服务端缓存', () => clearBackendServerCaches('all'))
+      // 渲染端内存缓存：此前只有登录态/音质变化事件会清理，设置页的「清理全部」够不着
+      await clearTarget('播放地址缓存', () => {
+        clearSongUrlCache()
+        clearArtistAlbumDetailCache()
+        clearHotSearchCache()
+        window.dispatchEvent(new Event('waveforge:url-cache-cleared'))
+        return Promise.resolve()
+      })
+      // WaveForgeLargeCache 与上面 clearAll() 清的 WaveForgeCache 是两个库
+      await clearTarget('探索页大对象', () => largeCacheClearAll())
       await clearTarget('歌曲信息', () => cacheManager.clearMetadata())
       // GPU 着色/合成缓存（ShaderCache + GPUCache）：新后端从干净状态重建
       if (window.electron?.system?.clearGpuCache) {
