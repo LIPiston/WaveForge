@@ -405,8 +405,9 @@ export function getBilibiliView(bvid: string, signal?: AbortSignal): Promise<{ c
   return fetchJson(`${BILI_API_BASE}/view?bvid=${encodeURIComponent(bvid)}`, { signal })
 }
 
-export function getBilibiliPlayUrl(bvid: string, cid: number, qn = 80, signal?: AbortSignal): Promise<BilibiliPlayInfo> {
-  return fetchJson(`${BILI_API_BASE}/playurl?bvid=${encodeURIComponent(bvid)}&cid=${cid}&qn=${qn}`, { signal })
+export function getBilibiliPlayUrl(bvid: string, cid: number, qn = 80, signal?: AbortSignal, audioTrack?: 'flac' | 'dolby'): Promise<BilibiliPlayInfo> {
+  const track = audioTrack ? `&audioTrack=${audioTrack}` : ''
+  return fetchJson(`${BILI_API_BASE}/playurl?bvid=${encodeURIComponent(bvid)}&cid=${cid}&qn=${qn}${track}`, { signal })
 }
 
 export function getBilibiliSubtitles(bvid: string, cid: number, signal?: AbortSignal): Promise<{ code: number; subtitles: BilibiliSubtitleInfo[] }> {
@@ -760,16 +761,19 @@ export const QUALITY_LABELS: Record<number, string> = {
   120: '4K',
   125: 'HDR 真彩',
   126: '杜比视界',
-  127: '杜比音效',
+  // B 站 DASH 视频流 id=127 是「8K 超高清」（2026-10 用 8K 演示片 playurl 实测：
+  // accept_quality=[127,120,...] accept_description[0]='超高清 8K'）。
+  // 杜比音效不是视频画质——它是 dash.dolby 音频轨，hasDolby 单独上报。
+  127: '8K',
 }
 
 /** 画质分档标签 + 是否会员专享 */
 export const QUALITY_TIERS: Array<{ qn: number; label: string; requiresVip?: boolean }> = [
-  { qn: 127, label: '杜比音效', requiresVip: true },
+  { qn: 127, label: '8K 超高清', requiresVip: true },
   { qn: 126, label: '杜比视界', requiresVip: true },
   { qn: 125, label: 'HDR 真彩', requiresVip: true },
   { qn: 120, label: '4K 超高清', requiresVip: true },
-  { qn: 116, label: '1080P 60帧' },
+  { qn: 116, label: '1080P 60帧', requiresVip: true },
   { qn: 112, label: '1080P 高码率', requiresVip: true },
   { qn: 80, label: '1080P 高清' },
   { qn: 64, label: '720P 准高清' },
@@ -820,9 +824,40 @@ export function resolveBiliPic(url: string): string {
 const twToCn = Converter({ from: 'tw', to: 'cn' })
 const hkToCn = Converter({ from: 'hk', to: 'cn' })
 
+/**
+ * 特殊字母 → 基础拉丁字母折叠表（规范化阶段统一，歌名与标题双方都过此表，不影响方向性）。
+ * 背景（用户实测 βiοs 匹配几乎全军覆没）：泽野弘之《βiοs》平台歌名用希腊字母 β/ο（U+03B2/U+03BF），
+ * 而 B 站上 90% 以上热门视频标题写拉丁 Bios/βios/ßios/βίος（β 一词多形），normalizeText 原本的
+ * NFC+全角+繁简+小写不会触碰这些码位 → 硬淘汰「歌名完整出现」把正片全数判为无关视频，只剩
+ * 拿「拔剑神曲」等描述词凑数的漏网结果。泽野系还有 Ǝ/Я（REVIVƎЯ）这类变形拉丁字母同病。
+ * 同形字符攻击防御不受影响：本表只做「字形相近的字母体系归一」，仍保留大小写折叠与去标点原语义。
+ */
+const SPECIAL_LETTER_FOLDS: Readonly<Record<string, string>> = {
+  // 希腊字母（B 站音乐标题常见：βiοs / βίος 系；全小写覆盖足够——标题先用 toLowerCase）
+  'α': 'a', 'β': 'b', 'γ': 'g', 'δ': 'd', 'ε': 'e', 'ζ': 'z', 'η': 'h', 'θ': 'th',
+  'ι': 'i', 'κ': 'k', 'λ': 'l', 'μ': 'm', 'ν': 'n', 'ξ': 'x', 'ο': 'o', 'π': 'p',
+  'ρ': 'r', 'σ': 's', 'ς': 's', 'τ': 't', 'υ': 'u', 'φ': 'f', 'χ': 'x', 'ψ': 'ps', 'ω': 'o',
+  // 希腊带调（βίος 的 ί）
+  'ά': 'a', 'έ': 'e', 'ή': 'h', 'ί': 'i', 'ό': 'o', 'ύ': 'u', 'ώ': 'o',
+  // 变形/装饰拉丁字母（泽野 REVIVƎЯ、标题玩梗写法 𝓲 等）：
+  'ǝ': 'e', 'ɜ': 'e', 'ø': 'o', 'đ': 'd', 'ð': 'd', 'þ': 'th', 'æ': 'ae', 'œ': 'oe',
+  'ł': 'l', 'ŋ': 'n', 'ħ': 'h', 'ŧ': 't',
+  // ß 不折叠成 ss：德语正字是 Straße，但 B 站标题写《ßios》指的就是 Bios（拔剑神曲），
+  // 折成 ssios 会让它错过 bios 的全部比对；b 才是音乐语境的共识映射。
+  'ß': 'b',
+  // † / ×（泽野系《Lila†Lila†》《1000×LIMIT BREAK》装饰符号）：B 站标题常省略或改写，
+  // 折叠掉保证「lilalila / 1000limitbreak」在两侧一致可比
+  '†': '', '×': 'x', '°': '', '・': '', '∙': '', '·': '',
+  // 西里尔同形（Я→R、И→N…）：REVIVƎЯ 的 Я 是西里尔 U+042F
+  'я': 'r', 'и': 'n', 'й': 'n', 'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c',
+  'у': 'y', 'х': 'x', 'к': 'k', 'м': 'm', 'т': 't', 'в': 'b', 'н': 'h',
+}
+
 /** 文本规范化：Unicode NFC（B 站标题偶见分解形假名，如「セ」+U+3099 组合浊点，
  *  不做 NFC 会让歌名精确匹配/硬淘汰判定全部失灵——用户实测：EVA 2021 官方 MV 因此被 -Infinity）、
- *  繁转简、全角转半角、去空白与标点、小写 */
+ *  繁转简、全角转半角、拉丁变音剥离（ä→a：泽野《Vogel im Käfig》的 ä 在 B 站标题
+ *  「Kafig/Käfig」两种写法各占半壁，不剥离则 29.8 万播放的无变音标题被硬淘汰）、
+ *  特殊字母折叠（希腊 β→b/ο→o 等，见 SPECIAL_LETTER_FOLDS）、去空白与标点、小写 */
 export function normalizeText(input: string): string {
   const half = String(input || '')
     .normalize('NFC')
@@ -833,6 +868,10 @@ export function normalizeText(input: string): string {
     .toLowerCase()
     // 含半角句号 ｡（U+FF61）：QQ 音乐等平台的日文歌手名常用「｡」收尾
     .replace(/[（()）\[\]【】《》<>{}"''“”·…!！?？,，.。｡;；:：\-—_/\\|&*^%$#@~`+=]/g, '')
+    // 拉丁变音符号剥离：NFD 分解出 combining diacritic（U+0300–U+036F）后删掉，
+    // 只对拉丁扩展区生效——假名/汉字/谚文不受影响（NFD 不分解它们为 ASCII+附加符）
+    .replace(/[\u00c0-\u024f]/g, (ch) => ch.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+    .replace(/[^\u0000-\u007f]/g, (ch) => SPECIAL_LETTER_FOLDS[ch] ?? ch)
     .replace(/\s+/g, '')
 }
 
@@ -843,11 +882,65 @@ export function cleanSongTitle(title: string): string {
   return cleaned
 }
 
+/**
+ * 平台歌名 → B 站常见书写形态的显式变体表（规范化后等价，键值都过 normalizeText）。
+ * 背景（用户实测 βiοs）：normalizeText 的特殊字母折叠让「βiοs/βios/βίος/ßios」在**比对**层面
+ * 已归一，但 B 站**搜索**把希腊字母 βiοs 当泛词混入大量无关内容（techno mix、健身视频…），
+ * 召回里几乎没有正片；只有拉丁 Bios 关键词才能召回 485 万/305 万播放的头部视频。搜索走的是
+ * 未规范化原文，因此对这类歌名必须显式给出拉丁转写做额外查询。
+ * searchContexts：该歌在 B 站的社区通用别名/语境词（如「拔剑神曲」）。这些词的召回质量
+ * 远高于歌名本身（B 站搜索对「拔剑神曲 βios」直接给出官方投稿与全部热门正片），
+ * 用于派生「语境词 + 歌名变体」查询。
+ * 键为平台歌名原文（cleanSongTitle 前），值为该歌的其它常见书写形态与搜索语境。
+ */
+interface SongTitleVariantEntry {
+  /** 歌名的其它常见书写形态（搜索词 + 比对变体） */
+  variants: readonly string[]
+  /** B 站社区对该曲的通用别名/语境词（仅用于搜索派生，不参与标题比对） */
+  searchContexts?: readonly string[]
+}
+const SONG_TITLE_VARIANTS: Readonly<Record<string, SongTitleVariantEntry>> = {
+  // 泽野弘之《βiοs》（罪恶王冠插曲）：B 站标题写 Bios/βios/βίος/ßios 的都有，拉丁词召回最好；
+  // 「拔剑神曲」是 B 站对这首曲的通用别名，官方投稿与头部正片全靠它召回
+  'βiοs': { variants: ['Bios', 'βios'], searchContexts: ['拔剑神曲'] },
+  'βίος': { variants: ['Bios', 'βios'], searchContexts: ['拔剑神曲'] },
+  'βios': { variants: ['Bios'], searchContexts: ['拔剑神曲'] },
+  // 泽野弘之《REVIVƎЯ》（我独自升级 S2 插曲）：Ǝ（U+018E）/Я（U+042F）变形字母，B 站也常写全拉丁
+  'REVIVƎЯ': { variants: ['REVIVER'] },
+  'REVIVER': { variants: ['REVIVƎЯ'] },
+  // Mrs. GREEN APPLE《ライラック》（忘却バッテリー OP）：平台歌名是拉丁 Lilac，B 站官方 MV
+  // 标题只用片假名ライラック（含「丁香花」官中后缀），拉丁词召回全是小体量字幕版
+  // （用户实测：32.9 万官方 MV 被硬淘汰，top1 只剩 4030 播放）
+  'Lilac': { variants: ['ライラック'] },
+  'LILAC': { variants: ['ライラック'] },
+  // 泽野弘之《ēn》(袁娅维) /《RO°S°E》等含注音/符号形态的补充按需增加
+}
+
+/** 取歌名的显式书写变体（原文键 + 规范化键双查），供搜索与比对共用。 */
+export function songTitleVariantsOf(songTitle: string): string[] {
+  const entry = songTitleVariantEntryOf(songTitle)
+  if (!entry) return []
+  const variants = new Set<string>(entry.variants)
+  // 变体的变体（Bios → βios → …）也收敛进来，防遗漏
+  for (const value of entry.variants) {
+    const nested = SONG_TITLE_VARIANTS[value]
+    if (nested) for (const nestedValue of nested.variants) variants.add(nestedValue)
+  }
+  return [...variants]
+}
+
+/** 取歌名的变体表条目（含搜索语境词），无则返回 undefined。 */
+function songTitleVariantEntryOf(songTitle: string): SongTitleVariantEntry | undefined {
+  const raw = cleanSongTitle(songTitle)
+  if (!raw) return undefined
+  return SONG_TITLE_VARIANTS[raw] || SONG_TITLE_VARIANTS[String(songTitle || '').trim()]
+}
+
 const OFFICIAL_MARKERS = ['官方', 'official']
 const MV_MARKERS = ['mv', 'pv', '音乐录影带', 'music video'].map((m) => normalizeText(m))
 const NEGATIVE_MARKERS = [
   '翻唱', 'cover', '教学', '教程', '讲解', '指弹', '演奏', '钢琴', '吉他', '翻弹',
-  '笛子', '古筝', '二胡', '萨克斯', '伴奏', 'remix', '鬼畜', '卡拉ok', 'k歌',
+  '笛子', '古筝', '二胡', '萨克斯', '伴奏', 'remix', '鬼畜', '卡拉ok', 'k歌', 'ktv字幕', 'ktv',
   '鼓谱', '架子鼓', '弹唱', '跟练', '扒谱', '练唱', '音游', '手元', '谱面', '全连', 'gameplay',
   '学日语', '学唱歌', '听歌学', '纯人声', '消音', '伴唱消除', '红石音乐', '歌ってみた', '歌ってみました',
   'guitar', 'piano', 'fingerstyle', 'drum', 'violin', 'cello', 'bass', '贝斯', 'flute', 'sax', 'saxophone',
@@ -914,6 +1007,23 @@ const ARTIST_ALIASES: Record<string, string[]> = {
   'Utada Hikaru': ['宇多田光', '宇多田ヒカル', 'Utada'],
   米津玄師: ['米津玄师', '米津玄師'],
   米津玄师: ['米津玄師'],
+  // 华语头部艺人：B 站标题常用英文名/繁体署名（用户实测『Jay Chou 晴天 MV』无歌手加成
+  // 掉到 179 分），繁体由 normalizeText 繁转简覆盖，英文别名必须显式补
+  周杰伦: ['周杰倫', 'Jay Chou', 'Chou Chieh-lun'],
+  周杰倫: ['周杰伦', 'Jay Chou'],
+  'Jay Chou': ['周杰伦', '周杰倫'],
+  邓紫棋: ['G.E.M.邓紫棋', 'G.E.M.', 'GEM鄧紫棋', '鄧紫棋'],
+  鄧紫棋: ['邓紫棋', 'G.E.M.'],
+  'G.E.M.': ['邓紫棋', '鄧紫棋'],
+  // 平台歌手字段常见整串 'G.E.M.邓紫棋'：B 站标题只署 'G.E.M.' 或 '邓紫棋' 任一都要命中
+  'G.E.M.邓紫棋': ['G.E.M.', 'GEM', '邓紫棋', '鄧紫棋', 'gem鄧紫棋'],
+  'gem邓紫棋': ['G.E.M.', 'GEM', '邓紫棋', '鄧紫棋'],
+  陈奕迅: ['陳奕迅', 'Eason Chan'],
+  陳奕迅: ['陈奕迅', 'Eason Chan'],
+  'Eason Chan': ['陈奕迅', '陳奕迅'],
+  林俊杰: ['林俊傑', 'JJ Lin'],
+  林俊傑: ['林俊杰', 'JJ Lin'],
+  'JJ Lin': ['林俊杰', '林俊傑'],
   中島美嘉: ['中岛美嘉', '中島美嘉'],
   中岛美嘉: ['中島美嘉'],
   滨崎步: ['浜崎あゆみ', '滨崎步'],
@@ -1153,6 +1263,17 @@ const UPLOADER_WEIGHT_PROFILES: readonly UploaderWeightProfile[] = [
   {
     names: ['JLRS-LeoFM', 'JRS-LeoFM'],
     score: -45,
+  },
+  {
+    // 阿权の音乐馆（mid 675948095，2026-10 人工核验）：官方 MV/官方 PV 素材 8K/HDR/4K60FPS
+    // 超分 + Hi-Res 音源的搬运号，9 个合集 60 投稿、全站 1032.9 万播放。标题自带 𝟒𝐊 数学粗体
+    // （normalizeText 不折叠）不吃 HD 加分，且标题党堆词打折会误伤其高信息量标题——
+    // 正向提分抵消打折损失。用户实测：这类官方素材超分视频观感优于低清官方投稿。
+    // +15：足够赢过普通搬运/字幕版（无官方词印证时正向词半额），但不反超真官方 MV
+    // （廻廻奇譚实测：+30 时 322 分反超 Eve_official 311，+15 后 307 < 311 保持官方优先）。
+    names: ['阿权の音乐馆'],
+    mid: 675948095,
+    score: 15,
   },
 ]
 
@@ -1430,7 +1551,11 @@ export function scoreCandidate(
   // 去括号主体也是独立候选——B 站标题通常只写其中一种写法，任一命中即可过硬淘汰。
   // 注意不可按长度 ≥2 过滤：单字歌名（如「恋」）会被整个排除导致全部硬淘汰。
   const songTitleBaseNorm = normalizeText(songTitleRaw.replace(/[（(][^（）()]*[）)]/g, '').trim())
-  const songTitleVariants = [...new Set([songTitleNorm, songTitleBaseNorm].filter((t) => t.length >= 1))]
+  // 显式书写变体（SONG_TITLE_VARIANTS，如 βiοs→Bios）：normalizeText 特殊字母折叠后
+  // 「βiοs/βios/βίος/ßios」已归一为 bios，无需按变体重复收集；此处收集的是折叠覆盖不到的
+  // 词形差异（如 Bios-LaZaRuS 的全称形态仍以 bios 前缀命中，无需单列）。
+  const explicitVariants = songTitleVariantsOf(songTitleRaw).map((v) => normalizeText(v))
+  const songTitleVariants = [...new Set([songTitleNorm, songTitleBaseNorm, ...explicitVariants].filter((t) => t.length >= 1))]
   const titleNorm = normalizeText(video.title)
   const rank = extra?.rank ?? 0
   const signals: CandidateSignals = {
@@ -1474,9 +1599,12 @@ export function scoreCandidate(
     score += 15
     signals.uploaderMatchesArtist = true
   }
+  // alias 全等判定排除「别名规范化后 === 歌手主名」的项（繁体别名经繁转简后与主名相同）：
+  // 否则『作者名=歌手本人』会同时命中 uploaderMatchesArtist 与 officialChannel，双份 +25/+10
+  // 重复计分（用户实测：周杰伦别名表补齐后官号测试差值从 32.5 跳到 57.5）。
   signals.officialChannel = matchesVerifiedOfficialSource(video, ctx, resolvedArtists)
     || OFFICIAL_CHANNEL_KEYWORDS.some((k) => authorNorm.includes(normalizeText(k)))
-    || aliasNormList.some((alias) => authorNorm === alias)
+    || aliasNormList.some((alias) => authorNorm === alias && !artistNormList.includes(alias))
 
   // 官方标记只有与艺人本人上传者相互印证时才成为可靠来源信号。
   if (signals.officialMarker && signals.uploaderMatchesArtist) score += 20
@@ -1499,7 +1627,19 @@ export function scoreCandidate(
   // 去掉引号段后整条标题基本只剩目标歌名 → 视频主体就是本曲，不是"主标题是另一首歌"。
   // 用户实测：706 万播放的该形态视频曾被这条 -85 规则误杀到第 12 名。
   const outsideQuoteNorm = normalizeText(rawVideoTitle.replace(/[《「『“"][^》」』”"]{2,80}[》」』”"]/g, ''))
-  const targetIsMainContent = songTitleVariants.some((variant) => outsideQuoteNorm.includes(variant) && outsideQuoteNorm.length <= variant.length + 16)
+  // 主内容判定两档：(a) 剥引号后正文几乎只剩歌名（+16 容差，原规则）；
+  // (b) 歌名出现在正文**主语位**（前 12 字符内）且后面直接跟讲解分隔符/歌手署名
+  // ——情绪钩子引号 + 作品书名号叠加的场景（用户实测：『“路上小心，艾伦”《进击的巨人》
+  // theDOGS——剧场版 mpi/泽野弘之【Hi-Res…】』176.8 万播放正片，旧阈值整条 -85 掉到 #15）。
+  // Starboy「…《Die For You》…，Starboy 五周年彩蛋」歌名在补充从句（位置 15）不算主语位，
+  // 「主标题是另一首歌」惩罚照常生效（回归用例保护）。
+  const targetIsMainContent = songTitleVariants.some((variant) => {
+    if (!outsideQuoteNorm.includes(variant)) return false
+    if (outsideQuoteNorm.length <= variant.length + 16) return true
+    // 主语位：歌名在剥引号正文的开头 12 字符内（normalizeText 已剥分隔符，位置即主语证据——
+    // Starboy 例歌名在补充从句位置 15，不满足）。
+    return outsideQuoteNorm.indexOf(variant) >= 0 && outsideQuoteNorm.indexOf(variant) <= 12
+  })
   if (quotedTitleNorms.length && !targetAppearsBeforeQuote && !hasWorkContext && !targetIsMainContent
     && !quotedTitleNorms.some((quoted) => songTitleVariants.some((variant) => quoted.includes(variant)))) {
     score -= 85
@@ -1565,8 +1705,15 @@ export function scoreCandidate(
         && !artistNormList.some((a) => prefix.includes(a))
         && !aliasNormList.some((a) => prefix.includes(a))) {
         const composerHit = COMPOSER_AFFINITY.some((c) => prefix.includes(normalizeText(c)))
-        if (!composerHit) score -= 45
-        else score += 5 // 作曲家署名：轻加，鼓励这类"虽无歌手但确是本曲作品"的视频
+        // 作品/IP 名署名不算"他人"：【罪恶王冠】《βios》拔剑神曲这类形态的书名号前缀是
+        // 作品名（用户实测：485 万播放的「【罪恶王冠】《βios》…王の诞生」被当「他人演唱」罚 -45，
+        // 排到复审门外）。IP 词与歌名一样是消歧证据——命中目标作品的 franchise/IP 词时不罚。
+        const franchiseHit = resolveFranchiseNames(ctx.franchise)
+          .map((name) => normalizeText(name))
+          .filter((name) => name.length >= 2)
+          .some((name) => prefix.includes(name))
+        if (!composerHit && !franchiseHit) score -= 45
+        else score += 5 // 作曲家/作品署名：轻加，鼓励这类"虽无歌手但确是本曲作品"的视频
       }
       break
     }
@@ -1645,6 +1792,8 @@ export function scoreCandidate(
   if (!signals.hasArtist) {
     const rawTitle = String(video.title || '')
     const lead = rawTitle.match(/^【([^】]{1,24})】/)
+    // 歌名以书名号紧跟在【】前缀之后（【作品名】《歌名》…）：该【】是作品语境不是人名
+    const hasQuotedSongAfterLead = Boolean(lead && /^\s*《[^》]{1,60}》/.test(rawTitle.slice(lead.index! + lead[0].length)))
     if (lead) {
       const leadNorm = normalizeText(lead[1])
       const isArtist = artistNormList.some((a) => leadNorm.includes(a) || a.includes(leadNorm))
@@ -1653,7 +1802,11 @@ export function scoreCandidate(
       // 这类前缀是分类标签不是人名（用户实测：被当"陌生人署名"罚 -30，正片因此输给教学视频）。
       // 只加"组合式"圈层词，不加裸「东方」——真有人叫这个名字（如虚拟歌手东方栀子）。
       const isQualifier = /4k|1080p|高清|超清|字幕|中字|歌词|mv|pv|官方|现场|live|演唱会|完整|加长|伴奏|纯音乐|纯享|instrumental|钢琴|吉他|guitar|piano|指弹|演奏|翻唱|cover|カバー|卡拉ok|ktv|ニコカラ|nico|投屏|mad|手书|剪辑|修复|重制|hi-?res|无损|试听|合集|中文|日语|日文|双语|中英|中日|竖屏|横屏|收藏|自用|搬运|vocal|原曲|project|同人|vocaloid|utau|cevio|synthv|ost|bgm/i.test(leadNorm)
-      if (leadNorm.length >= 2 && !isArtist && !isQualifier) score -= 30
+      // 作品/IP 名前缀（【罪恶王冠】《βios》…）：前缀是歌所属作品，不是演唱者。
+      // franchise 上下文生产不传时靠「前缀与书名号内歌名并存」识别——【X】《歌名》结构里
+      // 【X】标注的是作品/场景而非翻唱者（用户实测：485 万播放王の诞生被罚 -30 排到 #13，
+      // 进不了复审）。仅当【】前缀后紧跟书名号歌名时豁免；独立【人名】歌名照旧罚。
+      if (leadNorm.length >= 2 && !isArtist && !isQualifier && !hasQuotedSongAfterLead) score -= 30
     }
   }
 
@@ -1663,8 +1816,14 @@ export function scoreCandidate(
   else if (video.typename && ['影视剪辑', '日常', '游戏', '知识', '生活', '校园学习'].includes(video.typename)) score -= 20
 
   // 标题自称“官方”只能作为弱内容标记，不能替代账号来源证据。
-  for (const m of OFFICIAL_MARKERS) if (titleNorm.includes(m)) score += 8
-  for (const m of MV_MARKERS) if (titleNorm.includes(m)) score += 15
+  // 标题党防御（用户实测：廻廻奇譚 23 万播放标题党『【𝟒𝐊/𝐇𝐃𝐑…】主题曲OP 「廻廻奇譚」Eve MV
+  // 【主题曲/完整版/官方MV】』靠堆 官方+MV+完整版+主题曲+OP 五类正向词反超 319 万 Eve_official 真官方）：
+  // 无官方账号印证（uploaderMatchesArtist/officialChannel/机构认证）时，这些「自报身份」的正向词
+  // 加分减半——真官方标题短而朴素（『廻廻奇譚 - Eve MV』），堆词的几乎都是搬运/饭制。
+  const officialBacked = signals.uploaderMatchesArtist || signals.officialChannel || officialVerifyType === 1
+  const selfClaimFactor = officialBacked ? 1 : 0.5
+  for (const m of OFFICIAL_MARKERS) if (titleNorm.includes(m)) score += 8 * selfClaimFactor
+  for (const m of MV_MARKERS) if (titleNorm.includes(m)) score += 15 * selfClaimFactor
   for (const m of NEGATIVE_MARKERS) if (titleNorm.includes(m)) score -= 35
   // 教学/学习向 UP 主（作者维度独立检查）：标题可能完全不提教学——「卷心儿-听歌学日语」
   // 发的「歌词详解」标题只看得到"歌词"，靠标题负向词永远罚不到。计入 negativeHit：
@@ -1676,7 +1835,7 @@ export function scoreCandidate(
   for (const m of COMPILATION_MARKERS) if (titleNorm.includes(m)) score -= 60
   for (const m of POSITIVE_EXTRA_MARKERS) if (titleNorm.includes(m)) score += 10
   // 正片增强：主题曲/加长版/完整版 → 完整正片信号（独立加权，避免和正向标记叠加混淆）
-  for (const m of POSITIVE_SONG_MARKERS) if (titleNorm.includes(m)) score += 12
+  for (const m of POSITIVE_SONG_MARKERS) if (titleNorm.includes(m)) score += 12 * selfClaimFactor
   // 完整版/加长版 + 歌手命中 + 播放 ≥1万 + 非现场/非翻唱 → 完整正片本体，强优先。
   // （用户实测：58.2万播放的《紅蓮華》加长版应胜过 97.8万播放的 4K 重制/其它版本——
   // 加长版就是官方 MV 本体，播放量到量级后应稳压"更花哨但非本体"的版本。）
@@ -1690,7 +1849,7 @@ export function scoreCandidate(
   // normalizeText 会把「【OP】LiSA」黏成 "oplisa" 破坏词边界，所以用原始标题做边界匹配；
   // 允许带集数（OP1/ED2），防误伤 "operation"/"editor"/"open" 等单词。
   const isOpEdTitle = /(^|[^a-z0-9])(op|ed)\d*([^a-z0-9]|$)/i.test(video.title)
-  if (isOpEdTitle) score += 18
+  if (isOpEdTitle) score += 18 * selfClaimFactor
   // 高清/高帧率权重：4K/1080P/高清/超清/120帧 命中 → 高质量正片信号，任意偏好下基础加成；
   // 4K/120帧 属 premium 标记额外加成（'hd' 偏好在 preferenceAdjustment 另计 +20）
   if (signals.hdMarker) score += 12
@@ -2229,6 +2388,21 @@ export function buildQueries(song: MatchContext, settings?: Pick<BilibiliWatchSe
   // 4. 标题 + MV
   queries.push(`${title} MV`)
 
+  // 5. 歌名书写变体查询（用户实测 βiοs）：B 站搜索把希腊字母 βiοs 当泛词，召回几乎无正片；
+  //    拉丁 Bios 才能召回头部视频。带书写变体的歌名逐个追加「变体+歌手」「变体+MV」查询。
+  //    searchContexts（如「拔剑神曲」）的语境查询召回质量最高（官方投稿/热门正片全在里面），
+  //    但社区别名可能对应多首曲子（同名别称），只作补充查询、靠后续评分去噪。
+  const titleVariants = songTitleVariantsOf(song.songTitle)
+  const variantEntry = songTitleVariantEntryOf(song.songTitle)
+  for (const context of (variantEntry?.searchContexts || []).slice(0, 1)) {
+    queries.push(`${context} ${title}`.trim())
+    for (const variant of titleVariants.slice(0, 1)) queries.push(`${context} ${variant}`.trim())
+  }
+  for (const variant of titleVariants.slice(0, 2)) {
+    queries.push(artist ? `${variant} ${artist}`.trim() : variant)
+    queries.push(`${variant} MV`)
+  }
+
   const preference = settings?.matchPreference ?? 'balanced'
   if (preference === 'official') queries.push(`${title} ${artist} 官方`.trim(), `${title} 官方MV`.trim())
   else if (preference === 'live') queries.push(`${title} ${artist} 现场`.trim(), `${title} 演唱会`.trim())
@@ -2242,7 +2416,10 @@ export function buildQueries(song: MatchContext, settings?: Pick<BilibiliWatchSe
   const uniqueQueries: string[] = []
   const seenQueries = new Set<string>()
   for (const query of queries) {
-    const key = normalizeText(query)
+    // 去重键用「去空白小写的原文」而非 normalizeText：特殊字母折叠后「βiοs 澤野弘之」与
+    // 变体查询「Bios 澤野弘之」会折叠成同一个键，变体查询会被这里整条吃掉（B 站搜索端
+    // 两者召回差异极大——希腊字母是泛词，拉丁才是正片，见 SONG_TITLE_VARIANTS 注释）。
+    const key = query.toLowerCase().replace(/\s+/g, '')
     if (!key || seenQueries.has(key)) continue
     seenQueries.add(key)
     uniqueQueries.push(query)
@@ -2656,7 +2833,13 @@ async function findBestBilibiliMvUncached(
   const queries = buildQueries(song, settings)
   const seenBvids = new Set<string>()
   let videos: BilibiliVideo[] = []
-  for (const query of queries) {
+  // 每查询至少执行一轮（不因配额截断跳过后面的查询）：靠后查询可能是高召回的
+  // 变体/语境查询（SONG_TITLE_VARIANTS.searchContexts——希腊字母歌名唯一能召回头部
+  // 正片的入口），先到先得的 60 条截断会把它们整个饿死（用户实测 βiοs：前 4 条查询
+  // 就凑满 60 条，语境查询一次都没执行，485 万/403 万播放的官方投稿永远进不了候选）。
+  // 截断只控制「再开新查询」，当轮已合并结果照常入池。
+  for (let qi = 0; qi < queries.length; qi += 1) {
+    const query = queries[qi]
     try {
       const [r1, r2] = await Promise.all([
         searchBilibiliVideos(query, 1, signal),
@@ -2672,7 +2855,8 @@ async function findBestBilibiliMvUncached(
       if (signal?.aborted) return empty()
       // 单查询失败不阻断（风控/超时降级继续）
     }
-    if (videos.length >= 60) break
+    // 每条查询都执行（见循环头注释）；只在总量突破硬上限时提前收手（防极端风控雪崩）。
+    if (videos.length >= 200) break
   }
   if (!videos.length) return explicitOnly() || empty('搜索失败，请稍后重试')
 

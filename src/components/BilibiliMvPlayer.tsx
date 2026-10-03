@@ -20,6 +20,7 @@ import {
   Play, Pause, Volume2, VolumeX, ChevronLeft, ChevronRight,
   Search, X, Subtitles, CaptionsOff, ArrowLeft, RefreshCw, Eye, Clock, ListVideo, Music,
   Settings as SettingsIcon, ThumbsDown, RotateCcw, Home, ListMusic, Info, MessageCircle, MessageCircleOff, PlayCircle, Shuffle,
+  Maximize, Proportions,
 } from 'lucide-react'
 import { useTvMode, useTvBack } from '../tv/tvCore'
 import { useAutoHideCursor } from '../hooks/useAutoHideCursor'
@@ -324,6 +325,10 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
    * CSS 背景透明无效，必须让元素本身不覆盖四周。
    */
   const [videoAspect, setVideoAspect] = useState<number | null>(null)
+  /** 视频比例（看歌独占）：fit=contain 适配 / fill=裁切铺满 / 16:9 / 4:3（videoContainRect 依赖，声明须在前） */
+  const [videoScaleMode, setVideoScaleMode] = useState<'fit' | 'fill' | '16:9' | '4:3'>(() => {
+    try { return (localStorage.getItem('bilibili_watch_scale') as 'fit' | 'fill' | '16:9' | '4:3') || 'fit' } catch { return 'fit' }
+  })
   const [containerSize, setContainerSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   useEffect(() => {
     const el = containerRef.current
@@ -341,12 +346,17 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     const v = videoRef.current
     if (v && v.videoWidth > 0 && v.videoHeight > 0) setVideoAspect(v.videoWidth / v.videoHeight)
   }
-  // object-contain 显示矩形（居中，保持比例，四周留白给氛围光）
+  // 显示矩形：fit=object-contain 适配（含氛围光贴合）；fill=裁切铺满；16:9/4:3=强制比例居中
   const videoContainRect = useMemo(() => {
-    if (!videoAspect || !containerSize.w || !containerSize.h) return null
-    const scale = Math.min(containerSize.w / videoAspect, containerSize.h)
-    return { width: videoAspect * scale, height: scale }
-  }, [videoAspect, containerSize])
+    if (!containerSize.w || !containerSize.h) return null
+    if (videoScaleMode === 'fill') return null // null = 走 object-cover 分支（CSS 直接铺满）
+    const targetAspect = videoScaleMode === '16:9' ? 16 / 9
+      : videoScaleMode === '4:3' ? 4 / 3
+      : videoAspect // fit
+    if (!targetAspect) return null
+    const scale = Math.min(containerSize.w / targetAspect, containerSize.h)
+    return { width: targetAspect * scale, height: scale }
+  }, [videoAspect, containerSize, videoScaleMode])
   /** 续播目标歌曲位置；视频/音频各自在 metadata 就绪后消费，双轨都完成才清除。 */
   const startupSeekRef = useRef<{ songTime: number; videoApplied: boolean; audioApplied: boolean } | null>(
     initialSeekSeconds != null && Number.isFinite(initialSeekSeconds)
@@ -531,6 +541,8 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
   // 画质
   const [acceptQuality, setAcceptQuality] = useState<number[]>([])
   const [showQualityMenu, setShowQualityMenu] = useState(false)
+  const [showScaleMenu, setShowScaleMenu] = useState(false)
+  const [isWatchFullscreen, setIsWatchFullscreen] = useState(false)
   // 本地 toast（换视频无候选 / 无字幕等提示）
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const volumeTimerRef = useRef<number | null>(null)
@@ -702,6 +714,9 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
       setActiveVideo(candidate)
       setVideoUrl(null)
       setAudioUrl(null)
+      // 新视频音轨重置为标准轨（audioTrack 是视频属性，换视频必须重置；audioEnhance 由新视频 playInfo 决定）
+      setAudioTrack(null)
+      setAudioEnhance(null)
       // 新歌/新视频加载期间不要继续向外暴露上一首歌的对齐结果。
       alignmentOffsetRef.current = 0
       alignmentVerifiedRef.current = false
@@ -750,6 +765,19 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
             const qn = settingsRef.current.targetQuality === 'auto' ? 127 : settingsRef.current.targetQuality
             setQuality(qn)
             setAcceptQuality([])
+            // 复用路径拿不到 acceptQuality（背景层只传流），后台补拉一次 playurl 元数据：
+            // 否则画质菜单被 qualityIsLocked 假锁死成"仅杜比视界"（用户实测：杜比视频不能切其他画质）。
+            // 只读元数据，视频/音频流仍用复用的 cacheKey，不产生加载中断。
+            void (async () => {
+              try {
+                const meta = await getBilibiliPlayUrl(candidate.video.bvid, cid, qn)
+                if (meta.code === 0 && (meta.acceptQuality?.length || 0) > 0) {
+                  setAcceptQuality(Array.isArray(meta.acceptQuality) ? meta.acceptQuality : [])
+                  if (meta.quality) setQuality(meta.quality)
+                  setAudioEnhance(meta.hasFlac ? 'flac' : meta.hasDolby ? 'dolby' : null)
+                }
+              } catch { /* 元数据拉取失败不阻断播放，仅画质菜单降级为单档 */ }
+            })()
           } else {
             const qn = settingsRef.current.targetQuality === 'auto' ? 127 : settingsRef.current.targetQuality
             const playInfo = await getBilibiliPlayUrl(candidate.video.bvid, cid, qn, controller.signal)
@@ -760,6 +788,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
             // 大会员专享画质：不报错，播放当前会话可用的最高画质（quality 已由服务端协商）
             setQuality(playInfo.quality)
             setAcceptQuality(Array.isArray(playInfo.acceptQuality) ? playInfo.acceptQuality : [])
+            setAudioEnhance(playInfo.hasFlac ? 'flac' : playInfo.hasDolby ? 'dolby' : null)
           }
           setVideoUrl(reuseVideoUrl || bilibiliStreamUrl(cacheKey, 'video'))
           setStatus('playing')
@@ -1305,6 +1334,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
         switchSeekRef.current = { target: videoRef.current?.currentTime ?? 0, videoDone: false, audioDone: false }
         setQuality(playInfo.quality)
         setAcceptQuality(Array.isArray(playInfo.acceptQuality) ? playInfo.acceptQuality : [])
+        setAudioEnhance(playInfo.hasFlac ? 'flac' : playInfo.hasDolby ? 'dolby' : null)
         setVideoUrl(bilibiliStreamUrl(playInfo.cacheKey, 'video'))
         setAudioUrl(bilibiliStreamUrl(playInfo.cacheKey, 'audio'))
       } catch (error) {
@@ -1313,6 +1343,56 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     },
     [activeVideo, quality, showToast],
   )
+
+  /** 音轨切换（Hi-Res 无损 / 杜比全景声 / 普通轨）：同画质无损切换，换音轨并跳回原进度 */
+  const switchAudioTrack = useCallback(
+    async (track: 'flac' | 'dolby' | null) => {
+      const current = activeVideo
+      if (!current) return
+      setShowAudioMenu(false)
+      if (audioTrack === track) return
+      setAudioTrack(track)
+      const seq = ++audioSwitchSeqRef.current
+      try {
+        let cid = current.cid || 0
+        if (!cid) {
+          const view = await getBilibiliView(current.video.bvid)
+          if (view.code === 0) cid = view.data.cid
+        }
+        if (!cid) throw new Error('获取视频信息失败')
+        const qnValue = quality || 80
+        const playInfo = await getBilibiliPlayUrl(current.video.bvid, cid, qnValue, undefined, track ?? undefined)
+        if (playInfo.code !== 0 || !playInfo.cacheKey) throw new Error(playInfo.error || '切换音轨失败')
+        if (seq !== audioSwitchSeqRef.current) return
+        // 音轨切换只换音频流（视频流不动），进度由音频轨重载逻辑对齐
+        switchSeekRef.current = { target: videoRef.current?.currentTime ?? 0, videoDone: true, audioDone: false }
+        setAudioUrl(bilibiliStreamUrl(playInfo.cacheKey, 'audio'))
+        setAudioEnhance(playInfo.hasFlac ? 'flac' : playInfo.hasDolby ? 'dolby' : track)
+        showToast(track === 'flac' ? '已切换 Hi-Res 无损' : track === 'dolby' ? '已切换杜比全景声' : '已切换标准音轨')
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : '切换音轨失败')
+      }
+    },
+    [activeVideo, audioTrack, quality, showToast],
+  )
+
+  /** 看歌全屏：容器进入/退出浏览器全屏（此前只有状态监听没有入口） */
+  const toggleWatchFullscreen = useCallback(() => {
+    const container = containerRef.current
+    if (!container) return
+    if (document.fullscreenElement) {
+      void document.exitFullscreen?.().catch(() => undefined)
+    } else {
+      void container.requestFullscreen?.().catch(() => showToast('当前环境不支持全屏'))
+    }
+  }, [showToast])
+
+  /** 切换视频比例（持久化） */
+  const changeVideoScale = useCallback((mode: 'fit' | 'fill' | '16:9' | '4:3') => {
+    setVideoScaleMode(mode)
+    setShowScaleMenu(false)
+    try { localStorage.setItem('bilibili_watch_scale', mode) } catch { /* 忽略 */ }
+  }, [])
 
   /** 双击静音 / 双击恢复 */
   const toggleMute = () => {
@@ -1962,6 +2042,12 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
         startupSeek.audioApplied = true
         if (startupSeek.videoApplied) startupSeekRef.current = null
       }
+      // 新 audio 元素默认 1x：非过渡状态恢复用户倍速；本首歌就位即解除过渡抑制
+      // （此后渲染回写 ref 是安全的——ref 与元素状态一致，不会在过渡中途拉回用户值）
+      if (audio && watchSpeedRef.current !== 1 && !engineHandoffActiveRef.current && !watchSpeedTransitionMutedRef.current) {
+        audio.playbackRate = watchSpeedRef.current
+        watchSpeedTransitionMutedRef.current = false
+      }
       // 新视频音频轨淡入（进入看歌时配合引擎淡出无缝拼接）
       if (fadeInOnLoadRef.current && audio) {
         fadeInOnLoadRef.current = false
@@ -2079,9 +2165,13 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     void window.electron?.automixLog?.('看歌-audio', '音效路由已移除：音频直出（无 AudioContext）')?.catch?.(() => undefined)
   }, [audioUrl])
 
-  // 全屏状态监听
+  // 全屏状态监听（App 容器全屏 + 看歌容器自身全屏都跟踪）
   useEffect(() => {
-    const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement))
+    const onChange = () => {
+      const el = document.fullscreenElement
+      setIsFullscreen(Boolean(el))
+      setIsWatchFullscreen(Boolean(el && el === containerRef.current))
+    }
     document.addEventListener('fullscreenchange', onChange)
     return () => document.removeEventListener('fullscreenchange', onChange)
   }, [])
@@ -2109,13 +2199,14 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
       else if (showProfile) setShowProfile(false)
       else if (showPicker) setShowPicker(false)
       else if (showQualityMenu) setShowQualityMenu(false)
+      else if (showAudioMenu) setShowAudioMenu(false)
       else if (showSongInfo) setShowSongInfo(false)
       else if (isFullscreen) return
       else onBackToAudio()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [showLogin, showSettings, showProfile, showPicker, showQualityMenu, showSongInfo, isFullscreen, onBackToAudio, surfaceVisible])
+  }, [showLogin, showSettings, showProfile, showPicker, showQualityMenu, showAudioMenu, showSongInfo, isFullscreen, onBackToAudio, surfaceVisible])
 
   // 空格键播放/暂停（跟随"播放页快捷键"设置；看歌模式下全局 PlayerControls 不渲染，需自行监听）
   useEffect(() => {
@@ -2289,6 +2380,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
       ref={(el) => { containerRef.current = el; cursorHideRef(el) }}
       className="relative w-full h-full overflow-hidden"
       data-tv-scope
+      data-watch-root
       onMouseMove={handleContainerMouseMove}
       onMouseLeave={scheduleControlsHide}
       // 手势解锁：autoplay 被策略拒绝时，任意一次点击即授予用户激活 → 视频正式开播
@@ -2406,6 +2498,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
             autoPlay
             playsInline
             muted
+            onDoubleClick={toggleWatchFullscreen}
             // 本地代理对 media 同样回 ACAO 头：anonymous 让画布读像素（氛围黑边检测）不被污染
             crossOrigin="anonymous"
             // preload=auto 兜底：autoplay 被策略拒绝（NotAllowedError → 只有元数据、无帧可画，
@@ -2426,9 +2519,13 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
             onLoadedMetadata={updateVideoAspect}
             onLoadedData={updateVideoAspect}
             onResize={updateVideoAspect}
-            // 按视频实际宽高比精确贴合成显示矩形（居中），四周露出氛围光：
+            // 按显示矩形精确贴合（居中）；fill 模式走 object-cover 裁切铺满。
             // Chromium 的 <video> 黑边是媒体合成器强制绘制，CSS 背景透明无效
-            className={videoContainRect ? 'absolute z-10' : 'absolute inset-0 w-full h-full object-contain z-10'}
+            className={videoContainRect
+              ? 'absolute z-10'
+              : videoScaleMode === 'fill'
+                ? 'absolute inset-0 w-full h-full object-cover z-10'
+                : 'absolute inset-0 w-full h-full object-contain z-10'}
             style={videoContainRect
               ? {
                   width: videoContainRect.width,
@@ -2584,6 +2681,42 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
 
                   {/* 右下角按钮组：并入同一行，紧跟在进度条右侧（进度条 flex-1 止于此处） */}
                   <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5 overflow-x-auto pb-1 flex-shrink-0 pointer-events-auto">
+                  {/* 音轨增强徽章：可点切音效（Hi-Res 无损 / 杜比全景声 / 标准轨），同 B 站 Hi-Res 徽章交互 */}
+                  {audioEnhance && (
+                    <div className="relative">
+                      <button
+                        type="button"
+                        title="切换音效"
+                        onClick={() => setShowAudioMenu((v) => !v)}
+                        className="h-8 px-2.5 rounded-full flex items-center text-[11px] font-semibold text-white transition-colors"
+                        style={{ backgroundColor: 'rgba(255,255,255,0.18)' }}
+                      >
+                        {audioEnhance === 'flac' ? 'Hi-Res 无损' : '杜比音效'}
+                      </button>
+                      <AnimatePresence>
+                        {showAudioMenu && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: 8 }}
+                            transition={{ duration: 0.15 }}
+                            className="absolute bottom-full right-0 mb-2 w-40 rounded-xl bg-black/85 backdrop-blur-xl border border-white/15 p-1.5 shadow-2xl z-40"
+                          >
+                            {(['flac', 'dolby', null] as const).map((track) => (
+                              <button
+                                key={track ?? 'std'}
+                                type="button"
+                                onClick={() => void switchAudioTrack(track)}
+                                className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs transition-colors ${((track ?? null) === audioTrack) ? 'text-white bg-white/15' : 'text-white/65 hover:bg-white/10'}`}
+                              >
+                                {track === 'flac' ? 'Hi-Res 无损' : track === 'dolby' ? '杜比全景声' : '标准音轨'}
+                              </button>
+                            ))}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  )}
                   {/* 画质徽章：点击弹出画质菜单切换 */}
                   {quality > 0 && (
                     <div className="relative">
@@ -2674,6 +2807,36 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
                     className="h-8 w-8 rounded-full bg-white/10 backdrop-blur-md border border-white/15 flex items-center justify-center text-white/75 hover:bg-white/20 hover:text-white transition-colors"
                   >
                     <ListVideo size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    title="视频比例"
+                    onClick={() => { setShowScaleMenu((v) => !v); setShowQualityMenu(false); setShowAudioMenu(false) }}
+                    className="h-8 w-8 rounded-full bg-white/10 backdrop-blur-md border border-white/15 flex items-center justify-center text-white/75 hover:bg-white/20 hover:text-white transition-colors"
+                  >
+                    <Proportions size={15} />
+                  </button>
+                  {showScaleMenu && (
+                    <div className="absolute bottom-full mb-2 rounded-xl bg-black/85 backdrop-blur-xl border border-white/15 p-1.5 shadow-2xl z-40 w-28" style={{ right: 'auto' }}>
+                      {(['fit', 'fill', '16:9', '4:3'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => changeVideoScale(mode)}
+                          className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs transition-colors ${videoScaleMode === mode ? 'text-white bg-white/15' : 'text-white/65 hover:bg-white/10'}`}
+                        >
+                          {mode === 'fit' ? '适应窗口' : mode === 'fill' ? '铺满裁切' : mode}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    title={isWatchFullscreen ? '退出全屏' : '全屏'}
+                    onClick={toggleWatchFullscreen}
+                    className="h-8 w-8 rounded-full bg-white/10 backdrop-blur-md border border-white/15 flex items-center justify-center text-white/75 hover:bg-white/20 hover:text-white transition-colors"
+                  >
+                    <Maximize size={15} />
                   </button>
                   <button
                     type="button"

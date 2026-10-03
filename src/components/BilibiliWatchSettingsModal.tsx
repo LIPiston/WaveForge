@@ -274,12 +274,12 @@ export default function BilibiliWatchSettingsModal({ onClose, playerTheme = 'dar
               <h3 className={`text-xs font-semibold mb-2 ${dark ? 'text-white/55' : 'text-black/50'}`}>目标画质</h3>
               <div className="grid grid-cols-2 gap-1.5">
                 {([
-                  { value: 'auto', label: '自动最高', hint: '登录后最高可用（大会员含 4K/杜比）' },
-                  { value: 127, label: '杜比音效', hint: '大会员专享', requiresVip: true },
-                  { value: 126, label: '杜比视界', hint: '大会员专享', requiresVip: true },
-                  { value: 125, label: 'HDR 真彩', hint: '大会员专享', requiresVip: true },
+                  { value: 'auto', label: '自动最高', hint: '登录后最高可用（大会员含 8K/HDR/杜比视界）' },
+                  { value: 127, label: '8K 超高清', hint: '大会员专享（8K 片源）', requiresVip: true },
+                  { value: 126, label: '杜比视界', hint: '大会员专享（杜比视界片源）', requiresVip: true },
+                  { value: 125, label: 'HDR 真彩', hint: '大会员专享（HDR 片源）', requiresVip: true },
                   { value: 120, label: '4K 超高清', hint: '大会员专享', requiresVip: true },
-                  { value: 116, label: '1080P 60帧' },
+                  { value: 116, label: '1080P 60帧', hint: '大会员专享', requiresVip: true },
                   { value: 112, label: '1080P 高码率', hint: '大会员专享', requiresVip: true },
                   { value: 80, label: '1080P 高清', hint: '登录后可用' },
                   { value: 64, label: '720P' },

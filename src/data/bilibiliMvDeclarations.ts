@@ -11,7 +11,7 @@ export interface BilibiliMvDeclaration {
   verifiedAt: string
 }
 
-export const BILIBILI_MV_DECLARATION_VERSION = '2026-09-29-1'
+export const BILIBILI_MV_DECLARATION_VERSION = '2026-10-01-1'
 
 /**
  * 东方/同人评测语料的人工核验声明（x2-doujin-ja-001..017）。
@@ -227,6 +227,62 @@ export const BILIBILI_MV_DECLARATIONS: readonly BilibiliMvDeclaration[] = [
     duration: 311,
     note: '东方原曲声明：永夜抄原曲投稿（5.4万播放）。',
     verifiedAt: '2026-09-29',
+  },
+  // ===== 2026-10-01 全语种人工审核批次（浏览器 view API 核验标题/UP主/时长一致）=====
+  {
+    songKey: 'netease:18520488',
+    bvid: 'BV1GJ411x7h7',
+    songTitle: 'Never Gonna Give You Up',
+    artists: ['Rick Astley'],
+    videoTitle: '【官方 MV】Never Gonna Give You Up - Rick Astley',
+    uploader: '索尼音乐中国',
+    duration: 213,
+    note: '官方渠道搬运（索尼音乐中国），1.06亿播放，B站梗曲本尊。',
+    verifiedAt: '2026-10-01',
+  },
+  {
+    songKey: 'netease:2155478102',
+    bvid: 'BV19m421T7xS',
+    songTitle: 'Supernova',
+    artists: ['aespa'],
+    videoTitle: 'aespa《Supernova》MV',
+    uploader: 'SMTOWN',
+    duration: 194,
+    note: 'SMTOWN 官方频道投稿（1417万播放）。',
+    verifiedAt: '2026-10-01',
+  },
+  {
+    songKey: 'netease:1808375725',
+    bvid: 'BV1Yr4y1P73q',
+    songTitle: '群青',
+    artists: ['YOASOBI'],
+    videoTitle: 'YOASOBI 群青(Gunjo) Official Music Video',
+    uploader: 'Ayase-YOASOBI',
+    duration: 263,
+    note: 'YOASOBI 官方频道投稿（733万播放）。',
+    verifiedAt: '2026-10-01',
+  },
+  {
+    songKey: 'netease:2639291583',
+    bvid: 'BV1qDUPYKEzf',
+    songTitle: 'モニタリング',
+    artists: ['DECO*27', '初音ミク'],
+    videoTitle: 'DECO*27 - モニタリング feat. 初音ミク',
+    uploader: 'DECO27_Official',
+    duration: 182,
+    note: 'DECO*27 官方频道投稿（2890万播放）。',
+    verifiedAt: '2026-10-01',
+  },
+  {
+    songKey: 'netease:2034044634',
+    bvid: 'BV1Tf421m7iW',
+    songTitle: '希望有羽毛和翅膀',
+    artists: ['HOYO-MiX'],
+    videoTitle: '《崩坏：星穹铁道》EP：「希望有羽毛和翅膀」',
+    uploader: '崩坏星穹铁道',
+    duration: 178,
+    note: '崩坏星穹铁道官方账号投稿（2030万播放）。',
+    verifiedAt: '2026-10-01',
   },
 ]
 

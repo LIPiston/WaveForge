@@ -14,7 +14,7 @@
  */
 
 import { createPortal } from 'react-dom'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, X, Clock, Eye } from 'lucide-react'
 import { useModeParked } from '../utils/modeLayer'
 import {
@@ -245,7 +245,9 @@ async function findFallbackMvUrl(ctx: { songTitle: string; artists: string[]; so
   }
 }
 
-export default function BilibiliMvBackground({
+// memo：App 播放期间高频重渲染（约 1-4Hz），本组件挂载于歌词页背景全程常驻；
+// 所有回调 prop 在调用侧已稳定化（组件内部再经 ref 读最新实现），浅比较即可拦住无关重渲染。
+export default memo(function BilibiliMvBackground({
   songTitle,
   songArtists,
   songDuration,
@@ -1656,4 +1658,4 @@ export default function BilibiliMvBackground({
       )}
     </div>
   )
-}
+})
