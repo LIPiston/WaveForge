@@ -94,6 +94,7 @@ import BilibiliInteractPanel from './BilibiliInteractPanel'
 import DanmakuLayer from './DanmakuLayer'
 import { useColorThief } from '../hooks/useColorThief'
 import { loadPlaybackShortcutSettings } from '../services/playbackShortcutSettings'
+import { getEffectivePlaybackSpeed, loadPlaybackSpeedSettings, savePlaybackSpeedSettings, setEffectivePlaybackSpeed, PLAYBACK_SPEED_SETTINGS_EVENT, PLAYBACK_SPEED_TRANSITION_EVENT } from '../services/playbackSpeedSettings'
 import type { LyricLine } from '../services/musicApi'
 import { autoMixAnalysisService } from '../services/autoMixAnalysisService'
 import { ensureMvAlignment, getMvAlignmentFor, MIN_ALIGNMENT_CONFIDENCE } from '../services/mvAlignment'
@@ -443,6 +444,19 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
   videoUrlRef.current = videoUrl
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [quality, setQuality] = useState(0)
+  /** 音轨增强标记（B 站 DASH dash.flac/dash.dolby，独立于视频画质档位）：Hi-Res 无损 / 杜比全景声 */
+  const [audioEnhance, setAudioEnhance] = useState<'flac' | 'dolby' | null>(null)
+  /** 音轨切换菜单（用户实测 B 站 Hi-Res 徽章可点切音效）：null=关, flac=Hi-Res, dolby=杜比 */
+  const [audioTrack, setAudioTrack] = useState<'flac' | 'dolby' | null>(null)
+  const [showAudioMenu, setShowAudioMenu] = useState(false)
+  const audioSwitchSeqRef = useRef(0)
+  /** 歌曲倍速（跨表面共享）：看歌把歌曲 audio 元素跟随倍速；视频流按音频时长对齐自动同步。
+   *  过渡开始时 App 广播 PLAYBACK_SPEED_TRANSITION_EVENT，这里归 1，结束后按设置恢复。 */
+  const [watchSpeed, setWatchSpeed] = useState<number>(() => loadPlaybackSpeedSettings().speed)
+  const watchSpeedRef = useRef(watchSpeed)
+  watchSpeedRef.current = watchSpeed
+  /** 过渡抑制：过渡重置（元素归 1）到新歌就位之间，渲染回写与就绪恢复都不得应用用户倍速 */
+  const watchSpeedTransitionMutedRef = useRef(false)
   const [playError, setPlayError] = useState('')
 
   // 字幕
@@ -2226,6 +2240,57 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [handleTogglePlay, videoUrl, surfaceVisible])
+
+  // 歌曲倍速（看歌）：音频（权威时钟）与视频**双端同速**。视频若保持 1x，4s 漂移校正会
+  // 每轮把视频硬拽 ~1s（跳帧），且弹幕/字幕时钟（video.currentTime）持续落后歌词。
+  // 对齐路径不受影响：applyAlignmentOffset 的目标是同一时钟位置，双端同速不会产生双倍速差。
+  // 过渡重置广播把两者归 1（引擎 BPM 变速期间不用户倍速叠加）。
+  // ⚠️ transitionMutedRef 与「渲染时回写 ref」的相互作用：过渡重置只改元素不改 state，
+  // 若渲染仍无条件回写 ref，过渡期间任何渲染都会把 ref 拉回用户值，随后的
+  // onAudioLoaded/videoUrl effect 就提前恢复倍速、污染引擎变速段。这里过渡置 muted、
+  // 新歌就位（songKey 变化后的首次恢复路径）解除 muted 并同步 state=用户值。
+  useEffect(() => {
+    const applySpeed = () => {
+      const audio = audioRef.current
+      const video = videoRef.current
+      if (audio) audio.playbackRate = watchSpeedRef.current
+      if (video) video.playbackRate = watchSpeedRef.current
+    }
+    const onSettings = (event: Event) => {
+      const speed = (event as CustomEvent<number>).detail
+      if (typeof speed !== 'number') return
+      watchSpeedTransitionMutedRef.current = false // 用户主动改设置 = 明确意图，解除抑制
+      setWatchSpeed(speed)
+      applySpeed()
+    }
+    const onTransitionReset = () => {
+      watchSpeedTransitionMutedRef.current = true
+      setWatchSpeed(1)
+      setEffectivePlaybackSpeed(1)
+      const audio = audioRef.current
+      const video = videoRef.current
+      if (audio) audio.playbackRate = 1
+      if (video) video.playbackRate = 1
+    }
+    window.addEventListener(PLAYBACK_SPEED_SETTINGS_EVENT, onSettings)
+    window.addEventListener(PLAYBACK_SPEED_TRANSITION_EVENT, onTransitionReset)
+    return () => {
+      window.removeEventListener(PLAYBACK_SPEED_SETTINGS_EVENT, onSettings)
+      window.removeEventListener(PLAYBACK_SPEED_TRANSITION_EVENT, onTransitionReset)
+    }
+  }, [])
+
+  // 新视频/新音频就绪时恢复用户倍速（新元素默认 1）；过渡抑制期保持 1。
+  // 恢复后解除抑制：本首歌已就位，后续渲染回写 ref 是安全的。
+  useEffect(() => {
+    if (!videoUrl && !audioUrl) return
+    if (watchSpeedTransitionMutedRef.current) return
+    const audio = audioRef.current
+    const video = videoRef.current
+    if (audio && watchSpeed !== 1) audio.playbackRate = watchSpeed
+    if (video && watchSpeed !== 1) video.playbackRate = watchSpeed
+    setEffectivePlaybackSpeed(watchSpeed)
+  }, [videoUrl, audioUrl, watchSpeed])
 
   const dark = playerTheme === 'dark'
 

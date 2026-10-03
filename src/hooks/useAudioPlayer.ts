@@ -1,6 +1,7 @@
 ﻿import { debugLog } from '../utils/debugLog'
 import { isGameModeFrozen } from '../services/gameModeRuntime'
 import { isTvModeActive } from '../platform'
+import { PLAYBACK_SPEED_OPTIONS, PLAYBACK_SPEED_SETTINGS_EVENT, PLAYBACK_SPEED_TRANSITION_EVENT, setEffectivePlaybackSpeed } from '../services/playbackSpeedSettings'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   onStateChange as onBridgeStateChange,
@@ -754,6 +755,58 @@ export function useAudioPlayer(
     // 只解码目标20秒窗口，不在渲染进程展开整首 PCM。
     return bridge.prepare(metadata.url, metadata.trackKey || metadata.url)
   }, [])
+
+  // ===== 用户倍速（歌曲本体）：与引擎 BPM 变速（AI 混音 playbackRate）互斥 =====
+  // 过渡（preparing-next/armed/running-transition/committed）期间用户倍速必须让位：引擎在
+  // overlap 窗口以 speedRatio 驱动 deck。applyUserPlaybackSpeed 只在 playing/idle 应用；
+  // 过渡开始时 App 广播 PLAYBACK_SPEED_TRANSITION_EVENT，这里把元素归 1，过渡结束（回 playing）
+  // 再恢复用户倍速——避免过渡段被用户倍速二次叠加导致 BPM 失配。
+  const userSpeedRef = useRef(1)
+  const applyUserPlaybackSpeed = useCallback((speed: number) => {
+    const clamped = PLAYBACK_SPEED_OPTIONS.includes(speed as never) ? speed : 1
+    userSpeedRef.current = clamped
+    setEffectivePlaybackSpeed(clamped)
+    const audio = getActiveAudio()
+    if (audio && (transitionStateRef.current === 'playing' || transitionStateRef.current === 'idle' || transitionStateRef.current === 'loading-current')) {
+      audio.playbackRate = clamped
+    }
+  }, [getActiveAudio])
+
+  useEffect(() => {
+    const onSettings = (event: Event) => {
+      const speed = (event as CustomEvent<number>).detail
+      if (typeof speed === 'number') applyUserPlaybackSpeed(speed)
+    }
+    const onTransitionReset = () => {
+      // 过渡开始：引擎要接管 playbackRate（BPM 变速），用户倍速先归 1（注册表同步为生效值 1）
+      setEffectivePlaybackSpeed(1)
+      for (const audio of [primaryRef.current, secondaryRef.current]) {
+        if (audio) audio.playbackRate = 1
+      }
+    }
+    window.addEventListener(PLAYBACK_SPEED_SETTINGS_EVENT, onSettings)
+    window.addEventListener(PLAYBACK_SPEED_TRANSITION_EVENT, onTransitionReset)
+    return () => {
+      window.removeEventListener(PLAYBACK_SPEED_SETTINGS_EVENT, onSettings)
+      window.removeEventListener(PLAYBACK_SPEED_TRANSITION_EVENT, onTransitionReset)
+    }
+  }, [applyUserPlaybackSpeed])
+
+  // 播放启动时应用用户倍速（新 audio 元素/换曲后 playbackRate 回到默认 1）；
+  // 过渡状态下跳过（running-transition/committed 时引擎正以变速驱动，恢复交给过渡收尾）
+  useEffect(() => {
+    const applySpeedOnPlay = () => {
+      const state = transitionStateRef.current
+      const audio = getActiveAudio()
+      if (audio && userSpeedRef.current !== 1
+        && (state === 'playing' || state === 'idle' || state === 'loading-current')) {
+        audio.playbackRate = userSpeedRef.current
+        setEffectivePlaybackSpeed(userSpeedRef.current)
+      }
+    }
+    window.addEventListener('play', applySpeedOnPlay, true)
+    return () => window.removeEventListener('play', applySpeedOnPlay, true)
+  }, [getActiveAudio])
 
   const enableTrackStems = useCallback(async () => {
     const metadata = currentMetadataRef.current
@@ -3842,6 +3895,11 @@ export function useAudioPlayer(
       setVocalLevel: setTrackVocalLevel,
       setStemGains: setTrackStemGains,
       returnToOriginal: returnTrackStemsToOriginal,
+    },
+    /** 用户倍速（歌曲本体）：仅 playing/idle 应用；过渡期间自动让位给引擎 BPM 变速 */
+    playbackSpeed: {
+      apply: applyUserPlaybackSpeed,
+      get: () => userSpeedRef.current,
     },
   }
 }

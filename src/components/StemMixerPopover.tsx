@@ -3,6 +3,7 @@ import { AudioLines, Drum, MicVocal, Music2, RotateCcw, Waves } from 'lucide-rea
 import { useEffect, useRef, useState } from 'react'
 import type { TrackStemGains, TrackStemName } from '../audio/trackStemMixer'
 import { useTvBack } from '../tv/tvCore'
+import { getEffectivePlaybackSpeed, setEffectivePlaybackSpeed, PLAYBACK_SPEED_OPTIONS, savePlaybackSpeedSettings } from '../services/playbackSpeedSettings'
 
 export type StemControlStatus = 'unavailable' | 'idle' | 'separating' | 'partial' | 'ready' | 'failed'
 
@@ -48,6 +49,17 @@ export function StemMixerPopover({
 }: StemMixerPopoverProps) {
   const [open, setOpen] = useState(false)
   const [custom, setCustom] = useState(false)
+  const [speed, setSpeed] = useState(() => getEffectivePlaybackSpeed())
+  // 过渡期间元素被广播归 1（用户设置仍保留在 localStorage）：popover 显示「实际生效值」，
+  // 避免显示 1.5x 实际 1x 的假象；过渡结束后各应用方恢复设置值并更新注册表，这里跟随。
+  useEffect(() => {
+    const syncFromPeers = (event: Event) => {
+      const speed = (event as CustomEvent<{ speed?: number }>).detail?.speed
+      if (typeof speed === 'number') setSpeed(speed)
+    }
+    window.addEventListener('playbackSpeedEffectiveChanged', syncFromPeers as EventListener)
+    return () => window.removeEventListener('playbackSpeedEffectiveChanged', syncFromPeers as EventListener)
+  }, [])
   /** 启用失败时的可见提示：onEnable 返回 false 的多数路径只写 status/reason，
    *  静默返回 false 的路径（换 generation / 预载重跑）界面上原本毫无反馈，用户只看到滑块弹回。 */
   const [enableHint, setEnableHint] = useState('')
@@ -261,6 +273,30 @@ export function StemMixerPopover({
             <button type="button" onClick={control.onReturnOriginal} className="mt-3 flex w-full items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-medium" style={{ color: muted, background: track }}>
               <RotateCcw className="h-3 w-3" />恢复原声
             </button>
+
+            {/* 歌曲倍速（跨表面共享：歌曲本体 / 看歌视频 / MV 背景）：与分轨同面板零新增入口。
+                过渡（automix）开始时全局广播归 1，结束后按此设置恢复——UI 读回本地状态保持一致。 */}
+            <div className="mt-3 rounded-lg p-2" style={{ background: track }}>
+              <div className="mb-1.5 flex items-center justify-between text-[11px]" style={{ color: muted }}>
+                <span>歌曲倍速</span>
+                <span className="font-semibold tabular-nums" style={{ color: speed === 1 ? muted : accentColor }}>{speed === 1 ? '原速' : `${speed}x`}</span>
+              </div>
+              <div className="flex gap-1">
+                {PLAYBACK_SPEED_OPTIONS.map(option => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => { setSpeed(savePlaybackSpeedSettings(option).speed); setEffectivePlaybackSpeed(option) }}
+                    className="flex-1 rounded-md py-1 text-[10px] font-medium transition-colors"
+                    style={speed === option
+                      ? { color: '#fff', backgroundColor: accentColor }
+                      : { color: muted, background: dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.05)' }}
+                  >
+                    {option}x
+                  </button>
+                ))}
+              </div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

@@ -260,6 +260,7 @@ import {
   PLAYBACK_SHORTCUT_SETTINGS_EVENT,
   type PlaybackShortcutSettings,
 } from './services/playbackShortcutSettings'
+import { notifyPlaybackSpeedTransitionReset } from './services/playbackSpeedSettings'
 
 interface Track {
   id?: number
@@ -4396,6 +4397,12 @@ function App() {
     }
     wasAudioTransitioningRef.current = isTransitioning
   }, [dominantColor, isTransitioning])
+
+  // 用户倍速与过渡互斥：过渡开始时广播归一信号（歌曲 audio/看歌 video/背景 MV 各自归 1，
+  // 引擎在 overlap 以 BPM speedRatio 接管）；过渡结束（回非过渡态）后由各应用方按设置恢复。
+  useEffect(() => {
+    if (isTransitioning) notifyPlaybackSpeedTransitionReset()
+  }, [isTransitioning])
 
   useEffect(() => {
     const coverUrl = transitionToTrack?.coverUrl

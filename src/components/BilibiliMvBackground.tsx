@@ -51,6 +51,7 @@ import {
 } from '../services/mvAlignment'
 import type { BilibiliVideo, CandidateSignals } from '../services/bilibiliApi'
 import type { LyricLine } from '../services/musicApi'
+import { loadPlaybackSpeedSettings, setEffectivePlaybackSpeed, PLAYBACK_SPEED_SETTINGS_EVENT, PLAYBACK_SPEED_TRANSITION_EVENT } from '../services/playbackSpeedSettings'
 import { clampMvBlur, resolveMvBackgroundQuality } from '../services/playbackPerformancePolicy'
 
 type MvBackgroundStatus = 'idle' | 'searching' | 'loading' | 'playing' | 'confirm' | 'none' | 'error'
@@ -329,6 +330,48 @@ export default memo(function BilibiliMvBackground({
   // 槽位 URL 清除时释放 GPU 视频解码器（不清除会累积解码帧，导致渐卡并最终耗尽）
   useEffect(() => { if (!slotAUrl && slotARef.current) slotARef.current.load() }, [slotAUrl])
   useEffect(() => { if (!slotBUrl && slotBRef.current) slotBRef.current.load() }, [slotBUrl])
+
+  // 歌曲倍速同步：背景 MV 视频跟随歌曲倍速（否则节拍对齐会漂移）；过渡重置广播时归 1，
+  // 过渡结束（下一首槽位 canplay 后）由设置的 change 事件/新槽位加载恢复。
+  const bgSpeedRef = useRef(loadPlaybackSpeedSettings().speed)
+  /** 过渡归 1 后到下一首就位前，忽略新的倍速设置：过渡期间引擎在以 BPM 变速驱动歌曲，
+   *  此刻改倍速会让槽位视频与歌曲时钟分叉（2s 轮询按新 speed 拉视频、音频却是变速歌）。 */
+  const bgSpeedSuppressedRef = useRef(false)
+  useEffect(() => {
+    const applyToSlots = () => {
+      for (const slot of [slotARef.current, slotBRef.current]) {
+        if (slot && slot.playbackRate !== bgSpeedRef.current) {
+          try { slot.playbackRate = bgSpeedRef.current } catch { /* 某些编码不支持变速，忽略 */ }
+        }
+      }
+    }
+    const onSettings = (event: Event) => {
+      const speed = (event as CustomEvent<number>).detail
+      if (typeof speed !== 'number') return
+      bgSpeedRef.current = speed
+      // 过渡抑制期只记录不应用；换歌槽位重载后（suppression 解除）再生效
+      if (!bgSpeedSuppressedRef.current) applyToSlots()
+    }
+    const onTransitionReset = () => {
+      bgSpeedSuppressedRef.current = true
+      bgSpeedRef.current = 1
+      setEffectivePlaybackSpeed(1)
+      for (const slot of [slotARef.current, slotBRef.current]) {
+        if (slot) { try { slot.playbackRate = 1 } catch { /* 忽略 */ } }
+      }
+    }
+    // 新槽位出画面时补应用（新视频元素默认 1）；过渡抑制解除随新歌槽位加载：
+    // loadVideo 写槽位 URL 时 bgSpeedSuppressedRef 复位（见槽位 effect），此处仅跟随
+    applyToSlots()
+    window.addEventListener(PLAYBACK_SPEED_SETTINGS_EVENT, onSettings)
+    window.addEventListener(PLAYBACK_SPEED_TRANSITION_EVENT, onTransitionReset)
+    const interval = window.setInterval(applyToSlots, 2000)
+    return () => {
+      window.removeEventListener(PLAYBACK_SPEED_SETTINGS_EVENT, onSettings)
+      window.removeEventListener(PLAYBACK_SPEED_TRANSITION_EVENT, onTransitionReset)
+      window.clearInterval(interval)
+    }
+  }, [])
   const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A')
   const activeSlotRef = useRef<'A' | 'B'>('A')
   /** 每个槽位当前加载的视频 bvid（同步循环按活跃槽的 bvid 查对齐结果） */
@@ -608,6 +651,11 @@ export default memo(function BilibiliMvBackground({
           if (stagedOnly && (!currentActiveUrl || currentActiveUrl === newVideoUrl)) return
           const songJustSwitched = !stagedOnly && songSwitchedRef.current
           if (!stagedOnly) songSwitchedRef.current = false
+          // 新歌 MV 就位：过渡倍速抑制解除，恢复用户倍速（下一首起生效）
+          if (songJustSwitched) {
+            bgSpeedSuppressedRef.current = false
+            setEffectivePlaybackSpeed(loadPlaybackSpeedSettings().speed)
+          }
           if (!currentActiveUrl || currentActiveUrl === newVideoUrl || songJustSwitched) {
             // 首个视频 / 同一视频 / 刚切歌（旧视频已隐藏）：直接进当前槽位替换，无需过渡。
             // 刚切歌时不等交叉淡化——否则新视频进另一槽、淡入被快速切歌打断 → 背景空白
@@ -1154,6 +1202,9 @@ export default memo(function BilibiliMvBackground({
         // 否则视频从隐藏前的旧位置续播、小偏移逐次累积变大（实测切 2 次后慢 ~10s）
         lastSyncCorrectionRef.current = performance.now()
         v.currentTime = target
+        // 看歌期间用户倍速可能在歌曲 audio 上生效：切回立即同步视频倍速，
+        // 否则恢复的 1x 播放会再次偏离，等 2s 轮询校正时出现跳帧
+        if (bgSpeedRef.current !== 1) { try { v.playbackRate = bgSpeedRef.current } catch { /* 忽略 */ } }
         resumeSlot(activeSlotRef.current)
         return true
       }
