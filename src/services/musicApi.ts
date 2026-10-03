@@ -1855,7 +1855,7 @@ export async function getLyrics(
         const merged = attachBackgroundVocalsFromAmll(currentLyrics, amllResult.lyrics)
         currentLyrics = merged.lyrics
         if (merged.attached > 0) {
-          debugLog(`  [和声补挂] 从 AMLL 结构补挂 ${merged.attached} 处背景和声到骨架（${baseResult.source}），移除重复行 ${merged.removed}`)
+          debugLog(`  [结构补挂] 从 AMLL 补挂演唱者/背景和声到骨架（${baseResult.source}）：和声 ${merged.attached} 处，移除重复行 ${merged.removed}`)
         }
       }
 
@@ -2167,46 +2167,78 @@ export const normalizeLyricTextForMatch = (text: string): string => (text || '')
   .replace(/[\s·•\-–—()（）[\]【】「」『』〈〉《》"'`、，。！？!?,.&/|:：]+/g, '')
 
 /**
- * 把带 x-bg 结构的源（AMLL）里的背景和声，按「归一化文本 + 时间邻近」补挂到骨架歌词上，
- * 并移除骨架里与和声重复的独立行。
+ * 把带 x-bg / ttm:agent 结构的源（AMLL）的结构信息，按「归一化文本 + 时间邻近」补挂到骨架歌词上：
+ *  - 复制演唱者（agent）：左右分栏与对唱着色的数据源（QQ 等平台骨架没有 agent 字段）；
+ *  - 复制背景和声（backgroundVocals）：主行唱完保持全亮、和声小字逐词点亮；
+ *  - 移除骨架里与和声重复的独立行。
  *
  * 平台歌词（网易云 LRC / QQ QRC）里"和声"是普通行、没有结构标记；AMLL TTML 是唯一
- * 携带 x-bg 结构的数据源。补挂后主行唱完保持全亮、和声以小字按自己的时间窗逐词点亮。
- * 和声窗口按主行时间偏差（源间时间轴偏移）整体平移，保证点亮时机与骨架演唱对齐。
+ * 携带 x-bg / agent 结构的数据源。和声窗口按主行时间偏差（源间时间轴偏移）整体平移，
+ * 保证点亮时机与骨架演唱对齐。
  */
 export function attachBackgroundVocalsFromAmll(
   currentLyrics: LyricLine[],
   amllLyrics: LyricLine[],
 ): { lyrics: LyricLine[]; attached: number; removed: number } {
-  const bgSourceLines = amllLyrics.filter(line => line.backgroundVocals?.length)
-  if (bgSourceLines.length === 0) return { lyrics: currentLyrics, attached: 0, removed: 0 }
+  const structuredLines = amllLyrics.filter(line => line.backgroundVocals?.length || line.agent || line.agentId)
+  if (structuredLines.length === 0) return { lyrics: currentLyrics, attached: 0, removed: 0 }
 
   const bgTexts: Array<{ text: string; time: number; endTime: number }> = []
-  bgSourceLines.forEach(line => {
+  structuredLines.forEach(line => {
     line.backgroundVocals?.forEach(vocal => {
       const text = normalizeLyricTextForMatch(vocal.text)
       if (text) bgTexts.push({ text, time: vocal.time, endTime: vocal.endTime })
     })
   })
 
-  let attached = 0
-  const withVocals = currentLyrics.map(line => {
+  // 第一遍：精确匹配（归一化文本一致 + 时间邻近），同时收集源间时间偏差用于宽松兜底
+  const exactMatches = currentLyrics.map(line => {
     const key = normalizeLyricTextForMatch(line.text)
-    if (!key) return line
-    const match = bgSourceLines.find(candidate =>
+    if (!key) return null
+    return structuredLines.find(candidate =>
       normalizeLyricTextForMatch(candidate.text) === key && Math.abs(candidate.time - line.time) < 1.5
-    )
-    if (!match?.backgroundVocals) return line
-    attached++
+    ) ?? null
+  })
+  const deltas = exactMatches
+    .map((cand, index) => (cand ? currentLyrics[index].time - cand.time : null))
+    .filter((value): value is number => value !== null)
+    .sort((a, b) => a - b)
+  const medianDelta = deltas.length > 0 ? deltas[Math.floor(deltas.length / 2)] : 0
+
+  let attached = 0
+  const withVocals = currentLyrics.map((line, index) => {
+    let match = exactMatches[index]
+    if (!match) {
+      // 宽松兜底：跨源文本存在差异（want/wanna、标点/拼写）时精确匹配会漏行 →
+      // 按"时间 - 源间偏差中位数"对齐（窗口 ±0.35s，行距通常 ≥2s，不会误挂相邻行），
+      // 且要求归一化文本前 5 字符一致，防止错挂到完全不同的行上。
+      const key = normalizeLyricTextForMatch(line.text)
+      if (!key) return line
+      const fuzzy = structuredLines.find(candidate =>
+        Math.abs((line.time - medianDelta) - candidate.time) < 0.35
+        && normalizeLyricTextForMatch(candidate.text).slice(0, 5) === key.slice(0, 5)
+      )
+      if (!fuzzy) return line
+      match = fuzzy
+    }
     const delta = line.time - match.time
-    return {
-      ...line,
-      backgroundVocals: match.backgroundVocals.map(vocal => ({
+    const next: LyricLine = { ...line }
+    // 演唱者：骨架缺失时从结构源补挂（左右分栏/对唱着色依赖它）
+    if (match.agent || match.agentId) {
+      if (!next.agent && !next.agentId) {
+        next.agent = match.agent
+        next.agentId = match.agentId || match.agent
+      }
+    }
+    if (match.backgroundVocals?.length) {
+      attached++
+      next.backgroundVocals = match.backgroundVocals.map(vocal => ({
         ...vocal,
         time: vocal.time + delta,
         endTime: vocal.endTime + delta,
-      })),
+      }))
     }
+    return next
   })
 
   let removed = 0

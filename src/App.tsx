@@ -2226,6 +2226,8 @@ function App() {
     // v6：背景和声结构修复——AMLL TTML 的 x-bg 随主行下发（此前被丢弃）、YRC 括号和声行
     //     归并为主行 backgroundVocals（此前是独立行）。旧缓存会重放"和声变独立大字行"的旧结构，
     //     必须升版本强制重取，否则修复在缓存命中的歌曲上完全不可见。
+    // v8：结构补挂扩展为「演唱者(agent) + 背景和声(backgroundVocals)」全量下发，含跨源
+    //     文本差异（want/wanna）的偏差兜底——v7 缓存里的骨架行仍是无 agent 的旧结构。
     // v7：AMLL 结果下发 ttm:agent（左右分栏数据源）+ 经本地服务代理取数（渲染进程直连
     //     在部分网络下整批失败）。v6 缓存里存的正是"无 agent、无 backgroundVocals"的
     //     旧骨架（TTL 30 天，重启也不会失效），必须再升一版；**今后任何歌词取数/解析/
@@ -2239,7 +2241,7 @@ function App() {
       localStorage.getItem('adaptiveLyrics') || 'default',
       localStorage.getItem('primaryLyricsSource') || 'AMLL',
     ].join(':')
-    const lyricsCacheKey = `v7:${lyricsPolicyKey}:${cacheKey}`
+    const lyricsCacheKey = `v8:${lyricsPolicyKey}:${cacheKey}`
     const isFresh = cached
       && cached.lyricsPolicyKey === lyricsPolicyKey
       && Date.now() - (cached.lyricsTimestamp ?? cached.timestamp) < 5 * 60 * 1000

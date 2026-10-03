@@ -103,4 +103,28 @@ describe('和声结构补挂（平台骨架 + AMLL 结构）', () => {
     expect(removed).toBe(0)
     expect(lyrics).toHaveLength(4)
   })
+
+  it('演唱者（agent）从结构源补挂到骨架行；跨源文本差异（want/wanna）走时间偏差兜底', () => {
+    const skeletonLines = [
+      { time: 8.922, text: "And you're the kind of guy the ladies want" },
+      { time: 62.0, text: 'I never want to see you walk away' },
+    ] as unknown as Parameters<typeof attachBackgroundVocalsFromAmll>[0]
+    const amllLines = [
+      {
+        time: 8.738,
+        text: "And you're the kind of guy the ladies want",
+        agent: 'v1',
+        agentId: 'v1',
+        backgroundVocals: [{ time: 11.357, endTime: 13.638, text: "And there's a lot of cool chicks out there", words: [] }],
+      },
+      { time: 61.8, text: 'I never wanna see you walk away', agent: 'v2', agentId: 'v2' },
+    ] as unknown as Parameters<typeof attachBackgroundVocalsFromAmll>[1]
+
+    const { lyrics } = attachBackgroundVocalsFromAmll(skeletonLines, amllLines)
+    // 精确匹配行：agent 下发
+    expect(lyrics[0].agent).toBe('v1')
+    expect(lyrics[0].backgroundVocals?.length).toBe(1)
+    // 文本差异行（want vs wanna）：时间偏差中位数兜底后仍补上 agent（左右分栏依赖它）
+    expect(lyrics[1].agent).toBe('v2')
+  })
 })
