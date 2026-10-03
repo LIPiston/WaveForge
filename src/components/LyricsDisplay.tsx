@@ -120,14 +120,11 @@ const INTERLUDE_HIDE_BEFORE_NEXT_SECONDS = 1
 const INTERLUDE_MIN_GAP_SECONDS = 5
 
 // ── 左右交替歌词（Apple Music 特殊歌词风格；现代模式的柔和/摩登两种样式通用）──
-// 规则与摩登模式（ModengPlayerPage）同一套：
-//   对唱（≥2 演唱者）：按 agent 出现顺序，奇数序号的演唱者靠右，其余靠左；
-//   普通歌：两句间隔 ≥2s 视为分段，奇数段靠右、偶数段靠左 → 形成"左→右→左"。
-// 默认开启（与真机行为一致：真机没有开关、对唱/段落交替天然生效），用户可在
-// 快捷设置 → 功能 → 「左右交替歌词」显式关闭。
+// 规则与真机一致：仅当存在 ≥2 位演唱者（ttm:agent）时按演唱者奇偶分侧（首位靠左、次位靠右）；
+// 独唱 / 无演唱者信息一律靠左，不做段落启发式交替（真机也不会平白左右跳）。
+// 默认开启（真机没有这个开关、对唱天然生效），用户可在 快捷设置 → 功能 显式关闭。
 const LYRICS_SIDE_ALIGN_KEY = 'waveforge_lyrics_side_align'
 const LYRICS_SIDE_ALIGN_EVENT = 'waveforge:lyrics-side-align'
-const LYRICS_SIDE_ALIGN_PARAGRAPH_GAP_S = 2.0
 const readLyricsSideAlign = (): boolean => {
   try { return localStorage.getItem(LYRICS_SIDE_ALIGN_KEY) !== 'false' } catch { return true }
 }
@@ -871,23 +868,17 @@ export default memo(function LyricsDisplay({
       window.removeEventListener('storage', handleSideAlignStorage)
     }
   }, [])
-  // 左右交替：按行预计算对齐侧。对唱（≥2 演唱者）按 agent 出现顺序奇偶；
-  // 普通歌按段落奇偶（单次线性扫描，段落计数随行推进）。开启时覆盖 duet 对齐。
+  // 左右交替：按行预计算对齐侧。规则与真机一致——只有存在 ≥2 位演唱者（agent）时
+  // 才做左右分栏（按 agent 出现顺序奇偶：首位靠左、次位靠右）；独唱 / 无演唱者信息
+  // （平台歌词没有 agent 字段）一律靠左，不做任何段落启发式交替。
   const sideAlignSides = useMemo(() => {
     if (!sideAlignEnabled || scrollAlignment === 'center') return null
     const agentOf = (line: LyricLine) => (line.agentId || line.agent) || ''
     const agents = Array.from(new Set(displayLyricsData.map(agentOf).filter(Boolean)))
-    let paragraph = 0
-    return displayLyricsData.map((line, index) => {
-      if (index > 0) {
-        const prev = displayLyricsData[index - 1]
-        if (line.time != null && prev.time != null && line.time - prev.time >= LYRICS_SIDE_ALIGN_PARAGRAPH_GAP_S) paragraph++
-      }
-      if (agents.length >= 2) {
-        const agent = agentOf(line)
-        return agent && agents.indexOf(agent) % 2 === 1 ? 'right' as const : 'left' as const
-      }
-      return paragraph % 2 === 1 ? 'right' as const : 'left' as const
+    if (agents.length < 2) return null
+    return displayLyricsData.map(line => {
+      const agent = agentOf(line)
+      return agent && agents.indexOf(agent) % 2 === 1 ? 'right' as const : 'left' as const
     })
   }, [sideAlignEnabled, scrollAlignment, displayLyricsData])
 

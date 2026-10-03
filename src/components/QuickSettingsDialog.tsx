@@ -1350,7 +1350,7 @@ export default memo(function QuickSettingsDialog({
                         柔和/摩登两种歌词样式通用（LyricsDisplay 按行预计算对齐侧）。 */}
                     {lyricDisplayMode === 'modern' &&
                       renderToggleRow('左右交替歌词', lyricsSideAlign, handleLyricsSideAlignToggle, {
-                        description: '按演唱者/段落交替对齐两侧（柔和与摩登通用）',
+                        description: '对唱按演唱者左右分栏（柔和与摩登通用）',
                       })}
                   </>,
                 )}

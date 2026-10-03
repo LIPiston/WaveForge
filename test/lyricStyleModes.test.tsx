@@ -211,6 +211,24 @@ describe('Apple 对唱左右分栏', () => {
     expect(rowAt(container, 1)!.style.textAlign).toBe('right')
   })
 
+  it('无演唱者信息（平台歌词没有 agent）时默认不做左右分栏，全部靠左', () => {
+    const noAgents = duetLyrics.map(({ isDuet: _drop, agent: _agent, ...rest }) => rest)
+    const { container } = render(
+      <LyricsDisplay
+        currentTime={2.6}
+        isPlaying={false}
+        accentColor="#ffffff"
+        lyrics={noAgents}
+        displayMode="scroll"
+        lyricStyleMode="modern"
+      />,
+    )
+    for (const row of Array.from(container.querySelectorAll('[data-index]'))) {
+      expect((row as HTMLElement).style.paddingLeft).toBe('')
+      expect((row as HTMLElement).style.paddingRight).toBe('')
+    }
+  })
+
   it('沉浸式（居中）模式不做对唱分栏', () => {
     const { container } = render(
       <LyricsDisplay

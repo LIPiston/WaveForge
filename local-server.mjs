@@ -5957,6 +5957,71 @@ function setQQLyricCache(key, value) {
   }
 }
 
+// ── AMLL TTML DB 代理（逐字歌词的 x-bg 和声结构唯一来源）────────────────────
+// 渲染进程直连 GitHub raw / jsDelivr / 作者镜像会受各自网络策略影响（同一台机器上
+// curl 全通、Electron 里却可能整批失败），导致"和声结构补挂"拿不到 AMLL 结果。
+// 这里由本地服务 Node 侧代取并同源返回（与封面代理同理），彻底消除渲染进程网络差异。
+// 目录：ncm-lyrics / qq-lyrics / am-lyrics；网易云额外带 Dimeta 镜像兜底。
+const amllTtmlCache = new Map()
+const AMLL_TTML_CACHE_TTL = 10 * 60 * 1000
+const AMLL_TTML_CACHE_MAX = 200
+
+app.get('/api/lyrics/amll-ttml', async (req, res) => {
+  try {
+    const platform = String(req.query.platform || '')
+    const id = String(req.query.id || '').trim()
+    if (!['ncm', 'qq', 'am'].includes(platform) || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+      return res.status(400).json({ error: 'bad params' })
+    }
+    const folder = platform === 'ncm' ? 'ncm-lyrics' : platform === 'qq' ? 'qq-lyrics' : 'am-lyrics'
+    const encodedId = encodeURIComponent(id)
+    const cacheKey = `${platform}:${id}`
+    const hit = amllTtmlCache.get(cacheKey)
+    if (hit && Date.now() - hit.at < AMLL_TTML_CACHE_TTL) {
+      res.type('text/plain; charset=utf-8').send(hit.text)
+      return
+    }
+    const endpoints = [
+      `https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/${folder}/${encodedId}.ttml`,
+      `https://amll-ttml-db.stevexmh.net/${platform}/${encodedId}`,
+      `https://cdn.jsdelivr.net/gh/amll-dev/amll-ttml-db@main/${folder}/${encodedId}.ttml`,
+    ]
+    if (platform === 'ncm') {
+      endpoints.push(`https://amll.mirror.dimeta.top/api/db/ncm-lyrics/${encodedId}.ttml`)
+    }
+    let winner = null
+    try {
+      // 并行竞速：谁先取到有效 TTML 用谁（首个成功者胜出，其余请求自然废弃）。
+      // 串行会把最慢源的超时叠加到歌词加载路径上。
+      winner = await Promise.any(endpoints.map(async (url) => {
+        const upstream = await fetch(url, { signal: AbortSignal.timeout(6000) })
+        if (!upstream.ok) throw new Error(`HTTP ${upstream.status}`)
+        const body = await upstream.text()
+        // 校验是真 TTML（防止代理/错误页以 200 返回 HTML）
+        if (!body || !body.includes('<tt')) throw new Error('not ttml')
+        return { text: body, host: new URL(url).host }
+      }))
+    } catch {
+      winner = null
+    }
+    if (!winner) {
+      return res.status(404).json({ error: 'AMLL TTML not found' })
+    }
+    const { text, host: servedBy } = winner
+    amllTtmlCache.set(cacheKey, { at: Date.now(), text })
+    while (amllTtmlCache.size > AMLL_TTML_CACHE_MAX) {
+      const oldestKey = amllTtmlCache.keys().next().value
+      if (oldestKey === undefined) break
+      amllTtmlCache.delete(oldestKey)
+    }
+    console.log(`[AMLL代理] ✅ ${platform}/${id} via ${servedBy} (${text.length}B)`)
+    res.type('text/plain; charset=utf-8').send(text)
+  } catch (error) {
+    console.error('[AMLL代理] ❌', error?.message || error)
+    res.status(500).json({ error: error?.message || 'amll proxy failed' })
+  }
+})
+
 app.get('/api/qq/lyric', async (req, res) => {
   try {
     const { id, mid, cookie } = req.query

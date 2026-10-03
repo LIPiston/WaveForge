@@ -2265,6 +2265,10 @@ export function parseAMLLTTMLLyrics(ttmlText: string): LyricLine[] {
         words: words.length > 0 ? words : undefined,
         translation: line.translation?.trim() || undefined,
         roman: line.roman?.trim() || undefined,
+        // 演唱者（ttm:agent）：真机左右分栏与对唱着色的数据源——
+        // ME! 这类对唱曲 v1/v2 分工明确，缺了它左右交替只能退化到段落启发式。
+        agent: line.agent || undefined,
+        agentId: line.agent || undefined,
         backgroundVocals: backgroundVocals?.length ? backgroundVocals : undefined,
       }
     })
@@ -2313,6 +2317,13 @@ async function getAMLLTTMLLyrics(id: number | string, platform: MusicPlatform): 
   const encodedId = encodeURIComponent(String(id))
   const mirrorPath = platform === 'qq' ? 'qq' : 'ncm'
   const primaryEndpoints: AMLLEndpoint[] = [
+    {
+      name: '本地服务代理',
+      // 由后端 Node 侧代取（同源返回）：渲染进程直连 GitHub/jsDelivr 在部分网络策略下会
+      // 整批失败，而本地服务与 curl 同路径必通——这是"AMLL 结果缺失 → 和声补挂静默跳过"的根治。
+      url: `${API_BASE}/lyrics/amll-ttml?platform=${mirrorPath}&id=${encodedId}`,
+      timeout: 9000,
+    },
     {
       name: 'GitHub Raw',
       // 分支必须写 `main`：`refs/heads/main` 形式实测连接直接失败（curl http=000），
