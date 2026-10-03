@@ -11180,6 +11180,7 @@ function App() {
               onNext={handleNext}
               onPlaylistClick={() => setShowPlaylist(true)}
               songPlatform={currentSong?.platform}
+              songId={currentSong ? (currentSong.mid || currentSong.id) : undefined}
               qualityQuickSwitchEnabled={qualityQuickSwitch}
               backgroundEffect={lyricDisplayMode === 'immersive' || lyricDisplayMode === 'glorious' || lyricDisplayMode === 'multidimensional' ? 'immersive' : backgroundEffect}
               playMode={playMode}

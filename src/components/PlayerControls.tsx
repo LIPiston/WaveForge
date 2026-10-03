@@ -18,6 +18,7 @@ import {
   type QualityOptionValue,
 } from '../services/audioQualitySettings'
 import type { MusicPlatform } from '../services/platforms'
+import { getApiBase } from '../services/apiConfig'
 import { useTvMode, useRemoteCursorMode } from '../tv/tvCore'
 import { AUTOMIX_HUD_GOLD } from './AutomixHudBadge'
 
@@ -57,6 +58,8 @@ interface PlayerControlsProps {
   showImmersiveRoman?: boolean
   /** 音质快捷切换：当前歌曲平台（提供且开关开启时显示音质按钮） */
   songPlatform?: MusicPlatform
+  /** 音质快捷切换：当前歌曲 mid/id（QQ 用于拉取"这首歌实际支持哪些音质"列表） */
+  songId?: string | number
   /** 音质快捷切换开关（快捷设置 → 外观；默认开，关闭后不渲染按钮） */
   qualityQuickSwitchEnabled?: boolean
 }
@@ -190,33 +193,91 @@ function mixCssColors(from: string, to: string, progress: number) {
 
 /**
  * 播放条音质快捷切换：显示当前平台偏好音质的短标签（如 标准/高品质/无损/杜比），
- * 点击弹出档位列表直接切换。设置写入走 saveAudioQualitySettings（全端同键同事件，
- * App 侧监听后失效预载缓存；新音质随新的播放链接生效）。
- * 默认开启，可在 快捷设置 → 外观 → 音质快捷切换 关闭（关闭后本组件不渲染）。
+ * 点击弹出档位列表直接切换。QQ 平台弹层会拉取"这首歌实际支持哪些音质"（歌曲详情
+ * qualityLevels），支持的档位可选、平台报告但我们暂未实现取流的档位明确置灰标注
+ * 「暂未支持」——列表与歌曲对齐，不再只列固定几档还让人猜。
+ * 设置写入走 saveAudioQualitySettings（全端同键同事件，App 侧监听后失效预载缓存；
+ * 新音质随新的播放链接生效）。默认开启，可在 快捷设置 → 外观 → 音质快捷切换 关闭。
  */
+type QualityMenuEntry = {
+  key: string
+  label: string
+  /** null = 平台报告该档存在、但当前取流管线暂未支持 */
+  value: QualityOptionValue | null
+  requiresVip?: boolean
+}
+
+/** QQ 歌曲详情 qualityLevels 的 size_* 键 → 我们已实现的取流档位 */
+const QQ_QUALITY_LEVEL_TO_PREFERENCE: Record<string, QualityOptionValue> = {
+  size_flac: 'lossless',
+  size_320mp3: 'high',
+  size_128mp3: 'standard',
+}
+
 function QualityQuickSwitch({
   platform,
+  songId,
   playerTheme,
   accentColor,
   compact = false,
 }: {
   platform: MusicPlatform
+  songId?: string | number
   playerTheme: 'light' | 'dark'
   accentColor: string
   compact?: boolean
 }) {
   const [, forceQualityRefresh] = useState(0)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [songLevels, setSongLevels] = useState<Array<{ key: string; label: string }> | null>(null)
   useEffect(() => {
     const handleAudioQualityChange = () => forceQualityRefresh(value => value + 1)
     window.addEventListener(AUDIO_QUALITY_SETTINGS_EVENT, handleAudioQualityChange)
     return () => window.removeEventListener(AUDIO_QUALITY_SETTINGS_EVENT, handleAudioQualityChange)
   }, [])
 
+  // 打开弹层时按歌曲拉取实际可用音质（QQ）：后端 song/detail 返回 qualityLevels
+  //（size_flac/size_dolby/size_hires/size_*aac…，已按码率降序），30 分钟缓存、开销小。
+  useEffect(() => {
+    if (!menuOpen || platform !== 'qq' || songId == null) { setSongLevels(null); return }
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        const res = await fetch(
+          `${getApiBase()}/qq/song/detail?mid=${encodeURIComponent(String(songId))}`,
+          { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(6000)]) },
+        )
+        const data = await res.json().catch(() => null)
+        const levels = data?.song?.qualityLevels
+        setSongLevels(Array.isArray(levels) && levels.length > 0
+          ? levels.map((level: { key: string; label?: string }) => ({ key: String(level.key), label: String(level.label || level.key) }))
+          : null)
+      } catch {
+        setSongLevels(null)
+      }
+    })()
+    return () => controller.abort()
+  }, [menuOpen, platform, songId])
+
   const isDark = playerTheme === 'dark'
   const options = getQualityOptions(platform)
   const preference = getPlatformQualityPreference(platform)
   const current = options.find(option => option.value === preference) ?? options[0]
+
+  const entries: QualityMenuEntry[] = songLevels && platform === 'qq'
+    ? [
+        { key: 'auto', label: '自动', value: 'auto' },
+        ...songLevels.map(level => {
+          const value = QQ_QUALITY_LEVEL_TO_PREFERENCE[level.key] ?? null
+          return { key: level.key, label: level.label, value, requiresVip: value === 'lossless' }
+        }),
+      ]
+    : options.map(option => ({
+        key: String(option.value),
+        label: option.shortLabel,
+        value: option.value,
+        requiresVip: option.requiresVip,
+      }))
 
   const select = (value: QualityOptionValue) => {
     saveAudioQualitySettings({ [platform]: value } as Partial<AudioQualitySettings>)
@@ -235,7 +296,7 @@ function QualityQuickSwitch({
         title={`播放音质：${current.label}（点击切换）`}
       >
         <Headphones className={`w-3.5 h-3.5 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />
-        <span className={`text-[11px] font-medium leading-none ${playerTheme === 'dark' ? 'text-white/85' : 'text-black/75'}`}>
+        <span className={`max-w-[5.5rem] truncate text-[11px] font-medium leading-none ${playerTheme === 'dark' ? 'text-white/85' : 'text-black/75'}`}>
           {current.shortLabel}
         </span>
       </motion.button>
@@ -250,7 +311,7 @@ function QualityQuickSwitch({
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 8, scale: 0.95 }}
               transition={{ duration: 0.15 }}
-              className="absolute bottom-full right-0 mb-2 z-50 min-w-[9.5rem] rounded-xl p-1.5 backdrop-blur-3xl whitespace-nowrap"
+              className="absolute bottom-full right-0 mb-2 z-50 min-w-[10.5rem] max-w-[16rem] rounded-xl p-1.5 backdrop-blur-3xl whitespace-nowrap"
               style={{
                 background: isDark ? 'rgba(20, 22, 30, 0.92)' : 'rgba(250, 250, 250, 0.95)',
                 border: isDark ? '1px solid rgba(255,255,255,0.12)' : '1px solid rgba(0,0,0,0.1)',
@@ -258,24 +319,35 @@ function QualityQuickSwitch({
               }}
               data-tv-arrows="quality"
             >
-              <div className={`px-2.5 py-1 text-[10px] ${isDark ? 'text-white/40' : 'text-black/40'}`}>播放音质</div>
-              {options.map(option => (
-                <button
-                  key={option.value}
-                  type="button"
-                  disabled={option.disabled}
-                  onClick={() => select(option.value)}
-                  className={`w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                    isDark ? 'text-white/85 hover:bg-white/10' : 'text-black/80 hover:bg-black/10'
-                  }`}
-                >
-                  <span className="w-3.5 flex-shrink-0">
-                    {option.value === preference ? <Check className="w-3.5 h-3.5" style={{ color: accentColor }} /> : null}
-                  </span>
-                  <span className="flex-1">{option.shortLabel}</span>
-                  {option.requiresVip && <Crown className="w-3 h-3 text-amber-400 flex-shrink-0" />}
-                </button>
-              ))}
+              <div className={`px-2.5 py-1 text-[10px] ${isDark ? 'text-white/40' : 'text-black/40'}`}>
+                {songLevels ? '播放音质（本曲可用）' : '播放音质'}
+              </div>
+              {entries.map(entry => {
+                const unsupported = entry.value === null
+                const selected = !unsupported && entry.value === preference
+                return (
+                  <button
+                    key={entry.key}
+                    type="button"
+                    disabled={unsupported}
+                    onClick={() => { if (entry.value) select(entry.value) }}
+                    className={`w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] transition-colors disabled:cursor-not-allowed ${
+                      unsupported
+                        ? 'opacity-45'
+                        : isDark ? 'text-white/85 hover:bg-white/10' : 'text-black/80 hover:bg-black/10'
+                    }`}
+                  >
+                    <span className="w-3.5 flex-shrink-0">
+                      {selected ? <Check className="w-3.5 h-3.5" style={{ color: accentColor }} /> : null}
+                    </span>
+                    <span className="flex-1 truncate">{entry.label}</span>
+                    {unsupported && (
+                      <span className={`flex-shrink-0 text-[10px] ${isDark ? 'text-white/35' : 'text-black/35'}`}>暂未支持</span>
+                    )}
+                    {entry.requiresVip && <Crown className="w-3 h-3 text-amber-400 flex-shrink-0" />}
+                  </button>
+                )
+              })}
             </motion.div>
           </>
         )}
@@ -315,6 +387,7 @@ export default function PlayerControls({
   showImmersiveTranslation = false,
   showImmersiveRoman = false,
   songPlatform,
+  songId,
   qualityQuickSwitchEnabled = true,
 }: PlayerControlsProps) {
   const [isHovered, setIsHovered] = useState(false)
@@ -944,6 +1017,7 @@ export default function PlayerControls({
                         {songPlatform && qualityQuickSwitchEnabled && (
                           <QualityQuickSwitch
                             platform={songPlatform}
+                            songId={songId}
                             playerTheme={playerTheme}
                             accentColor={accentColor}
                             compact={tvCompact}
@@ -1231,8 +1305,8 @@ export default function PlayerControls({
               : `0 8px 32px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.1)`,
           }}
         >
-          {/* 进度条区域 */}
-          <div className="flex items-center justify-center">
+          {/* 进度条区域：两侧留出左右按钮集群的宽度，防止新增的音质按钮与剩余时间重叠 */}
+          <div className="flex items-center justify-center pl-36 pr-60">
             <motion.div
               animate={{
                 scale: 1,
@@ -1320,6 +1394,7 @@ export default function PlayerControls({
                 {songPlatform && qualityQuickSwitchEnabled && (
                   <QualityQuickSwitch
                     platform={songPlatform}
+                    songId={songId}
                     playerTheme={playerTheme}
                     accentColor={accentColor}
                   />
