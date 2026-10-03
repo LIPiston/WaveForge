@@ -1710,9 +1710,7 @@ export async function getLyrics(
       // 2) 平台歌词时间轴交叉验证：与当前平台官方歌词做文本对齐，时间偏差中位数小才加分
       const platformResult = successfulResults.find(result => result.source === platformSourceName)
 
-      const normalizeLyricText = (text: string) => (text || '')
-        .toLowerCase()
-        .replace(/[\s·•\-–—()（）[\]【】「」『』〈〉《》"'`、，。！？!?,.&/|:：]+/g, '')
+      const normalizeLyricText = normalizeLyricTextForMatch
 
       /** 候选歌词 vs 平台官方歌词：文本对齐后的时间偏差中位数 → 同步分 */
       const lyricTimingSyncScore = (candidate: LyricLine[], reference: LyricLine[]): number => {
@@ -1854,43 +1852,10 @@ export async function getLyrics(
       // （真机行为：主句唱完保持全亮 + 和声小字逐词点亮）。
       const amllResult = successfulResults.find(result => result.source === 'AMLL TTML DB')
       if (amllResult && !currentLyrics.some(line => line.backgroundVocals?.length)) {
-        const bgSourceLines = amllResult.lyrics.filter(line => line.backgroundVocals?.length)
-        if (bgSourceLines.length > 0) {
-          const bgTexts: Array<{ text: string; time: number; endTime: number }> = []
-          bgSourceLines.forEach(line => {
-            line.backgroundVocals?.forEach(vocal => {
-              const text = normalizeLyricText(vocal.text)
-              if (text) bgTexts.push({ text, time: vocal.time, endTime: vocal.endTime })
-            })
-          })
-          currentLyrics = currentLyrics
-            .map(line => {
-              const key = normalizeLyricText(line.text)
-              if (!key) return line
-              const match = bgSourceLines.find(candidate =>
-                normalizeLyricText(candidate.text) === key && Math.abs(candidate.time - line.time) < 1.5
-              )
-              if (!match?.backgroundVocals) return line
-              // 骨架与 AMLL 时间轴存在源间偏差（如 QQ 8.922 vs AMLL 8.738）：和声窗口
-              // 按主行偏差整体平移，保证和声点亮与骨架的演唱时间对齐
-              const delta = line.time - match.time
-              return {
-                ...line,
-                backgroundVocals: match.backgroundVocals.map(vocal => ({
-                  ...vocal,
-                  time: vocal.time + delta,
-                  endTime: vocal.endTime + delta,
-                })),
-              }
-            })
-            .filter(line => {
-              const key = normalizeLyricText(line.text)
-              if (!key) return true
-              return !bgTexts.some(bg =>
-                bg.text === key && line.time >= bg.time - 0.5 && line.time <= bg.endTime + 0.5
-              )
-            })
-          debugLog(`  [和声补挂] 从 AMLL 结构补挂 ${bgSourceLines.length} 处背景和声到骨架（${baseResult.source}）`)
+        const merged = attachBackgroundVocalsFromAmll(currentLyrics, amllResult.lyrics)
+        currentLyrics = merged.lyrics
+        if (merged.attached > 0) {
+          debugLog(`  [和声补挂] 从 AMLL 结构补挂 ${merged.attached} 处背景和声到骨架（${baseResult.source}），移除重复行 ${merged.removed}`)
         }
       }
 
@@ -2195,6 +2160,68 @@ function mergeLyricsWithTranslationAndRoman(
 /** 和声文本去包裹括号：AMLL 打轴/QRC 惯例用括号包裹和声，真机渲染不显示括号 */
 const stripBackgroundParens = (text: string): string =>
   text.replace(/^[（(\s]+/, '').replace(/[）)\s]+$/, '').trim()
+
+/** 文本归一化（和声结构匹配用）：小写 + 去空白/标点/括号，跨源（QQ/网易云/AMLL）行文本对齐 */
+export const normalizeLyricTextForMatch = (text: string): string => (text || '')
+  .toLowerCase()
+  .replace(/[\s·•\-–—()（）[\]【】「」『』〈〉《》"'`、，。！？!?,.&/|:：]+/g, '')
+
+/**
+ * 把带 x-bg 结构的源（AMLL）里的背景和声，按「归一化文本 + 时间邻近」补挂到骨架歌词上，
+ * 并移除骨架里与和声重复的独立行。
+ *
+ * 平台歌词（网易云 LRC / QQ QRC）里"和声"是普通行、没有结构标记；AMLL TTML 是唯一
+ * 携带 x-bg 结构的数据源。补挂后主行唱完保持全亮、和声以小字按自己的时间窗逐词点亮。
+ * 和声窗口按主行时间偏差（源间时间轴偏移）整体平移，保证点亮时机与骨架演唱对齐。
+ */
+export function attachBackgroundVocalsFromAmll(
+  currentLyrics: LyricLine[],
+  amllLyrics: LyricLine[],
+): { lyrics: LyricLine[]; attached: number; removed: number } {
+  const bgSourceLines = amllLyrics.filter(line => line.backgroundVocals?.length)
+  if (bgSourceLines.length === 0) return { lyrics: currentLyrics, attached: 0, removed: 0 }
+
+  const bgTexts: Array<{ text: string; time: number; endTime: number }> = []
+  bgSourceLines.forEach(line => {
+    line.backgroundVocals?.forEach(vocal => {
+      const text = normalizeLyricTextForMatch(vocal.text)
+      if (text) bgTexts.push({ text, time: vocal.time, endTime: vocal.endTime })
+    })
+  })
+
+  let attached = 0
+  const withVocals = currentLyrics.map(line => {
+    const key = normalizeLyricTextForMatch(line.text)
+    if (!key) return line
+    const match = bgSourceLines.find(candidate =>
+      normalizeLyricTextForMatch(candidate.text) === key && Math.abs(candidate.time - line.time) < 1.5
+    )
+    if (!match?.backgroundVocals) return line
+    attached++
+    const delta = line.time - match.time
+    return {
+      ...line,
+      backgroundVocals: match.backgroundVocals.map(vocal => ({
+        ...vocal,
+        time: vocal.time + delta,
+        endTime: vocal.endTime + delta,
+      })),
+    }
+  })
+
+  let removed = 0
+  const lyrics = withVocals.filter(line => {
+    const key = normalizeLyricTextForMatch(line.text)
+    if (!key) return true
+    const isDuplicate = bgTexts.some(bg =>
+      bg.text === key && line.time >= bg.time - 0.5 && line.time <= bg.endTime + 0.5
+    )
+    if (isDuplicate) removed++
+    return !isDuplicate
+  })
+
+  return { lyrics, attached, removed }
+}
 
 export function parseAMLLTTMLLyrics(ttmlText: string): LyricLine[] {
   const parsed = parseTTML(ttmlText)
