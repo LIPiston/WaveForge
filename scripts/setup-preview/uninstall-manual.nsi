@@ -7,6 +7,10 @@ Unicode true
 !endif
 
 !define PRODUCT_NAME "WaveForge 澜音工坊"
+!define PRODUCT_FILENAME "WaveForge"
+!define APP_EXECUTABLE_FILENAME "WaveForge.exe"
+!define VERSION "0.1.4"
+; 手动测试卸载器：生产语义（用户手动确认）
 !define BUILD_UNINSTALLER
 !define BUILD_RESOURCES_DIR "${SRC}\build"
 !define INSTALL_MODE_PER_ALL_USERS_REQUIRED
@@ -16,7 +20,7 @@ Var UnReviewTarget
 
 Name "${PRODUCT_NAME}"
 Caption "${PRODUCT_NAME} 卸载向导预览"
-OutFile "${SRC}/release/uninstall-preview-builder.exe"
+OutFile "${SRC}/release/uninstall-e2e-builder.exe"
 RequestExecutionLevel user
 Icon "${SRC}/build/setup-icon.ico"
 ShowInstDetails nevershow
@@ -33,12 +37,12 @@ SilentUnInstall normal
 !include "build\installer.nsh"
 
 Function un.onInit
-  StrCpy $INSTDIR "D:\WaveForge"
+  StrCpy $INSTDIR "D:\opencode\WaveForge\release\e2e-uninstall"
   ${GetParameters} $0
   ClearErrors
   ${GetOptions} $0 "/review=" $UnReviewTarget
   ${If} ${Errors}
-    StrCpy $UnReviewTarget "confirm"
+    StrCpy $UnReviewTarget "webui"
   ${EndIf}
   !insertmacro customUnInit
 FunctionEnd
@@ -72,6 +76,7 @@ Function un.ReviewFinishCreate
 FunctionEnd
 
 UninstPage custom un.ReviewConfirmCreate un.WaveUnConfirmLeave
+UninstPage custom un.WaveWebUiUninstallCreate
 !define MUI_PAGE_CUSTOMFUNCTION_PRE un.ReviewProgressPre
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.WaveUnInstFilesShow
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.WaveUnInstFilesLeave

@@ -32,12 +32,85 @@
 !define MUI_ABORTWARNING
 !define MUI_ABORTWARNING_TEXT "你确定要取消 ${PRODUCT_NAME} 的安装吗？"
 
+; WebView2 安装器壳：build/webui 存在时启用（构建前先跑 scripts/build-installer-shell.mjs）
+!ifndef WF_WEBUI
+  !if /FileExists "${BUILD_RESOURCES_DIR}\webui\WaveForgeSetupUI.exe"
+    !define WF_WEBUI 1
+  !endif
+!endif
+
+; preview 探针环境没有 eb 注入的这两个 define，这里兜底
+!ifndef APP_FILENAME
+  !define APP_FILENAME "${PRODUCT_NAME}"
+!endif
+!ifndef INSTALL_REGISTRY_KEY
+  !define INSTALL_REGISTRY_KEY "Software\${PRODUCT_NAME}"
+!endif
+
+; 静默范围补齐要用 UAC 宏（multiUser.nsh 已带，但探针/preview 只包含本文件，需自取）
+!include "UAC.nsh"
+
+!macro WaveWebUiBootstrap
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WF_PRODUCT", w "${PRODUCT_NAME}")'
+  FileOpen $0 "$PLUGINSDIR\webui\bootstrap.txt" w
+  ${If} $0 == ""
+    Quit
+  ${EndIf}
+  FileWrite $0 "PRODUCT=" ; 兼容占位：真实产品名经 WF_PRODUCT 环境变量传递
+  FileWrite $0 "$\r$\n"
+  FileWrite $0 "VERSION=${VERSION}$\r$\n"
+  FileWrite $0 "APP_EXE=${APP_EXECUTABLE_FILENAME}$\r$\n"
+  FileWrite $0 "EXEPATH=$EXEPATH$\r$\n"
+  FileWrite $0 "UI_DIR=$PLUGINSDIR\webui\ui$\r$\n"
+  !ifdef ESTIMATED_SIZE
+    IntOp $1 ${ESTIMATED_SIZE} / 1024
+    IntOp $1 $1 + 1
+  !else
+    StrCpy $1 0
+  !endif
+  FileWrite $0 "EST_MB=$1$\r$\n"
+  ; 当前用户默认目录：旧安装位置 → D:\WaveForge → C:\WaveForge
+  ReadRegStr $1 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ReadRegStr $3 HKCU "${UNINSTALL_REGISTRY_KEY}" DisplayVersion
+  FileWrite $0 "PRIOR_VER=$3$\r$\n"
+  FileWrite $0 "INSTALLDIR=$INSTDIR$\r$\n"
+  ${If} $1 == ""
+    System::Call 'kernel32::GetDriveTypeW(w "D:\\") i.r2'
+    ${If} $2 == 3
+      StrCpy $1 "D:\WaveForge"
+    ${Else}
+      StrCpy $1 "C:\WaveForge"
+    ${EndIf}
+  ${EndIf}
+  ; 探针可用 WF_PROBE_DIR 覆盖，避免测试写进真实默认目录
+  ReadEnvStr $3 "WF_PROBE_DIR"
+  ${If} $3 != ""
+    StrCpy $1 $3
+  ${EndIf}
+  FileWrite $0 "DIR_CURRENT=$1$\r$\n"
+  ; 所有用户默认目录：旧安装位置 → Program Files（中文经 WF_DIR_ALL 环境变量传递）
+  ReadRegStr $1 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ${If} $1 == ""
+    StrCpy $1 "$PROGRAMFILES\${APP_FILENAME}"
+  ${EndIf}
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WF_DIR_ALL", w "$1")'
+  FileWrite $0 "DIR_ALL=$\r$\n"
+  ${If} $WaveForceAllUsers == "1"
+    StrCpy $2 "all"
+  ${Else}
+    StrCpy $2 "current"
+  ${EndIf}
+  FileWrite $0 "SCOPE=$2$\r$\n"
+  FileClose $0
+!macroend
+
 !ifndef BUILD_UNINSTALLER
 !define MUI_CUSTOMFUNCTION_GUIINIT WaveGuiInit
 Var WaveTheme
 Var WaveInstallScope
 Var WaveForceAllUsers
 Var WaveIsUpdate
+Var WaveRealSilent
 Var WaveDesktopShortcutState
 Var WaveAgreementState
 Var WavePage
@@ -420,9 +493,13 @@ FunctionEnd
   nsDialogs::Show
 !macroend
 
+; 把壳需要的引导信息写进 bootstrap.txt。
+; 中文值（产品名、所有用户默认目录）经环境变量传递，避免 NSIS 3.0.x FileWrite 的 ANSI 限制；文件里只留 ASCII。
+
 !macro customInit
   StrCpy $WaveIsUpdate "0"
   StrCpy $WaveForceAllUsers "0"
+  StrCpy $WaveRealSilent "0"
   ${GetParameters} $0
   ${GetOptions} $0 "--updated" $1
   ${IfNot} ${Errors}
@@ -433,10 +510,70 @@ FunctionEnd
   ${IfNot} ${Errors}
     StrCpy $WaveForceAllUsers "1"
   ${EndIf}
-  ${If} ${Silent}
+  ClearErrors
+  ${GetOptions} $0 "/wfgo" $1
+  ${IfNot} ${Errors}
+    StrCpy $WaveRealSilent "1"
+  ${EndIf}
+  ClearErrors
+  ${GetOptions} $0 "/nodesktop" $1
+  ${IfNot} ${Errors}
+    StrCpy $WaveDesktopShortcutState "0"
+  ${Else}
     StrCpy $WaveDesktopShortcutState "1"
+  ${EndIf}
+  ClearErrors
+  ${If} ${Silent}
+    !ifdef WF_WEBUI
+      ; 壳误用 /S（没带 /wfgo）时退回真实静默安装，避免自环
+      ${If} $WaveRealSilent != "1"
+      ${AndIf} $WaveIsUpdate != "1"
+        StrCpy $WaveRealSilent "1"
+      ${EndIf}
+    !endif
+    ; 静默真实安装：页面回调不会运行，所有用户范围在这里补齐提权与模式
+    ; （setInstallModePerAllUsers 仅在 assisted/perMachine 构建定义，见 multiUser.nsh）
+    ${If} $WaveRealSilent == "1"
+    ${AndIf} $WaveForceAllUsers == "1"
+      !ifdef INSTALL_MODE_PER_ALL_USERS_REQUIRED
+        StrCpy $hasPerMachineInstallation "1"
+        StrCpy $hasPerUserInstallation "0"
+        ${IfNot} ${UAC_IsAdmin}
+          ShowWindow $HWNDPARENT ${SW_HIDE}
+          !insertmacro UAC_RunElevated
+          Quit
+        ${EndIf}
+        !insertmacro setInstallModePerAllUsers
+      !endif
+    ${EndIf}
+    ; .onInit 早前的 $INSTDIR 赋值可能覆盖了 NSIS 原生 /D 参数，静默路径没有页面流程再恢复它，这里补回
+    !insertmacro GetDParameter $1
+    ${If} $1 != ""
+      StrCpy $INSTDIR $1
+    ${EndIf}
     Return
   ${EndIf}
+  !ifdef WF_WEBUI
+    !ifndef WF_PREVIEW
+      ${If} $WaveIsUpdate != "1"
+        ; WebView2 壳模式：解出壳与 UI，写入引导信息后交出控制权
+        InitPluginsDir
+        SetOutPath "$PLUGINSDIR"
+        File /r "${BUILD_RESOURCES_DIR}\webui"
+        !insertmacro WaveWebUiBootstrap
+        !ifdef WF_PROBE
+          ; 探针：等待壳退出并把退出码落盘，便于端到端断言
+          ExecWait '"$PLUGINSDIR\webui\WaveForgeSetupUI.exe" --bootstrap "$PLUGINSDIR\webui\bootstrap.txt"' $0
+          FileOpen $1 "$EXEDIR\probe-shell-exit.txt" w
+          FileWrite $1 "exit=$0"
+          FileClose $1
+        !else
+          Exec '"$PLUGINSDIR\webui\WaveForgeSetupUI.exe" --bootstrap "$PLUGINSDIR\webui\bootstrap.txt"'
+        !endif
+        Quit
+      ${EndIf}
+    !endif
+  !endif
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File "${BUILD_RESOURCES_DIR}\ui\*.bmp"
@@ -1447,12 +1584,44 @@ Var UnWaveFont
 !macroend
 
 !macro customUnWelcomePage
-  UninstPage custom un.WaveUnConfirmCreate un.WaveUnConfirmLeave
+  !ifdef WF_WEBUI
+    ; WebView2 卸载器：跳过 NSIS 位图确认页，改为静默段由壳全权接手（UI+清理），NSIS 只做收尾自删
+    UninstPage instfiles un.WaveWebUiUninstallCreate
+  !else
+    UninstPage custom un.WaveUnConfirmCreate un.WaveUnConfirmLeave
+  !endif
 !macroend
 
 !macro customUnInstall
-  Call un.WaveUnInstFilesShow
+  !ifndef WF_WEBUI
+    Call un.WaveUnInstFilesShow
+  !endif
 !macroend
+
+; WebView2 卸载：解出壳（复用安装包里的 webui），壳全权负责扫描/确认/清理用户数据；
+; INSTALLDIR 通过环境变量传给壳（bootstrap 的 INSTALLDIR 键），壳执行后 NSIS 收尾自删。
+Function un.WaveWebUiUninstallCreate
+  !ifdef WF_WEBUI
+    HideWindow
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File /r "${BUILD_RESOURCES_DIR}\webui"
+    !insertmacro WaveWebUiBootstrap
+    ; 卸载上下文：目标目录与当前安装目录
+    System::Call 'kernel32::SetEnvironmentVariableW(w "WF_UNINSTALL", w "1")'
+    System::Call 'kernel32::SetEnvironmentVariableW(w "WF_INSTALLDIR", w "$INSTDIR")'
+    System::Call 'kernel32::SetEnvironmentVariableW(w "WF_PRODUCT", w "${PRODUCT_NAME}")'
+    !ifdef WF_PROBE
+      ; 探针/自动化专用：壳自动确认并执行卸载（保留默认勾选；生产安装器绝不带此开关）
+      System::Call 'kernel32::SetEnvironmentVariableW(w "WF_SETUP_AUTODEMO", w "1")'
+    !endif
+    ExecWait '"$PLUGINSDIR\webui\WaveForgeSetupUI.exe" --uninstall --bootstrap "$PLUGINSDIR\webui\bootstrap.txt"' $0
+    ; 用户在确认页取消（exit=32）：跳过全部收尾删除
+    ${If} $0 == 32
+      Quit
+    ${EndIf}
+  !endif
+FunctionEnd
 
 !macro customUninstallPage
   UninstPage custom un.WaveUnFinishCreate un.WaveUnFinishLeave

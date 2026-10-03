@@ -113,3 +113,9 @@ test-login-status.txt
 opencodepcs-*.png
 try_mixplan*.mjs
 test_dislike_signed.mjs
+
+# 安装器壳构建产物（由 scripts/build-installer-shell.mjs 生成）
+build/webui/
+
+# 根目录临时调试 exe（卸载器 e2e 探针，不入库）
+/release*.exe

@@ -14,8 +14,9 @@ Unicode true
 
 !define PRODUCT_NAME "WaveForge 澜音工坊"
 !define WF_PREVIEW
-!define BUILD_RESOURCES_DIR "${SRC}/build"
+!define BUILD_RESOURCES_DIR "${SRC}\build"
 !define isUpdated `0 == 1`
+!define APP_GUID "{A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D}"
 
 Name "${PRODUCT_NAME}"
 Caption "${PRODUCT_NAME} 安装向导"
@@ -25,7 +26,6 @@ Icon "${SRC}/build/setup-icon.ico"
 ShowInstDetails nevershow
 AutoCloseWindow true
 
-Var installMode
 Var isForceMachineInstall
 Var isForceCurrentInstall
 Var newDesktopLink
@@ -33,7 +33,11 @@ Var launchLink
 Var ReviewTarget
 
 !addincludedir "${SRC}"
+!addincludedir "${SRC}/node_modules/app-builder-lib/templates/nsis"
 !addincludedir "${SRC}/node_modules/app-builder-lib/templates/nsis/include"
+!include "FileFunc.nsh"
+!include "StdUtils.nsh"
+!include "${SRC}\node_modules\app-builder-lib\templates\nsis\multiUser.nsh"
 !include "build\installer.nsh"
 
 Function .onInit

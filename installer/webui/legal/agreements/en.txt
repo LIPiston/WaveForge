@@ -1,0 +1,33 @@
+## 1. Software and License
+1. WaveForge (the "Software") is a free music player developed and actively maintained by the WaveForge project team, with its source code publicly available.
+2. Subject to this Agreement, you may install, use and distribute the Software free of charge; the specific licensing terms of the source code are governed by the open-source license shipped with the repository.
+3. You may not use the Software for any purpose that violates the laws and regulations of your region, nor remove or obscure copyright and attribution notices contained in the Software.
+
+## 2. Third-Party Content and Platforms
+1. The Software aggregates content capabilities of third-party platforms such as NetEase Cloud Music, QQ Music, Kugou, Soda Music, Apple Music, Spotify and Bilibili; the Software is not affiliated with, nor partnered with, any of these platforms.
+2. Availability, audio quality, copyright status and account features of content on each platform are provided by that platform and may change at any time. Functional limitations or outages caused by platform policy changes, content takedowns or account risk controls are not defects of the Software.
+3. The legality of any third-party content you access through the Software depends on the source platform and your own account permissions. Please use such content only within the scope you are entitled to, and respect the copyrights of musical works.
+
+## 3. Accounts and Personal Data
+1. Some features require you to sign in to the corresponding platform account. Your account credentials are stored only on your device and are used solely to send requests to that platform; except where strictly necessary, the Software does not provide your credentials to any third party.
+2. Installing the Software does not collect personally identifiable information. Playback history, caches and configurations produced while running the Software are stored on your device; you may clear them in the Software settings at any time or remove them via the uninstaller.
+
+## 4. Disclaimer and Limitation of Liability
+1. The Software is provided "as is". To the maximum extent permitted by applicable law, the development team makes no express or implied warranties regarding merchantability, fitness, error-free operation or uninterrupted availability of the Software.
+2. To the maximum extent permitted by applicable law, the development team shall not be liable for any direct or indirect damages arising from the use of, or inability to use, the Software (including but not limited to data loss, loss of profits, or account restrictions).
+3. You understand and agree that parts of the Software rely on research into and adaptation of third-party platform interfaces, and such implementations may stop working or be adjusted as platforms are updated.
+
+## 5. Miscellaneous
+1. Headings in this Agreement are for convenience only and do not affect interpretation.
+2. Disputes arising from this Agreement shall first be resolved through friendly negotiation; failing that, they shall be submitted to a people's court with jurisdiction where the development team is located.
+3. If any provision of this Agreement is held invalid or unenforceable, the remaining provisions remain in full force.
+
+## 6. Software Updates
+1. The Software includes an update check that fetches version information from the project's official release channels (GitHub / Gitee); updates are downloaded and installed only after you confirm them manually.
+2. You may skip an update and keep using the current version; updates never silently alter your personal settings or data.
+
+## 7. Intellectual Property
+1. The rights in "WaveForge", its Chinese branding and related marks belong to the WaveForge project team.
+2. Third-party platform and product names mentioned herein are used solely to describe where features come from; their trademarks and intellectual property belong to their respective owners. Such mentions do not constitute any endorsement or affiliation statement.
+
+—— WaveForge Project Team
