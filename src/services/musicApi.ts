@@ -1138,11 +1138,30 @@ export function parseYrc(yrcText: string): LyricLine[] {
     fullText = fullText.replace(/,+/g, '').trim().replace(/\s+/g, ' ')
     
     if (fullText) {
-      result.push({
-        time: lineStartTime,
-        text: fullText,
-        words: normalizedWords.length > 0 ? normalizedWords : undefined
-      })
+      // 背景和声行（QQ/网易云 YRC 惯例：整行括号包裹）：不再作为独立行输出，
+      // 挂到上一主行的 backgroundVocals——主行唱完后保持全亮，和声在行下小字逐词点亮（真机行为）。
+      const isBackgroundVocalLine = /^[（(]/.test(fullText) && /[）)]$/.test(fullText)
+      const previousLine = result.length > 0 ? result[result.length - 1] : undefined
+      if (isBackgroundVocalLine && previousLine) {
+        const bgWords = normalizedWords
+          .map(word => ({ word: stripBackgroundParens(word.word), startTime: word.startTime, duration: word.duration }))
+          .filter(word => word.word)
+        previousLine.backgroundVocals = [
+          ...(previousLine.backgroundVocals ?? []),
+          {
+            time: lineStartTime,
+            endTime: lineStartTime + parseInt(headerMatch[2]) / 1000,
+            text: stripBackgroundParens(fullText),
+            words: bgWords,
+          },
+        ]
+      } else {
+        result.push({
+          time: lineStartTime,
+          text: fullText,
+          words: normalizedWords.length > 0 ? normalizedWords : undefined
+        })
+      }
     }
   }
   
@@ -1827,6 +1846,54 @@ export async function getLyrics(
           // 忽略
         }
       }
+      // ── 背景和声结构补挂（AMLL 独有 x-bg 结构 → 任意骨架）──
+      // 平台歌词（网易云 LRC / QQ QRC）里"和声"是普通行、没有结构标记，QQ 平台更是被
+      // 强制以平台歌词为骨架；AMLL TTML 是唯一携带 x-bg 结构的数据源。骨架自身没有
+      // backgroundVocals 时，把 AMLL 的和声按「归一化文本 + 时间邻近」补挂到对应主行，
+      // 并移除骨架里与和声重复的独立行——否则和声会在自己的时间点顶掉主句变大字行
+      // （真机行为：主句唱完保持全亮 + 和声小字逐词点亮）。
+      const amllResult = successfulResults.find(result => result.source === 'AMLL TTML DB')
+      if (amllResult && !currentLyrics.some(line => line.backgroundVocals?.length)) {
+        const bgSourceLines = amllResult.lyrics.filter(line => line.backgroundVocals?.length)
+        if (bgSourceLines.length > 0) {
+          const bgTexts: Array<{ text: string; time: number; endTime: number }> = []
+          bgSourceLines.forEach(line => {
+            line.backgroundVocals?.forEach(vocal => {
+              const text = normalizeLyricText(vocal.text)
+              if (text) bgTexts.push({ text, time: vocal.time, endTime: vocal.endTime })
+            })
+          })
+          currentLyrics = currentLyrics
+            .map(line => {
+              const key = normalizeLyricText(line.text)
+              if (!key) return line
+              const match = bgSourceLines.find(candidate =>
+                normalizeLyricText(candidate.text) === key && Math.abs(candidate.time - line.time) < 1.5
+              )
+              if (!match?.backgroundVocals) return line
+              // 骨架与 AMLL 时间轴存在源间偏差（如 QQ 8.922 vs AMLL 8.738）：和声窗口
+              // 按主行偏差整体平移，保证和声点亮与骨架的演唱时间对齐
+              const delta = line.time - match.time
+              return {
+                ...line,
+                backgroundVocals: match.backgroundVocals.map(vocal => ({
+                  ...vocal,
+                  time: vocal.time + delta,
+                  endTime: vocal.endTime + delta,
+                })),
+              }
+            })
+            .filter(line => {
+              const key = normalizeLyricText(line.text)
+              if (!key) return true
+              return !bgTexts.some(bg =>
+                bg.text === key && line.time >= bg.time - 0.5 && line.time <= bg.endTime + 0.5
+              )
+            })
+          debugLog(`  [和声补挂] 从 AMLL 结构补挂 ${bgSourceLines.length} 处背景和声到骨架（${baseResult.source}）`)
+        }
+      }
+
       if (onProgress) {
         onProgress(currentLyrics, baseResult.source, hasWordByWord, {
           logs: [...apiLogs],
@@ -2125,7 +2192,11 @@ function mergeLyricsWithTranslationAndRoman(
 }
 
 
-function parseAMLLTTMLLyrics(ttmlText: string): LyricLine[] {
+/** 和声文本去包裹括号：AMLL 打轴/QRC 惯例用括号包裹和声，真机渲染不显示括号 */
+const stripBackgroundParens = (text: string): string =>
+  text.replace(/^[（(\s]+/, '').replace(/[）)\s]+$/, '').trim()
+
+export function parseAMLLTTMLLyrics(ttmlText: string): LyricLine[] {
   const parsed = parseTTML(ttmlText)
 
   return parsed.lines
@@ -2138,12 +2209,36 @@ function parseAMLLTTMLLyrics(ttmlText: string): LyricLine[] {
       }))
       const text = words.map(word => word.word).join('').trim()
 
+      // 背景和声（x-bg）随主行下发：主行唱完后保持全亮（当前行窗口覆盖和声时段），
+      // 和声由 BackgroundVocals 组件在行下以小字按自己的时间窗逐词点亮（真机行为）。
+      const backgroundVocals = line.backgroundVocals?.length
+        ? line.backgroundVocals.map(vocal => ({
+            time: Math.max(0, vocal.time) / 1000,
+            endTime: Math.max(0, vocal.endTime) / 1000,
+            text: stripBackgroundParens(vocal.text),
+            words: (vocal.words || [])
+              .map(word => ({
+                word: stripBackgroundParens(word.text),
+                startTime: Math.max(0, word.startTime - vocal.time),
+                duration: Math.max(0, word.endTime - word.startTime),
+              }))
+              // 去括号后为空的词（x-bg 内首行缩进等空白文本节点）不参与逐词点亮
+              .filter(word => word.word),
+            translation: vocal.translation?.trim() || undefined,
+            roman: vocal.roman?.trim() || undefined,
+            romanization: vocal.romanization?.trim() || undefined,
+            agent: vocal.agent || undefined,
+            agentId: vocal.agentId || vocal.agent || undefined,
+          }))
+        : undefined
+
       return {
         time: line.startTime / 1000,
         text,
         words: words.length > 0 ? words : undefined,
         translation: line.translation?.trim() || undefined,
         roman: line.roman?.trim() || undefined,
+        backgroundVocals: backgroundVocals?.length ? backgroundVocals : undefined,
       }
     })
     .filter(line => line.text)

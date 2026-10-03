@@ -2223,6 +2223,9 @@ function App() {
     //（上午 parseInt('004Iwx…')=4 的守卫 bug 让 musicu 返回空 qrc/trans/roma → 结果被
     // IndexedDB 永久缓存，后端修好后缓存仍喂旧坏数据 → 重启也无效）
     // v5：保留 Apple TTML 独立翻译/罗马音、对唱 agent 和背景和声字段。
+    // v6：背景和声结构修复——AMLL TTML 的 x-bg 随主行下发（此前被丢弃）、YRC 括号和声行
+    //     归并为主行 backgroundVocals（此前是独立行）。旧缓存会重放"和声变独立大字行"的旧结构，
+    //     必须升版本强制重取，否则修复在缓存命中的歌曲上完全不可见。
     // 来源策略进入 key：切语言、登录态、第三方/自适应/主源后不会继续读取旧结果。
     const lyricsPolicyKey = [
       platform === 'apple' ? (localStorage.getItem('appleMusicEnabled') || 'default') : 'non-apple',
@@ -2232,7 +2235,7 @@ function App() {
       localStorage.getItem('adaptiveLyrics') || 'default',
       localStorage.getItem('primaryLyricsSource') || 'AMLL',
     ].join(':')
-    const lyricsCacheKey = `v5:${lyricsPolicyKey}:${cacheKey}`
+    const lyricsCacheKey = `v6:${lyricsPolicyKey}:${cacheKey}`
     const isFresh = cached
       && cached.lyricsPolicyKey === lyricsPolicyKey
       && Date.now() - (cached.lyricsTimestamp ?? cached.timestamp) < 5 * 60 * 1000

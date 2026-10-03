@@ -13,34 +13,34 @@ describe('getAppleLyricLineMotion', () => {
 
   it('releases the played line upward with less emphasis', () => {
     expect(getAppleLyricLineMotion('played', 1)).toEqual({
-      opacity: 0.46,
-      scale: 0.965,
+      opacity: 0.44,
+      scale: 0.97,
       y: -2,
-      blur: 1.4,
+      blur: 0,
     })
   })
 
   it('stages the upcoming line below the focus position', () => {
     expect(getAppleLyricLineMotion('upcoming', 1)).toEqual({
-      opacity: 0.66,
+      opacity: 0.5,
       scale: 0.98,
       y: 3,
-      blur: 0.9,
+      blur: 0,
     })
   })
 
   it('keeps distant lines stable and distinguishes played from upcoming', () => {
     expect(getAppleLyricLineMotion('played', 3)).toEqual({
       opacity: 0.3,
-      scale: 0.955,
+      scale: 0.95,
       y: 0,
-      blur: 2.6,
+      blur: 1.8,
     })
     expect(getAppleLyricLineMotion('upcoming', 3)).toEqual({
-      opacity: 0.38,
-      scale: 0.97,
+      opacity: 0.34,
+      scale: 0.96,
       y: 0,
-      blur: 2.2,
+      blur: 1.6,
     })
   })
 

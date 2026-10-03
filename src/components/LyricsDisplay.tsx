@@ -98,15 +98,17 @@ export const getAppleLyricLineMotion = (
   if (isManualScrolling) {
     return { opacity: phase === 'current' ? 1 : 0.72, scale: 1, y: 0, blur: 0 }
   }
+  // 对齐真机 Apple Music：邻行与当前句几乎同尺寸、清晰不糊，靠字重与提亮区分；
+  // 纵深感只由透明度随距离衰减 + 远处逐步模糊承担（真机邻行 blur=0）。
   if (phase === 'current') return { opacity: 1, scale: 1, y: 0, blur: 0 }
   if (phase === 'played') {
     return distance === 1
-      ? { opacity: 0.46, scale: 0.965, y: -2, blur: 1.4 }
-      : { opacity: 0.3, scale: 0.955, y: 0, blur: 2.6 }
+      ? { opacity: 0.44, scale: 0.97, y: -2, blur: 0 }
+      : { opacity: 0.3, scale: 0.95, y: 0, blur: 1.8 }
   }
   return distance === 1
-    ? { opacity: 0.66, scale: 0.98, y: 3, blur: 0.9 }
-    : { opacity: 0.38, scale: 0.97, y: 0, blur: 2.2 }
+    ? { opacity: 0.5, scale: 0.98, y: 3, blur: 0 }
+    : { opacity: 0.34, scale: 0.96, y: 0, blur: 1.6 }
 }
 
 type ImmersiveLyricEffect = 'soft-focus' | 'float' | 'breathe' | 'cinematic' | 'minimal'
@@ -116,6 +118,17 @@ const LYRIC_TIMING_LEAD_SECONDS = 0.28
 const LYRIC_FRAME_INTERVAL_MS = 1000 / 30
 const INTERLUDE_HIDE_BEFORE_NEXT_SECONDS = 1
 const INTERLUDE_MIN_GAP_SECONDS = 5
+
+// ── 左右交替歌词（Apple Music 特殊歌词风格；现代模式的柔和/摩登两种样式通用）──
+// 规则与摩登模式（ModengPlayerPage）同一套：
+//   对唱（≥2 演唱者）：按 agent 出现顺序，奇数序号的演唱者靠右，其余靠左；
+//   普通歌：两句间隔 ≥2s 视为分段，奇数段靠右、偶数段靠左 → 形成"左→右→左"。
+const LYRICS_SIDE_ALIGN_KEY = 'waveforge_lyrics_side_align'
+const LYRICS_SIDE_ALIGN_EVENT = 'waveforge:lyrics-side-align'
+const LYRICS_SIDE_ALIGN_PARAGRAPH_GAP_S = 2.0
+const readLyricsSideAlign = (): boolean => {
+  try { return localStorage.getItem(LYRICS_SIDE_ALIGN_KEY) === 'true' } catch { return false }
+}
 
 const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, value))
 
@@ -194,6 +207,15 @@ function BackgroundVocals({
                 )
               })
             : vocal.text}
+          {/* 和声自己的翻译：真机在和声行下方显示小字翻译 */}
+          {vocal.translation ? (
+            <span
+              className="block"
+              style={{ fontSize: '0.92em', opacity: 0.55, marginTop: '0.08em' }}
+            >
+              {vocal.translation}
+            </span>
+          ) : null}
         </span>
       )
     })}
@@ -676,6 +698,10 @@ export default memo(function LyricsDisplay({
   const effectiveLyricStyle = lyricStyleMode ?? storedLyricStyle
   const effectiveScrollTransitionStyle = scrollTransitionStyle ?? scrollStyleOfStyle(effectiveLyricStyle)
   const isModernScroll = displayMode === 'scroll' && effectiveScrollTransitionStyle === 'amodern'
+  // 摩登样式的行视觉分支（等字号 / 距离模糊 / 距离缩放 / AMLL 光带）只由歌词样式决定，
+  // 与滚动机制解耦——柔和并入弹簧滚动（修复"柔和滚动没有任何动画"）后，
+  // isModernScroll 在滚动模式下恒为 true，不能再代表"摩登视觉"。
+  const isModernStyle = effectiveLyricStyle === 'modern'
   // P1-14：过渡窗口内旧歌词树的最暗态由 transitionFadeProgress 决定；commit 帧 trackId 变化会让
   // 新歌词树以 initial=0 重新挂载（而旧树此刻还停在暗态）⇒ 观感是"歌名已换、歌词还在往上爬"。
   // 这里渲染期只读"上一次提交的快照"，把新树的初始不透明度对齐到旧树退场前的实际值；
@@ -708,7 +734,8 @@ export default memo(function LyricsDisplay({
   const [isManualScrolling, setIsManualScrolling] = useState(false)
   const [isJumping, setIsJumping] = useState(false)
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
-  const [hoverTimer, setHoverTimer] = useState<ReturnType<typeof setTimeout> | null>(null)
+  // setTimeout 句柄放 ref：放 state 里每次 set 都会触发一次无意义重渲染，且有陈旧闭包风险
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [blinkingIndex, setBlinkingIndex] = useState<number | null>(null) // 
   const [showGlassFrame, setShowGlassFrame] = useState(false)
   const [jumpTargetIndex, setJumpTargetIndex] = useState<number | null>(null)
@@ -748,7 +775,7 @@ export default memo(function LyricsDisplay({
   const isDesktopLayout = layoutContext === 'desktop'
   // 摩登（AMLL 风格）行视觉：整行随弹簧平移，行自身只做 scale/blur/opacity——
   // 不含行级 y 位移（旧实现让行在 upcoming→current→played 切换时上下跳 2~3px）。
-  const isAmllLyricMotion = isModernScroll && !isDesktopLayout
+  const isAmllLyricMotion = isModernStyle && !isDesktopLayout
   /** 摩登的逐字行渲染（AMLL 光带 + 长音强调），替代柔和的 susainGlow 路径 */
   const isAmllFill = isAmllLyricMotion && effectiveWordByWordEnabled
   /** plus-lighter 混合：复刻 AM"白但非纯白"（白字与背景加法混合染上背景色）；浅色主题会过曝，故只用于深色 */
@@ -826,11 +853,54 @@ export default memo(function LyricsDisplay({
     () => displayLyricsData.some(line => Boolean(line.isDuet)),
     [displayLyricsData]
   )
+  // 左右交替歌词开关（现代模式：柔和/摩登两种样式通用；经快捷设置切换）
+  const [sideAlignEnabled, setSideAlignEnabled] = useState(readLyricsSideAlign)
+  useEffect(() => {
+    const handleSideAlignChange = (event: Event) => {
+      setSideAlignEnabled(Boolean((event as CustomEvent<boolean>).detail))
+    }
+    const handleSideAlignStorage = (event: StorageEvent) => {
+      if (event.key === LYRICS_SIDE_ALIGN_KEY) setSideAlignEnabled(readLyricsSideAlign())
+    }
+    window.addEventListener(LYRICS_SIDE_ALIGN_EVENT, handleSideAlignChange)
+    window.addEventListener('storage', handleSideAlignStorage)
+    return () => {
+      window.removeEventListener(LYRICS_SIDE_ALIGN_EVENT, handleSideAlignChange)
+      window.removeEventListener('storage', handleSideAlignStorage)
+    }
+  }, [])
+  // 左右交替：按行预计算对齐侧。对唱（≥2 演唱者）按 agent 出现顺序奇偶；
+  // 普通歌按段落奇偶（单次线性扫描，段落计数随行推进）。开启时覆盖 duet 对齐。
+  const sideAlignSides = useMemo(() => {
+    if (!sideAlignEnabled || scrollAlignment === 'center') return null
+    const agentOf = (line: LyricLine) => (line.agentId || line.agent) || ''
+    const agents = Array.from(new Set(displayLyricsData.map(agentOf).filter(Boolean)))
+    let paragraph = 0
+    return displayLyricsData.map((line, index) => {
+      if (index > 0) {
+        const prev = displayLyricsData[index - 1]
+        if (line.time != null && prev.time != null && line.time - prev.time >= LYRICS_SIDE_ALIGN_PARAGRAPH_GAP_S) paragraph++
+      }
+      if (agents.length >= 2) {
+        const agent = agentOf(line)
+        return agent && agents.indexOf(agent) % 2 === 1 ? 'right' as const : 'left' as const
+      }
+      return paragraph % 2 === 1 ? 'right' as const : 'left' as const
+    })
+  }, [sideAlignEnabled, scrollAlignment, displayLyricsData])
 
   useEffect(() => {
+    // 脉冲写入节流（与 App.tsx PulsingCrossfadeBackground 同款）：pulseStore 实测约 97 次/秒，
+    // --restless-lyric-scale 是继承型 CSS 变量，每次写入都触发行子树样式重算；
+    // 脉冲是缓慢呼吸效果，32ms（≈30fps）视觉无差别。
+    const PULSE_MIN_INTERVAL_MS = 32
+    let lastAppliedAt = 0
     const updatePulseScale = () => {
       const node = activePulseLineRef.current
       if (!node) return
+      const now = performance.now()
+      if (now - lastAppliedAt < PULSE_MIN_INTERVAL_MS) return
+      lastAppliedAt = now
       const restlessPulse = pulseStore.getSnapshot().restless
       node.style.setProperty('--restless-lyric-scale', String(1.008 + restlessPulse * 0.021))
     }
@@ -1051,25 +1121,26 @@ export default memo(function LyricsDisplay({
     clearReturnTimer()
     
     // 清除之前的悬停计时器
-    if (hoverTimer) {
-      clearTimeout(hoverTimer)
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
     }
-    
+
     // Show delayed blink feedback only during manual scrolling
     if (isManualScrolling) {
       const timer = setTimeout(() => {
         setBlinkingIndex(index)
       }, 2000)
-      
-      setHoverTimer(timer)
+
+      hoverTimerRef.current = timer
     }
   }
   
   // 处理歌词移出
   const handleLyricMouseLeave = () => {
-    if (hoverTimer) {
-      clearTimeout(hoverTimer)
-      setHoverTimer(null)
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
     }
     setShowGlassFrame(false)
     setBlinkingIndex(null)
@@ -1090,9 +1161,9 @@ export default memo(function LyricsDisplay({
         clearTimeout(scrollTimeoutRef.current)
         scrollTimeoutRef.current = null
       }
-      if (hoverTimer) {
-        clearTimeout(hoverTimer)
-        setHoverTimer(null)
+      if (hoverTimerRef.current) {
+        clearTimeout(hoverTimerRef.current)
+        hoverTimerRef.current = null
       }
       clearReturnTimer()
       if (jumpAnimationTimerRef.current) {
@@ -1320,12 +1391,8 @@ export default memo(function LyricsDisplay({
     effectiveWordByWordEffectMode,
   ])
 
-  // 切回柔和风格时清掉弹簧残留位移：springY 是摩登专用的 transform，
-  // 若不清零会把原生滚动的歌词整块顶偏（表现为"没有滚到当前播放的歌词上"）。
-  useEffect(() => {
-    if (isModernScroll) return
-    springY.jump(0)
-  }, [isModernScroll, springY])
+  // 两种样式统一走弹簧滚动后不再需要"切回柔和清弹簧残留"的补偿：
+  // springY 在滚动模式下常驻驱动 transform，切风格时由弹簧滚动 effect 重新对锚（弹簧平滑滑到新锚点）。
 
   useEffect(() => {
     if (isModernScroll || isManualScrolling || currentIndex < 0 || typeof ResizeObserver === 'undefined') return
@@ -1376,9 +1443,10 @@ export default memo(function LyricsDisplay({
     return next?.text?.trim() ? currentIndex + 1 : currentIndex
   }
 
-  // 崭新模式：弹簧 transform 驱动滚动（零布局跳动）
+  // 崭新模式：弹簧 transform 驱动滚动（零布局跳动）。
+  // 两种样式统一走本路径（柔和并入），ResizeObserver 不可用（jsdom 测试环境）时跳过。
   useEffect(() => {
-    if (!isModernScroll) return
+    if (!isModernScroll || typeof ResizeObserver === 'undefined') return
     const container = containerRef.current
     if (!container) return
     const measure = () => {
@@ -1396,7 +1464,9 @@ export default memo(function LyricsDisplay({
       const elRect = el.getBoundingClientRect()
       const layoutCenter = (trackRect.top - containerRect.top) - springY.get()
         + (elRect.top + elRect.height / 2 - trackRect.top)
-      const target = containerRect.height * 0.36 - layoutCenter - modernManualY
+      // 焦点线锚点：摩登 36%（Apple 式上移）；柔和 50%（保持传统居中的既有观感）
+      const focusRatio = isModernStyle ? 0.36 : 0.5
+      const target = containerRect.height * focusRatio - layoutCenter - modernManualY
       // 托管切换（过渡中/视觉切换帧）：焦点一步到位，不做弹簧滑行——弹簧从旧位置滑过去
       // 正是"切歌后歌词向上滚/归位"的观感来源。
       if (prefersReducedMotion || managedCrossfadeRef.current) springY.jump(target)
@@ -1408,7 +1478,7 @@ export default memo(function LyricsDisplay({
     observer.observe(container)
     if (springWrapRef.current) observer.observe(springWrapRef.current)
     return () => observer.disconnect()
-  }, [isModernScroll, currentIndex, modernManualY, effectiveLyricSize, displayLyricsData, isManualScrolling, prefersReducedMotion, springY])
+  }, [isModernScroll, isModernStyle, currentIndex, modernManualY, effectiveLyricSize, displayLyricsData, isManualScrolling, prefersReducedMotion, springY])
 
   if (!lyrics || lyrics.length === 0) {
     return null
@@ -2470,7 +2540,7 @@ export default memo(function LyricsDisplay({
         onMouseEnter={handleContainerMouseEnter}
         onMouseLeave={handleContainerMouseLeave}
         style={{
-          ...(isModernScroll ? {} : {
+          ...(isModernStyle ? {} : {
             WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%)',
             maskImage: 'linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%)',
           }),
@@ -2520,7 +2590,7 @@ export default memo(function LyricsDisplay({
         <div
           aria-hidden="true"
           className="w-full shrink-0 pointer-events-none"
-          style={{ height: isModernScroll ? '0%' : '46%' }}
+          style={{ height: isModernStyle ? '0%' : '46%' }}
         />
         {preparedLyricsData.map((preparedLyric, index) => {
           const lyric = preparedLyric.lyric
@@ -2558,6 +2628,8 @@ export default memo(function LyricsDisplay({
           }
           
           const lyricKey = `lyric-${globalIndex}-${lyric.time ?? 'notime'}`
+          // 左右交替歌词的对齐侧（未开启时为 null → 走 duet 对齐）
+          const sideAlignSide = sideAlignSides ? sideAlignSides[globalIndex] : null
           const crowdedCurrentLine = isCurrent && isCrowdedLyricLine(lyric.text, effectiveLyricSize)
           const timingBlur = backgroundEffect === 'immersive'
             ? 0
@@ -2579,20 +2651,21 @@ export default memo(function LyricsDisplay({
           )
           const lineFilter = useLineMotionModel
             ? `blur(${appleLineMotion.blur}px)`
-            : isModernScroll
-              ? (isManualScrolling ? 'none' : `blur(${isCurrent ? 0 : distanceFromCurrent >= 3 ? 3.4 : distanceFromCurrent >= 2 ? 2.2 : 1.1}px)`)
+            : isModernStyle
+              ? (isManualScrolling ? 'none' : `blur(${isCurrent ? 0 : distanceFromCurrent >= 3 ? 2.4 : distanceFromCurrent >= 2 ? 1.0 : 0}px)`)
               : `blur(${Math.max(timingBlur, immersiveDistanceBlur)}px)`
-          const lineFontSize = isModernScroll || useLineMotionModel
+          const lineFontSize = isModernStyle || useLineMotionModel
             ? `${effectiveLyricSize}rem`
             : isCurrent ? `${effectiveLyricSize}rem` : `${effectiveLyricSize * 0.63}rem`
-          const lineFontWeight = isModernScroll ? 600 : (useLineMotionModel ? 500 : (isCurrent ? 700 : 400))
+          // 字重对齐真机：当前句加粗(700)、邻行常规(500)——尺寸几乎一致时靠字重区分主次
+          const lineFontWeight = isModernStyle ? (isCurrent ? 700 : 500) : (useLineMotionModel ? 500 : (isCurrent ? 700 : 400))
           const lineOpacity = useLineMotionModel ? appleLineMotion.opacity : opacityValue
           // 行级 y 恒为 0：行切换的上下位移交给滚动容器，行自身不再叠加
           // upcoming/played 的 ±2~5px 位移（用户反馈"正在播放→已播放完毕会上下动一下"）。
           const lineY = 0
           const lineScale = useLineMotionModel
             ? appleLineMotion.scale
-            : isModernScroll ? (isCurrent ? 1 : distanceFromCurrent >= 2 ? 0.74 : 0.80) : undefined
+            : isModernStyle ? (isCurrent ? 1 : distanceFromCurrent >= 2 ? 0.9 : 0.95) : undefined
           const appleTransformTransition = prefersReducedMotion || isManualScrolling || isInactiveGeneratedInterlude
             ? { duration: 0 }
             : { type: 'spring' as const, stiffness: 320, damping: 30, mass: 0.8 }
@@ -2620,18 +2693,22 @@ export default memo(function LyricsDisplay({
                 ...(lineScale === undefined ? {} : { scale: lineScale }),
               }}
               style={{
-                transformOrigin: hasDuetLines && lyric.isDuet
+                transformOrigin: sideAlignSide === 'right' || (hasDuetLines && lyric.isDuet)
                   ? 'right center'
                   : scrollAlignment === 'center' ? 'center center' : 'left center',
                 scale: lineScale === undefined ? (isCurrent ? 'var(--restless-lyric-scale, 1.008)' : 1) : undefined,
                 transition: lineScale === undefined ? 'scale 140ms cubic-bezier(0.22, 1, 0.36, 1)' : undefined,
                 zIndex: isCurrent ? 2 : lineTiming.upcomingProgress > 0 ? 1 : 0,
-                // 对唱左右分栏（Apple Music）：对唱行靠右并让出左侧，其余行让出右侧
-                ...(hasDuetLines && scrollAlignment !== 'center'
-                  ? lyric.isDuet
+                // 对唱左右分栏（Apple Music）；开启"左右交替歌词"时按行侧别对齐（柔和/摩登通用）
+                ...(sideAlignSide
+                  ? sideAlignSide === 'right'
                     ? { textAlign: 'right' as const, paddingLeft: '15%' }
                     : { paddingRight: '15%' }
-                  : {}),
+                  : hasDuetLines && scrollAlignment !== 'center'
+                    ? lyric.isDuet
+                      ? { textAlign: 'right' as const, paddingLeft: '15%' }
+                      : { paddingRight: '15%' }
+                    : {}),
               }}
               transition={{
                 opacity: isBlinking
@@ -2642,7 +2719,7 @@ export default memo(function LyricsDisplay({
                 y: useLineMotionModel ? appleTransformTransition : { duration: prefersReducedMotion ? 0 : 0.04, ease: 'linear' },
                 scale: useLineMotionModel
                   ? appleTransformTransition
-                  : isModernScroll && !prefersReducedMotion
+                  : isModernStyle && !prefersReducedMotion
                     ? { type: 'spring', stiffness: 240, damping: 24, mass: 0.9 }
                     : { duration: 0 },
                 filter: { duration: prefersReducedMotion ? 0 : useLineMotionModel ? 0.3 : 0.45, ease: [0.22, 1, 0.36, 1] },
@@ -2886,7 +2963,7 @@ export default memo(function LyricsDisplay({
         <div
           aria-hidden="true"
           className="w-full shrink-0 pointer-events-none"
-          style={{ height: isModernScroll ? '36%' : '56%' }}
+          style={{ height: isModernStyle ? '36%' : '56%' }}
         />
         </motion.div>
         </motion.div>

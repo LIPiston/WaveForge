@@ -353,6 +353,18 @@ export default memo(function QuickSettingsDialog({
     window.dispatchEvent(new CustomEvent('waveforge:modeng-side-align', { detail: next }))
   }
 
+  // 现代模式"左右交替歌词"（独立 key waveforge_lyrics_side_align，柔和/摩登两种样式通用；
+  // LyricsDisplay 经 waveforge:lyrics-side-align 事件实时响应）
+  const [lyricsSideAlign, setLyricsSideAlign] = useState<boolean>(() => {
+    try { return localStorage.getItem('waveforge_lyrics_side_align') === 'true' } catch { return false }
+  })
+  const handleLyricsSideAlignToggle = () => {
+    const next = !lyricsSideAlign
+    setLyricsSideAlign(next)
+    try { localStorage.setItem('waveforge_lyrics_side_align', String(next)) } catch { /* noop */ }
+    window.dispatchEvent(new CustomEvent('waveforge:lyrics-side-align', { detail: next }))
+  }
+
   const [hideImmersiveSongInfo, setHideImmersiveSongInfo] = useState(() => {
     const saved = localStorage.getItem('hideImmersiveSongInfo')
     return saved !== null ? JSON.parse(saved) : false
@@ -1313,6 +1325,13 @@ export default memo(function QuickSettingsDialog({
                     {lyricDisplayMode === 'modeng' &&
                       renderToggleRow('左右交替歌词', modengSideAlign, handleModengSideAlignToggle, {
                         description: '摩登模式按段落交替对齐两侧',
+                      })}
+
+                    {/* 现代模式（lyricDisplayMode === 'modern'）的左右交替：key 独立于摩登模式，
+                        柔和/摩登两种歌词样式通用（LyricsDisplay 按行预计算对齐侧）。 */}
+                    {lyricDisplayMode === 'modern' &&
+                      renderToggleRow('左右交替歌词', lyricsSideAlign, handleLyricsSideAlignToggle, {
+                        description: '按演唱者/段落交替对齐两侧（柔和与摩登通用）',
                       })}
                   </>,
                 )}
