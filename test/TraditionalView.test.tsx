@@ -203,6 +203,9 @@ describe('传统模式 TraditionalView', () => {
     vi.mocked(fetchExploreHome).mockResolvedValue(cannedHomePayload as any)
     // 搜索结果缓存是模块级的（本会话复用），测试之间要清掉，否则断言「打了几次接口」会被上一次的结果命中。
     clearTraditionalSearchCache()
+    // 注意：不要在这里统一 stub globalThis.fetch。本文件的用例各自按需替换 fetch，
+    // 且首页的兜底内容依赖「jsdom 网络失败」这条路径（例如网易云 7 张快捷卡的本地兜底标题、
+    // QQPcHome「你的歌单宝藏库」退回聚合 payload）。统一换成失败桩会让这些兜底链走岔。
   })
   afterEach(() => cleanup())
 
@@ -518,7 +521,9 @@ describe('传统模式 TraditionalView', () => {
     expect(screen.getByText('Daily 30')).toBeTruthy()
     expect(screen.getByText(/イエナイ-花村想太/)).toBeTruthy()
     expect(screen.getByText('每日30首')).toBeTruthy()
-    expect(screen.getByText('你的歌单宝藏库')).toBeTruthy()
+    // 宝藏库区块由另一个数据源（songlist 接口）填充，与上面 waitFor 的 feed 是两条独立
+    // 异步链，必须各自等待，不能同步断言。
+    await waitFor(() => expect(screen.getByText('你的歌单宝藏库')).toBeTruthy(), { timeout: 4000 })
   })
 
   it('所有者歌单不应被判定为可收藏', () => {
