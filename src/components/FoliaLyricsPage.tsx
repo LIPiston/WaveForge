@@ -13,11 +13,14 @@ import type { LyricAlternateText, LyricBackgroundVocal, LyricLine, LyricWord } f
 import type { PlaybackTimeStore } from '../audio/playbackTimeStore'
 import type { AudioAnalyzerStore } from '../hooks/useAudioAnalyzer'
 import { ensureFoliaI18n } from '../vendor/folia/i18n'
-import { resolveReadableThemeColor } from '../services/foliaReadableColor'
+import { buildFoliaTheme } from './foliaTunings'
 import VisualizerRenderer from '../vendor/folia/components/visualizer/VisualizerRenderer'
 import { hasVisualizerMode, DEFAULT_VISUALIZER_MODE } from '../vendor/folia/components/visualizer/registry'
 import { DEFAULT_TEMPERA_TUNING, DEFAULT_SONNET_TUNING, type Line, type LyricAlternateText as FoliaAlternateText, type LyricBackgroundVocal as FoliaBackgroundVocal, type Theme, type Word, type VisualizerMode } from '../vendor/folia/types'
 import type { VisualizerBackgroundConfig } from '../vendor/folia/components/visualizer/backgrounds/definition'
+import type { VisualizerTuningBundle } from '../vendor/folia/components/visualizer/tuningRegistry'
+import { usePerfMode } from '../tv/perfMode'
+import { buildWordSegments, resolveLumiereRenderQuality, resolveLumiereTuning } from './foliaLumiereSupport'
 
 ensureFoliaI18n()
 
@@ -55,6 +58,8 @@ export interface FoliaLyricsPageProps {
   foliaBackgroundEnabled?: boolean
   /** WaveForge MV 背景激活时置 true：folia 背景层完全透明（transparent），MV 视频露出 */
   mvBackgroundActive?: boolean
+  /** 用户在参数面板里保存的 per-mode 调参（键为 folia 模式 id）；未设置的项用默认值 */
+  userTunings?: VisualizerTuningBundle
   /** 模式退出动画期间为 false：保留静态视觉帧，但停止时钟与频谱订阅。 */
   active?: boolean
 }
@@ -123,6 +128,9 @@ export function convertLyricsToFoliaLines(
       id: `${trackId}-${index}`,
       agentId: line.agentId || line.agent,
       backgroundVocals: backgroundVocals?.length ? backgroundVocals : undefined,
+      // 绘光按词排版（虚词缩小 / 最长实词放大）优先用提供方的逐字时间轴切词，
+      // 而不是让 Intl.Segmenter 现场猜（尤其中文容易切错）。仅在能精确重建整行时才给。
+      wordSegments: buildWordSegments(line.text, line.words),
     }
   })
 }
@@ -147,9 +155,11 @@ export function FoliaLyricsPage({
   foliaStyle,
   foliaBackgroundEnabled = true,
   mvBackgroundActive,
+  userTunings,
   active = true,
 }: FoliaLyricsPageProps) {
   const mode: VisualizerMode = hasVisualizerMode(foliaStyle) ? foliaStyle : DEFAULT_VISUALIZER_MODE
+  const perfMode = usePerfMode()
 
   // ── 播放时间 → MotionValue（rAF 外推）──
   // 60fps 门控：claddagh/tilt 等样式订阅 currentTime.on('change') 对整行字符逐个写样式，
@@ -263,30 +273,11 @@ export function FoliaLyricsPage({
   )
 
   // ── 主题映射（从封面主题色构建多彩词色 + 让背景跟封面走）──
-  const theme: Theme = useMemo(() => {
-    const isDark = playerTheme === 'dark'
-    // 封面主色往往很深，直接用作 accent/secondary（翻译/字幕/次文字色）会在深色背景上
-    // 发黑发灰、可读性差。做可读性校正：深色主题下过暗 → 提亮，浅色主题下过亮 → 压暗，
-    // 保留色相。背景的封面取色走独立通道（useCoverColorBg），不受此校正影响。
-    const readableAccent = resolveReadableThemeColor(accentColor, isDark)
-    // 从校正后的主题色衍生 3 级词色：明亮 → 主题 → 暖灰，folia 各样式用 wordColors 给词缀着色
-    const wordColors = [
-      { word: 'accent', color: readableAccent },
-      { word: 'bright', color: isDark ? '#f5f6fa' : '#1c1d22' },
-      { word: 'warm', color: isDark ? '#c9b8a8' : '#5c4a3a' },
-    ]
-    return {
-      name: 'waveforge',
-      // 背景色在 useCoverColorBg 开启时被封面取色覆盖（仅作兜底），提亮至深灰避免纯黑阅读感
-      backgroundColor: isDark ? '#15171f' : '#f4f4f7',
-      primaryColor: isDark ? '#f5f6fa' : '#1c1d22',
-      accentColor: readableAccent,
-      secondaryColor: readableAccent,
-      fontStyle: 'sans' as const,
-      animationIntensity: 'normal' as const,
-      wordColors,
-    }
-  }, [playerTheme, accentColor])
+  // 与参数面板共用 buildFoliaTheme：两边必须一致，否则面板配色会和实际渲染的主题对不上
+  const theme: Theme = useMemo(
+    () => buildFoliaTheme({ playerTheme, accentColor }),
+    [playerTheme, accentColor],
+  )
 
   // ── 背景配置：开启封面取色，让 folia 背景（Latent shader）跟封面主题色动态变化，
   // 而不是固定暗色（这是"folia 多彩/我们暗色"的根因）。
@@ -298,7 +289,16 @@ export function FoliaLyricsPage({
   const visualizerTunings = useMemo(() => ({
     tempera: { ...DEFAULT_TEMPERA_TUNING, textureResolution: 1 },
     sonnet: { ...DEFAULT_SONNET_TUNING, textureResolution: 1 },
-  }), [])
+    // 用户显式调过的值覆盖上面的 WaveForge 默认；lumiere 放在最后，它的 darkField
+    // 必须由上下文（MV 背景 / 是否用 folia 背景）决定，不能被持久化值覆盖回不透明。
+    ...userTunings,
+    lumiere: resolveLumiereTuning({
+      mvBackgroundActive: Boolean(mvBackgroundActive),
+      foliaBackgroundEnabled,
+      renderQuality: resolveLumiereRenderQuality(perfMode),
+      userTuning: userTunings?.lumiere,
+    }),
+  }), [mvBackgroundActive, foliaBackgroundEnabled, perfMode, userTunings])
 
   const [rendererReady, setRendererReady] = useState(false)
   useEffect(() => {

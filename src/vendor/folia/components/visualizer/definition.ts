@@ -11,6 +11,7 @@ import {
     type DioramaTuning,
     type FumeTuning,
     type Line,
+    type LumiereTuning,
     type MonetPortraitImage,
     type MonetTuning,
     type PartitaTuning,
@@ -27,7 +28,7 @@ import type { VisualizerBackgroundConfig } from './backgrounds/definition';
 
 // src/components/visualizer/definition.ts
 // Shared contracts for discoverable visualizer modes.
-export type VisualizerTuningKind = 'none' | 'classic' | 'cadenza' | 'partita' | 'fume' | 'claddagh' | 'cappella' | 'tilt' | 'monet' | 'diorama' | 'pendolo' | 'sonnet' | 'tempera';
+export type VisualizerTuningKind = 'none' | 'classic' | 'cadenza' | 'partita' | 'fume' | 'claddagh' | 'cappella' | 'tilt' | 'monet' | 'diorama' | 'pendolo' | 'sonnet' | 'tempera' | 'lumiere';
 
 export interface VisualizerSharedProps {
     currentTime: MotionValue<number>;
@@ -58,6 +59,7 @@ export interface VisualizerSharedProps {
     subtitleFontScale?: number;
     subtitleOverlayOpacity?: number;
     subtitleOverlayBackground?: boolean;
+    subtitleUpcomingLyricsBlur?: boolean;
     showHarmonySubtitle?: boolean;
     harmonySubtitleBackground?: boolean;
     isPlayerChromeHidden?: boolean;
@@ -92,6 +94,8 @@ export interface VisualizerSharedProps {
     onSonnetTuningChange?: (patch: Partial<SonnetTuning>) => void;
     temperaTuning?: TemperaTuning;
     onTemperaTuningChange?: (patch: Partial<TemperaTuning>) => void;
+    lumiereTuning?: LumiereTuning;
+    onLumiereTuningChange?: (patch: Partial<LumiereTuning>) => void;
 }
 
 export interface VisualizerSettingsPanelProps {
@@ -137,6 +141,8 @@ export interface VisualizerSettingsPanelProps {
     onSonnetTuningChange?: (patch: Partial<SonnetTuning>) => void;
     temperaTuning?: TemperaTuning;
     onTemperaTuningChange?: (patch: Partial<TemperaTuning>) => void;
+    lumiereTuning?: LumiereTuning;
+    onLumiereTuningChange?: (patch: Partial<LumiereTuning>) => void;
     /** Mark slider drag start so onChange only updates draft. */
     onSliderPointerDown?: () => void;
     /** Commit draft values to persistent store on slider release. */
@@ -155,11 +161,13 @@ export interface VisualizerSettingsResetProps {
     resetPendoloTuning?: () => void;
     resetSonnetTuning?: () => void;
     resetTemperaTuning?: () => void;
+    resetLumiereTuning?: () => void;
     setDraftFumeTuning?: (tuning: FumeTuning) => void;
     setDraftCladdaghTuning?: (tuning: CladdaghTuning) => void;
     setDraftPendoloTuning?: (tuning: PendoloTuning) => void;
     setDraftSonnetTuning?: (tuning: SonnetTuning) => void;
     setDraftTemperaTuning?: (tuning: TemperaTuning) => void;
+    setDraftLumiereTuning?: (tuning: LumiereTuning) => void;
 }
 
 export interface VisualizerRegistryEntry {
@@ -173,6 +181,28 @@ export interface VisualizerRegistryEntry {
     render: (props: VisualizerSharedProps) => React.ReactElement;
     renderSettingsPanel?: (props: VisualizerSettingsPanelProps) => React.ReactNode;
     resetSettings?: (props: VisualizerSettingsResetProps) => void;
+    /*
+     * True when this mode's layout atoms come from whole-line word segmentation
+     * (utils/lyrics/wordSegmentation), so the user's saved split for a song changes what it draws.
+     * Declared here rather than as a list in the panel: the panel and the command both ask the
+     * registry, so adding a mode does not mean remembering to edit a hardcoded set.
+     * Grapheme-level modes leave it unset — a word split would not affect them.
+     */
+    usesWordSegmentation?: boolean;
+    /*
+     * Folium tunables: the multiplier keys this mode reads through
+     * useFoliumTunings(mode), with the range a mod may set and the identity
+     * value (the unmodified look). Declaring a key makes its name public API —
+     * mods address it by name, so renaming it is a breaking Folium change.
+     * Modes without this field cannot be targeted by `registries.tunings`.
+     */
+    foliumTunables?: Readonly<Record<string, FoliumTunable>>;
+}
+
+export interface FoliumTunable {
+    min: number;
+    max: number;
+    identity: number;
 }
 
 export interface VisualizerEntryModule {

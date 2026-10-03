@@ -35,6 +35,8 @@ interface VisualizerShellProps {
     visualizerOpacity?: number;
     children: React.ReactNode;
     className?: string;
+    /* 静止模式不挂共享背景层（它自带暗角、只留歌词）。默认 true，既有模式行为不变。 */
+    renderBackground?: boolean;
 }
 
 const PLAYER_CHROME_HOTSPOT_SIZE = 120;
@@ -54,6 +56,7 @@ const VisualizerShell = forwardRef<HTMLDivElement, VisualizerShellProps>(({
     visualizerOpacity = 1,
     children,
     className = '',
+    renderBackground = true,
 }, ref) => {
     const { t } = useTranslation();
     const [showBackButton, setShowBackButton] = useState(false);
@@ -175,17 +178,19 @@ const VisualizerShell = forwardRef<HTMLDivElement, VisualizerShellProps>(({
                 </motion.button>
             )}
 
-            <VisualizerBackgroundRenderer
-                config={sharedProps?.background}
-                theme={theme}
-                isDaylight={resolvedIsDaylight}
-                coverUrl={resolvedCoverUrl}
-                audioPower={audioPower}
-                audioBands={audioBands}
-                seed={sharedProps?.seed}
-                staticMode={resolvedStaticMode || resolvedBackgroundStaticMode}
-                paused={resolvedPaused}
-            />
+            {renderBackground && (
+                <VisualizerBackgroundRenderer
+                    config={sharedProps?.background}
+                    theme={theme}
+                    isDaylight={resolvedIsDaylight}
+                    coverUrl={resolvedCoverUrl}
+                    audioPower={audioPower}
+                    audioBands={audioBands}
+                    seed={sharedProps?.seed}
+                    staticMode={resolvedStaticMode || resolvedBackgroundStaticMode}
+                    paused={resolvedPaused}
+                />
+            )}
 
             {children}
         </div>

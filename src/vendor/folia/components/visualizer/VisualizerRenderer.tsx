@@ -24,7 +24,11 @@ const VisualizerRenderer: React.FC<VisualizerRendererProps> = ({ mode, ...props 
 
     return (
         <>
-            {getVisualizerRegistryEntry(mode).render(resolvedProps)}
+            {/* entry.tsx 用 React.lazy 包 renderer：没有 Suspense 边界会直接抛错。
+                现有的 12 个模式是静态 import，多这一层不影响它们。 */}
+            <React.Suspense fallback={null}>
+                {getVisualizerRegistryEntry(mode).render(resolvedProps)}
+            </React.Suspense>
             <VisualizerHarmonyOverlay
                 currentTime={resolvedProps.currentTime}
                 lines={resolvedProps.lines}

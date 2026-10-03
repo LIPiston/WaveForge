@@ -3,7 +3,7 @@ import { parseStoredBoolean } from './utils/storage'
 import { isTv, isTvModeActive, isDesktop } from './platform'
 import { dispatchTvBack, useTvBack, useRemoteCursorMode } from './tv/tvCore'
 import { isPerfModeEfficiency, isPerfModeEnhanced } from './tv/perfMode'
-import { lazy, memo, Suspense, startTransition, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps, type ReactNode } from 'react'
+import { lazy, memo, Suspense, startTransition, useState, useCallback, useEffect, useRef, useMemo, useSyncExternalStore, type ComponentProps, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import AlbumCoverPlayer from './components/AlbumCoverPlayer'
 import TransitionTrackTitles from './components/TransitionTrackTitles'
@@ -24,6 +24,26 @@ import ModernFluidBackground from './components/ModernFluidBackground'
 import { FoliaTransitionOverlay } from './components/folia/FoliaTransitionOverlay'
 import { FoliaUpNextCard } from './components/folia/FoliaUpNextCard'
 import { resolveFoliaPresentation } from './components/folia/foliaPresentation'
+import { resolveFoliaStyleFallback, supportsLumiere } from './components/foliaLumiereSupport'
+import {
+  mergeOrder,
+  moveIdToIndex,
+  parseStoredIdList,
+  readStoredOrder,
+  resolveEffectiveVisible,
+  toggleVisible,
+  writeStoredOrder,
+} from './components/lyricModePrefs'
+import { HorizontalShelf } from './components/apple-explore/HorizontalShelf'
+import { FoliaTuningPanel } from './components/FoliaTuningPanel'
+import {
+  hasFoliaTuningOverride,
+  readFoliaTunings,
+  resolvePanelTuning,
+  writeFoliaTunings,
+} from './components/foliaTunings'
+import { getVisualizerRegistryEntry } from './vendor/folia/components/visualizer/registry'
+import type { VisualizerTuningBundle } from './vendor/folia/components/visualizer/tuningRegistry'
 import { AutomixHudBadge, useAutomixHudTime, transitionEngineDisplayName } from './components/AutomixHudBadge'
 
 import MiniPlayer from './components/MiniPlayer'
@@ -79,7 +99,7 @@ import { getResolvedArtworkUrl, preloadArtwork } from './services/artworkLoader'
 import { recordListen } from './services/listeningLog'
 import { getDesktopSpectrumConsumerCount, subscribeDesktopSpectrumConsumers } from './services/desktopSpectrum'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Settings, Sparkles, Check, Image as ImageIcon, Radio } from 'lucide-react'
+import { Settings, Sparkles, Check, Image as ImageIcon, Radio, SlidersHorizontal } from 'lucide-react'
 import { getDeterministicNextIndex, getUpcomingIndices } from './audio/PlaybackQueue'
 import type { PreloadTrack, TrackAnalysis, TransitionCommit, TransitionDebugInfo, TransitionState, TransitionStrategy } from './audio/types'
 import { createPlaybackTimeCommitGate, type PlaybackTimeStore } from './audio/playbackTimeStore'
@@ -461,6 +481,16 @@ const LYRIC_MODE_VIDEO_MIGRATED_KEY = 'waveforge_video_mode_migrated'
 const LYRIC_MODE_PV_MIGRATED_KEY = 'waveforge_pv_mode_migrated'
 /** Folia 歌词样式（vendored Project Folia 可视化器）的持久化 key 与默认样式 */
 const FOLIA_STYLE_KEY = 'waveforge_folia_style'
+/** Folia 样式选择条的顺序（用户拖动排序）；缺项按默认顺序追加，升级新增样式不会消失 */
+const FOLIA_STYLE_ORDER_KEY = 'waveforge_folia_style_order'
+/** Folia 样式的显示/隐藏集合（与 WaveForge 模式那份互相独立） */
+const FOLIA_STYLE_VISIBILITY_KEY = 'waveforge_visible_folia_styles'
+/** WaveForge 歌词模式的显示顺序（用户拖动排序） */
+const LYRIC_MODE_ORDER_KEY = 'waveforge_lyric_mode_order'
+/** 站在 Folia 页签时菜单不列它自己：这个页签下 Folia 天然是开着的 */
+const FOLIA_PAGE_SELF_MODE: LyricDisplayMode = 'folia'
+/** 可见数下限：Folia 侧至少留两个，避免选择条被关空 */
+const MIN_VISIBLE_FOLIA_STYLES = 2
 const ALL_LYRIC_MODES: LyricDisplayMode[] = ['modern', 'immersive', 'wallpaper', 'glorious', 'multidimensional', 'modeng', 'video', 'folia', 'pv']
 const LYRIC_MODE_NAMES: Record<LyricDisplayMode, string> = {
   modern: '现代',
@@ -1441,8 +1471,74 @@ function App() {
   const [lyricPanelPage, setLyricPanelPage] = useState<'waveforge' | 'folia'>('waveforge')
   const [foliaStyle, setFoliaStyle] = useState<string>(() => {
     const saved = localStorage.getItem(FOLIA_STYLE_KEY)
-    return saved || 'classic'
+    // 绘光的光场与 bloom 都是 GLSL，上游在非 WebGL 下直接 throw。GPU 被禁用/软件渲染时
+    // 开机就回落到静止（纯 DOM），避免整个歌词页打空。
+    return resolveFoliaStyleFallback(saved || 'classic')
   })
+  // 探测一次即可（要建临时 canvas，不该每次切样式都做）
+  const lumiereSupported = useMemo(() => supportsLumiere(), [])
+  // ── Folia 样式的顺序与显示/隐藏（与 WaveForge 模式那份偏好互相独立）──
+  const foliaStyleIds = useMemo(() => FOLIA_STYLES.map(style => style.id), [])
+  const [foliaStyleOrder, setFoliaStyleOrder] = useState<string[]>(() => (
+    readStoredOrder(FOLIA_STYLE_ORDER_KEY, FOLIA_STYLES.map(style => style.id))
+    ?? FOLIA_STYLES.map(style => style.id)
+  ))
+  const [visibleFoliaStyles, setVisibleFoliaStyles] = useState<string[]>(() => {
+    try {
+      return parseStoredIdList(localStorage.getItem(FOLIA_STYLE_VISIBILITY_KEY))
+        ?? FOLIA_STYLES.map(style => style.id)
+    } catch {
+      return FOLIA_STYLES.map(style => style.id)
+    }
+  })
+  // ── WaveForge 歌词模式的显示顺序（可见性仍由既有 visibleLyricModes 负责）──
+  const [lyricModeOrder, setLyricModeOrder] = useState<string[]>(() => (
+    readStoredOrder(LYRIC_MODE_ORDER_KEY, ALL_LYRIC_MODES) ?? [...ALL_LYRIC_MODES]
+  ))
+  const orderedFoliaStyles = useMemo(
+    () => mergeOrder(foliaStyleIds, foliaStyleOrder),
+    [foliaStyleIds, foliaStyleOrder],
+  )
+  const effectiveVisibleFoliaStyles = resolveEffectiveVisible({
+    allIds: orderedFoliaStyles,
+    visible: visibleFoliaStyles,
+    currentId: foliaStyle,
+    minVisible: MIN_VISIBLE_FOLIA_STYLES,
+  })
+  const visibleFoliaStyleEntries = orderedFoliaStyles
+    .filter(id => effectiveVisibleFoliaStyles.includes(id))
+    .map(id => FOLIA_STYLES.find(style => style.id === id))
+    .filter((style): style is (typeof FOLIA_STYLES)[number] => Boolean(style))
+  const orderedLyricModes = useMemo(
+    () => mergeOrder(ALL_LYRIC_MODES, lyricModeOrder).filter((mode): mode is LyricDisplayMode => ALL_LYRIC_MODES.includes(mode as LyricDisplayMode)),
+    [lyricModeOrder],
+  )
+  const moveFoliaStyleTo = (id: string, targetIndex: number) => {
+    const next = moveIdToIndex(orderedFoliaStyles, id, targetIndex)
+    setFoliaStyleOrder(next)
+    writeStoredOrder(FOLIA_STYLE_ORDER_KEY, next)
+  }
+  const moveLyricModeTo = (id: string, targetIndex: number) => {
+    const next = moveIdToIndex(orderedLyricModes, id, targetIndex)
+    setLyricModeOrder(next)
+    writeStoredOrder(LYRIC_MODE_ORDER_KEY, next)
+  }
+  const toggleFoliaStyleVisibility = (id: string) => {
+    const result = toggleVisible({
+      allIds: orderedFoliaStyles,
+      visible: visibleFoliaStyles,
+      currentId: foliaStyle,
+      minVisible: MIN_VISIBLE_FOLIA_STYLES,
+      id,
+    })
+    if (!result.ok) return
+    setVisibleFoliaStyles(result.visible)
+    try {
+      localStorage.setItem(FOLIA_STYLE_VISIBILITY_KEY, JSON.stringify(result.visible))
+    } catch (error) {
+      console.warn('保存 Folia 样式可见设置失败:', error)
+    }
+  }
   // Folia 是否使用自己的背景（latent 封面取色 shader）：关闭后改用 WaveForge 封面背景
   // （folia 层透明露出 App 的封面背景层）。默认开启，尊重喜欢 Folia 原生背景的用户。
   const [foliaBackgroundEnabled, setFoliaBackgroundEnabled] = useState(() => {
@@ -3987,8 +4083,10 @@ function App() {
 
   /** 选择 Folia 歌词样式（第二页样式卡）：保存样式；未在 Folia 页时同时切入 */
   const handleFoliaStyleSelect = (style: string) => {
-    setFoliaStyle(style)
-    localStorage.setItem(FOLIA_STYLE_KEY, style)
+    // 不支持 WebGL 时绘光会被回落成静止，落盘也存回落后的值，避免下次开机又选中绘光
+    const resolved = resolveFoliaStyleFallback(style)
+    setFoliaStyle(resolved)
+    localStorage.setItem(FOLIA_STYLE_KEY, resolved)
     if (lyricDisplayModeRef.current !== 'folia') handleLyricDisplayModeChange('folia')
   }
 
@@ -4086,6 +4184,115 @@ function App() {
   const effectiveCoverPalette = coverColorStatus === 'ready' ? coverPalette : lastReadyCoverColor.palette
   const dominantColor = playbackCoverColor
   dominantColorRef.current = playbackCoverColor
+  // 歌词模式预设条：色档数据在这里、顺序由用户偏好（orderedLyricModes）决定。
+  // 不含 folia —— 它有自己的第二页，不出现在这一页的横格里。
+  const lyricModeTiles = [
+    { mode: 'modern' as LyricDisplayMode, label: '现代', background: 'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)' },
+    { mode: 'immersive' as LyricDisplayMode, label: '沉浸式', background: 'linear-gradient(135deg, #1e3a5f 0%, #0f1c2e 50%, #0a0a0a 100%)' },
+    { mode: 'wallpaper' as LyricDisplayMode, label: '墙纸', background: `repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 18px), linear-gradient(135deg, ${playbackCoverColor} 0%, #18171c 58%, #09090b 100%)` },
+    { mode: 'glorious' as LyricDisplayMode, label: '辉煌', background: `linear-gradient(118deg, #080713 0%, ${playbackCoverColor} 50%, #090911 78%, #101522 100%)` },
+    { mode: 'multidimensional' as LyricDisplayMode, label: '多维', background: `linear-gradient(145deg, #05060c 0%, ${playbackCoverColor} 48%, #0b1b2a 72%, #030409 100%)` },
+    { mode: 'modeng' as LyricDisplayMode, label: '摩登', background: 'linear-gradient(120deg, #3a3a3c 0%, #232325 45%, #101012 100%)' },
+    { mode: 'video' as LyricDisplayMode, label: '看歌', background: 'linear-gradient(120deg, #f8a5c2 0%, #fb7299 45%, #2d1b3d 100%)' },
+    { mode: 'pv' as LyricDisplayMode, label: 'PV', background: 'linear-gradient(135deg, #6d28d9 0%, #3b2f8f 42%, #0f172a 100%)' },
+  ]
+  const orderedLyricModeTiles = orderedLyricModes
+    .map(mode => lyricModeTiles.find(tile => tile.mode === mode))
+    .filter((tile): tile is (typeof lyricModeTiles)[number] => Boolean(tile))
+    .filter(tile => effectiveVisibleLyricModes.includes(tile.mode))
+  // 菜单条目按页签切换内容：WaveForge 页列 9 个歌词模式；Folia 页列 Folia 风格
+  //（Folia 页签下不出现「Folia」自身——在这个页签它天然是开着的，列出来只会误导）。
+  // 两份列表规则一致（当前项与「关掉就不够最小可见数」的项不可隐藏），只是作用对象不同。
+  const lyricModeMenuEntries = lyricPanelPage === 'folia'
+    ? orderedFoliaStyles.map((id, index) => {
+        const isVisible = effectiveVisibleFoliaStyles.includes(id)
+        const isCurrent = foliaStyle === id
+        return {
+          id,
+          index,
+          label: FOLIA_STYLES.find(style => style.id === id)?.zhName ?? id,
+          sublabel: id as string | undefined,
+          visible: isVisible,
+          locked: isCurrent || (isVisible && effectiveVisibleFoliaStyles.length <= MIN_VISIBLE_FOLIA_STYLES),
+          status: isCurrent ? '当前样式' : isVisible ? '显示中' : '已隐藏',
+          onToggle: () => toggleFoliaStyleVisibility(id),
+          onMove: (targetIndex: number) => moveFoliaStyleTo(id, targetIndex),
+          canMoveUp: index > 0,
+          canMoveDown: index < orderedFoliaStyles.length - 1,
+        }
+      })
+    : orderedLyricModes.map((mode, index) => {
+        const isVisible = effectiveVisibleLyricModes.includes(mode)
+        const isCurrent = lyricDisplayMode === mode
+        return {
+          id: mode as string,
+          index,
+          label: LYRIC_MODE_NAMES[mode],
+          sublabel: undefined as string | undefined,
+          visible: isVisible,
+          locked: isCurrent || mode === 'modern' || (isVisible && effectiveVisibleLyricModes.length <= 1),
+          status: mode === 'modern' ? '始终显示' : isCurrent ? '当前模式' : isVisible ? '显示中' : '已隐藏',
+          onToggle: () => toggleLyricModeVisibility(mode),
+          onMove: (targetIndex: number) => moveLyricModeTo(mode, targetIndex),
+          canMoveUp: index > 0,
+          canMoveDown: index < orderedLyricModes.length - 1,
+        }
+      })
+  // 菜单内拖拽排序：按指针所在行直接落位（moveIdToIndex 的语义在「原列表下标」下成立，
+  // 上下移都不必做 ±1 修正）。不做自动滚动——列表最多 14 行，够不到时用上/下移按钮兜底。
+  const menuListRef = useRef<HTMLDivElement | null>(null)
+  const menuDragRef = useRef<{ id: string; pointerId: number } | null>(null)
+  const [menuDraggingId, setMenuDraggingId] = useState<string | null>(null)
+  const handleMenuGripPointerDown = (event: ReactPointerEvent<HTMLButtonElement>, id: string) => {
+    event.preventDefault()
+    event.stopPropagation()
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      // 指针捕获失败时拖拽退化为「按一下即停」，不影响上/下移按钮
+    }
+    menuDragRef.current = { id, pointerId: event.pointerId }
+    setMenuDraggingId(id)
+  }
+  const handleMenuGripPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = menuDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const list = menuListRef.current
+    if (!list) return
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('[data-menu-row]'))
+    const overIndex = rows.findIndex(row => {
+      const rect = row.getBoundingClientRect()
+      return event.clientY >= rect.top && event.clientY <= rect.bottom
+    })
+    if (overIndex < 0) return
+    const currentIndex = rows.findIndex(row => row.dataset.menuRow === drag.id)
+    if (currentIndex < 0 || currentIndex === overIndex) return
+    if (lyricPanelPage === 'folia') moveFoliaStyleTo(drag.id, overIndex)
+    else moveLyricModeTo(drag.id, overIndex)
+  }
+  const endMenuGripDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = menuDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    menuDragRef.current = null
+    setMenuDraggingId(null)
+  }
+  // ── Folia 参数面板：注册表驱动，谁声明了 renderSettingsPanel 就渲染谁 ──
+  const [userFoliaTunings, setUserFoliaTunings] = useState<VisualizerTuningBundle>(() => readFoliaTunings())
+  const [showFoliaTuning, setShowFoliaTuning] = useState(false)
+  // 只用 registry 查询，不 import 任何 renderer：面板存在与否看 entry 有没有声明
+  const foliaStyleHasPanel = lyricPanelPage === 'folia'
+    && Boolean(getVisualizerRegistryEntry(foliaStyle as never)?.renderSettingsPanel)
+  const commitFoliaTuning = (next: Record<string, unknown>) => {
+    const bundle: VisualizerTuningBundle = { ...userFoliaTunings, [foliaStyle]: next } as VisualizerTuningBundle
+    setUserFoliaTunings(bundle)
+    writeFoliaTunings(bundle)
+  }
+  const resetFoliaTuning = () => {
+    const bundle: VisualizerTuningBundle = { ...userFoliaTunings }
+    delete bundle[foliaStyle as keyof VisualizerTuningBundle]
+    setUserFoliaTunings(bundle)
+    writeFoliaTunings(bundle)
+  }
   // 动画窗口：过渡动画（卡片/流光/交叉淡化）只在 currentTime 到达 transitionStartTime
   // （=动画起点，最多提前 10s）后才开始。AI 长混音的音频过渡远早于动画点开始，
   // 若不加门控，视觉会跟着 60s 混音全程走。transitionStartTime 为 null（普通交叉淡化/
@@ -9975,9 +10182,11 @@ function App() {
                         transition={{ type: 'spring', damping: 25, stiffness: 200 }}
                         className="fixed top-0 left-0 right-0 z-40"
                         onClick={(event) => {
-                          if (!showLyricModeCustomize) return
+                          if (!showLyricModeCustomize && !showFoliaTuning) return
+                          // 两个弹层都带 data-lyric-mode-customize：点在弹层内部不关闭
                           if ((event.target as HTMLElement).closest('[data-lyric-mode-customize]')) return
                           setShowLyricModeCustomize(false)
+                          setShowFoliaTuning(false)
                         }}
                       >
                         <div className={`relative h-[22vh] backdrop-blur-xl overflow-hidden ${playerTheme === 'dark' ? 'bg-black/40' : 'bg-white/55'}`}>
@@ -9988,88 +10197,115 @@ function App() {
                                   <h2 className={`text-xl font-bold mb-4 text-center ${playerTheme === 'dark' ? 'text-white' : 'text-black/90'}`}>歌词显示</h2>
                                   <div
                                     className="grid w-full gap-3"
-                                    style={{ gridTemplateColumns: `repeat(${effectiveVisibleLyricModes.length}, minmax(0, 1fr))` }}
+                                    style={{ gridTemplateColumns: `repeat(${orderedLyricModeTiles.length}, minmax(0, 1fr))` }}
                                   >
-                                    {([
-                                      ['modern', '现代', 'linear-gradient(135deg, #2d1b3d 0%, #1a0f2e 50%, #0a0a0a 100%)'],
-                                      ['immersive', '沉浸式', 'linear-gradient(135deg, #1e3a5f 0%, #0f1c2e 50%, #0a0a0a 100%)'],
-                                      ['wallpaper', '墙纸', `repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 18px), linear-gradient(135deg, ${playbackCoverColor} 0%, #18171c 58%, #09090b 100%)`],
-                                      ['glorious', '辉煌', `linear-gradient(118deg, #080713 0%, ${playbackCoverColor} 50%, #090911 78%, #101522 100%)`],
-                                      ['multidimensional', '多维', `linear-gradient(145deg, #05060c 0%, ${playbackCoverColor} 48%, #0b1b2a 72%, #030409 100%)`],
-                                      ['modeng', '摩登', `linear-gradient(120deg, #3a3a3c 0%, #232325 45%, #101012 100%)`],
-                                      ['video', '看歌', `linear-gradient(120deg, #f8a5c2 0%, #fb7299 45%, #2d1b3d 100%)`],
-                                      ['pv', 'PV', `linear-gradient(135deg, #6d28d9 0%, #3b2f8f 42%, #0f172a 100%)`],
-                                    ] as const)
-                                      .filter(([mode]) => effectiveVisibleLyricModes.includes(mode))
-                                      .map(([mode, label, background]) => (
-                                        <motion.button
-                                          type="button"
-                                          key={mode}
-                                          whileHover={{ scale: 1.05 }}
-                                          whileTap={{ scale: 0.95 }}
-                                          onClick={() => handleLyricDisplayModeChange(mode)}
-                                          className="relative h-24 min-w-0 rounded-xl overflow-hidden cursor-pointer border-2 transition-all"
-                                          style={{
-                                            background,
-                                            borderColor: lyricDisplayMode === mode ? '#fff' : 'rgba(255,255,255,0.2)',
-                                            boxShadow: lyricDisplayMode === mode ? `0 0 18px ${(playbackCoverColor)}35` : 'none',
-                                          }}
-                                        >
-                                          <div className="absolute inset-0 flex items-center justify-center">
-                                            <span className="text-white font-medium text-base">{label}</span>
+                                    {orderedLyricModeTiles.map(({ mode, label, background }) => (
+                                      <motion.button
+                                        type="button"
+                                        key={mode}
+                                        whileHover={{ scale: 1.05 }}
+                                        whileTap={{ scale: 0.95 }}
+                                        onClick={() => handleLyricDisplayModeChange(mode)}
+                                        className="relative h-24 min-w-0 rounded-xl overflow-hidden cursor-pointer border-2 transition-all"
+                                        style={{
+                                          background,
+                                          borderColor: lyricDisplayMode === mode ? '#fff' : 'rgba(255,255,255,0.2)',
+                                          boxShadow: lyricDisplayMode === mode ? `0 0 18px ${(playbackCoverColor)}35` : 'none',
+                                        }}
+                                      >
+                                        <div className="absolute inset-0 flex items-center justify-center">
+                                          <span className="text-white font-medium text-base">{label}</span>
+                                        </div>
+                                        {lyricDisplayMode === mode && (
+                                          <div className="absolute top-2 right-2 bg-white/20 backdrop-blur-sm px-2 py-1 rounded-full text-xs text-white">
+                                            当前
                                           </div>
-                                          {lyricDisplayMode === mode && (
-                                            <div className="absolute top-2 right-2 bg-white/20 backdrop-blur-sm px-2 py-1 rounded-full text-xs text-white">
-                                              当前
-                                            </div>
-                                          )}
-                                        </motion.button>
-                                      ))}
+                                        )}
+                                      </motion.button>
+                                    ))}
                                   </div>
                                 </>
                               ) : (
                                 <>
-                                  <h2 className={`text-xl font-bold mb-1 text-center ${playerTheme === 'dark' ? 'text-white' : 'text-black/90'}`}>Folia 歌词</h2>
-                                  <p className={`mb-3 text-center text-[11px] ${playerTheme === 'dark' ? 'text-white/45' : 'text-black/40'}`}>
-                                    12 种歌词视觉 · 设计来源 Project Folia
-                                  </p>
-                                  <div
-                                    className="grid w-full gap-2"
-                                    style={{ gridTemplateColumns: `repeat(${FOLIA_STYLES.length}, minmax(0, 1fr))` }}
+                                  {/* 设计来源那行移到标题右侧同一基线：原来它单独占一行，
+                                      14 个样式挤在一行横格里 —— 现在横向滚动，一屏 8 个 + 第 9 个露出一点 */}
+                                  <div className="mb-3 flex w-full items-baseline justify-center gap-2">
+                                    <h2 className={`text-xl font-bold ${playerTheme === 'dark' ? 'text-white' : 'text-black/90'}`}>Folia 歌词</h2>
+                                    <span className={`text-[11px] ${playerTheme === 'dark' ? 'text-white/45' : 'text-black/40'}`}>
+                                      {visibleFoliaStyleEntries.length} 种歌词视觉 · 设计来源 Project Folia
+                                    </span>
+                                  </div>
+                                  <HorizontalShelf
+                                    ariaLabel="Folia 歌词样式"
+                                    className="w-full"
+                                    viewportClassName="gap-2"
+                                    // 一屏 8 个 + 第 9 个露出约 30px（8.3 分法），提示右侧还有内容
+                                    itemClassName="w-[calc((100%-3.65rem)/8.3)] shrink-0"
                                   >
-                                    {FOLIA_STYLES.map((style) => {
+                                    {visibleFoliaStyleEntries.map((style) => {
                                       const active = lyricDisplayMode === 'folia' && foliaStyle === style.id
+                                      // 绘光需要 WebGL：不支持时灰掉并标明原因，而不是点了之后抛错
+                                      const unsupported = style.id === 'lumiere' && !lumiereSupported
                                       return (
                                         <motion.button
                                           type="button"
                                           key={style.id}
-                                          whileHover={{ scale: 1.06 }}
-                                          whileTap={{ scale: 0.94 }}
+                                          disabled={unsupported}
+                                          title={unsupported ? '绘光需要 WebGL，当前环境不可用' : undefined}
+                                          whileHover={unsupported ? undefined : { scale: 1.06 }}
+                                          whileTap={unsupported ? undefined : { scale: 0.94 }}
                                           onClick={() => handleFoliaStyleSelect(style.id)}
-                                          className="relative h-20 min-w-0 rounded-xl overflow-hidden cursor-pointer border-2 transition-all"
+                                          className={`relative h-20 w-full rounded-xl overflow-hidden border-2 transition-all ${unsupported ? 'cursor-not-allowed opacity-40 grayscale' : 'cursor-pointer'}`}
                                           style={{
                                             background: style.gradient,
                                             borderColor: active ? '#fff' : 'rgba(255,255,255,0.2)',
                                             boxShadow: active ? `0 0 16px ${(playbackCoverColor)}40` : 'none',
                                           }}
                                         >
-                                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
-                                            <span className="text-white font-medium text-sm leading-none">{style.zhName}</span>
-                                            <span className="text-white/50 text-[9px] leading-none">{style.id}</span>
+                                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 px-1">
+                                            <span className="text-white font-medium text-sm leading-none truncate max-w-full">{style.zhName}</span>
+                                            <span className="text-white/50 text-[9px] leading-none truncate max-w-full">{style.id}</span>
                                           </div>
                                           {active && (
                                             <div className="absolute top-1.5 right-1.5 bg-white/20 backdrop-blur-sm px-1.5 py-0.5 rounded-full text-[10px] text-white">
                                               当前
                                             </div>
                                           )}
+                                          {unsupported && (
+                                            <div className="absolute bottom-1 left-0 right-0 text-center text-[9px] text-white/80">需要 WebGL</div>
+                                          )}
                                         </motion.button>
                                       )
                                     })}
-                                  </div>
+                                  </HorizontalShelf>
                                 </>
                               )}
                             </div>
                           </div>
+                          {/* Folia 参数面板：只在当前样式声明了设置面板时出现（注册表驱动） */}
+                          {foliaStyleHasPanel && (
+                            <button
+                              type="button"
+                              aria-label="Folia 歌词参数"
+                              title={`${FOLIA_STYLES.find(style => style.id === foliaStyle)?.zhName ?? foliaStyle} 参数`}
+                              data-lyric-mode-customize
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                setShowLyricModeCustomize(false)
+                                setShowFoliaTuning((value) => !value)
+                              }}
+                              className={`absolute bottom-4 right-44 z-30 flex h-9 w-9 items-center justify-center rounded-full border transition-[background-color,color] ${
+                                showFoliaTuning
+                                  ? 'border-transparent text-white'
+                                  : playerTheme === 'dark'
+                                    ? 'border-white/15 bg-white/[0.08] text-white/85 hover:bg-white/[0.16] hover:text-white'
+                                    : 'border-black/10 bg-black/[0.06] text-black/70 hover:bg-black/[0.12] hover:text-black'
+                              }`}
+                              style={showFoliaTuning ? { backgroundColor: playbackCoverColor, boxShadow: `0 0 12px ${playbackCoverColor}55` } : undefined}
+                            >
+                              <SlidersHorizontal className="h-[18px] w-[18px]" />
+                            </button>
+                          )}
                           {/* Folia 歌词样式页切换：自定义按钮左侧，一键切到第二页（12 种 Folia 样式） */}
                           <button
                             type="button"
@@ -10077,6 +10313,7 @@ function App() {
                             title="Folia 歌词样式（设计来源 Project Folia）"
                             onClick={(event) => {
                               event.stopPropagation()
+                              setShowFoliaTuning(false)
                               setLyricPanelPage((page) => (page === 'waveforge' ? 'folia' : 'waveforge'))
                             }}
                             className={`absolute bottom-4 z-30 flex h-9 w-9 items-center justify-center rounded-full border transition-[background-color,color] ${
@@ -10156,40 +10393,106 @@ function App() {
                               className={`absolute right-8 top-[calc(22vh+24px)] z-40 w-64 rounded-2xl border p-2 backdrop-blur-2xl ${playerTheme === 'dark' ? 'border-white/15 bg-[#0c0e1a]/[0.97] shadow-[0_18px_50px_rgba(0,0,0,0.55)]' : 'border-black/10 bg-white/[0.97] shadow-[0_18px_50px_rgba(0,0,0,0.15)]'}`}
                               style={{ willChange: 'transform, opacity' }}
                             >
-                              <p className={`px-2 pb-1.5 pt-1 text-[11px] font-semibold tracking-[0.08em] ${playerTheme === 'dark' ? 'text-white/55' : 'text-black/50'}`}>显示 / 隐藏歌词模式</p>
-                              {ALL_LYRIC_MODES.map((mode) => {
-                                const isVisible = effectiveVisibleLyricModes.includes(mode)
-                                const isCurrent = lyricDisplayMode === mode
-                                // 现代模式始终显示；当前模式与最后一个可见模式不可隐藏
-                                const locked = isCurrent || mode === 'modern' || (isVisible && effectiveVisibleLyricModes.length <= 1)
-                                return (
-                                  <button
-                                    key={mode}
-                                    type="button"
-                                    disabled={locked}
-                                    onClick={() => toggleLyricModeVisibility(mode)}
-                                    className={`flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${playerTheme === 'dark' ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.05]'}`}
-                                  >
-                                    <span className="flex flex-col leading-tight">
-                                      <span className={`text-sm font-medium ${playerTheme === 'dark' ? 'text-white/95' : 'text-black/85'}`}>{LYRIC_MODE_NAMES[mode]}</span>
-                                      <span className={`mt-0.5 text-[10px] ${playerTheme === 'dark' ? 'text-white/45' : 'text-black/40'}`}>
-                                        {mode === 'modern' ? '始终显示' : (isCurrent ? '当前模式' : (isVisible ? '显示中' : '已隐藏'))}
-                                      </span>
-                                    </span>
-                                    <span
-                                      aria-hidden="true"
-                                      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200 ${isVisible ? 'bg-emerald-400/80' : playerTheme === 'dark' ? 'bg-white/15' : 'bg-black/15'}`}
-                                    >
-                                      <span
-                                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-[left] duration-200 ${isVisible ? 'left-[18px]' : 'left-0.5'}`}
-                                      />
-                                    </span>
-                                  </button>
-                                )
-                              })}
-                              <p className={`px-2 pb-1 pt-1.5 text-[10px] leading-snug ${playerTheme === 'dark' ? 'text-white/35' : 'text-black/35'}`}>
-                                现代模式始终显示；当前模式与最后一个可见模式不可隐藏
+                              <p className={`px-2 pb-1.5 pt-1 text-[11px] font-semibold tracking-[0.08em] ${playerTheme === 'dark' ? 'text-white/55' : 'text-black/50'}`}>
+                                {lyricPanelPage === 'folia' ? '显示 / 隐藏歌词样式' : '显示 / 隐藏歌词模式'}
                               </p>
+                              {/* 列表高度封顶并可滚动：Folia 侧最多 14 项，不封顶会顶出屏幕 */}
+                              <div ref={menuListRef} className="max-h-[52vh] overflow-y-auto">
+                                {lyricModeMenuEntries.map((entry) => (
+                                  <div
+                                    key={entry.id}
+                                    data-menu-row={entry.id}
+                                    className={`flex items-center gap-0.5 rounded-xl transition-colors ${menuDraggingId === entry.id ? (playerTheme === 'dark' ? 'bg-white/[0.12]' : 'bg-black/[0.08]') : ''}`}
+                                  >
+                                    {/* 拖拽把手 + 上/下移：拖拽靠指针事件，上下移保证键盘/触屏也能排序 */}
+                                    <button
+                                      type="button"
+                                      aria-label={`拖动排序：${entry.label}`}
+                                      title="拖动排序"
+                                      onPointerDown={(event) => handleMenuGripPointerDown(event, entry.id)}
+                                      onPointerMove={handleMenuGripPointerMove}
+                                      onPointerUp={endMenuGripDrag}
+                                      onPointerCancel={endMenuGripDrag}
+                                      className={`flex h-8 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md active:cursor-grabbing ${playerTheme === 'dark' ? 'text-white/30 hover:text-white/60' : 'text-black/30 hover:text-black/60'}`}
+                                    >
+                                      <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" />
+                                        <circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" />
+                                        <circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" />
+                                      </svg>
+                                    </button>
+                                    <span className="flex shrink-0 flex-col">
+                                      <button
+                                        type="button"
+                                        aria-label={`${entry.label} 上移`}
+                                        disabled={!entry.canMoveUp}
+                                        onClick={() => entry.onMove(entry.index - 1)}
+                                        className="flex h-4 w-4 items-center justify-center rounded text-[8px] leading-none disabled:opacity-20 enabled:hover:bg-white/10"
+                                      >
+                                        ▲
+                                      </button>
+                                      <button
+                                        type="button"
+                                        aria-label={`${entry.label} 下移`}
+                                        disabled={!entry.canMoveDown}
+                                        onClick={() => entry.onMove(entry.index + 1)}
+                                        className="flex h-4 w-4 items-center justify-center rounded text-[8px] leading-none disabled:opacity-20 enabled:hover:bg-white/10"
+                                      >
+                                        ▼
+                                      </button>
+                                    </span>
+                                    <button
+                                      type="button"
+                                      disabled={entry.locked}
+                                      onClick={entry.onToggle}
+                                      className={`flex min-w-0 flex-1 items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${playerTheme === 'dark' ? 'hover:bg-white/[0.07]' : 'hover:bg-black/[0.05]'}`}
+                                    >
+                                      <span className="flex min-w-0 flex-col leading-tight">
+                                        <span className={`truncate text-sm font-medium ${playerTheme === 'dark' ? 'text-white/95' : 'text-black/85'}`}>{entry.label}</span>
+                                        <span className={`mt-0.5 truncate text-[10px] ${playerTheme === 'dark' ? 'text-white/45' : 'text-black/40'}`}>
+                                          {entry.sublabel ? `${entry.sublabel} · ${entry.status}` : entry.status}
+                                        </span>
+                                      </span>
+                                      <span
+                                        aria-hidden="true"
+                                        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200 ${entry.visible ? 'bg-emerald-400/80' : playerTheme === 'dark' ? 'bg-white/15' : 'bg-black/15'}`}
+                                      >
+                                        <span
+                                          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-[left] duration-200 ${entry.visible ? 'left-[18px]' : 'left-0.5'}`}
+                                        />
+                                      </span>
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                              <p className={`px-2 pb-1 pt-1.5 text-[10px] leading-snug ${playerTheme === 'dark' ? 'text-white/35' : 'text-black/35'}`}>
+                                {lyricPanelPage === 'folia'
+                                  ? '拖动左侧把手可排序；当前样式与最后 ' + MIN_VISIBLE_FOLIA_STYLES + ' 个可见样式不可隐藏'
+                                  : '现代模式始终显示；当前模式与最后一个可见模式不可隐藏'}
+                              </p>
+                            </motion.div>
+                          )}
+                          {/* Folia 参数面板：与模式菜单互斥（同时开会在同一区域重叠） */}
+                          {showFoliaTuning && foliaStyleHasPanel && (
+                            <motion.div
+                              key="folia-tuning-popover"
+                              initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                              transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+                              data-lyric-mode-customize
+                              className={`absolute right-8 top-[calc(22vh+24px)] z-40 w-[21rem] max-h-[62vh] overflow-y-auto rounded-2xl border p-2 backdrop-blur-2xl ${playerTheme === 'dark' ? 'border-white/15 bg-[#0c0e1a]/[0.97] shadow-[0_18px_50px_rgba(0,0,0,0.55)]' : 'border-black/10 bg-white/[0.97] shadow-[0_18px_50px_rgba(0,0,0,0.15)]'}`}
+                              style={{ willChange: 'transform, opacity' }}
+                            >
+                              <FoliaTuningPanel
+                                mode={foliaStyle}
+                                tuning={resolvePanelTuning(userFoliaTunings, foliaStyle)}
+                                onCommit={commitFoliaTuning}
+                                onReset={resetFoliaTuning}
+                                hasOverride={hasFoliaTuningOverride(userFoliaTunings, foliaStyle)}
+                                playerTheme={playerTheme}
+                                accentColor={playbackCoverColor}
+                              />
                             </motion.div>
                           )}
                         </AnimatePresence>
@@ -10458,6 +10761,7 @@ function App() {
                     foliaStyle={foliaStyle}
                     foliaBackgroundEnabled={foliaBackgroundEnabled}
                     mvBackgroundActive={mvBackgroundActive}
+                    userTunings={userFoliaTunings}
                     active
                   />
                 </motion.div>

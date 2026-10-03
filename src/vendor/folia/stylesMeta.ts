@@ -24,4 +24,7 @@ export const FOLIA_STYLES: FoliaStyleMeta[] = [
   { id: 'diorama', zhName: '镜台', gradient: 'linear-gradient(145deg, #05060c 0%, #3f6fff 45%, #0b1b2a 75%, #030409 100%)' },
   { id: 'sonnet', zhName: '商籁', gradient: 'linear-gradient(135deg, #3d0f18 0%, #b8434f 50%, #1b0508 100%)' },
   { id: 'tempera', zhName: '凝彩', gradient: 'linear-gradient(135deg, #12303a 0%, #cf7a4a 55%, #0c1a1f 100%)' },
+  // 上游 v0.7.11 新增（order 25 / 130）。默认排在尾部，用户可在「显示 / 隐藏歌词模式」里拖动调序。
+  { id: 'lumiere', zhName: '绘光', gradient: 'linear-gradient(135deg, #14100a 0%, #c8a05a 45%, #6b4e1f 75%, #0a0806 100%)' },
+  { id: 'still', zhName: '静止', gradient: 'linear-gradient(135deg, #1a1c22 0%, #4a4f5a 55%, #101216 100%)' },
 ]
