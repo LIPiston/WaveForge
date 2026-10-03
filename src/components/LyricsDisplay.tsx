@@ -123,11 +123,13 @@ const INTERLUDE_MIN_GAP_SECONDS = 5
 // 规则与摩登模式（ModengPlayerPage）同一套：
 //   对唱（≥2 演唱者）：按 agent 出现顺序，奇数序号的演唱者靠右，其余靠左；
 //   普通歌：两句间隔 ≥2s 视为分段，奇数段靠右、偶数段靠左 → 形成"左→右→左"。
+// 默认开启（与真机行为一致：真机没有开关、对唱/段落交替天然生效），用户可在
+// 快捷设置 → 功能 → 「左右交替歌词」显式关闭。
 const LYRICS_SIDE_ALIGN_KEY = 'waveforge_lyrics_side_align'
 const LYRICS_SIDE_ALIGN_EVENT = 'waveforge:lyrics-side-align'
 const LYRICS_SIDE_ALIGN_PARAGRAPH_GAP_S = 2.0
 const readLyricsSideAlign = (): boolean => {
-  try { return localStorage.getItem(LYRICS_SIDE_ALIGN_KEY) === 'true' } catch { return false }
+  try { return localStorage.getItem(LYRICS_SIDE_ALIGN_KEY) !== 'false' } catch { return true }
 }
 
 const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, value))

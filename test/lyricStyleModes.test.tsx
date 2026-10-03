@@ -173,7 +173,9 @@ describe('Apple 对唱左右分栏', () => {
     expect(firstRow!.style.textAlign).toBe('')
   })
 
-  it('没有对唱行时不产生左右分栏内缩', () => {
+  it('显式关闭"左右交替歌词"后，没有对唱标记时不产生左右分栏内缩', () => {
+    // 左右交替默认开启（真机行为）；这里显式关闭，验证关闭态回到"仅 duet 标记分栏"的旧契约
+    localStorage.setItem('waveforge_lyrics_side_align', 'false')
     const plain = duetLyrics.map(({ isDuet: _drop, ...rest }) => rest)
     const { container } = render(
       <LyricsDisplay
@@ -189,6 +191,24 @@ describe('Apple 对唱左右分栏', () => {
       expect((row as HTMLElement).style.paddingRight).toBe('')
       expect((row as HTMLElement).style.paddingLeft).toBe('')
     }
+  })
+
+  it('默认开启"左右交替歌词"：按演唱者（agent）奇偶交替对齐，无需 duet 标记', () => {
+    const plain = duetLyrics.map(({ isDuet: _drop, ...rest }) => rest)
+    const { container } = render(
+      <LyricsDisplay
+        currentTime={2.6}
+        isPlaying={false}
+        accentColor="#ffffff"
+        lyrics={plain}
+        displayMode="scroll"
+        lyricStyleMode="modern"
+      />,
+    )
+    // v1（块内第 0 位演唱者）靠左让出右侧；v2（第 1 位）靠右让出左侧
+    expect(rowAt(container, 0)!.style.paddingRight).toBe('15%')
+    expect(rowAt(container, 1)!.style.paddingLeft).toBe('15%')
+    expect(rowAt(container, 1)!.style.textAlign).toBe('right')
   })
 
   it('沉浸式（居中）模式不做对唱分栏', () => {

@@ -11,6 +11,7 @@ import {
 import {
   AudioLines,
   Disc3,
+  Headphones,
   Languages,
   Layers,
   Palette,
@@ -354,15 +355,28 @@ export default memo(function QuickSettingsDialog({
   }
 
   // 现代模式"左右交替歌词"（独立 key waveforge_lyrics_side_align，柔和/摩登两种样式通用；
-  // LyricsDisplay 经 waveforge:lyrics-side-align 事件实时响应）
+  // LyricsDisplay 经 waveforge:lyrics-side-align 事件实时响应）。默认开启（真机默认行为），
+  // 仅用户显式存过 'false' 才视为关闭。
   const [lyricsSideAlign, setLyricsSideAlign] = useState<boolean>(() => {
-    try { return localStorage.getItem('waveforge_lyrics_side_align') === 'true' } catch { return false }
+    try { return localStorage.getItem('waveforge_lyrics_side_align') !== 'false' } catch { return true }
   })
   const handleLyricsSideAlignToggle = () => {
     const next = !lyricsSideAlign
     setLyricsSideAlign(next)
     try { localStorage.setItem('waveforge_lyrics_side_align', String(next)) } catch { /* noop */ }
     window.dispatchEvent(new CustomEvent('waveforge:lyrics-side-align', { detail: next }))
+  }
+
+  // 音质快捷切换（播放条音质按钮）显示开关：默认开启，关掉后播放条不显示该按钮。
+  // 独立 key + 事件同步（App 与 PlayerControls 分别监听）。
+  const [qualityQuickSwitch, setQualityQuickSwitch] = useState<boolean>(() => {
+    try { return localStorage.getItem('waveforge:quality-quick-switch') !== 'false' } catch { return true }
+  })
+  const handleQualityQuickSwitchToggle = () => {
+    const next = !qualityQuickSwitch
+    setQualityQuickSwitch(next)
+    try { localStorage.setItem('waveforge:quality-quick-switch', String(next)) } catch { /* noop */ }
+    window.dispatchEvent(new CustomEvent('waveforge:quality-quick-switch-changed', { detail: next }))
   }
 
   const [hideImmersiveSongInfo, setHideImmersiveSongInfo] = useState(() => {
@@ -1212,6 +1226,11 @@ export default memo(function QuickSettingsDialog({
                       (value) => handleBackgroundEffectChange(value as BackgroundEffect),
                       { columns: 4 },
                     )}
+
+                    {renderToggleRow('音质快捷切换', qualityQuickSwitch, handleQualityQuickSwitchToggle, {
+                      description: '播放条显示当前音质，点击可快速切换',
+                      icon: Headphones,
+                    })}
                   </>,
                   renderGhostChip('默认', () => {
                     handleThemeChange('dark')

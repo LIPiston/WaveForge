@@ -710,7 +710,12 @@ function SongDetailModal({ song, onClose, onPlayNow, onOpenPlaylist, onOpenAlbum
                 {extra?.mvId != null && (
                   <button
                     type="button"
-                    onClick={() => setShowMV(true)}
+                    onClick={() => {
+                      // MV 自带声音：打开播放器前先暂停主音频，避免与歌曲双重奏。
+                      // 事件由 App 侧监听并仅在真正播放中时暂停（显式暂停，非 toggle）。
+                      window.dispatchEvent(new Event('waveforge:pause-main-playback'))
+                      setShowMV(true)
+                    }}
                     className="w-full flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-white/10 text-left"
                     style={{ background: 'rgba(255,255,255,0.05)', border: `1px solid ${accentColor}55` }}
                   >

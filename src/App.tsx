@@ -7502,6 +7502,32 @@ function App() {
     return () => window.removeEventListener('waveforge:play-similar-song', handler)
   }, [])
 
+  // 歌曲详情内嵌 MV 播放前请求暂停主音频（防"歌唱+MV 双重奏"）。
+  // 显式暂停而非 toggle：仅当确实在播放时暂停（口径与遥控/媒体键的 pause 分支一致，
+  // WebView2 播放面以 bridge 状态为准）。
+  useEffect(() => {
+    const handler = () => {
+      const audio = audioPlayerRef.current.getAudioElement()
+      const currentlyPlaying = audioPlayerRef.current.isExternalPlaybackActive?.()
+        ? getBridgeState().playing
+        : isPlayingRef.current && !(audio?.paused ?? true)
+      if (currentlyPlaying) audioPlayerRef.current.togglePlay()
+    }
+    window.addEventListener('waveforge:pause-main-playback', handler)
+    return () => window.removeEventListener('waveforge:pause-main-playback', handler)
+  }, [])
+
+  // 音质快捷切换（播放条按钮）显示开关：默认开启，快捷设置 → 外观 可关；
+  // 独立 localStorage 键 + 事件同步（与其它快捷设置开关同模式）。
+  const [qualityQuickSwitch, setQualityQuickSwitch] = useState<boolean>(() => {
+    try { return localStorage.getItem('waveforge:quality-quick-switch') !== 'false' } catch { return true }
+  })
+  useEffect(() => {
+    const handler = (event: Event) => setQualityQuickSwitch(Boolean((event as CustomEvent<boolean>).detail))
+    window.addEventListener('waveforge:quality-quick-switch-changed', handler)
+    return () => window.removeEventListener('waveforge:quality-quick-switch-changed', handler)
+  }, [])
+
   // 共振挂起时，全局右键菜单多一项「推送至共振（一起听）」→ 这里把歌交给房间。
   // 房主当场决定：能加就设成下一曲，不能加就挂进预排队。
   useEffect(() => {
@@ -11147,6 +11173,8 @@ function App() {
               onPrevious={handlePrevious}
               onNext={handleNext}
               onPlaylistClick={() => setShowPlaylist(true)}
+              songPlatform={currentSong?.platform}
+              qualityQuickSwitchEnabled={qualityQuickSwitch}
               backgroundEffect={lyricDisplayMode === 'immersive' || lyricDisplayMode === 'glorious' || lyricDisplayMode === 'multidimensional' ? 'immersive' : backgroundEffect}
               playMode={playMode}
               onPlayModeChange={handlePlayModeChange}
