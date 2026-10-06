@@ -282,3 +282,22 @@ describe('mode integration wiring', () => {
     expect(app).toContain('}, [lyricDisplayMode, watchVideoActive])')
   })
 })
+
+describe('模式切换过渡动画：简易风格必须在暖目标下也播放', () => {
+  // 回归背景（用户实测 2026-10-06）：`handleTransitionStart` 曾把遮罩条件写成
+  // `(complexStyle || !warmTarget)` —— 选「简易」后，本次会话已挂载过的模式（暖目标）
+  // 完全不出遮罩，观感就是"简易动画没了，只剩复杂"。简易风格也应在暖目标下播自己的
+  // 动画（窗口压短：MODE_TRANSITION_SIMPLE_MIN_MS），只是不做复杂档的 chunk 预加载。
+  const app = source('App.tsx')
+
+  it('两个派发入口（模式卡片 / viewModeChanged 兜底）都按 warmTarget 出遮罩', () => {
+    expect(app).not.toContain('(complexStyle || !warmTarget)')
+    const quickAssignments = app.match(/quick: warmTarget/g) || []
+    expect(quickAssignments.length).toBe(2)
+  })
+
+  it('简易风格的暖目标窗口使用独立常量（1.3s），复杂快速档仍是 850ms', () => {
+    expect(app).toContain('const MODE_TRANSITION_SIMPLE_MIN_MS = 1300')
+    expect(app).toContain("modeTransitionStyleRef.current === 'simple' ? MODE_TRANSITION_SIMPLE_MIN_MS : MODE_TRANSITION_QUICK_MIN_MS")
+  })
+})

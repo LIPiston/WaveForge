@@ -122,6 +122,8 @@ const loadResonanceView = () => import('./features/resonance/ResonanceView')
 const MODE_TRANSITION_MIN_MS = 3000
 // 快速档（目标模式本次会话已挂载过、内容就绪）：只播一段压紧的丝滑过渡，不让用户白等
 const MODE_TRANSITION_QUICK_MIN_MS = 850
+// 简易风格（徽章动画）暖目标下的窗口：比复杂快速档稍长一点，让"极光+徽章"能被看清不闪一下
+const MODE_TRANSITION_SIMPLE_MIN_MS = 1300
 const MODE_TRANSITION_MAX_MS = 12000
 // 各模式懒加载 chunk 的统一入口：过渡动画一开始（点击模式卡片）就提前拉取，
 // 与来源面板的收起动画并行下载/编译，viewModeChanged 到达时 chunk 通常已在内存里——
@@ -3835,9 +3837,10 @@ function App() {
       const warmTarget = visitedModesRef.current.has(mode)
       // 模式切换过渡动画：若尚未为同一目标显示，则立即显示（点击即盖住，覆盖加载卡顿；
       // 已显示则保留原有 startedAt，不重置最短时长）。模式卡片路径已在 viewModeTransitionStart
-      // 里提前预加载 chunk + 盖上动画，这里通常只是兜底（遥控器/远程等直接派发 viewModeChanged 的入口）
-      if (!warmTarget && mode !== viewModeRef.current && modeTransitionRef.current?.to !== mode) {
-        setModeTransition({ to: mode, startedAt: performance.now(), ready: false, quick: false })
+      // 里提前预加载 chunk + 盖上动画，这里通常只是兜底（遥控器/远程等直接派发 viewModeChanged 的入口）。
+      // 暖目标同样出（快速窗口）——简易风格也靠这里补上动画，不再"只有复杂才有过渡"。
+      if (mode !== viewModeRef.current && modeTransitionRef.current?.to !== mode) {
+        setModeTransition({ to: mode, startedAt: performance.now(), ready: false, quick: warmTarget })
       }
       const loadTarget = MODE_CHUNK_LOADERS[mode]
 
@@ -3887,13 +3890,13 @@ function App() {
       //   简易转场维持旧机制（viewModeChanged 时才加载）。
       if (complexStyle) void MODE_CHUNK_LOADERS[mode]().catch(() => undefined)
       // 复杂转场：冷目标 → 完整档动画；暖目标（内容已就绪）→ 压紧的快速档，丝滑但不白等。
-      // 简易转场：维持旧行为，只有冷目标才盖加载遮罩
+      // 简易转场：同样每次都播（暖目标用短窗口）——此前暖目标完全不出遮罩，用户实测
+      // 「选了简易就再也看不到简易动画，只剩复杂」（2026-10-06）。
       if (
-        (complexStyle || !warmTarget)
-        && mode !== viewModeRef.current
+        mode !== viewModeRef.current
         && modeTransitionRef.current?.to !== mode
       ) {
-        setModeTransition({ to: mode, startedAt: performance.now(), ready: false, quick: complexStyle && warmTarget })
+        setModeTransition({ to: mode, startedAt: performance.now(), ready: false, quick: warmTarget })
       }
     }
     window.addEventListener('viewModeTransitionStart', handleTransitionStart as EventListener)
@@ -3915,8 +3918,11 @@ function App() {
         return
       }
       const elapsed = performance.now() - tr.startedAt
-      // 快速档最短时长压到 ~0.85s：动画主线播完即收，既有过渡感又不拖节奏
-      const minMs = tr.quick ? MODE_TRANSITION_QUICK_MIN_MS : MODE_TRANSITION_MIN_MS
+      // 快速档最短时长压到 ~0.85s：动画主线播完即收，既有过渡感又不拖节奏；
+      // 简易风格的暖目标窗口略长（1.3s），徽章动画看得清但依旧干脆。
+      const minMs = tr.quick
+        ? (modeTransitionStyleRef.current === 'simple' ? MODE_TRANSITION_SIMPLE_MIN_MS : MODE_TRANSITION_QUICK_MIN_MS)
+        : MODE_TRANSITION_MIN_MS
       if ((tr.ready && elapsed >= minMs) || elapsed >= MODE_TRANSITION_MAX_MS) {
         window.clearInterval(timer)
         setModeTransition(null)
