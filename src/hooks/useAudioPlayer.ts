@@ -393,6 +393,8 @@ export function useAudioPlayer(
   const onAudioGraphReadyRef = useRef(onAudioGraphReady)
   const volumeRef = useRef(DEFAULT_VOLUME)
   const transitionStateRef = useRef<TransitionState>('idle')
+  /** 时钟停滞看门（见 emit）：{at: 上次采样时刻, value: 上次采样时间} */
+  const clockStallWatchRef = useRef({ at: 0, value: -1 })
   /** 看歌挂起（App 进出看歌时置位）：挂起期间引擎不准备/不启动任何自动过渡，
    *  保证看歌期间歌曲不会因 automix 自动推进（切回仍是原歌），退出看歌时解除 */
   const watchHoldRef = useRef(false)
@@ -406,6 +408,13 @@ export function useAudioPlayer(
   const fallbackAnimationRef = useRef<number | null>(null)
   const transitionProgressAnimationRef = useRef<number | null>(null)  // 过渡进度动画帧
   const transitionStartTimeRef = useRef<number | null>(null)  // 过渡开始时间
+  /** 卡死看门狗截止时间：running-transition 超过「过渡时长 + 余量」仍未提交时强制收尾。
+   *  背景：提交由多条路径触发（缓冲 ended / 兜底 timer / 视觉提交批次），任何一条被
+   *  竞态守卫拦下都不会重试——用户反馈的「过渡后歌词/时间冻结、音频却还在放」即由此类
+   *  悬置状态造成（渲染路径尤其明显）。看门狗按期兜底，把 UI 与被听见的那条轨道重新对齐。 */
+  const transitionStuckDeadlineRef = useRef<number | null>(null)
+  /** 当前过渡策略（看门狗强制收尾时用来构造 transitionCommit）。 */
+  const transitionStrategyRef = useRef<TransitionStrategy>('gapless')
   // 过渡进度 emit 节流：rAF 仍每帧驱动，但仅当距上次 emit ≥30ms 才 emit（约 30fps），
   // 降低 App 整树重渲染频率；progress 到达 1 时强制 emit 最终值确保状态复位
   const transitionProgressEmitTimeRef = useRef(0)
@@ -421,8 +430,15 @@ export function useAudioPlayer(
   const autoMixPreparationAttemptsRef = useRef<Map<string, { attempts: number; lastAt: number }>>(new Map())
   const autoMixPrepareRetryTimerRef = useRef<number | null>(null)
   const prepareAutoMixRef = useRef<() => void>(() => {})
+  /** 无缝衔接智能短交叉的准备入口（ref 化，供 preload effect 稳定引用）。 */
+  const prepareGaplessCrossfadeRef = useRef<() => void>(() => {})
   const preparationRevisionRef = useRef(0)
   const transitionExecutionRevisionRef = useRef(0)
+  /** 无缝衔接的「智能短交叉」计划（独立于 AutoMix 的规划）。由 prepareGaplessCrossfade 用
+   *  与 AutoMix 同一套分析/规划机制算出的 1.5–4s 窗口：交叉时长、交叉位置（节拍对齐、
+   *  尾部静音裁剪）与前后取量都是分析运算的结果，不是固定值。id 带 `gapless` 前缀，
+   *  交叉执行时据此豁免「按交叉设置收拢窗口」的降级。 */
+  const gaplessPlanRef = useRef<TransitionPlan | null>(null)
   const visualSwitchTimerRef = useRef<number | null>(null)
   const preloadReadyCleanupRef = useRef<(() => void) | null>(null)
   const currentLoadWaitCancelRef = useRef<(() => void) | null>(null)
@@ -503,6 +519,27 @@ export function useAudioPlayer(
         ...(state.duration !== undefined ? { duration: state.duration } : {}),
         ...(state.isPlaying !== undefined ? { isPlaying: state.isPlaying } : {}),
       })
+    }
+    // 时钟停滞诊断：播放中但 emit 的时间连续 5 秒不前进 → 落盘一次（含过渡状态与活动 deck）。
+    // 用于定位「过渡后音频在放、UI/歌词时钟冻结」类问题——先证明哪个时钟停了。
+    if (state.currentTime !== undefined) {
+      const watch = clockStallWatchRef.current
+      const nowMs = performance.now()
+      if (watch.value < 0) {
+        watch.value = state.currentTime
+        watch.at = nowMs
+      } else if (nowMs - watch.at >= 5000) {
+        const playingNow = state.isPlaying ?? playbackTimeStore.getSnapshot().isPlaying
+        if (playingNow && state.currentTime === watch.value) {
+          const activeDeck = activePrimaryRef.current ? primaryRef.current : secondaryRef.current
+          logAutomixBackend(
+            'clock:stall',
+            `t=${state.currentTime.toFixed(2)} state=${transitionStateRef.current} paused=${activeDeck?.paused} src=…${String(activeDeck?.currentSrc || '').slice(-36)}`,
+          )
+        }
+        watch.at = nowMs
+        watch.value = state.currentTime
+      }
     }
     // 逐帧过渡进度不进 React 状态（App 层那 10fps 节流正是"过渡看起来卡"的来源），
     // 改由视觉轨道 store 直接广播给订阅它的叶子组件。
@@ -1017,6 +1054,8 @@ export function useAudioPlayer(
     preparationRevisionRef.current += 1
     transitionExecutionRevisionRef.current += 1
     transitionStartingRef.current = false
+    transitionStuckDeadlineRef.current = null
+    gaplessPlanRef.current = null
     preparationAbortRef.current?.abort()
     preparationAbortRef.current = null
     autoMixPreparationKeyRef.current = null
@@ -1102,6 +1141,12 @@ export function useAudioPlayer(
     
     if (executionRevision !== transitionExecutionRevisionRef.current || transitionStateRef.current !== 'running-transition') {
       debugLog('⚠️ [Transition] 执行版本不匹配或状态已变更，跳过提交')
+      // 落盘诊断：悬置状态（想提交但被守卫拦下）是「过渡后 UI 冻结」类问题的关键线索，
+      // 记录被拦原因与版本号；若状态仍停在 running-transition，看门狗随后会自动收尾。
+      logAutomixBackend(
+        'transition:commit-guard',
+        `skipped strategy=${strategy} revision=${executionRevision} currentRevision=${transitionExecutionRevisionRef.current} state=${transitionStateRef.current}`,
+      )
       return
     }
     
@@ -1133,6 +1178,8 @@ export function useAudioPlayer(
       transitionProgressAnimationRef.current = null
     }
     transitionStartTimeRef.current = null
+    transitionStuckDeadlineRef.current = null
+    gaplessPlanRef.current = null
     
     // 在 gapless 模式下，source 已经在 startTransition 中被停止了
     // 避免再次调用 load()，这会导致音频上下文短暂中断造成卡顿
@@ -1204,6 +1251,78 @@ export function useAudioPlayer(
     }
   }, [getActiveAudio, getActiveGain, getStandbyAudio, getStandbyGain, resetTrackStemMixer, setDeckGain, setTransitionState])
 
+  /**
+   * 卡死看门狗收尾：过渡悬置超过截止时间仍在 running-transition 时调用。
+   * 把 UI 与「实际在响的那条 deck」重新对齐——交接已发生时（待机 deck 在响）
+   * 把它提升为正式当前曲并补发 transitionCommit；否则仅退出过渡态、恢复时间喂食。
+   */
+  const forceEndStuckTransition = useCallback((reason: string) => {
+    if (transitionStateRef.current !== 'running-transition') return
+    logAutomixBackend('transition:watchdog', `${reason} · strategy=${transitionStrategyRef.current} · 悬置超过截止时间，强制收尾对齐 UI`)
+    if (transitionProgressAnimationRef.current !== null) {
+      cancelAnimationFrame(transitionProgressAnimationRef.current)
+      transitionProgressAnimationRef.current = null
+    }
+    if (transitionTimerRef.current !== null) { window.clearTimeout(transitionTimerRef.current); transitionTimerRef.current = null }
+    if (transitionDeckStartTimerRef.current !== null) { window.clearTimeout(transitionDeckStartTimerRef.current); transitionDeckStartTimerRef.current = null }
+    transitionRendererRef.current?.stopPlayback()
+    transitionBufferActiveRef.current = false
+    transitionStartTimeRef.current = null
+    transitionStuckDeadlineRef.current = null
+    gaplessPlanRef.current = null
+    try { transitionVisualStore.end(false) } catch { /* 视觉轨道收尾失败不阻塞恢复 */ }
+
+    const primary = primaryRef.current
+    const secondary = secondaryRef.current
+    const audible = primary && !primary.paused && (primary.currentSrc || primary.src)
+      ? primary
+      : (secondary && !secondary.paused && (secondary.currentSrc || secondary.src) ? secondary : null)
+    const previousMetadata = currentMetadataRef.current
+    const pendingNext = nextMetadataRef.current
+    const handoverHappened = Boolean(audible && pendingNext && audible === getStandbyAudio())
+    if (handoverHappened && audible && pendingNext) {
+      // 交接已发生（待机 deck 正在响）但提交被拦：提升为正式当前曲，UI 与声音对齐
+      setDeckGain(getActiveGain(), getActiveAudio(), 0)
+      setDeckGain(getStandbyGain(), audible, 1)
+      activePrimaryRef.current = !activePrimaryRef.current
+      currentMetadataRef.current = pendingNext
+      nextMetadataRef.current = null
+      setAudioElement(audible)
+    }
+    // 无论交接是否发生都补发 transitionCommit：App 侧据此清理过渡视觉轨道/进度/暗态，
+    // 否则 overlayProgress 残留会让歌词继续停在过渡的暗态时钟上（这正是「冻结」的外观）。
+    const commitTarget = handoverHappened && pendingNext ? pendingNext : previousMetadata
+    const commit: TransitionCommit = {
+      sourceTrackKey: previousMetadata?.trackKey || '',
+      targetTrackKey: commitTarget?.trackKey || previousMetadata?.trackKey || '',
+      targetIndex: commitTarget?.index,
+      targetTime: audible?.currentTime || 0,
+      strategy: transitionStrategyRef.current,
+      isVisualSwitch: false,
+    }
+    setTransitionState('playing', {
+      isPlaying: Boolean(audible && !audible.paused),
+      currentTime: audible?.currentTime || 0,
+      duration: finiteDuration(audible?.duration) || previousMetadata?.duration || 0,
+      ended: false,
+      transitioning: false,
+      transitionStartTime: null,
+      transitionCommit: commit,
+    })
+  }, [finiteDuration, getActiveAudio, getActiveGain, getStandbyAudio, getStandbyGain, setAudioElement, setDeckGain, setTransitionState, transitionVisualStore])
+
+  // 看门狗轮询：running-transition 悬置超过截止时间（过渡时长 + 余量）即强制收尾。
+  // 轮询 2s 一次、只在过渡态下做一次时间比较，开销可忽略。
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (transitionStateRef.current !== 'running-transition') return
+      const deadline = transitionStuckDeadlineRef.current
+      if (deadline === null || performance.now() < deadline) return
+      forceEndStuckTransition('stuck running-transition')
+    }, 2000)
+    return () => window.clearInterval(interval)
+  }, [forceEndStuckTransition])
+
   const startTransition = useCallback(async (strategy: TransitionStrategy, plan?: TransitionPlan) => {
     debugLog('🚀 [Transition] startTransition 被调用')
     debugLog('   策略:', strategy)
@@ -1242,7 +1361,9 @@ export function useAudioPlayer(
       4) // 默认 4 秒作为 fallback
     
     // 视觉过渡时长（gapless 模式下仍需要视觉动画）
-    let visualDuration = strategy === 'gapless' ? 0.4 : audioDuration
+    // 0.4s 快到肉眼看不见（用户反馈「无缝过渡没有转场动画」）；0.8s 让进度条流光/渐变
+    // 能被感知，同时 UI 切到下一首的延迟仍 <1s，不破坏「无缝」的体感。
+    let visualDuration = strategy === 'gapless' ? 0.8 : audioDuration
     
     let targetTime = Math.max(0, Math.min(plan?.targetStartTime || 0, targetAudioEnd))
 
@@ -1254,6 +1375,9 @@ export function useAudioPlayer(
     const executionRevision = ++transitionExecutionRevisionRef.current
     const targetSourceAtStart = target.currentSrc || target.src
     transitionStartingRef.current = true
+    transitionStrategyRef.current = strategy
+    // 看门狗截止：过渡时长 + 8s 余量（下限 15s）；渲染缓冲路径会在进入分支后按真实缓冲时长刷新
+    transitionStuckDeadlineRef.current = performance.now() + Math.max(15_000, (Math.max(audioDuration, visualDuration, 2) + 8) * 1000)
     const isExecutionCurrent = () => executionRevision === transitionExecutionRevisionRef.current
       && getActiveAudio() === source
       && getStandbyAudio() === target
@@ -1285,6 +1409,8 @@ export function useAudioPlayer(
           ))
           const transitionAudioDuration = Math.max(0.05, rendered.duration - playbackOffset)
           debugLog('   过渡音频时长:', transitionAudioDuration.toFixed(2), 's')
+          // 渲染缓冲可能远长于计划窗口（AI 长混音等）：看门狗截止按真实缓冲时长刷新
+          transitionStuckDeadlineRef.current = performance.now() + Math.max(15_000, (transitionAudioDuration + 8) * 1000)
           
           // Start transition progress tracking
           const transitionStartTime = performance.now()
@@ -1747,7 +1873,10 @@ export function useAudioPlayer(
       // 但用户关掉节拍匹配的意图就是"短而干净的交叉"，会沿用设置时长而不是 8~20s 窗口。
       const isDeckCrossfade = strategy === 'fixed-crossfade'
         || (strategy === 'beat-crossfade' && autoMixRef.current.enableBeatMatching === false)
-      if (isDeckCrossfade) {
+      // 无缝衔接的智能短交叉计划带 `gapless:` 前缀：其窗口是分析运算结果，豁免「按交叉设置
+      // 收拢时长」的降级（否则会退回固定 4s，丢掉节拍对齐与静音裁剪的智能定位）。
+      const isGaplessSmartPlan = String(plan?.id || '').startsWith('gapless:')
+      if (isDeckCrossfade && !isGaplessSmartPlan) {
         const configured = Math.max(0.25, crossfadeRef.current.duration)
         if (Math.abs(configured - audioDuration) > 0.05) {
           debugLog(`   ↳ 卡座交叉淡化：过渡时长按设置收敛 ${audioDuration.toFixed(2)}s → ${configured.toFixed(2)}s（${strategy}）`)
@@ -1999,6 +2128,8 @@ export function useAudioPlayer(
     } catch (error) {
       if (!isExecutionCurrent()) return
       console.error('❌ [Transition] 过渡失败:', error)
+      // 落盘诊断（用户反馈「节点显示了时间但实际没过渡」类问题全靠它定位）：
+      logAutomixBackend('transition:failed', `strategy=${strategy} · ${error instanceof Error ? error.message : String(error)}`)
       target.pause()
       if (nextMetadataRef.current?.trackKey === targetMetadata.trackKey) {
         detachAppleHls(target)
@@ -2528,6 +2659,81 @@ export function useAudioPlayer(
   prepareAutoMixRef.current = prepareAutoMix
 
   /**
+   * 无缝衔接的「智能短交叉」准备（跨专辑边界；独立于 AutoMix 的功能）。
+   *
+   * 复用与 AutoMix 同一套机制：autoMixAnalysisService 的轨迹分析（BPM/节拍/首尾静音/
+   * 音色与和声特征） + transitionPlanner 的窗口规划（节拍对齐、静音裁剪、候选窗口按
+   * 相似度/响度/人声度打分）。与 AutoMix 的区别是**设计参数**：
+   *   · 窗口时长锁在无缝衔接自己的区间 1.5–4s（短交叉，不做 DJ 式长混音）；
+   *   · 无效果链、无渲染、无 stem——就是一次智能定位的等功率交叉；
+   *   · 窗口落在「有声内容尾部」（skipSilence），交叉位置/前后取量均由分析结果决定。
+   * 计划就绪后以 armed 状态登记（transitionStartTime = 交叉起点），
+   * 播放到窗口起点时由 handleTimeUpdate 触发 beat-crossfade 执行。
+   */
+  const prepareGaplessCrossfade = useCallback(async () => {
+    const current = currentMetadataRef.current
+    const next = nextMetadataRef.current
+    if (!gaplessRef.current.enabled || autoMixRef.current.enabled) return
+    if (!current?.url || !current.trackKey || !next?.url || !next.trackKey) return
+    const pairKey = `${current.trackKey}->${next.trackKey}`
+    if (autoMixSkippedPairsRef.current.has(pairKey)) return
+    // 同专辑留给「直接拼接」三方案（专辑连续性），不走交叉
+    if (current.albumId && next.albumId && current.albumId === next.albumId) return
+
+    const revision = preparationRevisionRef.current
+    const controller = new AbortController()
+    preparationAbortRef.current?.abort()
+    preparationAbortRef.current = controller
+    try {
+      const [sourceAnalysis, targetAnalysis] = await Promise.all([
+        current.analysis || autoMixAnalysisService.analyze({ trackKey: current.trackKey, url: current.url, duration: current.duration, signal: controller.signal }),
+        next.analysis || autoMixAnalysisService.analyze({ trackKey: next.trackKey, url: next.url, duration: next.duration, signal: controller.signal }),
+      ])
+      if (controller.signal.aborted || revision !== preparationRevisionRef.current) return
+      if (!sourceAnalysis || !targetAnalysis) throw new Error('gapless analysis failed')
+      current.analysis = sourceAnalysis
+      next.analysis = targetAnalysis
+      const plan = planTransition(sourceAnalysis, targetAnalysis, {
+        beatMatching: true,
+        skipSilence: true,
+        minDuration: 1.5,
+        maxDuration: 4,
+      }, 'beat-crossfade')
+      // 无缝衔接语义（用户定稿）：
+      //   · 交叉锚定在**歌曲最末尾的空白处**——源窗口以原始曲末为终点，绝不提前到中段；
+      //   · 窗口“长度”（交叉多少秒）仍取规划器的智能结果（节拍网格/节奏相似度，1.5–4s）；
+      //   · 下一首从头进入（只跳过静音前奏，上限 2s），不用混音入点、不 seek 未缓冲位置。
+      const windowLength = Math.max(0.5, Math.min(4, plan.sourceEndTime - plan.sourceStartTime))
+      const sourceEnd = Math.max(windowLength, current.duration || plan.sourceEndTime)
+      plan.sourceStartTime = Math.max(0, sourceEnd - windowLength)
+      plan.sourceEndTime = sourceEnd
+      const introSkip = Number.isFinite(targetAnalysis.introSilence)
+        ? Math.max(0, Math.min(2, targetAnalysis.introSilence))
+        : 0
+      plan.targetStartTime = introSkip
+      plan.targetEndTime = introSkip + windowLength
+      // 标记为无缝衔接计划：交叉执行时豁免「按交叉设置收拢窗口」的降级
+      plan.id = `gapless:${plan.id}`
+      gaplessPlanRef.current = plan
+      logAutomixBackend(
+        'gapless:crossfade-plan',
+        `${pairKey} start=${plan.sourceStartTime.toFixed(2)} end=${plan.sourceEndTime.toFixed(2)} dur=${(plan.sourceEndTime - plan.sourceStartTime).toFixed(2)}s targetStart=${plan.targetStartTime.toFixed(2)} confidence=${plan.confidence.toFixed(2)}`,
+      )
+      setTransitionState('armed', {
+        transitionStrategy: 'gapless',
+        fallbackReason: plan.fallbackReason,
+        transitionStartTime: plan.sourceStartTime,
+        transitionDebug: buildTransitionDebug(plan, 'fallback'),
+      })
+    } catch (error) {
+      if (controller.signal.aborted || revision !== preparationRevisionRef.current) return
+      // 分析不可用：不武装计划，播放到边界时走 handleTimeUpdate 的兜底触发（静音裁剪 + 默认短窗）
+      logAutomixBackend('gapless:crossfade-plan-failed', error instanceof Error ? error.message : 'analysis failed')
+    }
+  }, [setTransitionState])
+  prepareGaplessCrossfadeRef.current = () => { void prepareGaplessCrossfade() }
+
+  /**
    * 用户在 HUD 点「关闭」：本次「当前曲 → 下一曲」不做智能混音（想完整听完这首歌）。
    * 语义：
    *   - 记入跳过集合（按曲对），本曲后续的 prepareAutoMix 会优先走"末尾短交叉"，不再分析/渲染；
@@ -2762,16 +2968,62 @@ export function useAudioPlayer(
           debugLog('🎬 [Crossfade] 到达交叉淡化点，剩余时间:', remaining.toFixed(2), 's')
           void startTransition('fixed-crossfade')
         } else if (pairStrategy === 'gapless' && Number.isFinite(remaining)) {
-          // Gapless 三方案分流已抽离到 src/services/gapless/seamlessJoinController.ts：
-          //   remaining ∈ (1, 20] 且专辑 → 预热缓存前 10s（保证首选拼接就绪）
-          //   remaining ∈ (0, 1]     → scheduleBoundary（首选直接拼接 / 备选 60ms 淡入淡出）
-          // 控制器内部自带 hasActiveTransition / boundaryScheduled 互斥检查。
-          const controller = seamlessJoinControllerRef.current
-          if (controller) {
-            if (remaining > 1 && remaining <= GAPLESS_SEAMLESS_WARMUP_SECONDS && albumPlayback && !applePair) {
-              controller.warmup()
-            } else if (remaining > 0 && remaining <= 1) {
-              controller.scheduleBoundary({ active, remaining, albumPlayback: albumPlayback && !applePair })
+          // 无缝衔接边界分流（独立于 AutoMix 的智能功能）：
+          //   · 同专辑 → 「直接拼接」三方案（预热 → scheduleBoundary，头尾不掐），
+          //     专辑连续性是 gapless 的本义，交叉淡化会破坏乐章边界；
+          //   · 跨专辑 → **智能短交叉**：prepareGaplessCrossfade 用与 AutoMix 同一套
+          //     分析/规划机制算出 1.5–4s 窗口（节拍对齐 + 首尾静音裁剪 + 相似度打分），
+          //     到达窗口起点执行 beat-crossfade；计划不可用时兜底 2.5s 短窗。
+          // 节点「关闭」= 本曲不做无缝衔接：不预热/不交叉，源曲完整播完后自然切歌。
+          const skippedPair = autoMixSkippedPairsRef.current.has(
+            `${currentMetadataRef.current?.trackKey}->${nextMetadataRef.current?.trackKey}`
+          )
+          if (!skippedPair) {
+            const albumDirectJoin = albumPlayback && !applePair
+            const controller = seamlessJoinControllerRef.current
+            if (albumDirectJoin) {
+              if (controller) {
+                if (remaining > 1 && remaining <= GAPLESS_SEAMLESS_WARMUP_SECONDS) {
+                  controller.warmup()
+                } else if (remaining > 0 && remaining <= 1) {
+                  controller.scheduleBoundary({ active, remaining, albumPlayback: true })
+                }
+              }
+            } else {
+              // 跨专辑：无缝衔接的「智能短交叉」——
+              // 首选已准备的计划（分析+规划算出的 1.5–4s 窗口：节拍对齐、尾部静音裁剪、
+              // 交叉位置与前后取量均来自分析结果）；播放到窗口起点即执行 beat-crossfade。
+              const gaplessPlan = gaplessPlanRef.current
+              if (gaplessPlan && active.currentTime >= gaplessPlan.sourceStartTime) {
+                debugLog(`🎬 [Gapless] 到达智能交叉窗口（${(gaplessPlan.sourceEndTime - gaplessPlan.sourceStartTime).toFixed(2)}s @ ${gaplessPlan.sourceStartTime.toFixed(2)}s）`)
+                logAutomixBackend(
+                  'gapless:crossfade-trigger',
+                  `${currentMetadataRef.current?.trackKey}->${nextMetadataRef.current?.trackKey} at=${active.currentTime.toFixed(2)} start=${gaplessPlan.sourceStartTime.toFixed(2)} dur=${(gaplessPlan.sourceEndTime - gaplessPlan.sourceStartTime).toFixed(2)} targetStart=${gaplessPlan.targetStartTime.toFixed(2)}`,
+                )
+                gaplessPlanRef.current = null
+                void startTransition('beat-crossfade', gaplessPlan)
+              } else if (!gaplessPlan) {
+                // 兜底：分析不可用/计划未就绪——2.5s 短窗，同样锚定原始曲末（末尾空白处交叉），
+                // 以计划对象走同一执行链路（同样豁免「按交叉设置收拢」的降级）
+                const fallbackDuration = 2.5
+                if (remaining <= fallbackDuration + 0.5) {
+                  const end = Math.max(fallbackDuration, active.duration || 0)
+                  const fallbackPlan = buildFallbackCrossfadePlanFor(
+                    currentMetadataRef.current || {}, nextMetadataRef.current || {}, end, '无缝衔接兜底（分析不可用）',
+                  )
+                  fallbackPlan.sourceStartTime = Math.max(0, end - fallbackDuration)
+                  fallbackPlan.sourceEndTime = end
+                  fallbackPlan.targetStartTime = 0
+                  fallbackPlan.targetEndTime = fallbackDuration
+                  fallbackPlan.id = `gapless:${fallbackPlan.id}`
+                  gaplessPlanRef.current = fallbackPlan
+                  debugLog(`🎬 [Gapless] 智能计划缺省 → 兜底 ${fallbackDuration}s 短交叉（锚定曲末）`)
+                  logAutomixBackend(
+                    'gapless:crossfade-trigger',
+                    `${currentMetadataRef.current?.trackKey}->${nextMetadataRef.current?.trackKey} fallback at=${active.currentTime.toFixed(2)} start=${fallbackPlan.sourceStartTime.toFixed(2)} end=${fallbackPlan.sourceEndTime.toFixed(2)} dur=${fallbackDuration}`,
+                  )
+                }
+              }
             }
           }
         }
@@ -2885,7 +3137,11 @@ export function useAudioPlayer(
 
       if (transitionStateRef.current === 'running-transition' && standby && !standby.paused) {
         debugLog('✅ [Event] 过渡正在进行中，提交过渡')
-        const strategy = transitionPlanRef.current?.strategy || (crossfadeRef.current.enabled ? 'fixed-crossfade' : 'gapless')
+        // 策略优先取正在跑的那一次过渡的真实策略（transitionStrategyRef 在 startTransition 写入）；
+        // 旧的启发式猜测会把「无缝衔接触发的交叉淡化」误标成 gapless（提交日志/覆盖率提示错名）。
+        const strategy = transitionStrategyRef.current
+          || transitionPlanRef.current?.strategy
+          || (crossfadeRef.current.enabled ? 'fixed-crossfade' : 'gapless')
         commitTransition(strategy, standby.currentTime, transitionExecutionRevisionRef.current)
       } else if (standby?.src && resolveBoundaryStrategy() === 'gapless') {
         debugLog('⏭️ [Event] 待机音频就绪且当前相邻边使用 Gapless')
@@ -3146,9 +3402,14 @@ export function useAudioPlayer(
             transitionStrategy: 'gapless',
             fallbackReason: autoMixRef.current.enabled ? 'Apple CENC pair uses gapless' : undefined,
           })
-        } else if (gaplessIntegrationRef.current) {
+        } else if (isAlbumPlayback() && gaplessIntegrationRef.current) {
+          // 同专辑：控制器的「直接拼接」三方案（预热 → scheduleBoundary）
           debugLog('🎵 [Preload] 准备无缝衔接，调用 GaplessIntegration')
           void prepareGaplessTransition()
+        } else {
+          // 跨专辑：无缝衔接的智能短交叉（分析与规划，独立于 AutoMix）
+          debugLog('🎵 [Preload] 准备无缝衔接（智能短交叉）')
+          void prepareGaplessCrossfadeRef.current()
         }
       } else {
         setTransitionState('armed', { transitionStrategy: pairStrategy })
@@ -3548,6 +3809,9 @@ export function useAudioPlayer(
     // 旧计划仍然可用（preserveNext 默认 true，standby 的 src 与元数据都保留），无需重新
     // 分析/重渲染，也避免经历"重排期间没有任何过渡可用"的空窗。
     const planBeforeSeek = transitionPlanRef.current
+    // 无缝衔接的智能计划同样先取出：cancelScheduledTransition 会清空它，
+    // 而 seek 落在窗口之前时计划仍然可用（窗口/缓存都没变），无需重新分析。
+    const gaplessPlanBeforeSeek = gaplessPlanRef.current
     cancelScheduledTransition('seek changed transition timing')
     // 元数据未加载（duration 未知）时直接定位，不做 0 上限裁剪，避免拖动归零
     const duration = Number.isFinite(active.duration) && active.duration > 0 ? active.duration : Infinity
@@ -3597,27 +3861,51 @@ export function useAudioPlayer(
       })
       debugLog('⏭️ [AutoMix] seek 落在过渡窗口之前：保留现有计划（不重新分析/渲染）')
     } else {
-      // 越过或进入过渡窗口：旧计划不可用，清空后让 prepareAutoMix 从当前位置重新规划。
-      if (planBeforeSeek) transitionPlanRef.current = null
-      emit({ currentTime: active.currentTime, duration: finiteDuration(active.duration), live: isLiveRef.current })
-      if (nextMetadataRef.current?.url) {
-        const strategy = resolveBoundaryStrategy()
-        if (strategy === 'automix') void prepareAutoMix()
-        else if (strategy === 'gapless' && !(currentMetadataRef.current?.appleHls || nextMetadataRef.current?.appleHls)) void prepareGaplessTransition()
-        else setTransitionState('armed', {
-          transitionStrategy: strategy,
-          fallbackReason: strategy === 'gapless' && autoMixRef.current.enabled ? 'Apple CENC pair uses gapless' : undefined,
+      // 无缝衔接：seek 落在智能交叉窗口之前且曲对不变 → 同样保留原计划（窗口/缓冲都没变）。
+      // 实测（2026-10-05 用户日志）：拖动进度条会 cancel 掉计划，导致边界退化成 2.5s 兜底；
+      // 这里与 AutoMix 同口径做「窗口前 seek 保留计划」。
+      const keepGaplessPlan = Boolean(
+        gaplessPlanBeforeSeek
+        && nextMetadataRef.current?.trackKey === gaplessPlanBeforeSeek.targetTrackKey
+        && active.currentTime < gaplessPlanBeforeSeek.sourceStartTime - 0.5,
+      )
+      if (keepGaplessPlan && gaplessPlanBeforeSeek) {
+        gaplessPlanRef.current = gaplessPlanBeforeSeek
+        debugLog('⏭️ [Gapless] seek 落在交叉窗口之前：保留智能短交叉计划（不重新分析）')
+        setTransitionState('armed', {
+          transitioning: false,
+          transitionStrategy: 'gapless',
+          fallbackReason: gaplessPlanBeforeSeek.fallbackReason,
+          transitionStartTime: gaplessPlanBeforeSeek.sourceStartTime,
+          transitionDebug: buildTransitionDebug(gaplessPlanBeforeSeek, 'fallback'),
         })
-      } else if (wasPlaying && active.paused) {
-        void active.play().catch(() => undefined)
+      } else {
+        // 越过或进入过渡窗口：旧计划不可用，清空后从当前位置重新规划。
+        if (planBeforeSeek) transitionPlanRef.current = null
+        emit({ currentTime: active.currentTime, duration: finiteDuration(active.duration), live: isLiveRef.current })
+        if (nextMetadataRef.current?.url) {
+          const strategy = resolveBoundaryStrategy()
+          if (strategy === 'automix') void prepareAutoMix()
+          else if (strategy === 'gapless' && !(currentMetadataRef.current?.appleHls || nextMetadataRef.current?.appleHls)) {
+            // 跨专辑重排智能短交叉计划（分析有缓存，通常秒回）；同专辑走控制器预热
+            if (isAlbumPlayback() && gaplessIntegrationRef.current) void prepareGaplessTransition()
+            else void prepareGaplessCrossfadeRef.current()
+          }
+          else setTransitionState('armed', {
+            transitionStrategy: strategy,
+            fallbackReason: strategy === 'gapless' && autoMixRef.current.enabled ? 'Apple CENC pair uses gapless' : undefined,
+          })
+        } else if (wasPlaying && active.paused) {
+          void active.play().catch(() => undefined)
+        }
+        return
       }
-      return
     }
     emit({ currentTime: active.currentTime, duration: finiteDuration(active.duration), live: isLiveRef.current })
     if (wasPlaying && active.paused) {
       void active.play().catch(() => undefined)
     }
-  }, [cancelScheduledTransition, emit, getActiveAudio, getActiveGain, prepareAutoMix, prepareGaplessTransition, resolveBoundaryStrategy, setDeckGain, setTransitionState, finiteDuration])
+  }, [cancelScheduledTransition, emit, getActiveAudio, getActiveGain, isAlbumPlayback, prepareAutoMix, prepareGaplessTransition, resolveBoundaryStrategy, setDeckGain, setTransitionState, finiteDuration])
 
   const setVolume = useCallback((volume: number) => {
     const clamped = Math.max(0, Math.min(1, volume))
@@ -3824,7 +4112,29 @@ export function useAudioPlayer(
     setWatchHold: (hold: boolean) => {
       if (hold === watchHoldRef.current) return
       watchHoldRef.current = hold
-      if (hold) cancelScheduledTransition('enter watch mode (hold)')
+      if (hold) {
+        cancelScheduledTransition('enter watch mode (hold)')
+      } else {
+        // 切出看歌：必须为当前歌**重新武装**边界过渡。进入看歌后引擎的加载链路触发过
+        // prepareAutoMix，但被本闸门跳过且不会重跑（元数据此后不再变化、调度 effect
+        // 也不再触发）——不补武装的话本曲结尾 automix 整体失灵、硬切下一首，而 HUD
+        // 还挂着上一曲残留的「即将过渡」（用户实测：看歌里听完自动切下一首、看了一段
+        // 切回歌词页，本曲放完无过渡，再下一首才恢复）。重走统一入口：按当前对策略
+        // 决定 prepare / gapless / 降级，顺带把过渡状态刷新成真实情况（HUD 不再过期）。
+        if (transitionStateRef.current !== 'running-transition') {
+          const strategy = resolveBoundaryStrategy()
+          if (strategy === 'automix') {
+            void prepareAutoMix()
+          } else if (strategy === 'gapless') {
+            void prepareGaplessTransition()
+          } else {
+            setTransitionState('armed', {
+              transitioning: false,
+              transitionStrategy: strategy,
+            })
+          }
+        }
+      }
     },
     getAudioElement: getActiveAudio,
     audioElement,
