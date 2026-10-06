@@ -3,7 +3,7 @@ import { parseStoredBoolean } from '../utils/storage'
 import { EMPTY_AUDIO_PULSE_STORE, type AudioPulseStore } from '../hooks/useAudioPulse'
 import { useTransitionLyricsCrossfade } from '../hooks/useTransitionVisual'
 import type { TransitionVisualStore } from '../audio/transitionVisualStore'
-import { memo, useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { reconcileBoundaryParentheses } from '../utils/lyricBoundaryParentheses'
 import { normalizeSequentialWordTiming, prepareLyricWords } from '../utils/lyricWordTiming'
 import { getAgentTintColor, getAppleMusicSettings } from '../services/appleMusic'
@@ -645,6 +645,9 @@ interface LyricsDisplayProps {
   /** 托管切换时的初始锚点：切歌瞬间 currentTime 可能还停在上一首（引擎一帧滞后），
    *  按时间扫会锚错行；这里直接用过渡期下一首歌词层停留的那一句。 */
   indexHint?: number | null
+  /** 过渡提交落定版本号：每次真实切歌提交 +1。用于提交帧后强制把列表重锚回当前句、
+   *  并复位手动滚动残留（用户实测：无缝交叉结束的下一秒歌词列表不再跟随）。 */
+  settleRevision?: number
   trackId?: string | number
   pulseStore?: AudioPulseStore
   playerTheme?: 'light' | 'dark'
@@ -686,6 +689,7 @@ export default memo(function LyricsDisplay({
   managedCrossfade = false,
   onActiveIndexChange,
   indexHint = null,
+  settleRevision = 0,
   trackId,
   pulseStore = EMPTY_AUDIO_PULSE_STORE,
   playerTheme = 'dark',
@@ -785,13 +789,37 @@ export default memo(function LyricsDisplay({
   // 当前这首歌的歌词树（AnimatePresence 里 key=trackId 的那层）。
   // 滚动定位必须在这棵树内部查询行节点：切歌瞬间旧树还在退场（DOM 仍在容器里），
   // 按容器查会命中旧树的行 → 滚到旧位置 → 再由 smooth 跟滚上去（"归位/向上滚"观感根源）。
-  const treeRef = useRef<HTMLDivElement>(null)
+  //
+  // ⚠️ 这两个 ref 被**新旧两棵歌词树共用**：旧树退场被 React 移除时会回调 ref(null)，
+  // 时间点在新树挂载（ref 已指向新树）之后约 0.45s —— 直接把刚挂好的引用清成 null。
+  // 实测（2026-10-06 用户环境 + CDP 取证）：每次切歌 0.45s 后弹簧滚动的 measure()
+  // 走 `if (!track) return` 静默失效，歌词列表停在切歌瞬间的锚点不再跟随（"歌词不跟屏"）。
+  // 回调用法只接受非空元素，旧树的这一次误清就被吞掉；测量侧另有 data 属性兜底。
+  const treeRef = useRef<HTMLDivElement | null>(null)
+  const setTreeRef = useCallback((el: HTMLDivElement | null) => { if (el) treeRef.current = el }, [])
   // 供滚动函数（render 期创建、事件/effect 中调用）读取最新值
   const managedCrossfadeRef = useRef(managedCrossfade)
   managedCrossfadeRef.current = managedCrossfade
   // 崭新模式：弹簧 transform 滚动引擎（零布局跳动，Apple Music 风）
   const springY = useSpring(0, { stiffness: 190, damping: 26, mass: 1.1 })
-  const springWrapRef = useRef<HTMLDivElement>(null)
+  const springWrapRef = useRef<HTMLDivElement | null>(null)
+  const setSpringWrapRef = useCallback((el: HTMLDivElement | null) => { if (el) springWrapRef.current = el }, [])
+  /**
+   * 解析当前这棵树的弹簧轨道元素：
+   *   ① ref 指向的元素仍连在容器内 → 直接用（正常路径）；
+   *   ② 否则退回按 `data-wf-lyric-track` 现查容器内**最后一个**轨道 —— AnimatePresence
+   *      渲染顺序是「旧树在前、新树在后」，取最后一个才是当前树（取第一个会命中退场旧树）。
+   */
+  const resolveSpringTrack = useCallback(() => {
+    const container = containerRef.current
+    const track = springWrapRef.current
+    if (track && track.isConnected && (!container || container.contains(track))) return track
+    if (!container) return null
+    const list = container.querySelectorAll('[data-wf-lyric-track]')
+    return list.length ? (list[list.length - 1] as HTMLDivElement) : null
+  }, [])
+  /** 强制弹簧滚动重新对锚（过渡提交帧用）：变化即让测量 effect 重跑一次。 */
+  const [springAnchorTick, setSpringAnchorTick] = useState(0)
   const [modernManualY, setModernManualY] = useState(0)
   const modernReturnTimerRef = useRef<number | null>(null)
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -996,7 +1024,8 @@ export default memo(function LyricsDisplay({
 
   const scrollLineToCenter = (index: number, behavior: ScrollBehavior = 'smooth') => {
     const container = containerRef.current
-    const scope = treeRef.current ?? container
+    // ref 可能仍指着已卸载的旧树（见 treeRef 注释），脱离文档时退回容器作用域
+    const scope = treeRef.current && treeRef.current.isConnected ? treeRef.current : container
     const el = scope?.querySelector(`[data-index="${index}"]`) as HTMLElement | null
     if (!container || !el) return
     // 托管切换（过渡进行中/视觉切换帧）与 prefers-reduced-motion 下一律瞬时定位：
@@ -1021,7 +1050,7 @@ export default memo(function LyricsDisplay({
   // 手动偏移必须钳在歌词内容范围内：上滚最多到首句中心到焦点线（上方不出现空白）、
   // 下滚最多到末句中心到焦点线（下方不出现空白）——否则能一路滚出歌词到空白
   const clampModernManualY = (y: number): number => {
-    const wrap = springWrapRef.current
+    const wrap = resolveSpringTrack()
     if (!wrap || displayLyricsData.length === 0) return y
     const cur = wrap.querySelector(`[data-index="${resolveModernAnchorIndex()}"]`) as HTMLElement | null
     const first = wrap.querySelector('[data-index="0"]') as HTMLElement | null
@@ -1384,6 +1413,34 @@ export default memo(function LyricsDisplay({
     effectiveWordByWordEffectMode,
   ])
 
+  // 过渡提交落定（settleRevision 变化）：强制把列表锚回当前句并复位一切手动滚动残留。
+  // 背景（用户实测 2026-10-05）：无缝交叉期间旧歌词淡出/新歌词淡入都正常，但提交的下一秒
+  // 列表停留在旧位置上不跟随。提交帧是 trackId/lyrics 整体切换的时刻，任何滚动状态残留
+  // 都会让新树停在顶部；这里与 trackChanged 的复位逻辑同口径再兜一次。
+  const lastSettleRevisionRef = useRef(settleRevision)
+  useEffect(() => {
+    if (settleRevision === lastSettleRevisionRef.current) return
+    lastSettleRevisionRef.current = settleRevision
+    isManualScrollingRef.current = false
+    setIsManualScrolling(false)
+    setManualScrollOffset(0)
+    setModernManualY(0)
+    setIsJumping(false)
+    setJumpTargetIndex(null)
+    const index = currentIndexRef.current
+    if (index < 0) return
+    // 弹簧滚动（scroll 模式恒走此路径）：聚焦由测量 effect 负责，只发 tick 让它重对锚。
+    // 不能在这里调 scrollLineToCenter —— 容器是 overflow-hidden 的弹簧画布，原生 scrollTo
+    // 与弹簧位移叠加，观感就是"交接完成瞬间整块歌词跳一下"（用户实测的边界位移）。
+    if (isModernScroll) {
+      setSpringAnchorTick(value => value + 1)
+      return
+    }
+    // 原生滚动模式（桌面视图等 scrollTransitionStyle=soft 的场景）：先立即对齐再平滑收尾。
+    scrollLineToCenter(index, 'auto')
+    scheduleScrollLineToCenter(index, 'smooth')
+  }, [settleRevision, isModernScroll])
+
   // 两种样式统一走弹簧滚动后不再需要"切回柔和清弹簧残留"的补偿：
   // springY 在滚动模式下常驻驱动 transform，切风格时由弹簧滚动 effect 重新对锚（弹簧平滑滑到新锚点）。
 
@@ -1443,7 +1500,7 @@ export default memo(function LyricsDisplay({
     const container = containerRef.current
     if (!container) return
     const measure = () => {
-      const track = springWrapRef.current
+      const track = resolveSpringTrack()
       if (!track) return
       const el = track.querySelector(`[data-index="${resolveModernAnchorIndex()}"]`) as HTMLElement | null
       if (!el) return
@@ -1469,9 +1526,10 @@ export default memo(function LyricsDisplay({
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(container)
-    if (springWrapRef.current) observer.observe(springWrapRef.current)
+    const track = resolveSpringTrack()
+    if (track) observer.observe(track)
     return () => observer.disconnect()
-  }, [isModernScroll, isModernStyle, currentIndex, modernManualY, effectiveLyricSize, displayLyricsData, isManualScrolling, prefersReducedMotion, springY])
+  }, [isModernScroll, isModernStyle, currentIndex, modernManualY, effectiveLyricSize, displayLyricsData, isManualScrolling, prefersReducedMotion, springY, springAnchorTick, resolveSpringTrack])
 
   if (!lyrics || lyrics.length === 0) {
     return null
@@ -2549,7 +2607,7 @@ export default memo(function LyricsDisplay({
       <AnimatePresence>
         <motion.div
           key={trackId}
-          ref={treeRef}
+          ref={setTreeRef}
           // P1-14：commit 帧从"旧树退场时的暗态"起步（而非 0），避免歌名已换、歌词还在从暗处爬上来的割裂感；
           // 非过渡切歌仍是 0，保持原有淡入。
           // 托管切换（managedCrossfade）：一步到位 1（下一首歌词层已经在同一位置同样式淡入到 1），
@@ -2557,7 +2615,11 @@ export default memo(function LyricsDisplay({
           initial={{ opacity: lyricEnterOpacity }}
           animate={{
             opacity: treeOpacity,
-            y: isTransitioning || transitionFadeProgress > 0 ? -10 : 0,
+            // 交叉淡化（crossfadeActive）期间不叠 10px 上浮：那条分支此时被赋 duration 0，
+            // 实际观感是「过渡窗口开启」与「视觉切换帧」各有一次**瞬移 10px**（用户实测
+            // "进过渡段/进第二曲各动一下"的位移来源），而退场语言此时已由逐帧 crossfadeQ 承担，
+            // 上浮纯属多余。仅在非交叉淡化的淡出路径（transitionFadeProgress 驱动）保留。
+            y: crossfadeActive ? 0 : (isTransitioning || transitionFadeProgress > 0 ? -10 : 0),
             transition: crossfadeActive
               // 交叉淡化进度本身就是逐帧值（30fps 订阅），这里不能再叠补间，否则每帧重启缓动 → 拖影
               ? { duration: 0 }
@@ -2574,9 +2636,12 @@ export default memo(function LyricsDisplay({
         >
         {/* 崭新模式：弹簧 transform 轨道（替代原生 scroll，零布局跳动）。
             柔和风格下不加任何 transform/will-change：容器走原生滚动，
-            残留的 translateY 或 will-change 会干扰滚动位置的测量。 */}
+            残留的 translateY 或 will-change 会干扰滚动位置的测量。
+            `data-wf-lyric-track`：轨道身份的 DOM 标记 —— 新旧歌词树共用同一组 ref，
+            旧树退场卸载会把它清空（见 treeRef 注释），测量侧据此在容器内现查当前轨道兜底。 */}
         <motion.div
-          ref={springWrapRef}
+          ref={setSpringWrapRef}
+          data-wf-lyric-track=""
           style={isModernScroll ? { y: springY, willChange: 'transform' } : undefined}
           className="w-full"
         >

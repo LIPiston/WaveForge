@@ -1777,6 +1777,8 @@ function App() {
   transitionDebugRef.current = transitionDebug
   const [transitionFallbackReason, setTransitionFallbackReason] = useState<string | undefined>()
   const [transitionProgress, setTransitionProgress] = useState(0) // 过渡进度 0-1
+  /** 歌词落定版本号：真实切歌提交时 +1，供歌词列表在提交帧强制重锚（修复「提交后不跟屏」）。 */
+  const [lyricSettleRevision, setLyricSettleRevision] = useState(0)
   // 过渡缓冲时长（秒）：叠加动画窗口（最后 4 秒）按此映射 progress
   const [transitionDuration, setTransitionDuration] = useState(0)
   const transitionTargetTimeRef = useRef(Number.NaN)
@@ -3024,6 +3026,8 @@ function App() {
       // keep the controls/background in their "transition" presentation indefinitely.
       setIsTransitioning(false)
       setTransitionProgress(0)
+      // 歌词落定：提交帧强制重锚当前句（修复「交叉结束的下一秒歌词列表不跟屏」）
+      setLyricSettleRevision(value => value + 1)
       setTransitionFromTrack(null)
       setTransitionToTrack(null)
       setTransitionFromAccentColor(null)
@@ -10758,6 +10762,7 @@ function App() {
                       romanEnabled={romanEnabled}
                       displayMode="single"
                       singleNextLinePreview
+                      settleRevision={lyricSettleRevision}
                       isTransitioning={isVisualTransitioning}
                       trackId={currentSong?.id || currentSong?.mid}
                       playerTheme={playerTheme}
@@ -11081,6 +11086,7 @@ function App() {
                           crossfadeActive={lyricsCrossfadeActive}
                           crossfadeStore={audioPlayer.transitionVisualStore}
                           managedCrossfade={lyricsManagedSwitch}
+                          settleRevision={lyricSettleRevision}
                           indexHint={visualSwitchedToTarget && incomingLyricIndexRef.current >= 0 ? incomingLyricIndexRef.current : null}
                           trackId={currentSong?.id || currentSong?.mid}
                           pulseStore={audioPulseStore}
