@@ -80,7 +80,32 @@ const PlaylistRow = memo(function PlaylistRow({
         boxShadow: isCurrent ? '0 10px 24px rgba(0,0,0,0.18)' : 'none',
       }}
     >
-      <div className="flex w-10 shrink-0 items-center justify-center">
+      {/* 封面卡片背景：复用缩略图同一 URL（零额外网络），静态模糊层 + 压暗渐变保证文字可读。
+          行是虚拟化的（只渲染可见 ~10 行），模糊层光栅化一次后不再有逐帧开销。 */}
+      {song.album?.picUrl && (
+        <div aria-hidden className="pointer-events-none absolute inset-0">
+          <CachedImage
+            src={song.album.picUrl}
+            alt=""
+            className="h-full w-full scale-150 object-cover blur-xl"
+            draggable={false}
+            retainPrevious
+          />
+          <div
+            className="absolute inset-0"
+            style={{
+              background: isCurrent
+                ? isDark
+                  ? 'linear-gradient(135deg, rgba(8,8,14,0.38), rgba(8,8,14,0.22))'
+                  : 'linear-gradient(135deg, rgba(250,250,248,0.5), rgba(250,250,248,0.3))'
+                : isDark
+                  ? 'linear-gradient(135deg, rgba(8,8,14,0.52), rgba(8,8,14,0.38))'
+                  : 'linear-gradient(135deg, rgba(250,250,248,0.62), rgba(250,250,248,0.42))',
+            }}
+          />
+        </div>
+      )}
+      <div className="relative flex w-10 shrink-0 items-center justify-center">
         {isCurrent ? (
           <motion.div
             animate={{ scale: [1, 1.14, 1] }}
@@ -93,7 +118,7 @@ const PlaylistRow = memo(function PlaylistRow({
         )}
       </div>
 
-      <div className={`h-16 w-16 shrink-0 overflow-hidden rounded-xl shadow-md ring-1 ${isDark ? 'bg-white/10 ring-white/15' : 'bg-black/5 ring-black/10'}`}>
+      <div className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-xl shadow-md ring-1 ${isDark ? 'bg-white/10 ring-white/15' : 'bg-black/5 ring-black/10'}`}>
         {song.album?.picUrl ? (
           <CachedImage
             src={song.album.picUrl}
@@ -112,7 +137,7 @@ const PlaylistRow = memo(function PlaylistRow({
         )}
       </div>
 
-      <div className="min-w-0 flex-1">
+      <div className="relative min-w-0 flex-1">
         <div className={`truncate text-base font-semibold ${isCurrent ? (isDark ? 'text-white' : 'text-black/90') : isDark ? 'text-white/90' : 'text-black/80'}`}>
           {song.name}
         </div>
@@ -129,9 +154,9 @@ const PlaylistRow = memo(function PlaylistRow({
 })
 
 function CrownIcon({ isDark }: { isDark: boolean }) {
-  // lucide Crown 图标
+  // lucide Crown 图标（relative：盖在封面背景层之上）
   return (
-    <svg className="h-5 w-5 shrink-0 text-yellow-400 drop-shadow-lg" viewBox="0 0 24 24" fill="currentColor">
+    <svg className="relative h-5 w-5 shrink-0 text-yellow-400 drop-shadow-lg" viewBox="0 0 24 24" fill="currentColor">
       <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 4v2H5v-2h14z" />
     </svg>
   )

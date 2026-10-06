@@ -17,11 +17,14 @@ import { installMediaKeyBridge } from './tv/mediaKeyBridge'
 import { installRemoteBridge } from './tv/remoteBridge'
 import TvKeyboard from './tv/TvKeyboard'
 import ErrorBoundary from './components/ErrorBoundary'
+import { installNativeTooltipSuppressor } from './utils/suppressNativeTooltips'
 
 // 平台初始化：标记 html[data-platform]/tv-mode（供 CSS 焦点适配），
 // 并给非 Electron 环境（Android WebView / 纯浏览器）注入 window.electron 最小桩。
 initPlatformUI()
 installElectronShim()
+// 全局禁用原生 title 悬浮气泡（用户要求：样式与播放器视觉不符）
+installNativeTooltipSuppressor()
 
 // ── AutoMix 桥自检（诊断用）：确认 window.electron 真实可用性 ──
 // 若 preload 未加载，isDesktop() 会误判为 web 并装桩（render 抛"仅桌面版可用"、

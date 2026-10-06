@@ -410,7 +410,10 @@ function Spectrum({ accentColor, style, large = false, suspended = false }: { ac
     </div>
   }
 
-  return <div className={`flex items-end justify-center gap-1 overflow-hidden ${large ? 'h-72' : 'h-20'}`}>{expanded.map((value, index) => <span key={index} className="h-full w-2 origin-bottom rounded-md" style={{ background: `linear-gradient(to top, ${accentColor}, rgba(255,255,255,.9))`, opacity: .55 + (index % 4) * .1, boxShadow: `0 0 12px ${accentColor}55`, transform: `scaleY(${Math.max(large ? .03 : .1, Math.min(.9, value * .87))})`, transition: 'transform 100ms ease-out', willChange: 'transform' }} />)}</div>
+  // 柱色：底部用混白提亮过的主题色 → 中段纯主题色 → 顶端近白。
+  // 之前每 4 根做 0.55~0.85 的不透明度循环（伪纹理），在深色壁纸上呈现为忽明忽暗的"黑柱"；
+  // 现在所有柱子统一不透明度，矮柱也只因高度（数据）不同而不同，不再因序号而发暗。
+  return <div className={`flex items-end justify-center gap-1 overflow-hidden ${large ? 'h-72' : 'h-20'}`}>{expanded.map((value, index) => <span key={index} className="h-full w-2 origin-bottom rounded-md" style={{ background: `linear-gradient(to top, color-mix(in srgb, ${accentColor} 72%, #fff), ${accentColor} 42%, rgba(255,255,255,.92))`, opacity: .92, boxShadow: `0 0 12px ${accentColor}55`, transform: `scaleY(${Math.max(large ? .03 : .1, Math.min(.9, value * .87))})`, transition: 'transform 100ms ease-out', willChange: 'transform' }} />)}</div>
 }
 
 function PlaybackProgress({ context, accentColor }: { context: DesktopMusicWidgetContext; accentColor: string }) {
