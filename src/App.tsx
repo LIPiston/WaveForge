@@ -1864,6 +1864,8 @@ function App() {
     duration?: number
     platform?: string
     id?: string | number
+    /** 过渡目标专辑名：MV 预载时用于推导作品名（IP 证据） */
+    albumName?: string
   } | null>(null)
   const [transitionFromAccentColor, setTransitionFromAccentColor] = useState<string | null>(null)
   const [transitionToAccentColor, setTransitionToAccentColor] = useState<string | null>(null)
@@ -2064,7 +2066,7 @@ function App() {
   // 看歌预加载：即将播放的后 2 首歌（预匹配评分高的 B 站视频）
   const watchUpcomingSongs = useMemo(() => {
     if (!playlist.length || typeof currentIndex !== 'number' || currentIndex < 0) return []
-    const upcoming: Array<{ songTitle: string; songArtists: string[]; songDuration: number; platform?: string; id?: string | number }> = []
+    const upcoming: Array<{ songTitle: string; songArtists: string[]; songDuration: number; platform?: string; id?: string | number; songAlbum?: string }> = []
     for (let offset = 1; offset <= 2; offset += 1) {
       const song = playlist[currentIndex + offset]
       if (!song) break
@@ -2074,6 +2076,7 @@ function App() {
         songDuration: (song.duration || 0) / 1000,
         platform: song.platform,
         id: song.id || song.mid,
+        songAlbum: song.album?.name,
       })
     }
     return upcoming
@@ -2976,6 +2979,7 @@ function App() {
           duration: typeof normalizedToSong.duration === 'number' ? normalizedToSong.duration / 1000 : undefined,
           platform: normalizedToSong.platform,
           id: normalizedToSong.id ?? normalizedToSong.mid,
+          albumName: normalizedToSong.album?.name,
         })
       }
     }
@@ -9832,6 +9836,7 @@ function App() {
             songDuration={(currentSong.duration || 0) / 1000}
             platform={currentSong.platform}
             songId={currentSong.id || currentSong.mid}
+            songAlbum={currentSong.album?.name}
             isPlaying={isPlaying}
             getAudioElement={getMvAudioElementStable}
             getPlaybackTimeSeconds={getMvPlaybackTimeSecondsStable}
@@ -9982,6 +9987,7 @@ function App() {
                 coverUrl={displayCoverUrl}
                 platform={currentSong.platform}
                 songId={currentSong.id || currentSong.mid}
+                songAlbum={currentSong.album?.name}
                 playerTheme={playerTheme}
                 onNext={handleNext}
                 onPrevious={handlePrevious}

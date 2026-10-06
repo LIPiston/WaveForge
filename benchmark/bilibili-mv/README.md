@@ -30,3 +30,10 @@ Reports include the Git commit, dirty-tree flag, scoring/corpus source hash and 
 Set `BILIBILI_BENCHMARK_DELAY_SCALE=0.1` only for local smoke tests; normal collection should retain the default pacing.
 
 `source-registry.json` is an evidence registry, not a blanket keyword allowlist. Add a Bilibili MID only after verifying it through an official project, publisher, artist, or label source. Scope each source to the relevant artist or franchise.
+
+## 可选字段
+
+- `album`：平台专辑名。语料带该字段时，匹配器会用 `mvFranchise.extractFranchiseFromAlbum`
+  从动画/游戏/影视原声专辑中保守提取作品名作为 IP 证据（显式 `franchise` 仍优先）。
+  抽取效果与风险用 `npm run audit:mv-franchise <library.json>`（真实曲库）
+  与 `npm run benchmark:mv-franchise`（留存候选池离线重打分，四对照臂）评估，二者不发起任何网络请求。

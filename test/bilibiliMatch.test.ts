@@ -608,6 +608,43 @@ describe('来源证据与稳定排序回归', () => {
     expect(inferRecordingTarget({ songTitle: 'unravel', artists: ['TK from 凛として時雨'], songDuration: 238 })).toBeUndefined()
   })
 
+  it('歌名自带 Anime Size / TV ver. / アニメサイズ 等短版标记时推断 tv-size', () => {
+    // 用户实测：上田麗奈「リテラチュア (文学) (Anime Size)」（魔女の旅々 OP）——歌名里的
+    // Anime Size 必须被识别成短版本体，否则会被当成完整版、反过来避开 90 秒的 OP 正片。
+    expect(inferRecordingTarget({ songTitle: 'リテラチュア (文学) (Anime Size)', artists: ['上田麗奈'], songDuration: 90 })).toBe('tv-size')
+    expect(inferRecordingTarget({ songTitle: '残酷な天使のテーゼ (TVサイズ)', artists: ['高橋洋子'], songDuration: 92 })).toBe('tv-size')
+    expect(inferRecordingTarget({ songTitle: 'Some Song (Anime Ver.)', artists: ['X'], songDuration: 90 })).toBe('tv-size')
+    expect(inferRecordingTarget({ songTitle: 'Some Song (TV Edition)', artists: ['X'], songDuration: 90 })).toBe('tv-size')
+    expect(inferRecordingTarget({ songTitle: 'Some Song アニメver.', artists: ['X'], songDuration: 90 })).toBe('tv-size')
+    // 完整版歌名（无短版标记）不受影响：仍按完整版处理、继续避开短 OP/ED；
+    // 泛词不误伤（Television / Animation 不是短版标记）
+    expect(inferRecordingTarget({ songTitle: 'リテラチュア', artists: ['上田麗奈'], songDuration: 260 })).toBeUndefined()
+    expect(inferRecordingTarget({ songTitle: 'Television', artists: ['X'], songDuration: 200 })).toBeUndefined()
+    expect(inferRecordingTarget({ songTitle: 'Animation', artists: ['X'], songDuration: 200 })).toBeUndefined()
+  })
+
+  it('Anime Size 歌曲优先匹配 1:30 的 OP/ED 正片，完整版歌曲仍避开短版', () => {
+    const animeCtx: MatchContext = { songTitle: 'リテラチュア (文学) (Anime Size)', artists: ['上田麗奈'], songDuration: 90, franchise: '魔女の旅々' }
+    // 短版本体：90 秒 OP 正片（自报 Anime Size）必须压过 4 分钟的完整版投稿
+    const op = scoreCandidate(video({ title: '【魔女の旅々】OP リテラチュア 上田麗奈 Anime Size', duration: 90, play: 100_000 }), animeCtx)
+    const fullMv = scoreCandidate(video({ title: '上田麗奈 リテラチュア 完整版 MV', duration: 250, play: 100_000 }), animeCtx)
+    expect(op.score).toBeGreaterThan(fullMv.score)
+    // 长短版本互斥的另一半：同一个 90 秒 OP 在完整版歌名语境下必须被短版降级压下去
+    const fullCtx: MatchContext = { songTitle: 'リテラチュア', artists: ['上田麗奈'], songDuration: 250 }
+    const opForFull = scoreCandidate(video({ title: '【魔女の旅々】OP リテラチュア 上田麗奈 Anime Size', duration: 90, play: 100_000 }), fullCtx)
+    const fullForFull = scoreCandidate(video({ title: '上田麗奈 リテラチュア 完整版 MV', duration: 250, play: 100_000 }), fullCtx)
+    expect(fullForFull.score).toBeGreaterThan(opForFull.score)
+  })
+
+  it('tv-size 的短版加分按候选标题标记发放，教学/演奏版不吃加分', () => {
+    const tvCtx: MatchContext = { songTitle: 'リテラチュア (Anime Size)', artists: ['上田麗奈'], songDuration: 90 }
+    const plain = scoreCandidate(video({ title: '【OP】リテラチュア 上田麗奈', duration: 90, play: 100_000 }), tvCtx)
+    const marked = scoreCandidate(video({ title: '【OP】リテラチュア 上田麗奈 Anime Size', duration: 90, play: 100_000 }), tvCtx)
+    expect(marked.score - plain.score).toBeGreaterThanOrEqual(30)
+    const instrumental = scoreCandidate(video({ title: '【OP】リテラチュア 上田麗奈 Anime Size 钢琴版', duration: 90, play: 100_000 }), tvCtx)
+    expect(instrumental.score).toBeLessThan(marked.score)
+  })
+
   it('社区合作频道不会冒充官方来源，SEKAI 版本仅由版本证据加权', () => {
     const sekaiVideo = video({ title: '【2DMV】神っぽいな 初音ミク', author: 'Project_SEKAI资讯站', mid: 13148307, duration: 205, play: 1_000_000 })
     const vocaloid = scoreCandidate(sekaiVideo, { songTitle: '神っぽいな', artists: ['ピノキオピー', '初音ミク'], songDuration: 204, targetVersion: 'virtual-singer' })

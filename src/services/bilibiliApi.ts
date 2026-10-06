@@ -17,6 +17,7 @@
 import { recordLogin, clearLoginExpiry, isLoginExpired } from './loginExpiry'
 import { Converter } from 'opencc-js/t2cn'
 import { BILIBILI_MV_DECLARATION_VERSION, getDeveloperBilibiliMvDeclaration } from '../data/bilibiliMvDeclarations'
+import { extractFranchiseFromAlbum, franchiseVariants } from './mvFranchise'
 
 export let BILI_API_BASE = 'http://localhost:3001/api/bilibili'
 
@@ -133,6 +134,9 @@ export interface MatchContext {
   targetVersion?: 'full-original' | 'tv-size' | 'sekai-version' | 'virtual-singer' | 'specific-performance'
   /** 可选作品/IP，用于高碰撞标题和游戏、动画主题曲消歧 */
   franchise?: string
+  /** 专辑名（平台元数据）：显式 franchise 缺失时从中保守提取作品名作为 IP 证据
+   *  （动画/游戏/影视原声专辑；普通专辑不提取——见 services/mvFranchise）。 */
+  album?: string
 }
 
 export interface CandidateSignals {
@@ -977,9 +981,22 @@ const NON_MUSIC_CONTENT_MARKERS = [
   '玩法预告', '实机预告', '游戏预告', '宣传片', '探险指南', '攻略', '任务线', '剧情解析', '武器展示',
   'adventure guide', 'gameplay trailer', 'weapon showcase', 'behind the scenes', 'making of',
 ]
+/**
+ * 电视音乐节目 / 音综的演出版标记：这类投稿是**节目现场的另一版录音**，与录音室正片不是同一条声轨
+ * （对不上口型/节拍），既算 live 也算"替代版本"。
+ * 背景（离线对照实测 2026-10-06）：G.E.M.《喜欢你》的「我是歌手」4K 修复版靠高清标记
+ * （hdMarker + 4K 加分）排到了录音室正片前面 —— 标题里没有「现场/live」字样，旧标记全都没命中。
+ */
+const TV_MUSIC_SHOW_MARKERS = [
+  '我是歌手', '蒙面歌王', '蒙面唱将', '天赐的声音', '声生不息', '中国好声音', '梦想的声音', '我们的歌',
+  '歌手2017', '歌手2018', '歌手2019', '歌手2020', '歌手2024', '歌手2025', '当打之年', '歌手·当打之年',
+  '音综', '节目现场', '演出版', '舞台版', '舞台纯享', 'live舞台',
+]
 const ALTERNATE_VERSION_MARKERS = [
   'acoustic', 'unplugged', 'stripped', 'one take', 'singthrough', 'first take',
   'remix', '重混音', '混音版', 'arrange', '现场', '演唱会', '演出', 'live版', 'colorful live', 'magical mirai', '魔法未来', '歌ってみた', '翻唱',
+  // 电视音乐节目演出版：同一首歌的节目现场录音（见 TV_MUSIC_SHOW_MARKERS 注释）
+  ...TV_MUSIC_SHOW_MARKERS,
 ]
 // 「加长」不收：加长版是正片信号（POSITIVE_SONG +12、完整正片强规则 +25），再 -55 会自相矛盾
 const DERIVED_EXTENDED_MARKERS = ['延长', 'extended', 'loop', '循环', '完整版自制', '民间完整版']
@@ -988,7 +1005,19 @@ const COMPILATION_MARKERS = ['合集', '串烧', '盘点', '榜单', '精选歌'
 const POSITIVE_EXTRA_MARKERS = ['歌词', '字幕', '4k', '1080p', '正式版', '中字', '高清', '超清']
 /** 正片增强标记：动漫/剧集主题曲 MV、加长版、完整版更可能是完整正片（用户反馈红莲华场景） */
 const POSITIVE_SONG_MARKERS = ['主题曲', '主題曲', '主题歌', '主題歌', 'テーマソング', '加长版', '加長版', '完整版']
-const LIVE_MARKERS = ['live', '现场', '演唱会', 'livehouse', '音乐节', 'live版', 'the first take', 'first take', '一発撮り', 'ファーストテイク']
+/**
+ * 「TV / 动画短版」标记：平台歌名带这些后缀时，音频本体就是 ~1:30 的动漫 OP/ED 录音，
+ * 匹配应**优先同长度的片头/片尾视频**；完整版歌曲则相反（避开短 OP/ED，见短版降级规则）。
+ *
+ * 背景（用户实测 2026-10-06）：上田麗奈「リテラチュア (文学) (Anime Size)」（TVアニメ
+ * 『魔女の旅々』OP）——平台歌名里的 Anime Size 此前不被识别，被当成完整版处理，
+ * 90 秒的 OP 正片反而吃「OP/ED 短版降级」-25。英文 TV/anime size·ver·edit·edition、
+ * 中文 电视版/TV版/动画版、日文 アニメサイズ/アニメ版/アニメver/テレビサイズ/TVサイズ 都算。
+ */
+const TV_ANIME_SIZE_MARKER = /\b(?:tv|anime)[\s._-]*(?:size|ver(?:sion)?|edit|edition)\b|电视版|tv版|动画版|アニメサイズ|アニメ版|アニメver|テレビサイズ|tvサイズ/i
+/** 「完整版 / 加长版」显式声明：短版歌曲的反方向排除依据（见 tv-size 分支） */
+const FULL_VERSION_CLAIM_MARKER = /完整版|加长版|加長版|フルサイズ|フルver|full[\s._-]*(?:size|ver(?:sion)?)/i
+const LIVE_MARKERS = ['live', '现场', '演唱会', 'livehouse', '音乐节', 'live版', 'the first take', 'first take', '一発撮り', 'ファーストテイク', ...TV_MUSIC_SHOW_MARKERS]
 /** 乐器/曲谱类标题（演奏向，多为翻弹/教学，非正片） */
 const INSTRUMENT_MARKERS = [
   '钢琴', '吉他', '指弹', '演奏', '笛子', '古筝', '二胡', '萨克斯', '伴奏', '鼓谱', '架子鼓', '扒谱',
@@ -1355,11 +1384,30 @@ const FRANCHISE_ALIASES: Record<string, string[]> = {
   'projectsekai': ['世界计划', 'プロジェクトセカイ', 'pjsk'],
 }
 
-function resolveFranchiseNames(franchise?: string): string[] {
-  const raw = String(franchise || '').trim()
+/**
+ * 匹配上下文可用的「作品名」（IP 词）清单：显式 franchise 优先；没有显式值时从专辑名保守提取
+ * （见 mvFranchise.extractFranchiseFromAlbum——只认作品关联专辑，普通专辑不出 IP 词）。
+ * 返回 [原名, ...别名]；无证据时返回空数组（保持"无 IP 证据"的原有评分口径）。
+ *
+ * ⚠️ 刻意不用于 `matchesVerifiedOfficialSource` / `uploaderQueries` 的**官号归属**判定：
+ * 推导出来的作品名只做评分与召回，不足以把某个 MID 认定为官方来源（信任判定要用显式声明）。
+ */
+function franchiseNamesOf(ctx: MatchContext): string[] {
+  const explicit = String(ctx.franchise || '').trim()
+  const raw = explicit
+    || extractFranchiseFromAlbum(ctx.album, { songTitle: ctx.songTitle, artists: ctx.artists })
+    || ''
   if (!raw) return []
   const key = normalizeText(raw)
-  return [raw, ...(FRANCHISE_ALIASES[key] || [])]
+  // 变体一并参与命中与召回（原名 + 去季/篇/剧场版 + 空格前截断）：
+  // 「鬼滅の刃 無限列車編」这类剧场版/分季标注要能命中只写作品名的 OP/ED 投稿标题。
+  const expanded: string[] = []
+  for (const name of [raw, ...(FRANCHISE_ALIASES[key] || [])]) {
+    for (const variant of franchiseVariants(name)) {
+      if (!expanded.includes(variant)) expanded.push(variant)
+    }
+  }
+  return expanded
 }
 
 /** 候选类型识别（标题标记驱动） */
@@ -1520,7 +1568,8 @@ export type RecordingTarget = NonNullable<MatchContext['targetVersion']>
 
 export function inferRecordingTarget(ctx: MatchContext): RecordingTarget | undefined {
   if (ctx.targetVersion) return ctx.targetVersion
-  if (/\b(?:tv\s*(?:size|ver(?:sion)?))\b|电视版|tv版/i.test(ctx.songTitle)) return 'tv-size'
+  // 歌名自带 TV/anime size 等短版标记 → 音频就是动漫 OP/ED 的 1:30 版本（见 TV_ANIME_SIZE_MARKER）
+  if (TV_ANIME_SIZE_MARKER.test(ctx.songTitle)) return 'tv-size'
   const artistNames = resolveArtistNames(ctx.artists || []).normalized
   const artistsText = normalizeText((ctx.artists || []).join(' '))
   if (/leoneed|moremorejump|vividbadsquad|wonderlands×?showtime|25时ナイトコード|25時ナイトコード/.test(artistsText)) return 'sekai-version'
@@ -1661,7 +1710,7 @@ export function scoreCandidate(
     const songSegmentIndex = segments.findIndex((part) => songTitleVariants.some((variant) => normalizeText(part) === variant))
     if (songSegmentIndex > 0) {
       const lead = normalizeText(segments[0])
-      const franchiseNames = resolveFranchiseNames(ctx.franchise).map(normalizeText)
+      const franchiseNames = franchiseNamesOf(ctx).map(normalizeText)
       const isExpectedSource = artistNormList.some((artist) => lead.includes(artist))
         || aliasNormList.some((alias) => lead.includes(alias))
         || franchiseNames.some((name) => lead.includes(name))
@@ -1714,7 +1763,7 @@ export function scoreCandidate(
         // 作品/IP 名署名不算"他人"：【罪恶王冠】《βios》拔剑神曲这类形态的书名号前缀是
         // 作品名（用户实测：485 万播放的「【罪恶王冠】《βios》…王の诞生」被当「他人演唱」罚 -45，
         // 排到复审门外）。IP 词与歌名一样是消歧证据——命中目标作品的 franchise/IP 词时不罚。
-        const franchiseHit = resolveFranchiseNames(ctx.franchise)
+        const franchiseHit = franchiseNamesOf(ctx)
           .map((name) => normalizeText(name))
           .filter((name) => name.length >= 2)
           .some((name) => prefix.includes(name))
@@ -1892,8 +1941,14 @@ export function scoreCandidate(
     if ((extra?.preference ?? 'balanced') !== 'live') penalizeAlternateVersion()
   } else if (targetVersion === 'tv-size') {
     const isDerivative = signals.negativeHit || classifyCandidateType(video.title) === 'instrumental'
-    if (!isDerivative && /tv\s*(size|ver)|电视版|tv版/i.test(video.title)) score += 35
+    // 候选自报 TV/anime size（与歌名侧同一套标记：Anime Size / TV ver. / アニメサイズ…）
+    if (!isDerivative && TV_ANIME_SIZE_MARKER.test(video.title)) score += 35
+    // 时长落在 OP/ED 常规区间（约 1:10–1:50）：短版歌曲的精确版本
     if (!isDerivative && video.duration >= 70 && video.duration <= 110) score += 25
+    // 反方向对称：歌曲本体是短版时，明确自报「完整版/加长版」的是另一版（更长）录音。
+    // 与「完整版歌曲避开短 OP/ED」同一条长短互斥规则的另一半；-20 只做倾向修正，
+    // 真正的排序由时长贴近评分负责（完整录音动辄偏离 >50% 已吃 -35）。
+    if (!isDerivative && FULL_VERSION_CLAIM_MARKER.test(video.title)) score -= 20
   } else if (targetVersion === 'virtual-singer') {
     penalizeAlternateVersion()
     if (/世界计划|project\s*sekai|pjsk|2dmv|3dmv|sekai\s*ver/i.test(video.title + video.author)) score -= 55
@@ -1936,7 +1991,7 @@ export function scoreCandidate(
     || (homeLang === 'latin' && markedLang !== 'en')
   )) score -= 80
 
-  const franchiseNorms = resolveFranchiseNames(ctx.franchise).map(normalizeText).filter((name) => name.length >= 2)
+  const franchiseNorms = franchiseNamesOf(ctx).map(normalizeText).filter((name) => name.length >= 2)
   const hasFranchise = franchiseNorms.some((name) => titleNorm.includes(name))
   if (hasFranchise) score += 25
   // 短而泛化的英文标题极易撞到问答、预告和其他游戏；可信来源只能证明上传者身份，
@@ -2057,7 +2112,11 @@ export function shouldAutoPlay(candidate: CandidateScore, strictness: AutoPlaySt
 // ===== 按歌缓存 + 手动选择记忆 + 黑名单 =====
 
 const MATCH_CACHE_TTL = 24 * 60 * 60 * 1000
-const MATCH_SCORE_VERSION = 'v9-nfc-and-versions'
+// v11：在 v10（TV/anime size 歌名识别 + 专辑名推导作品名）基础上新增
+//      · 电视音乐节目演出版标记（我是歌手/音综…按替代录音降权）
+//      · 作品名变体（去季/篇/剧场版、空格前截断）参与 IP 命中
+//      ——评分口径再次变化，24h 匹配缓存必须失效
+const MATCH_SCORE_VERSION = 'v11-tvshow-and-franchise-variants'
 /** 匹配缓存 LRU 上限（防止长时间会话无界增长） */
 const MATCH_CACHE_MAX = 60
 const matchCache = new Map<string, { at: number; result: BilibiliMatchResult }>()
@@ -2372,7 +2431,7 @@ export function buildQueries(song: MatchContext, settings?: Pick<BilibiliWatchSe
   for (const query of uploaderQueries(song, resolvedArtists)) queries.push(query)
   // 1. 原文标题 + 全部歌手（首选；日韩等原文标题直接搜原文，中文仅作辅助）
   if (artist) queries.push(`${title} ${artist}`.trim())
-  const franchiseNames = resolveFranchiseNames(song.franchise)
+  const franchiseNames = franchiseNamesOf(song)
   for (const franchise of franchiseNames) queries.push(`${title} ${franchise}`.trim())
   // 2. 逐个歌手 + 歌手别名尝试（如 宇多田光 ↔ 宇多田ヒカル，B 站标题两种写法都常见）
   const artistVariants: string[] = []

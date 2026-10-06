@@ -117,6 +117,8 @@ interface BilibiliMvPlayerProps {
   coverUrl: string
   platform?: string
   songId?: string | number
+  /** 专辑名：动画/游戏/影视原声专辑可推导作品名作为 IP 证据（见 services/mvFranchise） */
+  songAlbum?: string
   playerTheme?: 'light' | 'dark'
   /** 全局音量（0-1，单一数据源）：与其它播放模式同步，改动经 onVideoStateChange 回写 */
   volume?: number
@@ -138,7 +140,7 @@ interface BilibiliMvPlayerProps {
   onToggleFavorite?: () => void
   liked?: boolean
   /** 即将播放的歌曲（预加载评分高的视频） */
-  upcomingSongs?: Array<{ songTitle: string; songArtists: string[]; songDuration: number; platform?: string; id?: string | number }>
+  upcomingSongs?: Array<{ songTitle: string; songArtists: string[]; songDuration: number; platform?: string; id?: string | number; songAlbum?: string }>
   /** 从歌词模式切来看歌时的续播位置（音频秒数；视频加载后 seek 到该处） */
   initialSeekSeconds?: number
   /** MV 背景已加载的视频流（复用避免重新缓冲；需与 initialBvid/initialCid 配合） */
@@ -272,6 +274,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     coverUrl,
     platform,
     songId,
+    songAlbum,
     playerTheme = 'dark',
     volume: volumeProp = 0.7,
     onNext,
@@ -953,7 +956,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
         reportVideoActive(false)
       }
 
-      const ctx: MatchContext = { songTitle, artists: songArtists, songDuration, platform, id: songId }
+      const ctx: MatchContext = { songTitle, artists: songArtists, songDuration, platform, id: songId, album: songAlbum }
       try {
         const result = await findBestBilibiliMv(ctx, {
           signal: controller.signal,
@@ -1048,7 +1051,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     const ctxs = upcomingSongs.slice(0, 2)
     for (const upcoming of ctxs) {
       void findBestBilibiliMv(
-        { songTitle: upcoming.songTitle, artists: upcoming.songArtists, songDuration: upcoming.songDuration, platform: upcoming.platform, id: upcoming.id },
+        { songTitle: upcoming.songTitle, artists: upcoming.songArtists, songDuration: upcoming.songDuration, platform: upcoming.platform, id: upcoming.id, album: upcoming.songAlbum },
         { signal: preloadController.signal, settings: settingsRef.current },
       ).catch(() => { /* 预加载失败静默 */ })
     }
@@ -1560,7 +1563,7 @@ const BilibiliMvPlayer = forwardRef<BilibiliMvPlayerHandle, BilibiliMvPlayerProp
     setManualSearching(true)
     try {
       const r = await searchBilibiliVideos(keyword, 1, controller.signal)
-      const ctx: MatchContext = { songTitle, artists: songArtists, songDuration, platform, id: songId }
+      const ctx: MatchContext = { songTitle, artists: songArtists, songDuration, platform, id: songId, album: songAlbum }
       const results = (r.results || [])
         .map((video, rank) => scoreCandidate(video, ctx, { rank, preference: settingsRef.current.matchPreference }))
         .sort(compareCandidates)
