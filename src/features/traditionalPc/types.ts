@@ -35,6 +35,10 @@ export interface PcActions {
   onOpenAlbum?: (albumId: string, platform: MusicPlatform) => void
   onOpenChart?: (chart: any, autoplay?: boolean) => void
   onOpenComments?: (song: Song) => void
+  /** 打开 MV（弹窗内直接播放）；mvId 缺省 = 打开 MV 浏览弹窗（不直达播放）。 */
+  onOpenMv?: (mvId?: string, platform?: 'qq' | 'netease') => void
+  /** 打开某用户的个人主页（网易云用户卡片/粉丝行用）；不传时页面降级为自己的主页。 */
+  onOpenUserProfile?: (userId: string, nickname?: string, avatarUrl?: string) => void
   /** 分享歌单（复制平台分享链接 + toast）；未接入时为 undefined，页面据此不渲染分享按钮 */
   onSharePlaylist?: (playlist: any) => void
   /** 页内跳转到传统模式的其它页面（值由 TraditionalView 解释，见 PcNavTarget）。 */
@@ -53,10 +57,10 @@ export interface PcActions {
 
 /**
  * 页面内可发起的目标；TraditionalView 负责映射到自己的历史栈页面。
- * 只列真实存在的页面：本地音乐 / 下载管理 / 已购音乐 / 试听列表在本版本没有数据源，已整体下线。
+ * 只列真实存在的页面：本地音乐 / 下载管理 / 已购音乐 / 试听列表是产品决策上永久不支持的能力，入口已全部删除。
  */
 export type PcNavTarget =
-  | { kind: 'qq'; page: 'home' | 'hall' | 'liked' | 'recent' | 'search' | 'profile' | 'settings'; keyword?: string }
+  | { kind: 'qq'; page: 'home' | 'hall' | 'liked' | 'recent' | 'search' | 'profile' | 'settings'; keyword?: string; detail?: string }
   | { kind: 'netease'; page: 'home' | 'featured' | 'podcast' | 'roam' | 'follow' | 'liked' | 'recent' | 'mypodcast' | 'collect' | 'cloud' | 'search' | 'profile' | 'settings'; keyword?: string; detail?: string }
 
 /** 账号上下文。 */

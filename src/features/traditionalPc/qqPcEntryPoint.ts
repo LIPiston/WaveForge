@@ -4,6 +4,7 @@
 // 返回 CommonFeatures（可用条目 + 官方图标 + 是否已选）/ CommonSingers（常听艺人）/
 // RecentlyListening（最近常听的歌单）/ Selections（用户已选功能位）/ MaxSelectItemNum（=8）。
 // 这些都不是手机端那套数据，而是 PC 客户端自己的入口配置。
+import { getApiBase } from '../../services/apiConfig'
 import { getPlatformCookie } from '../../services/platforms'
 
 export interface QQPcEntryItem {
@@ -68,7 +69,7 @@ export function entryLinkParam(item: QQPcEntryItem, key: string): string {
 export async function fetchQQPcEntryPoint(): Promise<QQPcEntryPoint> {
   const cookie = getPlatformCookie('qq')
   if (!cookie) throw new Error('需要登录 QQ 音乐')
-  const response = await fetch('http://localhost:3001/api/qq/pc/entry-point', {
+  const response = await fetch(`${getApiBase()}/qq/pc/entry-point`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ cookie }),

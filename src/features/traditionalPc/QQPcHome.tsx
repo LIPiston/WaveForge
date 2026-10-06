@@ -12,6 +12,7 @@ import { Compass, Play } from 'lucide-react'
 import type { Song } from '../../services/musicApi'
 import type { ExplorePayload } from '../../services/exploreApi'
 import { fetchExploreRecommendationBatch } from '../../services/exploreApi'
+import { getApiBase } from '../../services/apiConfig'
 import { fetchQQExploreBootstrap, fetchQQRadarSongs } from '../qqExplore/api'
 import { qqCardPlaylist, type QQExploreCard, type QQExploreModule } from '../qqExplore/model'
 import { PcCardGrid, PcEmpty, PcPrimaryButton, PcSectionTitle, pcTheme, type PcTone } from './pcKit'
@@ -44,6 +45,10 @@ export interface QQPcHomeProps {
 const EMPTY_ACTIONS: PcActions = { onPlaySongs: () => {}, onSongMenu: () => {}, onOpenPlaylist: () => {}, onNavigate: () => {} }
 
 const artistLine = (song: Song): string => (song.artists || []).map(artist => artist.name).filter(Boolean).join(' / ')
+
+/** runCard 能分发的 action 类型；之外的卡片渲染成静态卡（与乐馆 QQPcHall 同一处理），不留点了没反应的死按钮。 */
+const ACTIONABLE_CARD_TYPES = new Set(['play-radio', 'play-radar', 'play-songs', 'open-playlist', 'open-preferences'])
+const isActionableCard = (card: QQExploreCard): boolean => ACTIONABLE_CARD_TYPES.has(card.action?.type || '')
 
 interface TreasureItem { key: string; coverUrl?: string; title: string; subtitle?: string; playCount?: number; playlist: any }
 
@@ -96,7 +101,7 @@ function QQPcHome({ payload, chrome, account, actions, active = true, username, 
         })))
       }
     }
-    void fetch('http://localhost:3001/api/qq/songlist/list?id=10000000&page=1&pageSize=18&sort=5', { cache: 'no-store' })
+    void fetch(`${getApiBase()}/qq/songlist/list?id=10000000&page=1&pageSize=18&sort=5`, { cache: 'no-store' })
       .then(response => response.json())
       .then(data => {
         if (cancelled) return
@@ -248,14 +253,8 @@ function QQPcHome({ payload, chrome, account, actions, active = true, username, 
             const caption = promoCard.subtitle || promoCard.reason || FALLBACK_RECOMMENDATION_LINE
             const cover = promoCard.coverUrl || promoCard.songs?.[0]?.album?.picUrl
             const busy = busyKey === (promoCard.id || promoCard.title)
-            return (
-              <button
-                type="button"
-                onClick={() => { void runCard(promoCard) }}
-                disabled={busy}
-                className="col-span-2 flex h-[188px] items-stretch justify-between gap-4 overflow-hidden rounded-2xl px-6 py-5 text-left transition hover:brightness-[1.03] disabled:opacity-80 lg:col-span-1"
-                style={{ background: PROMO_GRADIENT }}
-              >
+            const body = (
+              <>
                 <span className="flex min-w-0 flex-1 flex-col justify-between">
                   <span>
                     <span className="block truncate text-[26px] font-semibold leading-tight text-white">{promoCard.title || '猜你喜欢'}</span>
@@ -270,6 +269,26 @@ function QQPcHome({ payload, chrome, account, actions, active = true, username, 
                     <img src={cover} alt={promoCard.title || '推荐封面'} className="h-[132px] w-[132px] object-cover" loading="eager" referrerPolicy="no-referrer" />
                   </span>
                 ) : null}
+              </>
+            )
+            const promoClassName = 'col-span-2 flex h-[188px] items-stretch justify-between gap-4 overflow-hidden rounded-2xl px-6 py-5 text-left transition lg:col-span-1'
+            // 主推卡的兜底选中（style 201/203）可能带本软件打不开的 action：渲染成静态卡，不给死按钮
+            if (!isActionableCard(promoCard)) {
+              return (
+                <div key="promo-static" className={promoClassName} style={{ background: PROMO_GRADIENT }} title="该内容只能在 QQ 音乐客户端中打开">
+                  {body}
+                </div>
+              )
+            }
+            return (
+              <button
+                type="button"
+                onClick={() => { void runCard(promoCard) }}
+                disabled={busy}
+                className={`${promoClassName} hover:brightness-[1.03] disabled:opacity-80`}
+                style={{ background: PROMO_GRADIENT }}
+              >
+                {body}
               </button>
             )
           })()}
@@ -278,14 +297,8 @@ function QQPcHome({ payload, chrome, account, actions, active = true, username, 
             const { label, caption, subtitle } = featureLabel(card)
             const cover = card.coverUrl || card.songs?.[0]?.album?.picUrl
             const busy = busyKey === (card.id || card.title)
-            return (
-              <button
-                key={card.id || `${card.title}:${index}`}
-                type="button"
-                onClick={() => { void runCard(card) }}
-                disabled={busy}
-                className="group flex min-w-0 flex-col text-left disabled:opacity-80"
-              >
+            const body = (
+              <>
                 <span className="relative block aspect-[1.55] w-full overflow-hidden rounded-2xl">
                   {cover
                     ? <img src={cover} alt={card.title || '推荐封面'} className="h-full w-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
@@ -297,6 +310,29 @@ function QQPcHome({ payload, chrome, account, actions, active = true, username, 
                 </span>
                 <span className={`mt-2 truncate text-[13px] ${theme.text}`}>{caption}</span>
                 <span className={`truncate text-[12px] ${theme.subtle}`}>{subtitle}</span>
+              </>
+            )
+            // action 落不进 runCard 的卡（如 open-album/open-external）：静态卡 + 提示，与乐馆口径一致
+            if (!isActionableCard(card)) {
+              return (
+                <div
+                  key={card.id || `${card.title}:${index}`}
+                  className="flex min-w-0 flex-col text-left"
+                  title="该内容只能在 QQ 音乐客户端中打开"
+                >
+                  {body}
+                </div>
+              )
+            }
+            return (
+              <button
+                key={card.id || `${card.title}:${index}`}
+                type="button"
+                onClick={() => { void runCard(card) }}
+                disabled={busy}
+                className="group flex min-w-0 flex-col text-left disabled:opacity-80"
+              >
+                {body}
               </button>
             )
           })}

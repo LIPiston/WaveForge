@@ -14,6 +14,7 @@ import {
   PcDetailHeader, PcGhostButton, PcNoticeBar, PcPrimaryButton, PcSongTable, PcTabs, PcTableSearch,
   PcEmpty, pcTheme, type PcSkin, type PcTone,
 } from './pcKit'
+import PcComments from './PcComments'
 import type { PcActions, PcAccount } from './types'
 
 const PAGE_SIZE = 200
@@ -113,9 +114,12 @@ function PcPlaylistDetail({
     (playlist?.tags || []).length ? (playlist?.tags || []).map(tag => `#${tag}`).join(' ') : '',
   ].filter(Boolean).join(' · ')
 
-  // 官方还有「评论 / 收藏者」页签，但仓库里没有歌单级评论/收藏者接口（只有单曲评论，走行内入口/右键菜单），
-  // 所以这里只保留有数据的「歌曲」，而不是留一个点进去是空态的页签。
-  const tabItems = [{ key: 'songs', label: '歌曲', count: trackCount }]
+  // 歌单级评论两平台都有接口（网易云 type=2、QQ biztype=3，见 PcComments），
+  // 挂「评论」页签内嵌只读评论面板；「收藏者」没有数据源，仍不渲染假页签。
+  const tabItems = [
+    { key: 'songs', label: '歌曲', count: trackCount },
+    { key: 'comments', label: '评论' },
+  ]
 
   return (
     <div className="pb-8">
@@ -199,6 +203,16 @@ function PcPlaylistDetail({
           )}
         </>
       )}
+
+      {tab === 'comments' && playlist ? (
+        <PcComments
+          platform={platform}
+          resourceId={String(playlist.id || (playlist as { dirId?: string | number }).dirId || '')}
+          resourceIdKind="playlist"
+          chrome={chrome}
+          actions={actions}
+        />
+      ) : null}
     </div>
   )
 }

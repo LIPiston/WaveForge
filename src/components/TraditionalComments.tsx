@@ -147,7 +147,8 @@ function TraditionalComments({ song, accent, isDark, onClose }: TraditionalComme
           more = Boolean(data.data?.hasMore)
         }
       } else if (platform === 'qq') {
-        const pageNumber = reset ? 1 : pageRef.current + 1
+        // QQ：pagenum 页码分页（0 起，服务端映射上游 pageNo=pagenum+1）；首页必须传 0，传 1 会跳过第一条评论
+        const pageNumber = reset ? 0 : pageRef.current + 1
         const endpoint = `${API_BASE}/api/qq/comment?id=${encodeURIComponent(String(songId))}&pagenum=${pageNumber}&pagesize=20&type=${view}&biztype=1&cookie=${encodeURIComponent(getPlatformCookie('qq'))}`
         const response = await fetch(endpoint)
         const data = await response.json()
@@ -171,7 +172,7 @@ function TraditionalComments({ song, accent, isDark, onClose }: TraditionalComme
         setComments(list)
         setHotComments(hot)
         offsetRef.current = 30
-        pageRef.current = 1
+        pageRef.current = 0
         // 只缓存成功且非空的首页结果（空/失败不缓存，下次仍会重试）
         if (list.length > 0 || hot.length > 0) {
           commentsCache.set(cacheKey, { comments: list, hotComments: hot, hasMore: effectiveMore, cursor: sodaCursorRef.current })

@@ -339,11 +339,11 @@ describe('传统模式 TraditionalView', () => {
     const song = { id: 12, mid: 'qq-mid', name: 'QQ歌曲', artists: [{ name: '歌手' }], album: { name: '专辑', picUrl: '' }, duration: 1000, platform: 'qq' as const }
     render(<TraditionalComments song={song} accent="#22c55e" isDark onClose={() => undefined} />)
     await waitFor(() => expect(screen.getByText('加载更多')).toBeTruthy())
-    expect(String(fetchMock.mock.calls[0][0])).toContain('pagenum=1')
+    expect(String(fetchMock.mock.calls[0][0])).toContain('pagenum=0')
     expect(String(fetchMock.mock.calls[0][0])).toContain('qq-auth-cookie')
     fireEvent.click(screen.getByText('加载更多'))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(String(fetchMock.mock.calls[1][0])).toContain('pagenum=2')
+    expect(String(fetchMock.mock.calls[1][0])).toContain('pagenum=1')
   })
 
   it('恢复 traditional-search 来源并由 TV back 返回首页', async () => {

@@ -381,9 +381,9 @@ export default function SongContextMenu({
     return false
   })
 
-  // 菜单在未选中歌曲时仍会随页面渲染；此时保持空渲染，不能读取歌曲字段。
-  if (!song) return null
-
+  // 菜单未选中歌曲时的空渲染守卫：必须在所有 hooks 之后（下方还有 useSyncExternalStore/useState），
+  // 否则 TraditionalView 这种「组件常驻挂载、song 后到」的宿主会在首次右键时
+  // 触发 hooks 数量变化（Rendered more hooks than during the previous render）而崩溃整棵渲染树。
   // 获取评论数显示文本
   const getCommentCountText = () => {
     if (!song) return ''
@@ -409,6 +409,8 @@ export default function SongContextMenu({
   // kugou 走 H5 网关（喜欢/加歌为真实能力；「取消喜欢」上游无移除端点，在按钮层隐藏）
   const handleThirdPartyAction = (action: 'like' | 'unlike' | 'playlist', playlistId?: string): boolean => {
     const p = resolvedPlatform
+    // 本函数只在下方 `if (!song) return null` 守卫之后被菜单项调用；这里补窄化兜底
+    if (!song) return false
     if (!isThirdPartyPlatform(p)) return false
     if (!getPlatformCookie(p)) {
       showMenuToast(`请先登录${platformLabel(p)}`, 'error')
@@ -538,6 +540,9 @@ export default function SongContextMenu({
     if (!show || !song || !qqDislikeAvailable) return
     void loadQQDislikeIds().catch(() => {})
   }, [show, song, qqDislikeAvailable])
+
+  // 所有 hooks 已执行完毕，这里才是空歌曲的空渲染点（见上方说明）。
+  if (!song) return null
 
   const menuItems = [
     {

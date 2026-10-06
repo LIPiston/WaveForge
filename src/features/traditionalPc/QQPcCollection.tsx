@@ -3,8 +3,8 @@
 // 两个页面共用同一套骨架：大标题 → 下划线页签（带真实计数）→ 播放操作条 + 右端搜索
 // → 歌曲表格或封面网格（最近播放多一列「播放时间」）。所以用组件 + kind 收敛，避免两份页面样式漂移。
 //
-// 数据诚实性：本地扫描/下载/已购/试听记录、有声节目、视频在本版本都没有数据源，
-// 对应入口、页签、操作条按钮已整体下线（不留点进去只有空态的壳），绝不伪造数据。
+// 数据诚实性：本地扫描/下载/已购/试听记录、有声节目、视频是产品决策上永久不支持的能力
+// （上游也没有可用的数据源），对应入口、页签、操作条按钮已删除，不留空壳，绝不伪造数据。
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Search } from 'lucide-react'
 import type { Song } from '../../services/musicApi'

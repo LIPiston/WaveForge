@@ -46,10 +46,15 @@ const LazyNeteasePcFeatured = lazy(() => import('../features/traditionalPc/Netea
 const LazyNeteasePcPodcast = lazy(() => import('../features/traditionalPc/NeteasePcPodcast'))
 const LazyNeteasePcRoam = lazy(() => import('../features/traditionalPc/NeteasePcRoam'))
 const LazyNeteasePcFollow = lazy(() => import('../features/traditionalPc/NeteasePcFollow'))
+const LazyNeteasePcProfile = lazy(() => import('../features/traditionalPc/NeteasePcProfile'))
 const LazyPcPlaylistDetail = lazy(() => import('../features/traditionalPc/PcPlaylistDetail'))
+const LazyPcArtistDetail = lazy(() => import('../features/traditionalPc/PcArtistDetail'))
+const LazyPcAlbumDetail = lazy(() => import('../features/traditionalPc/PcAlbumDetail'))
+const LazyPcComments = lazy(() => import('../features/traditionalPc/PcComments'))
 const LazyPcSearch = lazy(() => import('../features/traditionalPc/PcSearch'))
 const LazyMVExploreModal = lazy(() => import('./MVExploreModal'))
 import { createPlaylist, deletePlaylist, getUserPlaylists, getLikedSongs, invalidateUserPlaylistsCache, removeSongFromPlaylist, subscribePlaylist, updatePlaylist } from '../services/playlistService'
+import { getApiBase } from '../services/apiConfig'
 import { createApplePlaylist, deleteApplePlaylist, updateApplePlaylist, getLastAppleMutationResult, getAppleCatalogPlaylistTracks, getAppleFavoriteSongs, getAppleLibraryPlaylists, getAppleLibrarySongs, getApplePlaylistTracks, getAppleRecentPlayed, appleLibraryTrackToSong, appleSongToSong, removeAppleTracksFromPlaylist, APPLE_FAVORITES_ID, APPLE_LIBRARY_ID } from '../services/appleCatalog'
 import { sodaMediaToSong } from '../services/sodaService'
 import { fetchSpotifyRecentlyPlayed, spotifyTrackToSong } from '../services/spotifyService'
@@ -551,7 +556,7 @@ type TraditionalPageFields =
   | { name: 'album'; id: string; platform: MusicPlatform }
   | { name: 'explore-more'; kind: 'playlists' | 'charts' }
   // PC 客户端复刻页：page 取值按当前平台解释（见 PC_PAGE_IDS）
-  | { name: 'pc'; page: PcPageId; keyword?: string }
+  | { name: 'pc'; page: PcPageId; keyword?: string; detail?: string }
 /** PC 复刻页标识：QQ 与网易云各用其中一部分，未知组合降级为空态。 */
 type PcPageId =
   | 'home' | 'hall' | 'liked' | 'recent'
@@ -626,6 +631,8 @@ function TraditionalView({
   const [pcCounts, setPcCounts] = useState<{ liked?: number; recent?: number; mypodcast?: number; collect?: number }>({})
   // 红心状态版本号：喜欢/取消喜欢后 +1，用于让 PC 表格重算红心（favoriteStatusService 无事件总线）
   const [favoriteRevision, setFavoriteRevision] = useState(0)
+  // QQ 音乐库页（喜欢/最近播放）回传的已喜欢歌曲键：QQLikedPanel 表格红心列的兜底口径
+  const [qqLikedKeys, setQqLikedKeys] = useState<Set<string>>(() => new Set())
 
   // PC 复刻页的红心状态：favoriteStatusService 是「拉一次 + 本地增量」的缓存，没有事件总线，
   // 所以这里主动预取一次并在完成后 bump 版本号让表格重算；登出/切号由 authRevision 触发。
@@ -814,7 +821,7 @@ function TraditionalView({
         .catch(() => undefined)
     } else {
       const cookie = getPlatformCookie('qq')
-      void fetch(`http://localhost:3001/api/qq/record/recent/song?limit=5${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`, { cache: 'no-store' })
+      void fetch(`${getApiBase()}/qq/record/recent/song?limit=5${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`, { cache: 'no-store' })
         .then(response => response.json())
         .then(payload => {
           if (cancelled) return
@@ -1406,13 +1413,13 @@ function TraditionalView({
       if (target.page === 'profile') { navigate({ name: 'profile' }); return }
       if (target.page === 'settings') { navigate({ name: 'settings' }); return }
       if (target.page === 'search') { navigate({ name: 'pc', page: 'search', keyword: target.keyword }); return }
-      navigate({ name: 'pc', page: target.page })
+      navigate({ name: 'pc', page: target.page, detail: target.detail })
       return
     }
     if (target.page === 'home') { navigate({ name: 'home' }); return }
     if (target.page === 'profile') { navigate({ name: 'profile' }); return }
     if (target.page === 'settings') { navigate({ name: 'settings' }); return }
-    navigate({ name: 'pc', page: target.page, keyword: target.keyword })
+    navigate({ name: 'pc', page: target.page, keyword: target.keyword, detail: target.detail })
   }, [navigate])
 
   // 左栏「刷歌」功能位 = 猜你喜欢电台：拉一批歌曲直接播放（与首页/探索页同一接口）
@@ -1457,6 +1464,10 @@ function TraditionalView({
     onOpenAlbum: (albumId, targetPlatform) => openAlbumDetail(albumId, targetPlatform),
     onOpenChart: (chart, autoplay) => { void openChartPage(chart, autoplay) },
     onOpenComments: song => openCommentsFor(song),
+    onOpenMv: (mvId, mvPlatform) => setMvModal(mvId
+      ? { platform: mvPlatform ?? (platform === 'netease' ? 'netease' : 'qq'), mvId, directPlay: true }
+      : { platform: mvPlatform ?? (platform === 'netease' ? 'netease' : 'qq') }),
+    onOpenUserProfile: (userId, nickname, avatarUrl) => navigate({ name: 'profile', userId, nickname, avatarUrl }),
     onSharePlaylist: handleSharePlaylist,
     onNavigate: navigatePcTarget,
     onLogin: () => onLoginClick(platform),
@@ -1464,8 +1475,8 @@ function TraditionalView({
     isLiked: song => peekSongFavoriteStatus(song, platform, getFavoriteUserId(platform)) ?? false,
     currentSongKey: currentSong ? pcSongKey(currentSong) : '',
     isPlaying,
-    likedKeys: undefined,
-  }), [onSongSelect, platform, openPlaylist, openArtistDetail, openAlbumDetail, openChartPage, openCommentsFor, handleSharePlaylist, navigatePcTarget, onLoginClick, handleToggleLike, currentSong, isPlaying, favoriteRevision])
+    likedKeys: platform === 'qq' ? qqLikedKeys : undefined,
+  }), [onSongSelect, platform, openPlaylist, openArtistDetail, openAlbumDetail, openChartPage, openCommentsFor, handleSharePlaylist, navigatePcTarget, onLoginClick, handleToggleLike, currentSong, isPlaying, favoriteRevision, qqLikedKeys])
 
   const pcPageFallback = <div className={`py-20 text-center text-sm ${muted}`}>正在加载客户端页面…</div>
 
@@ -1491,7 +1502,7 @@ function TraditionalView({
     navigate({ name: 'pc', page: key as PcPageId })
   }, [navigate])
 
-  const renderPcPage = (pageId: PcPageId, active: boolean, keyword?: string) => {
+  const renderPcPage = (pageId: PcPageId, active: boolean, keyword?: string, detail?: string) => {
     const wrap = (node: ReactNode, label: string) => (
       <EmbeddedExploreErrorBoundary label={label}>
         <Suspense fallback={pcPageFallback}>{node}</Suspense>
@@ -1502,14 +1513,15 @@ function TraditionalView({
       if (pageId === 'search') return wrap(<LazyPcSearch initialKeyword={keyword} platform="qq" chrome={pcChromeQQ} account={pcAccount} actions={pcActions} active={active} />, 'QQ 音乐搜索')
       if (pageId === 'hall') return wrap(<LazyQQPcHall chrome={pcChromeQQ} account={pcAccount} actions={pcActions} active={active} />, 'QQ 音乐乐馆')
       if (pageId === 'liked' || pageId === 'recent') {
-        return wrap(<LazyQQPcCollection kind={pageId} chrome={pcChromeQQ} account={pcAccount} actions={pcActions} authRevision={authRevision} active={active} />, 'QQ 音乐音乐库')
+        // 红心键集只认「喜欢」页回传：最近播放页的曲目天然不是喜欢口径，两页都写会互相覆盖
+        return wrap(<LazyQQPcCollection kind={pageId} chrome={pcChromeQQ} account={pcAccount} actions={pcActions} authRevision={authRevision} active={active} onLikedChange={pageId === 'liked' ? setQqLikedKeys : undefined} />, 'QQ 音乐音乐库')
       }
       return wrap(<PcEmpty theme={pcTheme(pcChromeQQ.tone)} title="该页面暂未提供" />, 'QQ 音乐')
     }
     if (platform === 'netease') {
       if (pageId === 'home') return wrap(<LazyNeteasePcHome chrome={pcChromeNetease} account={pcAccount} actions={pcActions} authRevision={authRevision} active={active} currentSong={currentSong} />, '网易云推荐页')
       if (pageId === 'search') return wrap(<LazyPcSearch initialKeyword={keyword} platform="netease" chrome={pcChromeNetease} account={pcAccount} actions={pcActions} active={active} />, '网易云搜索')
-      if (pageId === 'featured') return wrap(<LazyNeteasePcFeatured chrome={pcChromeNetease} account={pcAccount} actions={pcActions} authRevision={authRevision} active={active} currentSong={currentSong} />, '网易云精选')
+      if (pageId === 'featured') return wrap(<LazyNeteasePcFeatured chrome={pcChromeNetease} account={pcAccount} actions={pcActions} authRevision={authRevision} active={active} currentSong={currentSong} initialChannel={detail} />, '网易云精选')
       if (pageId === 'podcast') return wrap(<LazyNeteasePcPodcast chrome={pcChromeNetease} account={pcAccount} actions={pcActions} authRevision={authRevision} active={active} />, '网易云播客')
       if (pageId === 'roam') return wrap(<LazyNeteasePcRoam chrome={pcChromeNetease} account={pcAccount} actions={pcActions} authRevision={authRevision} active={active} />, '网易云漫游')
       if (pageId === 'follow') return wrap(<LazyNeteasePcFollow chrome={pcChromeNetease} account={pcAccount} actions={pcActions} authRevision={authRevision} active={active} />, '网易云关注')
@@ -1532,7 +1544,7 @@ function TraditionalView({
     }
     // PC 复刻页（QQ/网易云）：所有客户端概念页走这里
     if (page.name === 'pc') {
-      if (platform === 'qq' || platform === 'netease') return renderPcPage(page.page, active, page.keyword)
+      if (platform === 'qq' || platform === 'netease') return renderPcPage(page.page, active, page.keyword, page.detail)
       // 其它平台没有客户端复刻页：让「搜索」这类通用入口回落到原生传统页
       if (page.page === 'search') {
         return <TraditionalSearch initialKeyword={page.keyword} platform={platform} accent={accent} isDark={isDark} active={active} currentSong={currentSong} onBack={onBack} onSongSelect={onSongSelect} onOpenPlaylist={openPlaylist} onOpenArtist={openArtistDetail} onOpenAlbum={openAlbumDetail} onPlayNext={onPlayNext} onAddToFavorites={onAddToFavorites} onRemoveFromFavorites={onRemoveFromFavorites} onAddToPlaylist={onAddToPlaylist} onViewComments={openCommentsFor} onCopyInfo={onCopyInfo} onShare={handleShareSong} userPlaylists={userPlaylists} />
@@ -1569,6 +1581,16 @@ function TraditionalView({
           </EmbeddedExploreErrorBoundary>
         )
       }
+      // 网易云平台：同样换成客户端复刻主页（userId 非空 = 看别人的主页）
+      if (platform === 'netease') {
+        return (
+          <EmbeddedExploreErrorBoundary label="网易云个人主页">
+            <Suspense fallback={pcPageFallback}>
+              <LazyNeteasePcProfile chrome={pcChromeNetease} account={pcAccount} actions={pcActions} authRevision={authRevision} active={active} profileUserId={page.userId} />
+            </Suspense>
+          </EmbeddedExploreErrorBoundary>
+        )
+      }
       return <TraditionalProfile platform={platform} accent={accent} isDark={isDark} loggedIn={loggedIn} username={username} avatar={avatar} selfUserId={selfPlatformUserId} targetUserId={page.userId} targetNickname={page.nickname} targetAvatar={page.avatarUrl} userPlaylists={userPlaylists} onBack={onBack} onOpenPlaylist={openPlaylist} onOpenLiked={openLikedSongs} onOpenUserProfile={(userId, nickname, avatarUrl) => navigate({ name: 'profile', userId, nickname, avatarUrl })} onOpenArtist={openArtistDetail} onLoginClick={() => onLoginClick(platform)} />
     }
     if (page.name === 'playlist') {
@@ -1596,12 +1618,42 @@ function TraditionalView({
       return <TraditionalPlaylistDetail playlist={page.playlist} songs={page.songs} loading={playlistLoading} error={playlistError} onRetry={() => void openPlaylist(page.playlist, true)} currentSong={currentSong} playerTheme={playerTheme} accentColor={accent} onClose={onClose} isOwner={ownsPlaylist(page.playlist)} onSongSelect={(song, songs) => onSongSelect(song, songs, { mode: 'traditional', surface: 'traditional-playlist', platform: song.platform || platform, playlist: page.playlist, songs })} onOpenArtist={openArtistDetail} onOpenAlbum={openAlbumDetail} onPlayNext={onPlayNext} onAddToFavorites={onAddToFavorites} onRemoveFromFavorites={onRemoveFromFavorites} onAddToPlaylist={onAddToPlaylist} onRemoveFromPlaylist={ownsPlaylist(page.playlist) && getPlatformCapabilities((page.playlist?.platform || platform) as MusicPlatform).removeTracksFromPlaylist ? handleRemoveFromCurrentPlaylist : undefined} onViewComments={openCommentsFor} onCopyInfo={onCopyInfo} onShare={handleShareSong} userPlaylists={userPlaylists} ownUserName={loggedIn ? username : ''} ownUserAvatar={avatar} ownUserId={selfPlatformUserId} onOpenUserProfile={(targetPlatform, userId, nickname, avatarUrl) => { if (targetPlatform === platform) navigate({ name: 'profile', userId, nickname, avatarUrl }) }} />
     }
     if (page.name === 'comments') {
+      // PC 平台：评论换客户端风格面板（精彩评论 + 最新评论）；其它平台仍走通用弹层页
+      if (page.song.platform === 'qq' || page.song.platform === 'netease') {
+        return (
+          <EmbeddedExploreErrorBoundary label="歌曲评论">
+            <Suspense fallback={pcPageFallback}>
+              <LazyPcComments platform={page.song.platform} songId={page.song.id} resourceIdKind="song" chrome={page.song.platform === 'qq' ? pcChromeQQ : pcChromeNetease} actions={pcActions} active={active} />
+            </Suspense>
+          </EmbeddedExploreErrorBoundary>
+        )
+      }
       return <TraditionalComments song={page.song} accent={accent} isDark={isDark} onClose={onClose} />
     }
     if (page.name === 'artist') {
+      // PC 平台：歌手详情换客户端复刻版（热门歌曲/专辑/MV 页签）；其它平台仍走通用页
+      if (page.platform === 'qq' || page.platform === 'netease') {
+        return (
+          <EmbeddedExploreErrorBoundary label="歌手详情">
+            <Suspense fallback={pcPageFallback}>
+              <LazyPcArtistDetail id={page.id} platform={page.platform} chrome={page.platform === 'qq' ? pcChromeQQ : pcChromeNetease} actions={pcActions} active={active} />
+            </Suspense>
+          </EmbeddedExploreErrorBoundary>
+        )
+      }
       return <TraditionalArtistDetail artistId={page.id} platform={page.platform} accent={accent} isDark={isDark} currentSong={currentSong} onClose={onClose} onSongSelect={onSongSelect} onPlayNext={onPlayNext} onAddToFavorites={onAddToFavorites} onRemoveFromFavorites={onRemoveFromFavorites} onAddToPlaylist={onAddToPlaylist} onViewComments={openCommentsFor} onCopyInfo={onCopyInfo} onShare={handleShareSong} onOpenAlbum={openAlbumDetail} userPlaylists={userPlaylists} />
     }
     if (page.name === 'album') {
+      // PC 平台：专辑详情换客户端复刻版（大封面头部 + 曲目表）；其它平台仍走通用页
+      if (page.platform === 'qq' || page.platform === 'netease') {
+        return (
+          <EmbeddedExploreErrorBoundary label="专辑详情">
+            <Suspense fallback={pcPageFallback}>
+              <LazyPcAlbumDetail id={page.id} platform={page.platform} chrome={page.platform === 'qq' ? pcChromeQQ : pcChromeNetease} actions={pcActions} active={active} />
+            </Suspense>
+          </EmbeddedExploreErrorBoundary>
+        )
+      }
       return <TraditionalAlbumDetail albumId={page.id} platform={page.platform} accent={accent} isDark={isDark} currentSong={currentSong} onClose={onClose} onSongSelect={onSongSelect} onPlayNext={onPlayNext} onAddToFavorites={onAddToFavorites} onRemoveFromFavorites={onRemoveFromFavorites} onAddToPlaylist={onAddToPlaylist} onViewComments={openCommentsFor} onCopyInfo={onCopyInfo} onShare={handleShareSong} onOpenArtist={openArtistDetail} userPlaylists={userPlaylists} />
     }
     return (
@@ -2110,7 +2162,7 @@ function TraditionalProfile({ platform, accent, isDark, loggedIn, username, avat
     const fallback = { nickname: isSelf ? username : (targetNickname || ''), avatarUrl: (isSelf ? avatar : targetAvatar) || '', signature: '' }
     if (!uid) { setDetail(fallback); return }
     if (platform === 'netease') {
-      fetch(`http://localhost:3001/api/netease/user/detail?uid=${encodeURIComponent(uid)}`, { cache: 'no-store' })
+      fetch(`${getApiBase()}/netease/user/detail?uid=${encodeURIComponent(uid)}`, { cache: 'no-store' })
         .then(r => r.json())
         .then(data => {
           if (cancelled) return
@@ -2120,7 +2172,7 @@ function TraditionalProfile({ platform, accent, isDark, loggedIn, username, avat
         .catch(() => { if (!cancelled) setDetail(fallback) })
     } else if (platform === 'qq') {
       const cookie = getPlatformCookie('qq')
-      fetch(`http://localhost:3001/api/qq/user/detail?id=${encodeURIComponent(uid)}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`, { cache: 'no-store' })
+      fetch(`${getApiBase()}/qq/user/detail?id=${encodeURIComponent(uid)}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`, { cache: 'no-store' })
         .then(r => r.json())
         .then(data => {
           if (cancelled) return
@@ -2140,7 +2192,7 @@ function TraditionalProfile({ platform, accent, isDark, loggedIn, username, avat
     let cancelled = false
     if (platform === 'netease') {
       const cookie = getPlatformCookie('netease')
-      fetch(`http://localhost:3001/api/netease/user/playlist?uid=${encodeURIComponent(uid)}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`, { cache: 'no-store' })
+      fetch(`${getApiBase()}/netease/user/playlist?uid=${encodeURIComponent(uid)}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`, { cache: 'no-store' })
         .then(r => r.json())
         .then(data => {
           if (cancelled) return
@@ -2150,7 +2202,7 @@ function TraditionalProfile({ platform, accent, isDark, loggedIn, username, avat
         .catch(() => { if (!cancelled) setOtherPlaylists([]) })
     } else if (platform === 'qq') {
       const cookie = getPlatformCookie('qq')
-      fetch(`http://localhost:3001/api/qq/user/playlist?id=${encodeURIComponent(uid)}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`, { cache: 'no-store' })
+      fetch(`${getApiBase()}/qq/user/playlist?id=${encodeURIComponent(uid)}${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`, { cache: 'no-store' })
         .then(r => r.json())
         .then(data => {
           if (cancelled) return
@@ -2418,10 +2470,10 @@ function TraditionalRecent({ platform, accent, isDark, active, loggedIn, current
       return
     }
     const endpoint = platform === 'qq'
-      ? `http://localhost:3001/api/qq/record/recent/song?limit=100${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`
+      ? `${getApiBase()}/qq/record/recent/song?limit=100${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`
       : platform === 'soda'
-        ? `http://localhost:3001/api/soda/recent?limit=50${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`
-        : `http://localhost:3001/api/netease/record/recent/song?limit=100${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`
+        ? `${getApiBase()}/soda/recent?limit=50${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`
+        : `${getApiBase()}/netease/record/recent/song?limit=100${cookie ? `&cookie=${encodeURIComponent(cookie)}` : ''}`
     fetch(endpoint, { cache: 'no-store' })
       .then(response => response.json().catch(() => null).then(payload => ({ response, payload })))
       .then(({ response, payload }) => {

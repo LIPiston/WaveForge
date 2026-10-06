@@ -15,22 +15,53 @@ import type { PcAccount, PcActions, PcChrome } from './types'
 
 /**
  * 漫游模式 → fetchNeteaseRoam 的 mode/subMode。
- * 取值来源说明：服务端把 mode 原样透传给安卓协议 /api/v1/radio/get（server/netease-native-explore.mjs），
- * 仓库里唯一能确认的取值是它自己的默认值 'DEFAULT'（官方「熟悉」档）；其余四档用客户端漫游模式的语义标识，
- * 服务端不识别时会返回空列表 —— 那时页面显示空态并提示切回「熟悉」，不造假数据。
+ * 取值证据（2026-10-04 抓包核对）：
+ * 1) NeteaseCloudMusicApi 公开逆向文档：/api/v1/radio/get 的 mode ∈ { aidj, DEFAULT, FAMILIAR, EXPLORE, SCENE_RCMD }（可选 subMode）；
+ * 2) 官方 Link Platform 下发的曲风漫游资源实测携带 mode=SCENE_RCMD + subMode（见 neteaseExplore/model.ts 的 fm 入口）；
+ * 3) 本机网易云 PC 客户端 3.1.41 实测：点「漫游」直接开播且逐首下发，客户端本身无档位选择器。
+ * 早期这里猜的 'NICHE'/'ATMOSPHERE' 上游并不存在（任意非法值都会被容忍成默认流），已按真实枚举修正；
+ * 官方没有「喜欢/小众」档位，不再伪造。
  */
 const ROAM_MODES: Array<{ key: string; label: string; mode: string; subMode?: string }> = [
-  { key: 'familiar', label: '熟悉', mode: 'DEFAULT' },
-  { key: 'like', label: '喜欢', mode: 'FAMILIAR' },
+  { key: 'familiar', label: '熟悉', mode: 'FAMILIAR' },
   { key: 'explore', label: '探索', mode: 'EXPLORE' },
-  { key: 'niche', label: '小众', mode: 'NICHE' },
-  { key: 'atmosphere', label: '氛围', mode: 'ATMOSPHERE' },
+  { key: 'scene', label: '氛围', mode: 'SCENE_RCMD' },
+  { key: 'default', label: '默认', mode: 'DEFAULT' },
 ]
 
-/** 单次漫游拉取的歌曲数（接口回传上限附近的常规值）。 */
-const ROAM_LIMIT = 30
+/** 漫游队列目标长度（官方客户端是逐首播放的电台，这里拼成队列便于整批试听）。 */
+const ROAM_QUEUE_TARGET = 30
+/** 每轮并发请求数：上游单曲下发，队列靠多轮连发拼出来（打满 8 轮仍不够就按实得展示）。 */
+const ROAM_BATCH_SIZE = 6
+const ROAM_MAX_ROUNDS = 8
 /** 换一批时回传给服务端的已漫游 id 上限，与探索页保持一致（服务端也只吃 100 个）。 */
 const ROAM_MEMORY_LIMIT = 100
+
+/**
+ * 拼一支漫游队列：/api/v1/radio/get 每次只回 1 首（实测），连发多轮并用 unplaySongIds 去重。
+ * 整轮没有任何新增时提前止损——继续连发只会拿到重复曲目。
+ */
+async function fetchRoamQueue(signal: AbortSignal | undefined, options: { mode: string; subMode?: string; memory: string[] }): Promise<Song[]> {
+  const collected: Song[] = []
+  const seen = new Set<string>()
+  const played = [...options.memory]
+  for (let round = 0; round < ROAM_MAX_ROUNDS && collected.length < ROAM_QUEUE_TARGET; round++) {
+    const batch = await Promise.all(Array.from({ length: ROAM_BATCH_SIZE }, () =>
+      fetchNeteaseRoam(signal, { mode: options.mode, subMode: options.subMode, limit: 1, unplaySongIds: played })
+        .then(list => list[0])
+        .catch(() => undefined)))
+    let added = 0
+    for (const song of batch) {
+      if (!song?.id || seen.has(String(song.id))) continue
+      seen.add(String(song.id))
+      collected.push(song)
+      played.push(String(song.id))
+      added++
+    }
+    if (!added) break
+  }
+  return collected.slice(0, ROAM_QUEUE_TARGET)
+}
 
 export interface NeteasePcRoamProps {
   chrome: PcChrome
@@ -62,12 +93,11 @@ function NeteasePcRoam({ chrome, account, actions, authRevision, active = true }
     const controller = new AbortController()
     setLoading(true)
     setError('')
-    fetchNeteaseRoam(controller.signal, {
+    void fetchRoamQueue(controller.signal, {
       mode: mode.mode,
       subMode: mode.subMode,
-      limit: ROAM_LIMIT,
       // 换一批时把已漫游出来的歌交给服务端去重，与官方「换一批」语义一致
-      unplaySongIds: memoryRef.current,
+      memory: memoryRef.current,
     })
       .then(list => {
         if (controller.signal.aborted) return
@@ -192,8 +222,8 @@ function NeteasePcRoam({ chrome, account, actions, authRevision, active = true }
             empty={(
               <PcEmpty
                 theme={theme}
-                title={error ? '漫游加载失败' : '该漫游模式暂无歌曲'}
-                description={error || `服务端未返回「${mode.label}」模式的歌曲，可切换其它模式再试`}
+                title={error ? '漫游加载失败' : '本次漫游没有拿到歌曲'}
+                description={error || '官方漫游是逐首下发的电台，偶发空回合；点「换一批」重试或切换其它模式'}
                 action={(
                   <PcGhostButton
                     label="重试"

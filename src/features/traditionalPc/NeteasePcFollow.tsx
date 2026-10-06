@@ -250,8 +250,10 @@ function NeteasePcFollow({ chrome, account, actions, authRevision, active = true
     title: user.nickname,
     subtitle: user.signature || '已关注',
     rounded: 'rounded-full',
-    // 没有用户主页参数通道，这里只做「打开个人中心」的导航
-    onClick: () => actions.onNavigate({ kind: 'netease', page: 'profile' }),
+    // 优先打开对方的个人主页（TraditionalView navigate 到 profile 页）；无通道时降级为自己的主页
+    onClick: () => (actions.onOpenUserProfile
+      ? actions.onOpenUserProfile(String(user.userId), user.nickname, user.avatarUrl)
+      : actions.onNavigate({ kind: 'netease', page: 'profile' })),
   })), [users, actions])
 
   const playAll = useCallback(() => {

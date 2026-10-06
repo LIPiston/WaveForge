@@ -187,6 +187,10 @@ function QQPcSidebar({
     if (route === 'charts') { onNavigate('hall'); return }
     if (isOfficialSonglist(item)) { onNavigate('hall'); return }
     if (route === 'hall') { onNavigate('hall'); return }
+    // 听书 / AI 唱 / 数字专辑等没有数据源的条目：明确告知，而不是点了没反应（与面板底部说明一致）
+    window.dispatchEvent(new CustomEvent('showToast', {
+      detail: { message: `「${item.title}」暂不支持在 WaveForge 内打开`, type: 'info' },
+    }))
   }, [onNavigate, onOpenArtist, onOpenMv, onOpenPlaylist])
 
   // 可添加条目：只留真实落点的官方条目 + 本软件自己的「刷歌」（客户端把它当本地功能，官方入口接口里没有）

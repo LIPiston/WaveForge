@@ -236,7 +236,7 @@ export function PcTabs({ items, value, onChange, accent, theme, size = 'md' }: {
   )
 }
 
-/** 胶囊页签（精选/歌单广场/排行榜、收藏专辑/已购专辑…）。 */
+/** 胶囊页签（精选/歌单广场/排行榜、收藏专辑/收藏的 MV…）。 */
 export function PcChips({ items, value, onChange, accent, theme, className = '' }: { items: PcTabItem[]; value: string; onChange: (key: string) => void; accent: string; theme: PcTheme; className?: string }) {
   return (
     <div className={`flex flex-wrap items-center gap-2 ${className}`}>
@@ -333,7 +333,7 @@ export interface PcSongTableColumns {
   duration?: boolean
   /** 播放时间列（最近播放页） */
   playedAt?: boolean
-  /** 文件大小列（本地和下载页） */
+  /** 文件大小列（云盘文件） */
   size?: boolean
 }
 

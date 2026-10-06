@@ -4,14 +4,14 @@
 // 为什么一个文件容纳多个页面：它们在官方客户端里共用同一套页签 + 操作条 + 表格/网格骨架，
 // 差别只在数据源与页签文案；放在一起可以共享归一化与空态工具，避免多份重复代码。
 // 每个 kind 各自独立取数、独立 loading/空态；未登录或接口失败时一律给空态，不白屏、不造假数据。
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import {
-  LogIn, MoreHorizontal, RefreshCw,
+  Headphones, LogIn, MoreHorizontal, RefreshCw, Trash2,
 } from 'lucide-react'
 import { fetchExplorePlaylist, type ExplorePlaylist } from '../../services/exploreApi'
 import { getLikedSongs, getNeteasePlaylistTrackPage, getUserPlaylists } from '../../services/playlistService'
 import { fetchNeteaseRecentSongs } from '../../services/neteaseRecentPlayback'
-import { getNeteaseDjSublist, getSubscribedAlbums } from '../../services/musicApi'
+import { getNeteaseDjSublist, getNeteaseMvSublist, getSubscribedAlbums } from '../../services/musicApi'
 import { getPlatformCookie } from '../../services/platforms'
 import { getApiBase } from '../../services/apiConfig'
 import { fetchNeteaseMyPodcasts } from '../neteaseExplore/discover'
@@ -19,7 +19,8 @@ import type { NeteaseNativeResource } from '../neteaseExplore/model'
 import type { Song } from '../../services/musicApi'
 import {
   PcCardGrid, PcDetailHeader, PcEmpty, PcGhostButton, PcIconButton, PcListFooter, PcNoticeBar,
-  PcPageTitle, PcPrimaryButton, PcSongTable, PcTableSearch, PcTabs, pcTheme, type PcTheme,
+  PcPageTitle, PcPrimaryButton, PcRowAction, PcSongTable, PcTableSearch, PcTabs, pcDuration,
+  pcTheme, type PcTheme,
 } from './pcKit'
 import type { PcAccount, PcActions, PcChrome } from './types'
 
@@ -438,6 +439,116 @@ function LikedPanel({ chrome, account, actions, authRevision, active = true }: O
  * ------------------------------------------------------------------ */
 
 type RecentSong = Song & { playedAt?: number }
+/** 内容类最近播放（服务端 /netease/record/recent/:type 支持的类型，song 单列在上面的歌曲表）。 */
+type RecentContentType = 'playlist' | 'album' | 'dj'
+
+const RECENT_TYPE_LABEL: Record<RecentContentType, string> = { playlist: '歌单', album: '专辑', dj: '电台节目' }
+
+/** 内容类记录的模块级短 TTL 缓存：页签来回切换不重发请求（账号级数据 30s 足够新鲜）。 */
+const RECENT_LIST_CACHE_TTL = 30_000
+const recentListCache = new Map<string, { rows: any[]; expiresAt: number }>()
+
+/** 最近播放的歌单/专辑/电台节目记录行（服务端与 neteaseRecentPlayback 同一条路由，type 不同）。 */
+async function fetchRecentListRows(type: RecentContentType): Promise<any[]> {
+  const cached = recentListCache.get(type)
+  if (cached && cached.expiresAt > Date.now()) return cached.rows
+  if (cached) recentListCache.delete(type)
+  const cookie = getPlatformCookie('netease')
+  if (!cookie) throw new Error('请先登录网易云音乐')
+  const response = await fetch(`${getApiBase()}/netease/record/recent/${type}?limit=${RECENT_LIMIT}&cookie=${encodeURIComponent(cookie)}`, { cache: 'no-store' })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok || payload?.error) throw new Error(payload?.error || `最近${RECENT_TYPE_LABEL[type]}读取失败（HTTP ${response.status}）`)
+  const candidates = [payload?.data?.list, payload?.data?.records, payload?.data, payload?.list, payload?.records]
+  const rows = candidates.find(Array.isArray) || []
+  recentListCache.set(type, { rows, expiresAt: Date.now() + RECENT_LIST_CACHE_TTL })
+  return rows
+}
+
+/** 最近播放内容卡（歌单/专辑/电台节目共用的网格卡）。 */
+interface RecentCard {
+  key: string
+  coverUrl?: string
+  title: string
+  subtitle?: string
+  playCount?: number | null
+  onClick?: () => void
+  onContextMenu?: (event: ReactMouseEvent) => void
+}
+
+/** 最近播放的歌单行 → 卡片：副标题「N 首」，点击走歌单通道打开。 */
+function recentPlaylistCards(rows: any[], actions: PcActions): RecentCard[] {
+  const cards: RecentCard[] = []
+  for (const row of rows) {
+    const resource = row?.resource || row?.data || row
+    const id = String(resource?.id || row?.resourceId || '')
+    const name = String(resource?.name || '')
+    if (!id || !name) continue
+    const coverUrl = String(resource?.coverImgUrl || resource?.picUrl || resource?.coverUrl || '')
+    const trackCount = Number(resource?.trackCount || resource?.size || 0) || undefined
+    const raw = { id, name, coverUrl, platform: 'netease', trackCount }
+    cards.push({
+      key: `recent-playlist:${id}`,
+      coverUrl,
+      title: name,
+      subtitle: trackCount ? `${trackCount} 首` : undefined,
+      playCount: Number(resource?.playCount || 0) || undefined,
+      onClick: () => actions.onOpenPlaylist(raw),
+      onContextMenu: event => {
+        event.preventDefault()
+        actions.onPlaylistMenu?.({ show: true, x: event.clientX, y: event.clientY, playlist: raw })
+      },
+    })
+  }
+  return cards
+}
+
+/** 最近播放的专辑行 → 卡片：副标题是歌手名（官方专辑卡同款），点击进专辑详情。 */
+function recentAlbumCards(rows: any[], actions: PcActions): RecentCard[] {
+  const cards: RecentCard[] = []
+  for (const row of rows) {
+    const resource = row?.resource || row?.data || row
+    const id = String(resource?.id || row?.resourceId || '')
+    const name = String(resource?.name || '')
+    if (!id || !name) continue
+    const artists = Array.isArray(resource?.artists) ? resource.artists : resource?.artist ? [resource.artist] : []
+    cards.push({
+      key: `recent-album:${id}`,
+      coverUrl: String(resource?.picUrl || resource?.blurPicUrl || resource?.coverUrl || ''),
+      title: name,
+      subtitle: artists.map((artist: any) => artist?.name).filter(Boolean).join(' / ') || String(resource?.company || '') || undefined,
+      onClick: () => actions.onOpenAlbum?.(id, 'netease'),
+    })
+  }
+  return cards
+}
+
+/**
+ * 最近播放的电台节目行 → 卡片：节目本身没有独立的打开通道（PcActions 无 channel），
+ * 按本文件播客页签的约定打开所属电台（走歌单通道，isRadio）；行里没有电台信息就不给点击。
+ */
+function recentDjCards(rows: any[], actions: PcActions): RecentCard[] {
+  const cards: RecentCard[] = []
+  for (const row of rows) {
+    const resource = row?.resource || row?.data || row
+    const radio = resource?.radio || resource?.djRadio || {}
+    const programId = String(resource?.programId || resource?.id || row?.resourceId || '')
+    const name = String(resource?.programName || resource?.name || '')
+    if (!programId || !name) continue
+    const coverUrl = String(resource?.coverUrl || resource?.picUrl || resource?.mainSong?.coverUrl || radio?.picUrl || '')
+    const radioId = String(radio?.id || '')
+    const radioName = String(radio?.name || '')
+    cards.push({
+      key: `recent-dj:${programId}`,
+      coverUrl,
+      title: name,
+      subtitle: radioName || undefined,
+      onClick: radioId
+        ? () => actions.onOpenPlaylist({ id: radioId, name: radioName || '播客', coverUrl: String(radio?.picUrl || coverUrl), platform: 'netease', isRadio: true })
+        : undefined,
+    })
+  }
+  return cards
+}
 
 /**
  * 「播放时间」列：neteaseRecentPlayback 的归一化结果只保留可播放字段，不带时间戳，
@@ -475,10 +586,24 @@ function RecentPanel({ chrome, account, actions, authRevision, active = true }: 
   const [reloadToken, setReloadToken] = useState(0)
   const [tab, setTab] = useState('songs')
 
+  // 内容类记录（歌单/专辑/电台节目）按页签独立取数，互不阻塞
+  const [contentCards, setContentCards] = useState<Partial<Record<RecentContentType, RecentCard[]>>>({})
+  const [contentLoading, setContentLoading] = useState<Partial<Record<RecentContentType, boolean>>>({})
+  const [contentError, setContentError] = useState<Partial<Record<RecentContentType, string>>>({})
+
   const refresh = useCallback(() => setReloadToken(value => value + 1), [])
+  // 已加载标记：页签来回切换时不重复打接口（authRevision / 刷新按钮变化才重新拉）
+  const loadKey = `${authRevision ?? 0}:${reloadToken}`
+  const songsKeyRef = useRef('')
+  const contentKeyRefs = useRef<Partial<Record<RecentContentType, string>>>({})
+  // actions 是父层每次渲染都可能变的新对象：进 ref，避免失败重拉被无关状态变化放大（repo 惯例见 QQPcCollection）
+  const actionsRef = useRef(actions)
+  useEffect(() => { actionsRef.current = actions })
 
   useEffect(() => {
-    if (!active || !loggedIn) return
+    if (!active || !loggedIn || tab !== 'songs') return
+    if (songsKeyRef.current === loadKey) return
+    songsKeyRef.current = loadKey
     let cancelled = false
     setLoading(true)
     setError('')
@@ -496,10 +621,43 @@ function RecentPanel({ chrome, account, actions, authRevision, active = true }: 
         setSongs([])
         setError(err instanceof Error ? err.message : '最近播放加载失败')
         setLoading(false)
+        // 失败不留请求锁：下次激活/重进页签时能自动重试（与内容页签同口径）
+        songsKeyRef.current = ''
       }
     })()
     return () => { cancelled = true }
-  }, [active, loggedIn, authRevision, reloadToken])
+  }, [active, loggedIn, tab, loadKey])
+
+  // 歌单/专辑/电台节目记录：选中页签才拉，每个类型各自独立 loading/空态
+  useEffect(() => {
+    if (!active || !loggedIn) return
+    if (tab !== 'playlist' && tab !== 'album' && tab !== 'dj') return
+    const type = tab
+    if (contentKeyRefs.current[type] === loadKey) return
+    let cancelled = false
+    setContentLoading(prev => ({ ...prev, [type]: true }))
+    setContentError(prev => ({ ...prev, [type]: '' }))
+    fetchRecentListRows(type)
+      .then(rows => {
+        if (cancelled) return
+        contentKeyRefs.current[type] = loadKey
+        const cards = type === 'playlist'
+          ? recentPlaylistCards(rows, actionsRef.current)
+          : type === 'album'
+            ? recentAlbumCards(rows, actionsRef.current)
+            : recentDjCards(rows, actionsRef.current)
+        setContentCards(prev => ({ ...prev, [type]: cards }))
+        setContentLoading(prev => ({ ...prev, [type]: false }))
+        // 空结果不是错误：渲染成普通空态，不带「重试」按钮（error 只留给真正的失败）
+      })
+      .catch(() => {
+        if (cancelled) return
+        setContentCards(prev => ({ ...prev, [type]: [] }))
+        setContentError(prev => ({ ...prev, [type]: `最近${RECENT_TYPE_LABEL[type]}加载失败` }))
+        setContentLoading(prev => ({ ...prev, [type]: false }))
+      })
+    return () => { cancelled = true }
+  }, [active, loggedIn, tab, loadKey])
 
   const playAll = useCallback(() => {
     if (!songs.length) return
@@ -515,8 +673,20 @@ function RecentPanel({ chrome, account, actions, authRevision, active = true }: 
     )
   }
 
-  // 官方还有 播客/有声书/歌单/专辑 四条记录线，但都没有记录接口：页签整体不下线（避免留下点进去只看到空态的死页签）
-  const tabs = [{ key: 'songs', label: '单曲', count: songs.length || undefined }]
+  // 官方最近播放还有 声音/视频 两条记录线（服务端 voice/video 类型也存在），
+  // 但本软件没有对应的打开/播放通道，不做死页签；歌单/专辑/电台节目有真实记录接口，全部保留。
+  const tabs = [
+    { key: 'songs', label: '单曲', count: songs.length || undefined },
+    { key: 'playlist', label: '歌单', count: contentCards.playlist?.length || undefined },
+    { key: 'album', label: '专辑', count: contentCards.album?.length || undefined },
+    { key: 'dj', label: '电台节目', count: contentCards.dj?.length || undefined },
+  ]
+
+  // 当前选中的内容类页签（非歌曲表），渲染分支要用
+  const contentType: RecentContentType | null = tab === 'playlist' || tab === 'album' || tab === 'dj' ? tab : null
+  const activeCards = (contentType && contentCards[contentType]) || []
+  const activeTypeLoading = (contentType && contentLoading[contentType]) || false
+  const activeTypeError = (contentType && contentError[contentType]) || ''
 
   return (
     <div className="pb-8">
@@ -528,8 +698,15 @@ function RecentPanel({ chrome, account, actions, authRevision, active = true }: 
         tabs={tabs}
         right={(
           <>
-            <PcPrimaryButton label="播放全部" accent={accent} onClick={playAll} disabled={!songs.length} />
-            {/* 收藏全部/更多都没有可用的批量接口或菜单：整体不渲染 */}
+            {/* 播放全部只属于单曲页签（歌单/专辑/电台节目是内容卡，没有整块播放语义） */}
+            {tab === 'songs' && <PcPrimaryButton label="播放全部" accent={accent} onClick={playAll} disabled={!songs.length} />}
+            <PcGhostButton
+              label="刷新"
+              icon={<RefreshCw className={`h-3.5 w-3.5 ${loading || activeTypeLoading ? 'animate-spin' : ''}`} />}
+              theme={theme}
+              onClick={refresh}
+              disabled={loading || activeTypeLoading}
+            />
           </>
         )}
       />
@@ -552,6 +729,23 @@ function RecentPanel({ chrome, account, actions, authRevision, active = true }: 
             likedKeys={actions.likedKeys}
             onToggleLike={actions.onToggleLike}
             empty={<PcEmpty theme={theme} title="还没有最近播放记录" description="在网易云音乐里播放过的歌曲会出现在这里" />}
+          />
+        )
+      )}
+
+      {/* 歌单/专辑/电台节目：内容卡网格（点击进歌单/专辑详情；电台节目打开所属电台） */}
+      {contentType && (
+        activeTypeLoading && !activeCards.length ? (
+          <PanelLoading theme={theme} label={`正在加载最近${RECENT_TYPE_LABEL[contentType]}…`} />
+        ) : activeCards.length ? (
+          <PcCardGrid items={activeCards} theme={theme} accent={accent} columns={6} />
+        ) : (
+          <RetryEmpty
+            theme={theme}
+            title={activeTypeError || `还没有最近播放的${RECENT_TYPE_LABEL[contentType]}`}
+            description={`在网易云音乐里播放过的${RECENT_TYPE_LABEL[contentType]}会出现在这里`}
+            onRetry={refresh}
+            retrying={activeTypeLoading}
           />
         )
       )}
@@ -739,6 +933,15 @@ interface AlbumCard {
   albumId: string
 }
 
+/** 收藏的 MV 卡（mv/sublist 行 → PcCardGrid）。 */
+interface MvCard {
+  key: string
+  coverUrl?: string
+  title: string
+  subtitle?: string
+  mvId: string
+}
+
 function CollectPanel({ chrome, account, actions, authRevision, active = true }: Omit<NeteasePcCollectionProps, 'kind'>) {
   const theme = pcTheme(chrome.tone)
   const accent = chrome.accent
@@ -750,10 +953,14 @@ function CollectPanel({ chrome, account, actions, authRevision, active = true }:
   const [albums, setAlbums] = useState<AlbumCard[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [mvs, setMvs] = useState<MvCard[]>([])
+  const [mvLoading, setMvLoading] = useState(false)
+  const [mvError, setMvError] = useState('')
   const refresh = useCallback(() => setReloadToken(value => value + 1), [])
   // 已加载标记：页签/胶囊来回切换不重复打接口
   const loadKey = `${authRevision ?? 0}:${reloadToken}`
   const loadedKeyRef = useRef('')
+  const mvsKeyRef = useRef('')
 
   useEffect(() => {
     if (!active || !loggedIn) return
@@ -796,6 +1003,49 @@ function CollectPanel({ chrome, account, actions, authRevision, active = true }:
     return () => { cancelled = true }
   }, [active, loggedIn, tab, chip, authRevision, reloadToken, loadKey])
 
+  // 收藏的 MV：mv/sublist 服务层包装（getNeteaseMvSublist 内部失败返回 []，不抛错）
+  useEffect(() => {
+    if (!active || !loggedIn || tab !== 'mv') return
+    if (mvsKeyRef.current === loadKey) return
+    let cancelled = false
+    setMvLoading(true)
+    setMvError('')
+    getNeteaseMvSublist({ cookie: getPlatformCookie('netease') })
+      .then(payload => {
+        if (cancelled) return
+        mvsKeyRef.current = loadKey
+        // 包装层返回 data.data（可能是 { list: [...] } 也可能直接是数组），行字段兼容新旧两代
+        const candidates = [payload, payload?.list, payload?.data, payload?.data?.list]
+        const list = candidates.find(Array.isArray) || []
+        const cards: MvCard[] = (list as any[]).map((item: any): MvCard | null => {
+          const id = String(item?.mvId ?? item?.vid ?? item?.id ?? '')
+          const name = String(item?.mvName ?? item?.name ?? '')
+          if (!id || !name) return null
+          const artists = Array.isArray(item?.artists)
+            ? item.artists.map((artist: any) => artist?.name).filter(Boolean).join(' / ')
+            : String(item?.artistName || '')
+          const durationMs = Number(item?.duration || 0) || 0
+          return {
+            key: `mv:${id}`,
+            coverUrl: String(item?.cover || item?.coverUrl || item?.picUrl || ''),
+            title: name,
+            subtitle: [artists, durationMs ? pcDuration(durationMs) : ''].filter(Boolean).join(' · ') || undefined,
+            mvId: id,
+          }
+        }).filter((card): card is MvCard => Boolean(card))
+        setMvs(cards)
+        setMvLoading(false)
+        if (!cards.length) setMvError('没有读取到收藏的 MV')
+      })
+      .catch(() => {
+        if (cancelled) return
+        setMvs([])
+        setMvError('收藏的 MV 加载失败')
+        setMvLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [active, loggedIn, tab, authRevision, reloadToken, loadKey])
+
   if (!loggedIn) {
     return (
       <div className="pb-8">
@@ -807,11 +1057,27 @@ function CollectPanel({ chrome, account, actions, authRevision, active = true }:
 
   return (
     <div className="pb-8">
-      {/* 官方是「专辑 / MV」两页签 + 「收藏专辑 / 已购专辑」两胶囊；后三者都没有数据源，只保留收藏专辑 */}
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <h1 className={`text-[24px] font-semibold ${theme.text}`}>我的收藏</h1>
-        <PcGhostButton label="刷新" icon={<RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />} theme={theme} onClick={refresh} disabled={loading} />
-      </div>
+      {/* 官方是「专辑 / MV」两页签 + 「收藏专辑 / 已购专辑」两胶囊；已购专辑按产品决策永久不做，胶囊不做 */}
+      <PcPageTitle theme={theme} title="我的收藏" subtitle="收藏的专辑与收藏的 MV" />
+      <TabBar
+        theme={theme}
+        accent={accent}
+        active={tab}
+        onChange={setTab}
+        tabs={[
+          { key: 'album', label: '收藏的专辑', count: albums.length || undefined },
+          { key: 'mv', label: '收藏的 MV', count: mvs.length || undefined },
+        ]}
+        right={(
+          <PcGhostButton
+            label="刷新"
+            icon={<RefreshCw className={`h-3.5 w-3.5 ${loading || mvLoading ? 'animate-spin' : ''}`} />}
+            theme={theme}
+            onClick={refresh}
+            disabled={loading || mvLoading}
+          />
+        )}
+      />
 
       {tab === 'album' && (
         <>
@@ -835,6 +1101,28 @@ function CollectPanel({ chrome, account, actions, authRevision, active = true }:
           )}
         </>
       )}
+
+      {tab === 'mv' && (
+        mvLoading && !mvs.length ? (
+          <PanelLoading theme={theme} label="正在加载收藏的 MV…" />
+        ) : mvs.length === 0 ? (
+          <RetryEmpty theme={theme} title="还没有收藏的 MV" description={mvError || '在 MV 页点收藏后，这里会显示它们'} onRetry={refresh} retrying={mvLoading} />
+        ) : (
+          <PcCardGrid
+            items={mvs.map(mv => ({
+              key: mv.key,
+              coverUrl: mv.coverUrl,
+              title: mv.title,
+              subtitle: mv.subtitle,
+              // MV 直接进弹窗播放通道（TraditionalView 的 mvModal，netease MV id）
+              onClick: () => actions.onOpenMv?.(mv.mvId, 'netease'),
+            }))}
+            theme={theme}
+            accent={accent}
+            columns={6}
+          />
+        )
+      )}
     </div>
   )
 }
@@ -853,8 +1141,9 @@ interface CloudResult {
 }
 
 /**
- * 云盘列表：后端路由已存在（local-server.mjs 的 /api/netease/cloud/list），但前端没有服务层，
- * 这里就地包一层最小只读 fetch —— 只取列表，不实现上传/删除（产品上不新增云盘写操作）。
+ * 云盘列表：后端路由已存在（local-server.mjs 的 /api/netease/cloud/list），前端就地包一层最小 fetch。
+ * 上传链路本软件没有，不做；删除走 /api/netease/cloud/delete（见下方 deleteCloudSong），
+ * 试听走 /api/netease/cloud/url（见下方 fetchCloudSongUrl）。
  */
 async function fetchCloudList(signal: AbortSignal): Promise<CloudResult> {
   const cookie = getPlatformCookie('netease')
@@ -908,6 +1197,78 @@ function formatCapacity(mb?: number): string {
   return `${Number(gb.toFixed(gb < 10 ? 1 : 0))}G`
 }
 
+/* 云盘文件播放地址（服务端 /api/netease/cloud/url，参数 id + cookie）：
+   返回的直链带有效期（上游 expi 600s），这里给 5 分钟的模块级缓存，
+   同一首反复点试听不重发请求；过期自动重取。 */
+const CLOUD_URL_CACHE_TTL = 5 * 60_000
+const cloudUrlCache = new Map<string, { url: string; expiresAt: number }>()
+
+async function fetchCloudSongUrl(songId: number | string): Promise<string> {
+  const key = String(songId)
+  const cached = cloudUrlCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) return cached.url
+  if (cached) cloudUrlCache.delete(key)
+  const cookie = getPlatformCookie('netease')
+  if (!cookie) throw new Error('请先登录网易云音乐')
+  const response = await fetch(`${getApiBase()}/netease/cloud/url?id=${encodeURIComponent(key)}&cookie=${encodeURIComponent(cookie)}`, { cache: 'no-store' })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok || payload?.error) throw new Error(payload?.error || `云盘文件地址获取失败（HTTP ${response.status}）`)
+  // 服务端把上游 http 直链转成了 https；data 主体兼容对象/数组两种返回形态
+  const url = String(payload?.data?.url || (Array.isArray(payload?.data) ? payload.data[0]?.url : '') || '')
+  if (!url) throw new Error('该云盘文件暂时没有可用的播放地址')
+  cloudUrlCache.set(key, { url, expiresAt: Date.now() + CLOUD_URL_CACHE_TTL })
+  return url
+}
+
+/* 云盘试听：正式播放链路按平台歌曲解析地址，而云盘专属文件不在公共曲库（song/url 常拿不到流），
+   所以用页面内独立的 Audio 元素直接放云盘直链；同一时间只播一个，切换/卸载都要停掉。 */
+let cloudPreviewAudio: HTMLAudioElement | null = null
+let cloudPreviewToken = 0
+
+function stopCloudPreview() {
+  cloudPreviewToken += 1
+  if (cloudPreviewAudio) {
+    cloudPreviewAudio.pause()
+    cloudPreviewAudio.removeAttribute('src')
+    cloudPreviewAudio = null
+  }
+}
+
+/** 返回 true 表示真的开始播放了（false = 取地址期间被别的点击/停止顶掉）。 */
+async function playCloudPreview(songId: number | string, onEnded?: () => void): Promise<boolean> {
+  stopCloudPreview()
+  const token = cloudPreviewToken
+  const url = await fetchCloudSongUrl(songId)
+  // 取地址期间用户又点了别的（或停止）：这次结果直接作废
+  if (token !== cloudPreviewToken) return false
+  const audio = new Audio(url)
+  cloudPreviewAudio = audio
+  audio.onended = () => {
+    if (cloudPreviewAudio === audio) cloudPreviewAudio = null
+    onEnded?.()
+  }
+  try {
+    await audio.play()
+  } catch {
+    if (cloudPreviewAudio === audio) cloudPreviewAudio = null
+    throw new Error('浏览器未能播放云盘文件，请重试')
+  }
+  return true
+}
+
+/** 云盘删除（服务端 POST /api/netease/cloud/delete，参数 id + cookie）。 */
+async function deleteCloudSong(songId: number | string): Promise<void> {
+  const cookie = getPlatformCookie('netease')
+  if (!cookie) throw new Error('请先登录网易云音乐')
+  const response = await fetch(`${getApiBase()}/netease/cloud/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: String(songId), cookie }),
+  })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok || payload?.error) throw new Error(payload?.error || `云盘删除失败（HTTP ${response.status}）`)
+}
+
 function CloudPanel({ chrome, account, actions, authRevision, active = true }: Omit<NeteasePcCollectionProps, 'kind'>) {
   const theme = pcTheme(chrome.tone)
   const accent = chrome.accent
@@ -919,6 +1280,9 @@ function CloudPanel({ chrome, account, actions, authRevision, active = true }: O
   const [error, setError] = useState('')
   const [keyword, setKeyword] = useState('')
   const [reloadToken, setReloadToken] = useState(0)
+  // 行内动作状态：正在试听 / 正在删除的 songId（行 hover 动作的高亮与禁噪）
+  const [previewId, setPreviewId] = useState('')
+  const [deletingId, setDeletingId] = useState('')
   const refresh = useCallback(() => setReloadToken(value => value + 1), [])
 
   useEffect(() => {
@@ -955,6 +1319,63 @@ function CloudPanel({ chrome, account, actions, authRevision, active = true }: O
     if (!songs.length) return
     actions.onPlaySongs(songs[0], songs, 0)
   }, [songs, actions])
+
+  // 面板卸载时停掉试听：直链属于页面内的临时播放，不进全局播放器
+  useEffect(() => () => stopCloudPreview(), [])
+  // 页面被隐藏（用户切走页面/切平台，TraditionalView 对历史页只是 display:none 保活）时也要停：
+  // 模块级 Audio 不在 DOM 里，visibility 管不住它，否则会一直压过全局播放器
+  useEffect(() => {
+    if (!active) {
+      stopCloudPreview()
+      setPreviewId('')
+    }
+  }, [active])
+
+  /** 云盘试听：云盘专属文件不在公共曲库，正式播放链路常常取不到流，这里直接放云盘直链。 */
+  const handlePreview = useCallback(async (song: CloudSong) => {
+    const id = String(song.id)
+    if (previewId === id) {
+      // 正在试听同一首：再点一次就是停止
+      stopCloudPreview()
+      setPreviewId('')
+      return
+    }
+    setPreviewId(id)
+    try {
+      const started = await playCloudPreview(song.id, () => setPreviewId(''))
+      if (started) {
+        window.dispatchEvent(new CustomEvent('showToast', { detail: { message: `正在试听云盘文件「${song.name}」`, type: 'info' } }))
+      }
+    } catch (err: unknown) {
+      // 只有还停在当前这首时才清高亮（期间可能已切到别的曲目）
+      setPreviewId(prev => (prev === id ? '' : prev))
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: err instanceof Error ? err.message : '云盘试听失败', type: 'error' } }))
+    }
+  }, [previewId])
+
+  /** 从云盘删除：确认 → 删除 → 停掉对应试听 → 刷新列表（toast 反馈结果）。 */
+  const handleDelete = useCallback(async (song: CloudSong) => {
+    const id = String(song.id)
+    // 同一首歌删除在途时直接吞掉再次点击：confirm + POST 都不能重复提交
+    if (deletingId === id) return
+    if (!window.confirm(`确定从云盘删除「${song.name}」吗？删除后需要重新上传。`)) return
+    setDeletingId(id)
+    try {
+      await deleteCloudSong(song.id)
+      cloudUrlCache.delete(id)
+      if (previewId === id) {
+        // 文件已删：正在试听的话立刻停掉（地址已失效）
+        stopCloudPreview()
+        setPreviewId('')
+      }
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: `已从云盘删除「${song.name}」`, type: 'success' } }))
+      refresh()
+    } catch (err: unknown) {
+      window.dispatchEvent(new CustomEvent('showToast', { detail: { message: err instanceof Error ? err.message : '云盘删除失败', type: 'error' } }))
+    } finally {
+      setDeletingId('')
+    }
+  }, [deletingId, previewId, refresh])
 
   if (!loggedIn) {
     return (
@@ -1014,6 +1435,16 @@ function CloudPanel({ chrome, account, actions, authRevision, active = true }: O
               isPlaying={actions.isPlaying}
               onPlay={(song, index) => actions.onPlaySongs(song, filteredSongs, index)}
               onMenu={(event, song) => { event.preventDefault(); actions.onSongMenu({ show: true, x: event.clientX, y: event.clientY, song, songs: filteredSongs }) }}
+              rowActions={song => (
+                <>
+                  <PcRowAction theme={theme} title={previewId === String(song.id) ? '停止试听' : '云盘试听'} onClick={() => void handlePreview(song)}>
+                    <Headphones className="h-3 w-3" />
+                  </PcRowAction>
+                  <PcRowAction theme={theme} title={deletingId === String(song.id) ? '删除中…' : '从云盘删除'} onClick={() => void handleDelete(song)}>
+                    <Trash2 className={`h-3 w-3 ${deletingId === String(song.id) ? 'animate-pulse' : ''}`} />
+                  </PcRowAction>
+                </>
+              )}
               empty={(
                 <PcEmpty
                   theme={theme}

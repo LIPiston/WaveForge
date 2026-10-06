@@ -4,12 +4,13 @@
 // 卡片形态统一是「封面 + 标题 + 副标题」。这里只保留有真实数据源的四类：
 //   · 推荐：账号级聚合接口的 musicHall 货架（要登录 cookie，未登录整体空态，不编内容）；
 //   · 歌手：公开歌手列表接口（分页 80 条/页，可继续加载）；
-//   · 排行：货架里 action=open-chart 的榜单卡（网关没有公开的榜单目录接口，见下方注释）；
+//   · 排行：聚合接口 /api/explore/qq 透传的官方榜单目录（上游 top/category），
+//     失败/为空时退回货架里 action=open-chart 的榜单卡（见 renderCharts）；
 //   · 歌单：公开的歌单分类 + 分类歌单接口。
 // 星光 / 农场 / 直播 / 听书 在网关里没有对应数据源，整类不做（不留点了没反应的分类）。
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Play, RefreshCw, User } from 'lucide-react'
-import type { ExploreChart } from '../../services/exploreApi'
+import { fetchExploreHome, type ExploreChart } from '../../services/exploreApi'
 import { getApiBase } from '../../services/apiConfig'
 import { openExternalLink } from '../../utils/externalLink'
 import { fetchQQExploreBootstrap } from '../qqExplore/api'
@@ -147,6 +148,11 @@ function QQPcHall({ chrome, account, actions, active = true }: QQPcHallProps) {
   const [snapshotError, setSnapshotError] = useState('')
   const snapshotKeyRef = useRef('')
 
+  // 排行：官方榜单目录（聚合接口 /api/explore/qq 的 charts 字段，上游来自 top/category 全量榜单）
+  const [directoryCharts, setDirectoryCharts] = useState<ExploreChart[]>([])
+  const [directoryState, setDirectoryState] = useState<LoadState>('idle')
+  const directoryKeyRef = useRef('')
+
   // 歌手
   const [singers, setSingers] = useState<QQSinger[]>([])
   const [singerState, setSingerState] = useState<LoadState>('idle')
@@ -161,8 +167,12 @@ function QQPcHall({ chrome, account, actions, active = true }: QQPcHallProps) {
   const [activeCategory, setActiveCategory] = useState<number | null>(null)
   const [squarePlaylists, setSquarePlaylists] = useState<QQSquarePlaylist[]>([])
   const [squareState, setSquareState] = useState<LoadState>('idle')
+  const [squareLoadingMore, setSquareLoadingMore] = useState(false)
+  const [squareHasMore, setSquareHasMore] = useState(false)
+  const squarePageRef = useRef(1)
   const categoryKeyRef = useRef('')
   const squareKeyRef = useRef('')
+  const squareAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => () => singerAbortRef.current?.abort(), [])
 
@@ -196,6 +206,33 @@ function QQPcHall({ chrome, account, actions, active = true }: QQPcHallProps) {
       if (snapshotKeyRef.current === snapshotKey) snapshotKeyRef.current = ''
     }
   }, [active, loggedIn, snapshotKey])
+
+  /* ── 排行：榜单目录（聚合接口公开可用，进入页签才请求；失败时退回货架榜单卡） ── */
+  const directoryKey = `charts-directory:${revision}`
+  useEffect(() => {
+    if (!active || tab !== 'charts') return
+    if (directoryKeyRef.current === directoryKey) return
+    directoryKeyRef.current = directoryKey
+    const controller = new AbortController()
+    setDirectoryState('loading')
+    void fetchExploreHome('qq', controller.signal)
+      .then(data => {
+        if (controller.signal.aborted) return
+        setDirectoryCharts(Array.isArray(data?.charts) ? data.charts : [])
+        setDirectoryState('ready')
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return
+        // 失败不留请求锁：重试按钮会通过 revision 再发一次
+        if (directoryKeyRef.current === directoryKey) directoryKeyRef.current = ''
+        setDirectoryCharts([])
+        setDirectoryState('error')
+      })
+    return () => {
+      controller.abort()
+      if (directoryKeyRef.current === directoryKey) directoryKeyRef.current = ''
+    }
+  }, [active, tab, directoryKey])
 
   /* ── 歌手：公开接口，进入页签才请求 ── */
   const loadSingers = useCallback((page: number, append: boolean) => {
@@ -260,37 +297,51 @@ function QQPcHall({ chrome, account, actions, active = true }: QQPcHallProps) {
     }
   }, [active, tab, categoryKey])
 
-  /* ── 分类歌单网格 ── */
+  /* ── 分类歌单网格：服务端路由已做 id→category / page→pageNo / pageSize→num 映射，
+       分类与翻页都能真实生效，因此这里与歌手区一样提供「加载更多」。 ── */
+  const SQUARE_PAGE_SIZE = 30
+  const loadSquare = useCallback((categoryId: number, page: number, append: boolean) => {
+    squareAbortRef.current?.abort()
+    const controller = new AbortController()
+    squareAbortRef.current = controller
+    if (append) setSquareLoadingMore(true)
+    else { setSquareState('loading'); setSquarePlaylists([]) }
+    fetch(`${getApiBase()}/qq/songlist/list?id=${categoryId}&page=${page}&pageSize=${SQUARE_PAGE_SIZE}&sort=5`, { signal: controller.signal, cache: 'no-store' })
+      .then(response => response.json())
+      .then(payload => {
+        if (controller.signal.aborted) return
+        const list = parseQQSquarePlaylists(payload)
+        setSquarePlaylists(previous => (append
+          ? [...previous.filter(item => !list.some(next => next.id === item.id)), ...list]
+          : list))
+        squarePageRef.current = page
+        setSquareHasMore(list.length >= SQUARE_PAGE_SIZE)
+        setSquareState('ready')
+        setSquareLoadingMore(false)
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return
+        setSquareLoadingMore(false)
+        setSquareState(append ? 'ready' : 'error')
+      })
+  }, [])
+
   const squareKey = `${activeCategory}:${revision}`
   useEffect(() => {
     if (!active || tab !== 'playlists' || activeCategory == null) return
     if (squareKeyRef.current === squareKey) return
     squareKeyRef.current = squareKey
-    const controller = new AbortController()
-    setSquareState('loading')
-    // 说明：服务端路由把查询参数按 id/page 传给上游库，而上游只认 category/pageNo/num，
-    // 所以无论选哪个分类、第几页，拿到的都是「全部」的第一页（已实测 2026-09-28：
-    // pageSize 生效，category 与 pageNo 被忽略）。这是数据源现状（服务端路由不在本次
-    // 改动范围内），因此这里不提供「加载更多」，免得翻几次都是同一批歌单；
-    // 分类胶囊仍按官方版式保留，等网关修好参数名即可自然生效。
-    fetch(`${getApiBase()}/qq/songlist/list?id=${activeCategory}&page=1&pageSize=30&sort=5`, { signal: controller.signal, cache: 'no-store' })
-      .then(response => response.json())
-      .then(payload => {
-        if (controller.signal.aborted) return
-        setSquarePlaylists(parseQQSquarePlaylists(payload))
-        setSquareState('ready')
-      })
-      .catch(() => {
-        if (controller.signal.aborted) return
-        if (squareKeyRef.current === squareKey) squareKeyRef.current = ''
-        setSquarePlaylists([])
-        setSquareState('error')
-      })
+    loadSquare(activeCategory, 1, false)
     return () => {
-      controller.abort()
+      squareAbortRef.current?.abort()
       if (squareKeyRef.current === squareKey) squareKeyRef.current = ''
     }
-  }, [active, tab, activeCategory, squareKey])
+  }, [active, tab, activeCategory, squareKey, loadSquare])
+
+  const loadMoreSquare = useCallback(() => {
+    if (activeCategory == null || squareLoadingMore) return
+    loadSquare(activeCategory, squarePageRef.current + 1, true)
+  }, [activeCategory, squareLoadingMore, loadSquare])
 
   /* ── 派生数据 ── */
 
@@ -303,8 +354,8 @@ function QQPcHall({ chrome, account, actions, active = true }: QQPcHallProps) {
   }, [snapshot])
 
   /**
-   * 排行榜目录：网关没有公开的榜单目录接口（`/api/qq/top` 只给单个榜单的曲目，
-   * 也没有 /api/qq/toplist），所以只从货架里 action=open-chart 的卡片反推。
+   * 排行榜兜底目录：正常情况用聚合接口 /api/explore/qq 透传的全量榜单（directoryCharts，
+   * 上游 top/category），接口失败或为空时才从货架里 action=open-chart 的卡片反推。
    * 这里刻意不套 isHiddenQQMusicHallShelf：隐藏规则是为了首页版面（编辑甄选等），
    * 不代表里面的榜单卡无效。
    */
@@ -363,15 +414,17 @@ function QQPcHall({ chrome, account, actions, active = true }: QQPcHallProps) {
       case 'open-album':
         return act.onOpenAlbum ? () => act.onOpenAlbum?.(action.albumId, 'qq') : null
       case 'open-mv':
-        // 传统模式的页面栈里没有 MV 页（onNavigate 覆盖不到），交给系统浏览器打开官方 MV 页
+        // 走全局 MV 弹窗直接播放（与左栏「MV」入口同一链路）；弹窗不可用时才退回系统浏览器
+        if (act.onOpenMv) return () => act.onOpenMv?.(action.mvId, 'qq')
         return () => openExternalLink(`https://y.qq.com/n/ryqq/mv/${action.mvId}`)
       case 'open-external':
         return () => openExternalLink(action.url)
       case 'open-section':
-        // 官方的「更多」入口：能对上我们页签的跳页签，对不上的（MV/电台）不响应
+        // 官方的「更多」入口：能对上我们页签的跳页签，MV 分区走全局 MV 弹窗，其余不响应
         if (action.section === 'artists') return () => setTab('artists')
         if (action.section === 'charts') return () => setTab('charts')
         if (action.section === 'playlists') return () => setTab('playlists')
+        if (action.section === 'mvs' && act.onOpenMv) return () => act.onOpenMv?.(undefined, 'qq')
         return null
       case 'search':
         return () => act.onNavigate({ kind: 'qq', page: 'search', keyword: action.query })
@@ -393,6 +446,7 @@ function QQPcHall({ chrome, account, actions, active = true }: QQPcHallProps) {
   const refresh = useCallback(() => {
     // 已加载键全部失效 + revision 变化：当前页签需要的数据会重新拉取，其余页签等切过去再拉
     snapshotKeyRef.current = ''
+    directoryKeyRef.current = ''
     singerKeyRef.current = ''
     categoryKeyRef.current = ''
     squareKeyRef.current = ''
@@ -527,30 +581,52 @@ function QQPcHall({ chrome, account, actions, active = true }: QQPcHallProps) {
     )
   }
 
-  /* ── 排行：货架里的榜单卡 ── */
+  /* ── 排行：官方榜单目录（聚合接口透传 top/category 全量）；目录不可用时退回货架榜单卡 ── */
   const renderCharts = () => {
     if (!act.onOpenChart) return <PcEmpty theme={theme} title="当前版本不支持打开榜单" />
+    // 优先：聚合接口的「全部榜单」目录（公开接口，未登录也能看）
+    if (directoryCharts.length) {
+      return (
+        <PcCardGrid
+          items={directoryCharts.map(chart => ({
+            key: `chart-dir:${chart.id}`,
+            coverUrl: chart.coverUrl,
+            title: chart.name,
+            subtitle: chart.group || undefined,
+            onClick: () => act.onOpenChart?.(chart),
+          }))}
+          theme={theme}
+          accent={accent}
+          columns={6}
+          showPlayOnHover={false}
+        />
+      )
+    }
+    // 目录未就绪：货架里已有榜单卡就先展示，货架也没有才等目录
+    if (charts.length) {
+      return (
+        <PcCardGrid
+          items={charts.map(chart => ({
+            key: `chart:${chart.id}`,
+            coverUrl: chart.coverUrl,
+            title: chart.name,
+            subtitle: chart.group || undefined,
+            onClick: () => act.onOpenChart?.(chart),
+          }))}
+          theme={theme}
+          accent={accent}
+          columns={6}
+          showPlayOnHover={false}
+        />
+      )
+    }
+    if (directoryState === 'loading') return loadingLine
     if (!loggedIn) {
-      return <PcEmpty theme={theme} title="登录后查看官方排行榜" description="排行榜来自 QQ 音乐账号级接口，登录后才会返回" action={act.onLogin ? <PcPrimaryButton label="立即登录" icon={<User className="h-3.5 w-3.5" />} onClick={act.onLogin} accent={accent} /> : undefined} />
+      return <PcEmpty theme={theme} title="登录后查看官方排行榜" description="榜单目录暂时不可用，登录后可从账号货架补齐榜单" action={act.onLogin ? <PcPrimaryButton label="立即登录" icon={<User className="h-3.5 w-3.5" />} onClick={act.onLogin} accent={accent} /> : undefined} />
     }
     if (snapshotState === 'loading' && !snapshot) return loadingLine
     if (snapshotState === 'error') return snapshotErrorEmpty
-    if (!charts.length) return <PcEmpty theme={theme} title="暂无榜单" description="账号返回的货架里没有榜单卡片" />
-    return (
-      <PcCardGrid
-        items={charts.map(chart => ({
-          key: `chart:${chart.id}`,
-          coverUrl: chart.coverUrl,
-          title: chart.name,
-          subtitle: chart.group || undefined,
-          onClick: () => act.onOpenChart?.(chart),
-        }))}
-        theme={theme}
-        accent={accent}
-        columns={6}
-        showPlayOnHover={false}
-      />
-    )
+    return <PcEmpty theme={theme} title="暂无榜单" description="榜单目录与账号货架里都没有榜单" />
   }
 
   /* ── 歌单：分类胶囊 + 歌单网格 ── */
@@ -599,6 +675,16 @@ function QQPcHall({ chrome, account, actions, active = true }: QQPcHallProps) {
           </div>
         ))}
         <div className="pt-2">{grid}</div>
+        {squareState === 'ready' && squareHasMore ? (
+          <div className="flex justify-center pt-2">
+            <PcGhostButton
+              label="加载更多歌单"
+              theme={theme}
+              disabled={squareLoadingMore}
+              onClick={loadMoreSquare}
+            />
+          </div>
+        ) : null}
       </div>
     )
   }

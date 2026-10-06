@@ -1,7 +1,7 @@
 // 网易云音乐 PC 客户端风格左栏（逆向官方 3.x 布局）：
 // 「网易云音乐」品牌头 → 推荐/精选/播客/漫游/关注 → 我的（我喜欢的音乐/最近播放/我的播客/
 // 我的收藏/我的音乐云盘 + 收起）→ 创建的歌单 N / 收藏的歌单 N + 歌单列表。
-// 没有数据源的入口（下载管理 / 本地音乐）不下线在列表里留空位——直接不渲染。
+// 没有数据源的入口（下载管理 / 本地音乐）按产品决策永久不做——直接不渲染。
 // 当前项 = 实心红底白字药丸（官方同款）；底部保留本软件的设置/模式入口。
 import { memo, type RefObject } from 'react'
 import {
@@ -63,7 +63,7 @@ function NeteasePcSidebar({
     { key: 'follow', label: '关注', Icon: Mail },
   ]
 
-  // 「下载管理 / 本地音乐」在本版本没有数据源（无下载链路、无本地扫描），整体下线不留空壳入口
+  // 「下载管理 / 本地音乐」为产品决策上永久不支持的能力（无下载链路、无本地扫描），入口直接不渲染
   const myItems: Array<{ key: NeteasePcNavKey; label: string; Icon: typeof Heart; count?: number }> = [
     { key: 'liked', label: '我喜欢的音乐', Icon: Heart, count: counts.liked },
     { key: 'recent', label: '最近播放', Icon: Clock, count: counts.recent },
