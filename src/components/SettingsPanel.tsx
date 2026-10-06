@@ -113,17 +113,33 @@ type UpdateDetail = {
 type DeviceGrant = { feature: string; label: string; issuedAt: number; expiresAt: number | null; note?: string }
 type DeviceState = { status: 'idle' | 'loading' | 'ready' | 'error'; deviceId: string; storage?: 'registry' | 'file'; grants: DeviceGrant[]; message?: string }
 
-const audioQualityLabel = (quality: AudioQualityPreference | 'aac' | 'hi-res-lossless' | 'atmos') => ({
-  auto: '自动最高',
-  standard: '标准',
-  high: '高品质',
-  'very-high': '超高品质',
-  lossless: '无损',
-  'hi-res': 'Hi-Res',
-  aac: 'AAC',
-  'hi-res-lossless': '高解析无损',
-  atmos: '空间音频',
-}[quality])
+/** 各平台音质档位的官方名称（设置页汇总行按平台取值，避免 QQ 的档位名套到网易云上）。 */
+const QUALITY_LABELS_BY_PLATFORM: Record<string, Partial<Record<AudioQualityPreference | 'aac' | 'hi-res-lossless' | 'atmos', string>>> = {
+  qq: {
+    auto: '自动最高', standard: '标准（128k）', high: 'HQ 高品（320k）', lossless: 'SQ 无损（1024k）',
+    '192aac': 'HQ 高品（192k）', '96aac': '流畅（96k）', '48aac': '省流（48k）',
+    'very-high': '超高品质', 'hi-res': 'Hi-Res',
+  },
+  netease: {
+    auto: '自动最高', standard: '标准（128k）', high: '极高（320k）', lossless: '无损（FLAC）', 'hi-res': 'Hi-Res 无损（192k）', 'very-high': '较高（192k）',
+  },
+  apple: {
+    auto: '自动', aac: 'AAC（256k）', lossless: '无损（ALAC）', 'hi-res-lossless': '高解析度无损（24bit 192k）', atmos: '杜比全景声（Atmos）',
+  },
+}
+const GENERIC_QUALITY_LABELS: Partial<Record<AudioQualityPreference | 'aac' | 'hi-res-lossless' | 'atmos', string>> = {
+  auto: '自动最高', standard: '标准（128k）', high: '高品（320k）', 'very-high': '超高品质', lossless: '无损（FLAC）',
+  'hi-res': 'Hi-Res', aac: 'AAC（256k）', 'hi-res-lossless': '高解析无损（24bit 192k）', atmos: '杜比全景声（Atmos）',
+}
+
+const audioQualityLabel = (
+  quality: AudioQualityPreference | 'aac' | 'hi-res-lossless' | 'atmos',
+  platform?: string,
+) => (
+  (platform && QUALITY_LABELS_BY_PLATFORM[platform]?.[quality])
+  || GENERIC_QUALITY_LABELS[quality]
+  || String(quality)
+)
 
 const appLogoUrl = new URL('../../logo.png', import.meta.url).href
 
@@ -2839,8 +2855,7 @@ function SettingsPanel({
                       {modeTransitionStyle === 'complex' && (
                         <div className="flex items-center justify-between gap-6 pt-1">
                           <div className="min-w-0">
-                            <div className={`${textPrimary} text-sm font-medium mb-1`}>转场音效</div>
-                            <div className={`${textTertiary} text-xs`}>每个模式一段专属合成提示音（Steam 风格"嗖—嗡"），关闭后只有动画</div>
+                            <div className={`${textPrimary} text-sm font-medium`}>转场音效</div>
                           </div>
                           <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
                             <input
@@ -2891,7 +2906,7 @@ function SettingsPanel({
                         <div className="text-left min-w-0">
                         <div className={`${textPrimary} font-medium`}>各平台播放音质</div>
                         <div className={`${textSecondary} text-sm truncate`}>
-                          Apple Music：{audioQualityLabel(audioQualitySettings.apple)} · 网易云：{audioQualityLabel(audioQualitySettings.netease)} · QQ音乐：{audioQualityLabel(audioQualitySettings.qq)} · Spotify：{audioQualityLabel(audioQualitySettings.spotify)} · 酷狗：{audioQualityLabel(audioQualitySettings.kugou)} · 汽水：{audioQualityLabel(audioQualitySettings.soda)}
+                          Apple Music：{audioQualityLabel(audioQualitySettings.apple, 'apple')} · 网易云：{audioQualityLabel(audioQualitySettings.netease, 'netease')} · QQ音乐：{audioQualityLabel(audioQualitySettings.qq, 'qq')} · Spotify：{audioQualityLabel(audioQualitySettings.spotify)} · 酷狗：{audioQualityLabel(audioQualitySettings.kugou)} · 汽水：{audioQualityLabel(audioQualitySettings.soda)}
                         </div>
                         </div>
                       </div>

@@ -23,7 +23,8 @@ import DesktopWidgetZone from './DesktopWidgetZone'
 import DesktopFocusAlarmOverlay from './DesktopFocusAlarmOverlay'
 import { Song, LyricLine, isSameSong } from '../services/musicApi'
 import type { MusicPlatform } from '../services/platforms'
-import { getPlatformCapabilities, getPlatformCookie, getVisiblePlatforms, getPlatformVisualMetadata, PLATFORM_ORDER_EVENT, PLATFORM_VISIBILITY_EVENT } from '../services/platforms'
+import { getPlatformCapabilities, getPlatformCookie, getVisiblePlatforms, PLATFORM_ORDER_EVENT, PLATFORM_VISIBILITY_EVENT } from '../services/platforms'
+import { PlatformLogo, PlatformPillCarousel } from './PlatformSwitcher'
 import { getAppleLibraryPlaylists, getAppleLibrarySongs, getAppleFavoriteSongs, getAppleRecentPlayed, appleLibraryTrackToSong, getApplePlaylistTracks, getAppleCatalogPlaylistTracks, appleSongToSong, updateApplePlaylist, deleteApplePlaylist, removeAppleTracksFromPlaylist, getLastAppleMutationResult, APPLE_FAVORITES_ID, APPLE_LIBRARY_ID } from '../services/appleCatalog'
 import { sodaMediaToSong } from '../services/sodaService'
 import { mergeAppleRecentPlayback } from '../services/appleRecentPlayback'
@@ -1551,14 +1552,6 @@ function DesktopView({
     }
   }, [currentSong])
 
-  // 切换平台
-  const handlePlatformSwitch = () => {
-    const order = getVisiblePlatforms()
-    const next = order[(order.indexOf(currentPlatform) + 1) % order.length]
-    setCurrentPlatform(next)
-    syncPlatformAcrossViews(next)
-  }
-
   const closePlaylistDetail = useCallback(() => {
     playlistLoadControllerRef.current?.abort()
     playlistLoadControllerRef.current = null
@@ -2676,32 +2669,34 @@ function DesktopView({
                 <Search className="w-5 h-5 text-white" />
               </motion.button>
 
-              {/* 平台切换按钮 - 使用六平台均有的文字视觉标识 */}
-              <motion.button
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={handlePlatformSwitch}
-                className="rounded-full flex items-center justify-center transition-all"
-                style={{
-                  width: '48px',
-                  height: '48px',
-                  background: 'rgba(255, 255, 255, 0.1)',
-                  border: '1px solid rgba(255, 255, 255, 0.2)',
-                  boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.2)',
-                }}
-              >
-                <span
-                  aria-label={getPlatformVisualMetadata(currentPlatform).label}
-                  title={getPlatformVisualMetadata(currentPlatform).label}
-                  className="flex h-7 min-w-7 items-center justify-center rounded-md px-1 text-xs font-bold"
+              {/* 平台切换：紧凑 logo 滑动轮播（当前平台始终居中，左右拖动/点按切换）。
+                  用户要求：桌面模式要能滑动切平台、做紧凑一点、直接用 logo；
+                  只有一个可切换平台时退化为静态 logo 磁贴。 */}
+              {visiblePlatforms.length >= 2 ? (
+                <PlatformPillCarousel
+                  platforms={visiblePlatforms}
+                  current={currentPlatform}
+                  onChange={(next) => { setCurrentPlatform(next); syncPlatformAcrossViews(next) }}
+                  variant="logo"
+                  slot={48}
+                  visibleSlots={3}
+                  blurAmount={18}
+                />
+              ) : (
+                <div
+                  className="rounded-full flex items-center justify-center"
+                  title={currentPlatform}
                   style={{
-                    color: getPlatformVisualMetadata(currentPlatform).color,
-                    background: getPlatformVisualMetadata(currentPlatform).background,
+                    width: '48px',
+                    height: '48px',
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.2)',
                   }}
                 >
-                  {getPlatformVisualMetadata(currentPlatform).shortLabel}
-                </span>
-              </motion.button>
+                  <PlatformLogo platform={currentPlatform} size={28} />
+                </div>
+              )}
 
               {/* 桌面融合穿透开关：依赖桌面端窗口穿透 IPC，TV 无真实桌面可穿透——隐藏 */}
               {!isTvUi && (

@@ -9101,28 +9101,38 @@ function App() {
   const closeProfileRef = useRef<() => void>(() => undefined)
   const closeAlbumDetailRef = useRef<() => void>(() => undefined)
   const closePlaylistRef = useRef<() => void>(() => undefined)
-  const profileSwitchPlatformRef = useRef<() => void>(() => undefined)
+  const profileSwitchPlatformRef = useRef<(platform: MusicPlatform) => void>(() => undefined)
   const profileLogoutRef = useRef<(platform: MusicPlatform) => void>(() => undefined)
   const smartReorderRef = useRef<() => void>(() => undefined)
   const playlistSongSelectRef = useRef<(index: number) => void>(() => undefined)
   closeProfileRef.current = () => { setShowProfile(false); setProfileUserTarget(null) }
   closeAlbumDetailRef.current = () => closeAlbumDetail()
   closePlaylistRef.current = () => setShowPlaylist(false)
-  profileSwitchPlatformRef.current = () => {
-    // 已登录平台间轮换（Apple 登录态由 token 判定；被隐藏的平台不参与轮换）
-    const order: MusicPlatform[] = ['netease', 'qq', 'apple', 'spotify', 'kugou', 'soda']
-    const loggedIn = {
+  /** 个人中心可切换的平台（已登录 + 未隐藏，顺序即药丸内顺序） */
+  const profileSwitchablePlatforms = useMemo(() => {
+    const loggedIn: Record<MusicPlatform, boolean> = {
       netease: neteaseLoggedIn,
       qq: qqLoggedIn,
       apple: appleLoggedIn,
       spotify: spotifyLoggedIn,
       kugou: kugouLoggedIn,
       soda: sodaLoggedIn,
-    } as Record<MusicPlatform, boolean>
-    const candidates = order.filter(platform => loggedIn[platform] && isPlatformVisible(platform))
-    if (candidates.length <= 1) return
-    const next = candidates[(candidates.indexOf(profileInitialPlatform) + 1) % candidates.length] || candidates[0]
-    setProfileInitialPlatform(next)
+    }
+    return (['netease', 'qq', 'apple', 'spotify', 'kugou', 'soda'] as MusicPlatform[])
+      .filter(platform => loggedIn[platform] && isPlatformVisible(platform))
+  }, [neteaseLoggedIn, qqLoggedIn, appleLoggedIn, spotifyLoggedIn, kugouLoggedIn, sodaLoggedIn])
+  profileSwitchPlatformRef.current = (platform: MusicPlatform) => {
+    // 直切指定平台：只允许切到「已登录且未隐藏」的平台（药丸理论上只列这些，这里再兜一层）
+    const loggedIn: Record<MusicPlatform, boolean> = {
+      netease: neteaseLoggedIn,
+      qq: qqLoggedIn,
+      apple: appleLoggedIn,
+      spotify: spotifyLoggedIn,
+      kugou: kugouLoggedIn,
+      soda: sodaLoggedIn,
+    }
+    if (!loggedIn[platform] || !isPlatformVisible(platform)) return
+    setProfileInitialPlatform(platform)
   }
   profileLogoutRef.current = (platform) => {
     if (platform === 'netease') handleNeteaseLogout()
@@ -9147,7 +9157,7 @@ function App() {
     closeProfile: () => closeProfileRef.current(),
     closeAlbumDetail: () => closeAlbumDetailRef.current(),
     closePlaylist: () => closePlaylistRef.current(),
-    switchProfilePlatform: () => profileSwitchPlatformRef.current(),
+    switchProfilePlatformTo: (platform: MusicPlatform) => profileSwitchPlatformRef.current(platform),
     logout: (platform: MusicPlatform) => profileLogoutRef.current(platform),
     smartReorder: () => smartReorderRef.current(),
     playlistSongSelect: (index: number) => playlistSongSelectRef.current(index),
@@ -11551,12 +11561,12 @@ function App() {
             suspended={!showProfile}
             initialPlatform={profileInitialPlatform}
             initialTab={profileInitialTab}
-            canSwitchPlatform={[neteaseLoggedIn, qqLoggedIn, appleLoggedIn, sodaLoggedIn].filter(Boolean).length >= 2}
+            switchablePlatforms={profileSwitchablePlatforms}
+            onSwitchPlatformTo={stableDialogCallbacks.switchProfilePlatformTo}
             userId={profileInitialPlatform === 'netease' ? neteaseUserId : profileInitialPlatform === 'qq' ? qqUserId : ''}
             cookie={profileInitialPlatform === 'netease' ? _neteaseCookie : profileInitialPlatform === 'qq' ? _qqCookie : ''}
             onClose={stableDialogCallbacks.closeProfile}
             onSongSelect={viewCallbacks.onSongSelect}
-            handleSwitchPlatform={stableDialogCallbacks.switchProfilePlatform}
             onLogout={stableDialogCallbacks.logout}
             currentSong={currentSong}
             playerTheme={playerTheme}

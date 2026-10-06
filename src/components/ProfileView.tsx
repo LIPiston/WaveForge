@@ -24,6 +24,7 @@ import type { MusicPlatform } from '../services/platforms'
 import { getPlatformCapabilities, getPlatformCookie, platformLabel } from '../services/platforms'
 import { buildPlaylistShareUrl } from '../services/playlistShare'
 import { getAppleAuthState } from '../services/appleAuth'
+import { PlatformPillCarousel } from './PlatformSwitcher'
 import { getPlatformRemainingDays } from '../services/loginExpiry'
 import { getAppleLibraryPlaylists, getAppleFavoriteSongs, getAppleRecentPlayed, appleLibraryTrackToSong, createApplePlaylist, deleteApplePlaylist, updateApplePlaylist, getApplePlaylistTracks, getAppleCatalogPlaylistTracks, getAppleLibrarySongs, appleSongToSong, getLastAppleMutationResult, removeAppleTracksFromPlaylist, APPLE_FAVORITES_ID, APPLE_LIBRARY_ID, enrichApplePlaylistTrackCounts } from '../services/appleCatalog'
 import { preloadArtwork } from '../services/artworkLoader'
@@ -136,22 +137,10 @@ interface UserDetail {
 type ProfileTab = 'created' | 'subscribed' | 'detail' | 'recent' | 'social' | 'rank' | 'favs' | 'collections' | 'cloud'
 type RecentPlaybackType = 'song' | 'playlist' | 'album' | 'dj' | 'voice'
 
-// 平台切换轮转顺序（与 App.tsx 的已登录平台轮换一致；仅用于按钮文案/配色）
-const PLATFORM_SWITCH_ORDER: MusicPlatform[] = ['netease', 'qq', 'apple', 'spotify', 'kugou', 'soda']
-
 // 汽水虚拟歌单 id（后端 server/qishui-api.mjs 的 SODA_WEB_LIKED/RECENT/FEED_PLAYLIST_ID 约定，
 // 与 services/addablePlaylists 的 VIRTUAL_PLAYLIST_IDS 同口径）：它们不是用户创建/收藏的
 // 真实歌单，「我创建的歌单」分栏必须剔除，否则「汽水最近播放」等虚拟卡会混进创建栏
 const SODA_VIRTUAL_PLAYLIST_IDS = new Set(['qishui-liked', 'qishui-recent', 'qishui-feed'])
-const SWITCH_PLATFORM_COLORS: Record<MusicPlatform, string> = {
-  netease: 'bg-green-600 hover:bg-green-700 text-white',
-  qq: 'bg-red-600 hover:bg-red-700 text-white',
-  apple: 'bg-pink-600 hover:bg-pink-700 text-white',
-  spotify: 'bg-[#1DB954] hover:bg-[#1ED760] text-white',
-  kugou: 'bg-blue-600 hover:bg-blue-700 text-white',
-  soda: 'bg-purple-600 hover:bg-purple-700 text-white',
-}
-
 const formatCount = (value?: number) => {
   const count = Number(value || 0)
   if (count >= 100000000) return `${(count / 100000000).toFixed(1)}亿`
@@ -539,13 +528,15 @@ const RankSongRow = memo(function RankSongRow({
 interface ProfileViewProps {
   initialPlatform: MusicPlatform  // 初始显示的平台
   initialTab?: ProfileTab
-  canSwitchPlatform: boolean  // 是否可以切换平台
+  /** 可切换的平台（已登录且未隐藏，顺序即药丸内顺序）；≥2 时才渲染平台切换药丸 */
+  switchablePlatforms?: MusicPlatform[]
+  /** 直接切换到指定平台（个人中心头部药丸：点击/拖动即切） */
+  onSwitchPlatformTo?: (platform: MusicPlatform) => void
   userId: string  // 当前平台的用户ID（Apple 无此概念，传空串）
   cookie: string  // 当前平台的Cookie（Apple 走 token，传空串）
   accentColor?: string  // 主题色
   onClose: () => void
   onSongSelect: (song: Song, playlist?: Song[]) => void
-  handleSwitchPlatform: () => void  // 切换平台的回调
   onLogout: (platform: MusicPlatform) => void  // 退出登录回调
   currentSong?: Song | null
   playerTheme?: 'light' | 'dark'
@@ -566,13 +557,13 @@ interface ProfileViewProps {
 function ProfileView({ 
   initialPlatform,
   initialTab = 'created',
-  canSwitchPlatform,
+  switchablePlatforms = [],
+  onSwitchPlatformTo,
   userId,
   cookie,
   accentColor = '#3B82F6',
   onClose, 
   onSongSelect,
-  handleSwitchPlatform,
   onLogout,
   currentSong = null,
   playerTheme = 'dark',
@@ -1963,16 +1954,17 @@ function ProfileView({
     return () => window.removeEventListener('playlist-content-changed', handlePlaylistContentChanged)
   }, [currentPlatform, suspended])
 
-  // 切换平台（查看他人时锁定目标平台，禁止切换）
-  const handlePlatformSwitch = () => {
-    if (viewTarget) return
+  // 切换到指定平台（查看他人时锁定目标平台，禁止切换）：先复位「最近播放」等跨平台残留，
+  // 再交给父级把 profileInitialPlatform 指到目标平台（ProfileView 的 currentPlatform 会跟随）。
+  const switchPlatformTo = (next: MusicPlatform) => {
+    if (viewTarget || next === currentPlatform) return
     recentRequestRef.current.controller?.abort()
     recentRequestRef.current.revision += 1
     setRecentItems([])
     setRecentError('')
     setRecentLoading(activeTab === 'recent')
     setRecentSongContextMenu({ show: false, x: 0, y: 0, song: null, songs: [] })
-    handleSwitchPlatform()  // 调用父组件的回调
+    onSwitchPlatformTo?.(next)
   }
 
   const fetchUserData = async (targetPlatform?: MusicPlatform) => {
@@ -2508,17 +2500,15 @@ function ProfileView({
                   <Plus className="w-5 h-5 text-white/70" />
                 </motion.button>
               )}
-              {/* 平台切换按钮 - 仅在至少两个平台已登录时显示 */}
-              {canSwitchPlatform && (
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={handlePlatformSwitch}
-                  className={`px-4 py-2 rounded-full font-medium text-sm transition-all flex items-center gap-2 ${SWITCH_PLATFORM_COLORS[platform]}`}
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  切换到{platformLabel(PLATFORM_SWITCH_ORDER[(PLATFORM_SWITCH_ORDER.indexOf(platform) + 1) % PLATFORM_SWITCH_ORDER.length])}
-                </motion.button>
+              {/* 平台切换药丸（可拖拽，首页「个人信息」同款样式）：
+                  仅看自己的主页时显示 —— 查看他人主页时切平台会把当前浏览的用户主页整个换掉（用户实测反馈）。 */}
+              {!viewTarget && switchablePlatforms.length >= 2 && (
+                <PlatformPillCarousel
+                  platforms={switchablePlatforms}
+                  current={currentPlatform}
+                  onChange={switchPlatformTo}
+                  playerTheme={playerTheme}
+                />
               )}
               
               {/* 关闭按钮 */}
@@ -3211,7 +3201,9 @@ function ProfileView({
                     {/* 详细信息卡片 */}
                     <div className="relative bg-white/5 rounded-xl p-6 space-y-4">
 
-                      {/* 折叠：用户数据脱敏（隐私） */}
+                      {/* 折叠：用户数据脱敏（隐私）——个人电台名保护是 Apple Music 独有概念，
+                          只在 Apple 平台（且是自己的主页）渲染；其它平台的用户信息没有这一项。 */}
+                      {platform === 'apple' && !viewTarget && (
                       <div className="rounded-lg border border-white/10 bg-white/[0.03]">
                         <button
                           type="button"
@@ -3249,6 +3241,7 @@ function ProfileView({
                           </div>
                         )}
                       </div>
+                      )}
 
                       <div className="grid grid-cols-2 gap-4">
                         <div className="bg-white/5 rounded-lg p-4">
