@@ -41,6 +41,7 @@ import {
   type CandidateType,
 } from '../services/bilibiliApi'
 import { computeMvSyncTarget } from '../services/mvBackground'
+import { activeLyricLine, formatMvSyncSnapshot, type MvSyncSnapshot } from '../services/mvSyncDiagnostics'
 import { useTransitionOverlayProgress } from '../hooks/useTransitionVisual'
 import type { TransitionVisualStore } from '../audio/transitionVisualStore'
 import {
@@ -63,6 +64,8 @@ export interface MvBackgroundUpcomingSong {
   songDuration: number
   platform?: string
   id?: string | number
+  /** 专辑名：动画/游戏/影视原声专辑可推导作品名作为 IP 证据（见 services/mvFranchise） */
+  songAlbum?: string
 }
 
 interface BilibiliMvBackgroundProps {
@@ -72,6 +75,8 @@ interface BilibiliMvBackgroundProps {
   songDuration: number
   platform?: string
   songId?: string | number
+  /** 专辑名：动画/游戏/影视原声专辑可推导作品名（IP 证据），普通专辑不推导 */
+  songAlbum?: string
   isPlaying: boolean
   getAudioElement: () => HTMLAudioElement | null
   /** 渲染过渡期间的权威播放时钟；未提供或返回非有限值时回退到 audio.currentTime。 */
@@ -124,6 +129,8 @@ interface BilibiliMvBackgroundProps {
     duration?: number
     platform?: string
     id?: string | number
+    /** 过渡目标专辑名（App 下发）：预载目标 MV 时用于推导作品名 */
+    albumName?: string
   } | null
   /** 过渡进度 0-1：过渡期预载的 MV 以其为透明度叠在旧 MV 上渐入 */
   transitionProgress?: number
@@ -154,6 +161,12 @@ const TYPE_BADGES: Record<CandidateType, { label: string; color: string }> = {
   instrumental: { label: '演奏', color: '#8B7CF6' },
   lyrics: { label: '字幕', color: '#52C41A' },
   other: { label: '其他', color: '#8A8F99' },
+}
+
+/** MV 背景同步诊断（[renderer:MvSync]，写 automix-backend.log）：格式与判读见 services/mvSyncDiagnostics */
+const mvSyncLog = (msg: string): void => {
+  console.log('[MvSync]', msg)
+  void window.electron?.automixLog?.('MvSync', msg)?.catch?.(() => undefined)
 }
 
 function formatPlayCount(play: number): string {
@@ -254,6 +267,7 @@ export default memo(function BilibiliMvBackground({
   songDuration,
   platform,
   songId,
+  songAlbum,
   isPlaying,
   getAudioElement,
   getPlaybackTimeSeconds,
@@ -313,8 +327,8 @@ export default memo(function BilibiliMvBackground({
   // 若进 effect 依赖会导致搜索/加载每帧重跑、video 反复卸载重建（闪烁）。仅 songKey 变化才重新匹配。
   // 异步加载完成后的歌曲 key 校验：songKey 可能在异步期间变化（切歌），
   // 用 ref 而非闭包捕获——否则旧歌的 loadVideo 会把新歌的槽位灌入错误 MV
-  const songRef = useRef({ songTitle, songArtists, songDuration, platform, songId })
-  songRef.current = { songTitle, songArtists, songDuration, platform, songId }
+  const songRef = useRef({ songTitle, songArtists, songDuration, platform, songId, songAlbum })
+  songRef.current = { songTitle, songArtists, songDuration, platform, songId, songAlbum }
 
   // 挂起（所属模式层被切走）时不渲染候选条：它 portal 到 body，不受挂起层 visibility:hidden 约束，
   // 留着会浮在当前模式底部（同 useModeParked 的说明）。
@@ -462,6 +476,8 @@ export default memo(function BilibiliMvBackground({
   }, [lyrics])
   /** 同步校正冷却：距上次 seek 校正 ≥10s 才允许再次校正（每次 seek 触发重缓冲 = "卡一下"） */
   const lastSyncCorrectionRef = useRef(0)
+  /** MV 同步诊断状态：跟踪键去重（(歌曲,视频,对齐态) 变化才打"跟踪开始"）、10s 心跳节流、校正计数 */
+  const mvSyncStateRef = useRef({ trackingKey: '', lastHeartbeat: 0, corrections: 0 })
   /** 上一次渲染的 hidden 值：从看歌切回（hidden true→false）时做一次性硬同步 */
   const prevHiddenRef = useRef(hidden)
   /** 看歌切回硬同步的重试定时器（隐藏期缓冲可能被回收，视频暂不可 seek 时稍后重试） */
@@ -523,11 +539,41 @@ export default memo(function BilibiliMvBackground({
       if (target !== null && Math.abs(video.currentTime - target) > minJumpSec) {
         void window.electron?.automixLog?.('MvAlign', `[背景] 跳转对齐 ${bvid} offset=${alignment.offsetSeconds}s conf=${alignment.confidence.toFixed(2)} audio=${audio.currentTime.toFixed(1)}s → video seek ${target.toFixed(1)}s（原 ${video.currentTime.toFixed(1)}s，槽${slot} src=${(video.currentSrc || video.src || '空').slice(-40)}）`)?.catch?.(() => undefined)
         lastSyncCorrectionRef.current = performance.now()
+        mvSyncStateRef.current.corrections += 1
         video.currentTime = target
           if (isPlayingRef.current && video.paused && video.readyState >= 3 && (slot === activeSlotRef.current || slot === incomingSlotRef.current || isTransitioningStagedSlot(slot))) void video.play().catch(() => undefined)
       }
     }
   }, [songKey])
+
+  /**
+   * 采样当前活跃槽的同步快照（[renderer:MvSync] 诊断行内容，见 services/mvSyncDiagnostics）。
+   * 只读 ref 与对齐缓存，无副作用；在同步循环的每个 tick 调用。
+   */
+  const buildMvSyncSnapshot = (audio: HTMLAudioElement): MvSyncSnapshot => {
+    const slot = activeSlotRef.current
+    const bvid = slotBvidRef.current[slot]
+    const candidate = fallbackChainRef.current.find((c) => c.video.bvid === bvid)
+    const alignment = getMvAlignmentFor(songKeyRef.current, bvid, alignmentOwnerFor(bvid))
+    const aligned = Boolean(alignment && alignment.confidence >= MIN_ALIGNMENT_CONFIDENCE)
+    const audioPosition = playbackTime(audio)
+    return {
+      songKey: songKeyRef.current,
+      songTitle: songRef.current.songTitle,
+      bvid,
+      videoTitle: candidate?.video.title,
+      candidateType: candidate?.type,
+      ccVerification: candidate?.ccVerification,
+      alignment,
+      aligned,
+      audioSeconds: audioPosition,
+      videoSeconds: slotEl(slot)?.currentTime ?? 0,
+      effectiveOffset: aligned && alignment ? alignment.offsetSeconds : 0,
+      lyricLine: activeLyricLine(lyricsRef.current, audioPosition),
+      corrections: mvSyncStateRef.current.corrections,
+      slot,
+    }
+  }
 
   const normalizedBlur = clampMvBlur(blur)
   const slotUrl = (slot: 'A' | 'B') => (slot === 'A' ? slotAUrl : slotBUrl)
@@ -718,6 +764,11 @@ export default memo(function BilibiliMvBackground({
             }
           }
           if (!isCurrentRequest()) return
+          // 新视频落槽：清掉上一首/上一次校正遗留的 10s 冷却——否则切歌后同步循环
+          // 要等冷却过期才把新视频拽到对齐位置（实测 Dead Inside 切歌后 ~4.5s 背景
+          // 停在错误位置 video 13.2s vs 目标 26.4s；jumpToAlignedPosition 也因视频
+          // 尚未就绪 readyState<2 跳过，错过就只剩这个循环兜底）
+          lastSyncCorrectionRef.current = 0
           setStatus('playing')
           if (lastPlayStateRef.current) {
             onPlayStateChangeRef.current?.({ ...lastPlayStateRef.current, songKey: slotOwnerRef.current[activeSlotRef.current] || songKeyRef.current, currentTime: activeEl()?.currentTime || 0 })
@@ -728,6 +779,8 @@ export default memo(function BilibiliMvBackground({
           if (getSessionManualPick(songKey) === candidate.video.bvid) clearSessionManualPick()
           if (stagedOnly) return // 后台预载失败静默：不影响当前播放，也不弹错误提示
           const message = error instanceof Error ? error.message : 'MV 加载失败'
+          // 诊断：加载失败此前只弹 UI 角标，日志无痕——回倒/换视频丢背景时无法定位
+          mvSyncLog(`加载失败 song=${expectedSongKey} bvid=${candidate.video.bvid} 原因=${message} 链=${fallbackChainSongRef.current === songKey ? '当前歌' : '他歌'}`)
           failedBvidsRef.current.add(candidate.video.bvid)
           // fallback 链必须属于当前歌——预载会把链覆盖成"目标歌"的候选，直接推进会
           // 用上一首/下一首的候选（用户实测"错位一首"）。链不属于当前歌 → 放弃推进
@@ -843,8 +896,8 @@ export default memo(function BilibiliMvBackground({
       setShowCandidates(false)
       setCandidates([])
       void (async () => {
-        const { songTitle: st, songArtists: sa, songDuration: sd, platform: pf, songId: sid } = songRef.current
-        const ctx: MatchContext = { songTitle: st, artists: sa, songDuration: sd, platform: pf, id: sid }
+        const { songTitle: st, songArtists: sa, songDuration: sd, platform: pf, songId: sid, songAlbum: slb } = songRef.current
+        const ctx: MatchContext = { songTitle: st, artists: sa, songDuration: sd, platform: pf, id: sid, album: slb }
         const result = await findBestBilibiliMv(ctx, {
           signal: controller.signal,
           // CC 字幕验证：同步取已加载歌词（含翻译），没加载就不等——命中缓存后零网络升级
@@ -887,6 +940,7 @@ export default memo(function BilibiliMvBackground({
             setLoadedVideoBvid(fakeCandidate.video.bvid)
             fallbackChainRef.current = [fakeCandidate]
             fallbackChainSongRef.current = songKey
+            lastSyncCorrectionRef.current = 0 // 兜底 MV 落槽：同 loadVideo，清冷却让首个同步周期就位
             setStatus('playing')
           } else {
             setStatus('none')
@@ -994,7 +1048,7 @@ export default memo(function BilibiliMvBackground({
       void (async () => {
         try {
           const result = await findBestBilibiliMv(
-            { songTitle: upcoming.songTitle, artists: upcoming.songArtists, songDuration: upcoming.songDuration, platform: upcoming.platform, id: upcoming.id },
+            { songTitle: upcoming.songTitle, artists: upcoming.songArtists, songDuration: upcoming.songDuration, platform: upcoming.platform, id: upcoming.id, album: upcoming.songAlbum },
             { signal: preloadController.signal, settings: getBilibiliWatchSettings() },
           )
           if (preloadController.signal.aborted || result.status !== 'auto' || !result.best) return
@@ -1061,6 +1115,7 @@ export default memo(function BilibiliMvBackground({
           songDuration: targetDuration,
           platform: target.platform,
           id: target.id,
+          album: target.albumName,
         }
         const result = await findBestBilibiliMv(ctx, { signal: controller.signal })
         if (!isCurrentTransition()) return
@@ -1142,10 +1197,17 @@ export default memo(function BilibiliMvBackground({
 
   // 死胡同状态（未找到 / 匹配失败 / 播放失败 / 候选条被关闭）→ 通知外部回退到普通封面背景；
   // 恢复播放（搜索中/加载中/候选选择中）→ 通知取消回退。外部据此在 MV 层与封面层之间切换。
+  const prevFallbackActiveRef = useRef(false)
   useEffect(() => {
     const fallbackActive = status === 'none' || status === 'error'
+    // 诊断：none/error 之前只有 UI 角标可见，「背景没了」类反馈无法从日志定位——
+    // 进入/恢复死胡同一律落一行，与 [MvSync] 跟踪开始/心跳互相印证
+    if (fallbackActive !== prevFallbackActiveRef.current) {
+      prevFallbackActiveRef.current = fallbackActive
+      mvSyncLog(`回退封面 ${fallbackActive ? '进入' : '恢复'} status=${status} song=${songKey} bvid=${slotBvidRef.current[activeSlotRef.current] || '空'}`)
+    }
     onFallbackChange?.(fallbackActive)
-  }, [status, showCandidates, onFallbackChange])
+  }, [status, showCandidates, onFallbackChange, songKey])
 
   // 槽位是否已经真正出过画面：canplay 才算（拿到 URL 不等于有帧可显示）。
   // URL 被清空（切歌/释放解码器/关闭开关）时同步失效。
@@ -1290,7 +1352,21 @@ export default memo(function BilibiliMvBackground({
       const alignment = getMvAlignmentFor(songKey, activeBvid, alignmentOwnerFor(activeBvid))
       // 无对齐结果（现场/翻唱/对不上）→ 按 offset=0 自由跟随音频位置，而不是完全不校正：
       // 否则用户拖进度条/跳歌词后视频停留在旧位置（实测 宮 现场版跳转不跟随）
-      const offset = alignment && alignment.confidence >= MIN_ALIGNMENT_CONFIDENCE ? alignment.offsetSeconds : 0
+      const aligned = Boolean(alignment && alignment.confidence >= MIN_ALIGNMENT_CONFIDENCE)
+      const offset = aligned && alignment ? alignment.offsetSeconds : 0
+      // —— MV 背景同步诊断（[renderer:MvSync]）：放在早退之前，缓冲/seeking 期间也有心跳 ——
+      // 跟踪键含对齐态：对齐算完/缓存命中时（free→aligned）会补一条"跟踪开始"宣告最终映射
+      const diag = mvSyncStateRef.current
+      const diagTrackingKey = `${songKey}|${activeBvid}|${aligned ? 'aligned' : 'free'}`
+      if (diag.trackingKey !== diagTrackingKey) {
+        diag.trackingKey = diagTrackingKey
+        diag.corrections = 0
+        diag.lastHeartbeat = now
+        mvSyncLog(formatMvSyncSnapshot('跟踪开始', buildMvSyncSnapshot(audio)))
+      } else if (now - diag.lastHeartbeat >= 10_000) {
+        diag.lastHeartbeat = now
+        mvSyncLog(formatMvSyncSnapshot('心跳', buildMvSyncSnapshot(audio)))
+      }
       const video = slotEl(activeSlotRef.current)
       if (!video || video.readyState < 2) return
       // 自愈：视频因网络停顿/缓冲被暂停时恢复播放（否则会冻结在当前帧）
@@ -1300,6 +1376,7 @@ export default memo(function BilibiliMvBackground({
       if (target === null) return
       if (Math.abs(video.currentTime - target) > 3 && now - lastSyncCorrectionRef.current > 10000) {
         lastSyncCorrectionRef.current = now
+        diag.corrections += 1
         video.currentTime = target
       }
     }, transitionActive ? 250 : 1500)
@@ -1338,6 +1415,7 @@ export default memo(function BilibiliMvBackground({
       const target = computeMvSyncTarget(audio.currentTime + offset, video.duration)
       if (target !== null && Math.abs(video.currentTime - target) > 1.5) {
         void window.electron?.automixLog?.('MvAlign', `[背景] seek跟随 audio=${audio.currentTime.toFixed(1)}s offset=${offset}s → video ${video.currentTime.toFixed(1)}s→${target.toFixed(1)}s`)?.catch?.(() => undefined)
+        mvSyncStateRef.current.corrections += 1
         video.currentTime = target
       }
     }
@@ -1359,6 +1437,12 @@ export default memo(function BilibiliMvBackground({
   useEffect(() => {
     if (!enabled || hidden) return
     if (status !== 'playing') return
+    // 过渡未提交（transitionToTrack 仍在）时 canonical audio 的 src 还是上一首：
+    // 此刻跑对齐会把上一首的音频当成歌曲侧节拍/包络参考（实测 5АМ 的 songKey 下
+    // 缓存了上一首 162.2s/115.38BPM 的分析 → 节拍/包络结论全废 → 补偿强加错误偏移
+    // 入缓存 30 天）。提交帧 transitionToTrack 清空后本 effect 随 transitionActive
+    // 依赖重跑补算，届时 audio.src 已是新歌。
+    if (transitionActive) return
     if (transitionPreloadRef.current && transitionPreloadRef.current.trackKey !== songTrackKeyRef.current) return
     const mvState = slotPlayStateRef.current[activeSlotRef.current]
     if (!mvState?.bvid || !mvState.cid) return
@@ -1371,6 +1455,7 @@ export default memo(function BilibiliMvBackground({
     alignmentControllerRef.current = controller
     void ensureMvAlignment({
       songKey,
+      trackKey: songTrackKeyRef.current || undefined,
       songTitle: songRef.current.songTitle,
       songArtists: songRef.current.songArtists,
       songDuration: songRef.current.songDuration,
@@ -1387,7 +1472,7 @@ export default memo(function BilibiliMvBackground({
       if (alignmentControllerRef.current === controller) alignmentControllerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [songKey, enabled, hidden, status, lyricsAlignmentSignature, loadedVideoBvid, activeSlot])
+  }, [songKey, enabled, hidden, status, lyricsAlignmentSignature, loadedVideoBvid, activeSlot, transitionActive])
 
   // 用户关闭 MV 背景是彻底停用：中止网络、预热和对齐，停止定时器并释放解码器。
   // hidden 仍只是临时遮挡，保留缓冲和 staged 状态，保证看歌往返与正常过渡视觉不变。
@@ -1554,6 +1639,8 @@ export default memo(function BilibiliMvBackground({
 
   // 视频加载失败：清掉该槽的 staged/incoming 标记并释放 URL；若正是当前播放槽则进入 error 回退
   const handleVideoError = (slot: 'A' | 'B') => {
+    // 诊断：视频 error 此前不落日志，回倒/快速切歌丢背景时无法定位是哪一环
+    mvSyncLog(`视频error 槽=${slot} bvid=${slotBvidRef.current[slot] || '空'} owner=${slotOwnerRef.current[slot] || '空'} staged=${stagedSlotRef.current === slot} active=${activeSlotRef.current === slot} song=${songKeyRef.current}`)
     if (stagedSlotRef.current === slot) stagedSlotRef.current = null
     if (pendingPromotionRef.current === slot) pendingPromotionRef.current = null
     const failedBvid = slotBvidRef.current[slot]

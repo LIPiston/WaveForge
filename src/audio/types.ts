@@ -177,8 +177,12 @@ export interface TrackAnalysis {
   rmsEnvelope?: number[]
   /** 包络互相关峰值（≥0.6 表示 MV 与歌曲同录音；网格置信度失效时可兜底用包络偏移） */
   envelopePeak?: number
-  /** 包络互相关偏移（秒；仅 envelopePeak ≥0.6 时可信） */
+  /** 包络互相关偏移（秒；仅 envelopePeak ≥0.6 且突出度达标时可信） */
   envelopeOffset?: number
+  /** 包络峰突出度：主峰 − ±2s 外次峰。phonk 等重复结构的相关曲线平坦、多个局部峰
+   *  几乎等高，绝对峰值（≥0.6）挡不住 argmax 落在错误的重复段上（实测 Одна 偏移
+   *  错 ~4-5s ≈ 一句歌词）；突出度不足 = 偏移不可信 */
+  envelopeProminence?: number
   sourceSignature?: string
   analysisVersion: string
   createdAt: number

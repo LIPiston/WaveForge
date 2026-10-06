@@ -4,6 +4,7 @@ import {
   detectOffsetFromBeats,
   ensureMvAlignment,
   firstLyricTime,
+  getMvAlignment,
   getMvAlignmentFor,
   MIN_ALIGNMENT_CONFIDENCE,
   mvAlignmentInputSignature,
@@ -11,6 +12,8 @@ import {
   shouldRejectAlignmentFor,
 } from '../src/services/mvAlignment'
 import { autoMixAnalysisService } from '../src/services/autoMixAnalysisService'
+import * as autoMixModule from '../src/services/autoMixAnalysisService'
+import { buildEnvelopeAlignment } from '../src/services/mvAlignment'
 import * as bilibiliApi from '../src/services/bilibiliApi'
 import type { LyricLine } from '../src/services/musicApi'
 import type { BilibiliSubtitleLine } from '../src/services/bilibiliApi'
@@ -203,6 +206,156 @@ describe('alignment cache trust gate（候选可信度闸门）', () => {
 
     expect(getMvAlignmentFor('villain-key', 'BV-villain', { candidateType: 'other', ccVerification: 'mismatch' })).toBeNull()
     expect(getMvAlignmentFor('villain-key', 'BV-villain', { candidateType: 'other', ccVerification: 'unverified' })).not.toBeNull()
+  })
+})
+
+describe('alignment hardening（5АМ 错位回归）', () => {
+  const baseInput = {
+    songKey: 'hardening-key',
+    songTitle: '5АМ',
+    songArtists: ['АДЛИН'],
+    songDuration: 137.6,
+    songUrl: 'http://audio/song',
+    bvid: 'BV-hardening',
+    cid: 1,
+    videoUrl: 'http://audio/mv',
+    candidateType: 'other',
+  }
+
+  it('other 候选节拍路径跑过仍失败 → 不做补偿兜底（自由播放）', async () => {
+    vi.spyOn(bilibiliApi, 'getBilibiliSubtitles').mockResolvedValue({ code: 0, subtitles: [] })
+    const analyze = vi.spyOn(autoMixAnalysisService, 'analyze').mockResolvedValue({ beats: [] } as any)
+    const decodeAudioUrl = vi.spyOn(autoMixModule, 'decodeAudioUrl').mockResolvedValue({ buffer: {} } as any)
+
+    const result = await ensureMvAlignment({ ...baseInput, candidateType: 'other' })
+
+    expect(result).toBeNull()
+    expect(analyze).toHaveBeenCalled() // 节拍路径真正跑过（歌曲+MV 音频 URL 齐备）
+    expect(decodeAudioUrl).not.toHaveBeenCalled() // 信号链已裁决对不上 → 补偿被闸门拦下
+  })
+
+  it('节拍路径没跑过（blob 歌曲）→ 仍允许补偿兜底', async () => {
+    vi.spyOn(bilibiliApi, 'getBilibiliSubtitles').mockResolvedValue({ code: 0, subtitles: [] })
+    vi.spyOn(autoMixAnalysisService, 'analyze').mockResolvedValue({ beats: [] } as any)
+    const decodeAudioUrl = vi.spyOn(autoMixModule, 'decodeAudioUrl').mockResolvedValue({ buffer: {} } as any)
+
+    await ensureMvAlignment({ ...baseInput, songUrl: 'blob:http://127.0.0.1/local-song', candidateType: 'other' })
+
+    expect(decodeAudioUrl).toHaveBeenCalled()
+  })
+
+  it('歌曲侧节拍优先复用 automix trackKey 缓存，不按 songKey 重复分析', async () => {
+    vi.spyOn(bilibiliApi, 'getBilibiliSubtitles').mockResolvedValue({ code: 0, subtitles: [] })
+    const automixCached = {
+      trackKey: 'app-track-key',
+      duration: 137.6,
+      beats: Array.from({ length: 32 }, (_, i) => i * 0.5),
+      estimatedBpm: 120,
+      provider: 'beat_this',
+      rmsEnvelope: Array.from({ length: 100 }, () => 0.5),
+    }
+    const getCached = vi.spyOn(autoMixAnalysisService, 'getCached').mockResolvedValue(automixCached as any)
+    const analyze = vi.spyOn(autoMixAnalysisService, 'analyze').mockResolvedValue({ beats: [] } as any)
+
+    await ensureMvAlignment({ ...baseInput, trackKey: 'app-track-key' })
+
+    expect(getCached).toHaveBeenCalledWith('app-track-key')
+    expect(analyze).toHaveBeenCalledTimes(1) // 只剩 MV 侧分析
+    expect(String(analyze.mock.calls[0]?.[0]?.trackKey)).toContain('mv-align-video:')
+  })
+
+  it('歌曲分析时长与元数据明显不符（脏缓存/错源）→ 拒用不比对', async () => {
+    vi.spyOn(bilibiliApi, 'getBilibiliSubtitles').mockResolvedValue({ code: 0, subtitles: [] })
+    // 实测脏数据：过渡竞态把上一首 162.2s 的分析缓存在 5АМ（137.6s）的 songKey 下
+    const poisoned = {
+      trackKey: 'app-track-key',
+      duration: 162.2,
+      beats: Array.from({ length: 32 }, (_, i) => i * 0.5),
+      estimatedBpm: 115.38,
+      provider: 'browser-fallback',
+      rmsEnvelope: Array.from({ length: 100 }, () => 0.5),
+    }
+    vi.spyOn(autoMixAnalysisService, 'getCached').mockResolvedValue(poisoned as any)
+    const analyze = vi.spyOn(autoMixAnalysisService, 'analyze').mockResolvedValue({ beats: [] } as any)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const result = await ensureMvAlignment({ ...baseInput, trackKey: 'app-track-key' })
+
+    expect(result).toBeNull()
+    expect(log).toHaveBeenCalledWith('[MvAlign]', expect.stringContaining('时长不符'))
+    expect(analyze).not.toHaveBeenCalled()
+  })
+
+  it('迁移：丢弃不可信的 live-vocal 旧缓存，live/cover 与其他方法保留', () => {
+    localStorage.setItem('waveforge:mv-alignments:v2-seconds', JSON.stringify({
+      'k|BV-legacy': { offsetSeconds: 12.16, confidence: 0.55, method: 'live-vocal', ts: Date.now() },
+      'k|BV-other': { offsetSeconds: 9, confidence: 0.55, method: 'live-vocal', candidateType: 'other', ts: Date.now() },
+      'k|BV-live': { offsetSeconds: 1.4, confidence: 0.55, method: 'live-vocal', candidateType: 'live', ts: Date.now() },
+      'k|BV-beat': { offsetSeconds: 0.4, confidence: 1, method: 'beat', ts: Date.now() },
+    }))
+    resetMvAlignmentCachesForTests()
+
+    expect(getMvAlignment('k', 'BV-legacy')).toBeNull() // 旧记录无候选类型，无法自证清白
+    expect(getMvAlignment('k', 'BV-other')).toBeNull()
+    expect(getMvAlignment('k', 'BV-live')).not.toBeNull()
+    expect(getMvAlignment('k', 'BV-beat')).not.toBeNull()
+  })
+})
+
+describe('envelope alignment gate（包络峰突出度闸门，Одна 回归）', () => {
+  // 50fps、30s 的确定性包络：不规则的能量起伏（非周期），便于相关峰唯一
+  function irregularEnvelope(frames: number): number[] {
+    const rms: number[] = []
+    let state = 0x12345678
+    for (let i = 0; i < frames; i += 1) {
+      state = (state * 1103515245 + 12345) >>> 0
+      const noise = (state % 1000) / 1000
+      const pulse = (i % 173 < 12 ? 1 : 0) * (0.6 + noise * 0.4) + (i % 397 < 30 ? 0.8 : 0)
+      rms.push(Math.min(1, 0.05 + noise * 0.2 + pulse))
+    }
+    return rms
+  }
+
+  it('同录音位移 3s：峰唯一 → offset≈3、突出度达标', () => {
+    const song = irregularEnvelope(1500)
+    const mv = song.map((value, i) => (i >= 150 ? song[i - 150] : 0.05))
+    const result = autoMixModule.envelopeOffsetOf(mv, song, 50)
+    expect(result.offset).toBeGreaterThan(2.5)
+    expect(result.offset).toBeLessThan(3.5)
+    expect(result.peak).toBeGreaterThanOrEqual(0.6)
+    expect(result.prominence).toBeGreaterThanOrEqual(autoMixModule.ENVELOPE_PROMINENCE_MIN)
+    expect(buildEnvelopeAlignment(result.offset, result.peak, result.prominence)).not.toBeNull()
+  })
+
+  it('周期结构（每 5s 重复）：±2s 外存在等高峰 → 突出度≈0 → 拒绝对齐', () => {
+    // 每 5s 一个脉冲；mv 位移 1s。相关峰在 1±5k s 全部等高——argmax 落在哪个等价峰
+    // 是扫描顺序决定的（实测落到 -24s，差 25s）——绝对峰值再高也不可信。
+    const frames = 2000
+    const song = Array.from({ length: frames }, (_, i) => (i % 250 < 6 ? 1 : 0.05))
+    const mv = song.map((value, i) => (i >= 50 ? song[i - 50] : 0.05)) // 位移 1s
+    const result = autoMixModule.envelopeOffsetOf(mv, song, 50)
+    // argmax 必落在某个等价峰上（≡ +1s mod 5s），但不保证是 +1s 本身
+    const equivalentMod = ((result.offset - 1) % 5 + 5) % 5
+    expect(Math.min(equivalentMod, 5 - equivalentMod)).toBeLessThan(0.3)
+    expect(result.peak).toBeGreaterThanOrEqual(0.6)
+    expect(result.prominence).toBeLessThan(autoMixModule.ENVELOPE_PROMINENCE_MIN)
+    expect(buildEnvelopeAlignment(result.offset, result.peak, result.prominence)).toBeNull()
+  })
+
+  it('buildEnvelopeAlignment 分级：双门槛 + 置信度随证据伸缩', () => {
+    // 峰值不足
+    expect(buildEnvelopeAlignment(1, 0.55, 0.3)).toBeNull()
+    // 突出度不足（Одна 型：绝对峰值够高、argmax 是抛硬币）
+    expect(buildEnvelopeAlignment(-1.8, 0.67, 0.03)).toBeNull()
+    // 偏移越界
+    expect(buildEnvelopeAlignment(50, 0.9, 0.3)).toBeNull()
+    // 干净匹配：封顶 0.8
+    const clean = buildEnvelopeAlignment(3.0, 0.95, 0.4)
+    expect(clean).toMatchObject({ method: 'envelope', offsetSeconds: 3, confidence: 0.8, prominence: 0.4 })
+    // 温和匹配：可信但不满分（旧版硬编码 0.55）
+    const modest = buildEnvelopeAlignment(1.5, 0.7, 0.12)
+    expect(modest?.confidence).toBeCloseTo(0.4 + 0.1 + 0.24, 5)
+    expect(modest?.confidence).toBeGreaterThanOrEqual(0.5)
   })
 })
 

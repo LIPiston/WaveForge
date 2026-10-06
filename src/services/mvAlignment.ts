@@ -28,7 +28,7 @@ import {
   getBilibiliWatchSettings,
   type BilibiliSubtitleLine,
 } from './bilibiliApi'
-import { autoMixAnalysisService, decodeAudioUrl, computeFrameEnvelope, detectLiveMusicEntry, envelopeOffsetOf } from './autoMixAnalysisService'
+import { autoMixAnalysisService, decodeAudioUrl, computeFrameEnvelope, detectLiveMusicEntry, envelopeOffsetOf, ENVELOPE_PROMINENCE_MIN } from './autoMixAnalysisService'
 
 export interface MvAlignment {
   /** MV 视频时间 - 歌曲音频时间的偏移（秒）：歌曲位置 s 对应视频位置 s + offsetSeconds */
@@ -36,12 +36,28 @@ export interface MvAlignment {
   /** 0-1 置信度 */
   confidence: number
   method: 'subtitle' | 'beat' | 'live-vocal' | 'envelope'
+  /** 包络峰突出度（method=envelope 时携带）：主峰 − ±2s 外次峰，持久化迁移据此裁决可信度 */
+  prominence?: number
 }
 
 /** 低于该置信度视为不可靠，调用方应自由播放、不做对齐校正 */
 export const MIN_ALIGNMENT_CONFIDENCE = 0.5
 /** 偏移量合理性上限：前摇超过 45s 基本是货不对板（别的现场/剪辑），不冒险对齐 */
 const MAX_SANE_OFFSET_SECONDS = 45
+
+/**
+ * 包络互相关结果的统一裁决：峰值与峰突出度双门槛，置信度按证据分级。
+ * 旧版把置信度硬编码 0.55（恰好压过 0.5 门槛）且只看绝对峰值——phonk 等重复结构
+ * 的相关曲线平坦、±2s 外常有几乎等高的竞争峰，argmax 落在错误重复段照样过闸
+ * （实测 Одна offset=-1.8s、真实 ≈+3s，背景整体慢一句）。突出度不足 = 偏移
+ * 是"抛硬币"选出来的 → 拒绝（自由播放），宁缺毋滥。
+ */
+export function buildEnvelopeAlignment(offsetSeconds: number, peak: number, prominence: number): MvAlignment | null {
+  if (!(peak >= 0.6) || !(prominence >= ENVELOPE_PROMINENCE_MIN)) return null
+  if (!Number.isFinite(offsetSeconds) || Math.abs(offsetSeconds) > MAX_SANE_OFFSET_SECONDS) return null
+  const confidence = Math.max(0, Math.min(0.8, 0.4 + (peak - 0.6) + prominence * 2))
+  return { offsetSeconds: Math.round(offsetSeconds * 100) / 100, confidence, method: 'envelope', prominence: Math.round(prominence * 100) / 100 }
+}
 
 const STORAGE_KEY = 'waveforge:mv-alignments:v2-seconds'
 const CACHE_MAX = 200
@@ -50,9 +66,13 @@ const NEGATIVE_CACHE_TTL_MS = 30 * 1000
 
 interface CachedEntry extends MvAlignment {
   ts: number
+  /** 写入时的候选类型：loadPersisted 据此裁决 live-vocal 旧记录是否可信（见 loadPersisted 迁移注释） */
+  candidateType?: string
 }
 
-const memoryCache = new Map<string, MvAlignment>()
+type MemoryEntry = MvAlignment & { candidateType?: string }
+
+const memoryCache = new Map<string, MemoryEntry>()
 const inFlight = new Map<string, Promise<MvAlignment | null>>()
 const prewarmInFlight = new Map<string, Promise<void>>()
 const negativeCache = new Map<string, { signature: string; expiresAt: number }>()
@@ -112,16 +132,28 @@ const mvLog = (msg: string): void => {
   void window.electron?.automixLog?.('MvAlign', msg)?.catch?.(() => undefined)
 }
 
-function loadPersisted(): Map<string, MvAlignment> {
+function loadPersisted(): Map<string, MemoryEntry> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return new Map()
     const parsed = JSON.parse(raw) as Record<string, CachedEntry>
     const now = Date.now()
-    const map = new Map<string, MvAlignment>()
+    const map = new Map<string, MemoryEntry>()
     for (const [key, entry] of Object.entries(parsed)) {
       if (entry && typeof entry.offsetSeconds === 'number' && now - entry.ts < CACHE_TTL_MS) {
-        map.set(key, { offsetSeconds: entry.offsetSeconds, confidence: entry.confidence, method: entry.method })
+        // 迁移：live-vocal 记录只在写入时带有 live/cover/instrumental 候选类型才可信。
+        // 旧记录不带 candidateType，无法排除"节拍已裁决对不上、补偿仍强加偏移"的旧路径
+        // （实测 5АМ 转载视频被写入 +12.2s 错误偏移后 30 天内每次播放都命中缓存）。
+        // 补偿结果可秒级重算，丢弃无代价；live/cover 的正常记录重算后会带类型重新持久化。
+        if (entry.method === 'live-vocal') {
+          const ownerType = entry.candidateType
+          if (ownerType !== 'live' && ownerType !== 'cover' && ownerType !== 'instrumental') continue
+        }
+        // 迁移：旧 envelope 记录不带突出度，无法排除"绝对峰值够高但 argmax 落在错误
+        // 重复段"的偏移（实测 Одна -1.8s、真实 ≈+3s，背景慢一句）。重算便宜（MV 侧
+        // 分析已预热），丢弃无代价；新记录经 buildEnvelopeAlignment 分级后带 prominence。
+        if (entry.method === 'envelope' && !(typeof entry.prominence === 'number' && entry.prominence >= ENVELOPE_PROMINENCE_MIN)) continue
+        map.set(key, { offsetSeconds: entry.offsetSeconds, confidence: entry.confidence, method: entry.method, prominence: entry.prominence, candidateType: entry.candidateType })
       }
     }
     return map
@@ -185,6 +217,12 @@ export function getMvAlignmentFor(
 
 export interface MvAlignmentInput {
   songKey: string
+  /**
+   * App 稳定 trackKey（automix 分析缓存键）：节拍对齐优先复用它已缓存的歌曲分析——
+   * automix 的音频按曲目身份下载，不受 audio.src 过渡竞态影响。songKey（如
+   * qq:646755675）与 automix trackKey（如 qq-002L2DQS2FWzn1）是两套键，互不命中。
+   */
+  trackKey?: string
   songTitle: string
   songArtists: string[]
   songDuration: number
@@ -265,7 +303,7 @@ export async function ensureMvAlignment(input: MvAlignmentInput, signal?: AbortS
       if (Array.isArray(input.lyrics) && input.lyrics.length > 0) {
         const subLive = await detectViaSubtitles(sharedInput)
         if (subLive && subLive.confidence >= MIN_ALIGNMENT_CONFIDENCE) {
-          memoryCache.set(key, subLive)
+          memoryCache.set(key, { ...subLive, candidateType: input.candidateType })
           negativeCache.delete(key)
           persist()
           mvLog(`对齐成功（现场版字幕）：${songKey} ${bvid} offset=${subLive.offsetSeconds}s conf=${subLive.confidence.toFixed(2)} method=subtitle`)
@@ -287,7 +325,7 @@ export async function ensureMvAlignment(input: MvAlignmentInput, signal?: AbortS
   const promise = (async () => {
     const result = await detectAlignment(sharedInput)
     if (result && result.confidence >= MIN_ALIGNMENT_CONFIDENCE) {
-      memoryCache.set(key, result)
+      memoryCache.set(key, { ...result, candidateType: input.candidateType })
       negativeCache.delete(key)
       persist()
       mvLog(`对齐成功：${songKey} ${bvid} offset=${result.offsetSeconds}s conf=${result.confidence.toFixed(2)} method=${result.method}`)
@@ -297,10 +335,15 @@ export async function ensureMvAlignment(input: MvAlignmentInput, signal?: AbortS
     // 与音源是不同录音——节拍网格必然不贴合）。补一次现场声乐补偿（MV 音乐入口 −
     // 歌曲首句歌词），至少把前奏/开唱位置对上去（实测 黒音さや 翻唱 rainy tone）。
     // 官方 MV 是同一录音、网格失败通常是信号问题，不做此补偿（会加错误偏移）。
-    if (input.candidateType !== 'official' && input.candidateType !== 'lyrics') {
+    // 但节拍路径**真正跑过**（歌曲与 MV 音频 URL 齐备）仍返回 null = 信号链已裁决
+    // "非同录音/对不上"（网格置信度、包络相关峰全不过线）：此时锚点补偿会用错误的
+    // 对应关系强加偏移（实测 5АМ 转载视频被补偿强加 +12.2s，背景歌词错位数句且入
+    // 缓存 30 天）→ 只允许在节拍路径没跑过（缺 URL，多为 blob 播放）时补偿兜底。
+    const beatPathRan = Boolean(input.songUrl?.startsWith('http') && input.videoUrl?.startsWith('http'))
+    if (input.candidateType !== 'official' && input.candidateType !== 'lyrics' && !beatPathRan) {
       const comp = await computeLiveCompensation(sharedInput)
       if (comp && comp.confidence >= MIN_ALIGNMENT_CONFIDENCE) {
-        memoryCache.set(key, comp)
+        memoryCache.set(key, { ...comp, candidateType: input.candidateType })
         negativeCache.delete(key)
         persist()
         mvLog(`对齐成功（补偿兜底）：${songKey} ${bvid} offset=${comp.offsetSeconds}s conf=${comp.confidence.toFixed(2)} method=${comp.method}`)
@@ -387,7 +430,7 @@ async function computeLiveCompensation(input: MvAlignmentInput, signal?: AbortSi
       mvLog(`现场版检测：${input.bvid} buffer=${buffer.duration.toFixed(1)}s 音乐入口=${mvMusicStart.toFixed(2)}s 首句歌词=${firstVocal != null ? firstVocal.toFixed(2) : '无'} 歌曲入口=${offsetB != null ? (mvMusicStart - offsetB).toFixed(2) : '无'} → offset=${offset}s（锚=${anchorLabel}）`)
       mvLog(`现场版声乐补偿：${input.bvid} ${input.candidateType} → offset=${offset}s conf=0.55`)
       const result: MvAlignment = { offsetSeconds: offset, confidence: 0.55, method: 'live-vocal' }
-      memoryCache.set(key, result)
+      memoryCache.set(key, { ...result, candidateType: input.candidateType })
       persist()
       return result
     } catch (error) {
@@ -500,9 +543,14 @@ async function mediaEnvelopeAlignmentFallback(
   ])
   if (!song || !mv || Math.abs(song.frameRate - mv.frameRate) > 0.01) return null
   const result = envelopeOffsetOf(mv.frameRms, song.frameRms, song.frameRate)
-  if (!Number.isFinite(result.offset) || result.peak < 0.6 || Math.abs(result.offset) > MAX_SANE_OFFSET_SECONDS) return null
-  mvLog(`媒体元素包络对齐：offset=${result.offset.toFixed(2)}s peak=${result.peak.toFixed(3)}`)
-  return { offsetSeconds: Math.round(result.offset * 100) / 100, confidence: Math.min(0.85, result.peak), method: 'envelope' }
+  if (!Number.isFinite(result.offset) || Math.abs(result.offset) > MAX_SANE_OFFSET_SECONDS) return null
+  const aligned = buildEnvelopeAlignment(result.offset, result.peak, result.prominence)
+  if (!aligned) {
+    mvLog(`媒体元素包络对齐拒绝：offset=${result.offset.toFixed(2)}s peak=${result.peak.toFixed(3)} 突出度=${result.prominence.toFixed(3)}（峰值/突出度不足，自由播放）`)
+    return null
+  }
+  mvLog(`媒体元素包络对齐：offset=${aligned.offsetSeconds.toFixed(2)}s peak=${result.peak.toFixed(3)} 突出度=${result.prominence.toFixed(3)} → conf=${aligned.confidence.toFixed(2)}`)
+  return aligned
 }
 
 async function detectAlignment(input: MvAlignmentInput, signal?: AbortSignal): Promise<MvAlignment | null> {
@@ -804,8 +852,11 @@ async function detectViaBeats(input: MvAlignmentInput, signal?: AbortSignal): Pr
   if (!songUrl.startsWith('http') || !videoUrl.startsWith('http')) return null
 
   try {
-    // 1. 歌曲节拍：用歌曲自己的 trackKey（与 automix 同一 key → 命中已缓存分析免重算）
-    const songAnalysis = await autoMixAnalysisService.analyze({
+    // 1. 歌曲节拍：优先复用 automix 已缓存的同曲分析（App trackKey 命中；automix 的音频
+    //    按曲目身份下载，不受 audio.src 过渡竞态影响）。songKey 与 automix trackKey 是
+    //    两套键（实测 qq:646755675 ≠ qq-002L2DQS2FWzn1），songKey 只作自建缓存键。
+    const cachedSongAnalysis = input.trackKey ? await autoMixAnalysisService.getCached(input.trackKey) : null
+    const songAnalysis = cachedSongAnalysis || await autoMixAnalysisService.analyze({
       trackKey: input.songKey,
       url: songUrl,
       duration: input.songDuration,
@@ -817,6 +868,13 @@ async function detectViaBeats(input: MvAlignmentInput, signal?: AbortSignal): Pr
       return null
     }
     mvLog(`歌曲分析：${input.songKey} beats=${songBeats.length} 首拍=${songBeats[0].toFixed(2)}s BPM=${songAnalysis?.estimatedBpm} provider=${songAnalysis?.provider} 有rmsEnvelope=${Array.isArray(songAnalysis?.rmsEnvelope) && (songAnalysis?.rmsEnvelope?.length || 0) > 0}`)
+    // 歌曲分析健全性：分析时长与歌曲元数据明显不符 = 脏缓存/错源音频（实测过渡竞态把
+    // 上一首 162.2s 的分析缓存在 5АМ 的 songKey 下——缓存键只含 trackKey+时长不含 URL，
+    // 脏数据长期存活——节拍/包络结论全废、错误偏移入缓存）。拒用并放弃对齐（自由播放）。
+    if (input.songDuration > 0 && (songAnalysis?.duration ?? 0) > 0 && Math.abs((songAnalysis?.duration ?? 0) - input.songDuration) > 5) {
+      mvLog(`歌曲分析时长不符：${input.bvid} 分析=${(songAnalysis?.duration ?? 0).toFixed(1)}s 歌曲元数据=${input.songDuration}s（脏缓存/错源，拒用）`)
+      return null
+    }
 
     // 2. MV 音频轨节拍：走 analyze 全链路（Python → Electron worker → 浏览器
     //    decodeAudioData，最后者原生支持 m4a/aac——B站 DASH 音频轨是 m4s/aac，
@@ -861,12 +919,19 @@ async function detectViaBeats(input: MvAlignmentInput, signal?: AbortSignal): Pr
     // 网格需与 MV 音频贴合：锚点/混叠失败的网格（gridOnsetConfidence 低）即使自洽
     // 也会让互相关算出错误偏移并套用——置信度低于阈值时拒绝对齐（自由播放，不乱跳）。
     if ((mvAnalysis?.confidence ?? 0) < 0.15) {
-      // 包络兜底：网格置信度低但**包络强相关**（peak≥0.6 = MV 与歌曲同录音，如官方 MV
-      // 音频 librosa 解不了（metadata-only）时网格天然失效，动测 0.027）→ 用包络偏移。
-      // 货不对板/不同录音的包络不会强相关，不会误触发。
-      if (mvAnalysis?.envelopePeak != null && mvAnalysis.envelopePeak >= 0.6 && mvAnalysis.envelopeOffset != null) {
-        mvLog(`包络兜底对齐：${input.bvid} 网格 ${(mvAnalysis?.confidence ?? 0).toFixed(3)} 弱但包络 peak=${mvAnalysis.envelopePeak.toFixed(2)}≥0.6 → offset=${mvAnalysis.envelopeOffset.toFixed(2)}s conf=0.55（MV 节拍分析不可用）`)
-        return { offsetSeconds: Math.round(mvAnalysis.envelopeOffset * 100) / 100, confidence: 0.55, method: 'envelope' }
+      // 包络兜底：网格置信度低但**包络强相关且峰突出**（peak≥0.6 = MV 与歌曲同录音，
+      // prominence≥门槛 = argmax 不是落在重复段上的假峰，如官方 MV 音频 librosa 解不了
+      // （metadata-only）时网格天然失效，动测 0.027）→ 用包络偏移。突出度不足的偏移
+      // 是"抛硬币"选的（实测 Одна -1.8s、真实 ≈+3s）→ 拒绝，退媒体元素包络或自由播放。
+      const envelopeResult = mvAnalysis?.envelopePeak != null && mvAnalysis.envelopeOffset != null
+        ? buildEnvelopeAlignment(mvAnalysis.envelopeOffset, mvAnalysis.envelopePeak, mvAnalysis.envelopeProminence ?? 0)
+        : null
+      if (envelopeResult) {
+        mvLog(`包络兜底对齐：${input.bvid} 网格 ${(mvAnalysis?.confidence ?? 0).toFixed(3)} 弱但包络 peak=${mvAnalysis!.envelopePeak!.toFixed(2)} 突出度=${(mvAnalysis!.envelopeProminence ?? 0).toFixed(2)} → offset=${envelopeResult.offsetSeconds.toFixed(2)}s conf=${envelopeResult.confidence.toFixed(2)}（MV 节拍分析不可用）`)
+        return envelopeResult
+      }
+      if (mvAnalysis?.envelopePeak != null && mvAnalysis.envelopeOffset != null) {
+        mvLog(`包络兜底拒绝：${input.bvid} peak=${mvAnalysis.envelopePeak.toFixed(2)} 突出度=${(mvAnalysis.envelopeProminence ?? 0).toFixed(2)} 不足（argmax 落在重复段/弱峰）；尝试媒体元素包络`)
       }
       mvLog(`节拍对齐拒绝：${input.bvid} MV 网格置信度 ${(mvAnalysis?.confidence ?? 0).toFixed(3)} < 0.15；尝试媒体元素包络`)
       return mediaEnvelopeAlignmentFallback(songUrl, videoUrl, signal)

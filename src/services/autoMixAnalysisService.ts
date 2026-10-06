@@ -391,16 +391,19 @@ function findBeatPatternGrid(
   offset: number
   confidence: number
   /** 包络互相关峰值（无可信包络时为 undefined）：网格因 MV 节拍缺失而失效时，
-   *  峰值 ≥0.6 的包络偏移是"同录音"的强证据，调用方可兜底使用 */
+   *  峰值 ≥0.6 且突出度达标的包络偏移是"同录音"的强证据，调用方可兜底使用 */
   envelopePeak?: number
-  /** 包络互相关偏移（秒，envelopePeak ≥0.6 时才可信） */
+  /** 包络互相关偏移（秒，envelopePeak ≥0.6 且突出度达标时才可信） */
   envelopeOffset?: number
+  /** 包络峰突出度（主峰 − ±2s 外次峰），与 envelopePeak 配套传递 */
+  envelopeProminence?: number
 } {
   const minOffset = -45
   const maxOffset = 45
   // 包络强相关时随结果带出（函数级变量：if 块内的 env 在 return 处不可见）
   let envelopePeak: number | undefined
   let envelopeOffset: number | undefined
+  let envelopeProminence: number | undefined
   // onset 脉冲宽约 2-5 帧。窗口必须远小于相邻拍距（129BPM 约 23 帧），否则会捞到
   // 相邻拍的 onset 造成"偏移错一拍的假峰"；粗扫步长取 0.05s（2.5 帧）确保命中峰。
   const WINDOW_FRAMES = 3
@@ -441,14 +444,15 @@ function findBeatPatternGrid(
   let anchorKind = 'onset'
   if (songRms && songRms.length > 0 && rms && rms.length > 0) {
     const env = envelopeOffsetOf(rms, songRms, frameRate)
-    if (env.peak >= 0.6) {
+    if (env.peak >= 0.6 && env.prominence >= ENVELOPE_PROMINENCE_MIN) {
       anchor = env.offset
-      anchorKind = `envelope(peak=${env.peak.toFixed(2)})`
+      anchorKind = `envelope(peak=${env.peak.toFixed(2)} prominence=${env.prominence.toFixed(2)})`
       envelopePeak = env.peak
       envelopeOffset = env.offset
+      envelopeProminence = env.prominence
     } else {
       anchor = detectMusicStart(rms, frameRate) - songStartEstimate
-      anchorKind = `musicStart(envPeak=${env.peak.toFixed(2)}<0.6回退, 歌曲起始=${songStartEstimate.toFixed(2)}s)`
+      anchorKind = `musicStart(envPeak=${env.peak.toFixed(2)}/${env.prominence.toFixed(2)}弱回退, 歌曲起始=${songStartEstimate.toFixed(2)}s)`
     }
   } else {
     const musicStart = rms && rms.length > 0 ? detectMusicStart(rms, frameRate) : detectMusicStartOnset(onset, frameRate)
@@ -510,7 +514,7 @@ function findBeatPatternGrid(
     confidence,
     // 包络信息随结果返回：MV 节拍缺失（metadata-only）时网格置信度无意义，
     // 但强包络相关（peak≥0.6）证明 MV 与歌曲同录音 → 调用方可用包络偏移兜底
-    ...(envelopePeak !== undefined ? { envelopePeak, envelopeOffset } : {}),
+    ...(envelopePeak !== undefined ? { envelopePeak, envelopeOffset, envelopeProminence } : {}),
   }
 }
 
@@ -522,11 +526,19 @@ function medianOf(values: number[]): number {
 }
 
 /**
+ * 包络偏移可信所需的最小峰突出度（主峰 − ±2s 外次峰）。Pearson r 的采样噪声约
+ * 1/√n ≈ 0.03（n≈1200），0.05 ≈ 2σ：低于它说明 ±2s 外存在几乎等高的竞争峰——
+ * phonk 等重复结构的常态——argmax 落在哪个重复段基本是抛硬币（实测 Одна 偏移
+ * 错 ~4-5s ≈ 一句歌词）。
+ */
+export const ENVELOPE_PROMINENCE_MIN = 0.05
+
+/**
  * 包络互相关求偏移（歌曲 RMS 包络提示存在时）：MV 与歌曲同源 → 两者的 RMS 包络一致，
  * 相差一个偏移。皮尔逊相关对幅度不敏感，安静前奏/节拍混叠下最鲁棒（onset 相关在
  * 安静前奏区噪声大，实测 rainy tone 偏移晚 ~10s）。先降采样到 10fps，粗扫 0.25s + 精化。
  */
-export function envelopeOffsetOf(mvRms: number[], songRms: number[], frameRate: number): { offset: number; peak: number } {
+export function envelopeOffsetOf(mvRms: number[], songRms: number[], frameRate: number): { offset: number; peak: number; prominence: number } {
   const step = Math.max(1, Math.round(frameRate / 10))
   const song: number[] = []
   for (let i = 0; i < songRms.length; i += step) song.push(songRms[i])
@@ -573,7 +585,17 @@ export function envelopeOffsetOf(mvRms: number[], songRms: number[], frameRate: 
     const s = pearson(bestF + d)
     if (s > bestS) { bestS = s; bestF = bestF + d }
   }
-  return { offset: bestF / 10, peak: bestS }
+  // 峰突出度：主峰 − ±2s 外次峰。phonk 等重复结构的相关曲线平坦、多个局部峰几乎
+  // 等高，绝对峰值再高也不代表 argmax 唯一（实测 Одна 偏移错 ~4-5s ≈ 一句歌词、
+  // 5АМ 转载视频被弱峰假偏移带偏）——调用方以 prominence 门槛裁决偏移可信度。
+  const PROMINENCE_WINDOW_F = 20 // ±2s @10fps
+  let runnerUp = -1
+  for (let f = minF; f <= maxF; f += coarse) {
+    if (Math.abs(f - bestF) <= PROMINENCE_WINDOW_F) continue
+    const s = pearson(f)
+    if (s > runnerUp) runnerUp = s
+  }
+  return { offset: bestF / 10, peak: bestS, prominence: bestS - runnerUp }
 }
 
 function detectSilence(frameRms: number[], frameDuration: number, duration: number) {
