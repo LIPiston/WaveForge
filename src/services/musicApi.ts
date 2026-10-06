@@ -49,6 +49,32 @@ const songUrlRefreshUntil = new Map<string, number>()
 const songUrlInvalidationVersions = new Map<string, number>()
 let songUrlCacheGeneration = 0
 
+/** 最近一次实际解析出的音质档：播放条音质弹层「自动」括号显示当前档位用。
+ *  键必须带歌曲 id（`${platform}:${id}`）——此前只按平台记录，换歌后会把上一首的档位
+ *  （如 SQ）残留给没有该档位的新歌（用户实测：おとめの肖像 最高只有 HQ，却显示 SQ）。 */
+const RESOLVED_QUALITY_TTL = 30 * 60 * 1000
+const resolvedQualityStore = new Map<string, { value: string; at: number }>()
+const resolvedQualityKey = (platform: string, songId?: string | number | null) => {
+  const id = songId == null ? '' : String(songId).trim()
+  return id ? `${platform}:${id}` : platform
+}
+const setLastResolvedQuality = (platform: string, value: string, songId?: string | number | null) => {
+  resolvedQualityStore.set(resolvedQualityKey(platform, songId), { value, at: Date.now() })
+  // 上限保护：按歌曲记录增长更快，超出丢最旧（Map 迭代序 = 插入序）
+  while (resolvedQualityStore.size > 200) {
+    const oldest = resolvedQualityStore.keys().next().value
+    if (oldest === undefined) break
+    resolvedQualityStore.delete(oldest)
+  }
+}
+/** 读取某首歌最近一次实际播放的音质档原始值（30 分钟内有效）；没有记录返回 null。
+ *  songId 缺省时退回平台级记录（向后兼容旧调用）。 */
+export function getLastResolvedQuality(platform: string, songId?: string | number | null): string | null {
+  const entry = resolvedQualityStore.get(resolvedQualityKey(platform, songId))
+  if (!entry || Date.now() - entry.at > RESOLVED_QUALITY_TTL) return null
+  return entry.value
+}
+
 /**
  * 由上游声明的签名有效期推导缓存时长：min(5 分钟, expi - 缓冲)，并设下限避免抖动。
  * 上游未给（或给了非法值）时沿用默认 5 分钟。
@@ -897,6 +923,13 @@ export async function getSongUrl(id: number | string, platform: MusicPlatform = 
       const url = readUrl(data)
       if (url && platform === 'netease' && data.fallback) {
         console.info(`[API] Netease song ${id} is using fallback audio from ${data.source || 'automatic match'}`)
+      }
+      // 记录最近一次实际解析出的音质档：播放条音质弹层的「自动」括号里显示当前档位用（按歌曲记录）
+      if (url) {
+        try {
+          if (platform === 'qq' && data?.actualQuality) setLastResolvedQuality(platform, String(data.actualQuality), id)
+          else if (platform === 'netease' && data?.data?.[0]?.level) setLastResolvedQuality(platform, String(data.data[0].level), id)
+        } catch { /* 记录失败不影响播放 */ }
       }
       cacheSongUrl(cacheKey, url, url ? readTtlMs(data) : undefined)
       return url

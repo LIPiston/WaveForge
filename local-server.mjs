@@ -1907,7 +1907,7 @@ function isAllowedFallbackAudioUrl(value) {
 }
 
 
-const AUDIO_QUALITY_PREFERENCES = new Set(['auto', 'standard', 'high', 'very-high', 'lossless', 'hi-res'])
+const AUDIO_QUALITY_PREFERENCES = new Set(['auto', 'standard', 'high', 'very-high', 'lossless', 'hi-res', '192aac', '96aac', '48aac'])
 
 function normalizeAudioQualityPreference(value) {
   return AUDIO_QUALITY_PREFERENCES.has(String(value || 'auto')) ? String(value || 'auto') : 'auto'
@@ -1915,10 +1915,12 @@ function normalizeAudioQualityPreference(value) {
 
 
 function getNeteaseQualityCandidates(preference, isVip) {
-  const free = ['exhigh', 'standard']
+  // 「自动」档不按 vip 标志裁剪候选链（与 QQ 同口径）：账号实际可得的档位由网易云接口
+  // 在响应里给出（data[0].level），非会员请求母带/Hi-Res 会自动落回其实际档位。
+  if (preference === 'auto') return ['jymaster', 'hires', 'lossless', 'exhigh', 'standard']
   if (!isVip) {
     if (preference === 'standard') return ['standard']
-    return free
+    return ['exhigh', 'standard']
   }
   switch (preference) {
     case 'standard': return ['standard']
@@ -1926,12 +1928,21 @@ function getNeteaseQualityCandidates(preference, isVip) {
     case 'very-high':
     case 'lossless': return ['lossless', 'exhigh', 'standard']
     case 'hi-res': return ['hires', 'lossless', 'exhigh', 'standard']
-    case 'auto':
     default: return ['jymaster', 'hires', 'lossless', 'exhigh', 'standard']
   }
 }
 
 function getQQQualityCandidates(preference, isVip) {
+  // AAC 档（192k/96k/48k）不设会员闸门：是否可取由 vkey 与歌曲实际文件决定，拿不到自然落下一档。
+  // 档位↔前缀映射已实测校准（Meting provider 对照 + Content-Length 与 track_info.size_* 比对）：
+  // 192k=C600 / 96k=C400 / 48k=C200（.m4a 容器）。
+  // 「自动」档不按 vip 标志裁剪候选链：账号能不能出高档由取流接口（vkey）说话——
+  // vip 标志来自登录时的 localStorage，可能过期/不准；多出的失败探测很快（空 purl 立即返回），
+  // 换来「自动 = 账号当前实际可用的最高音质」。手动档的回落链保持原样。
+  if (preference === 'auto') return ['flac', '320', '128', 'm4a']
+  if (preference === '48aac') return ['48aac', 'm4a']
+  if (preference === '96aac') return ['96aac', '128']
+  if (preference === '192aac') return ['192aac', '96aac', '128']
   if (!isVip) {
     if (preference === 'standard') return ['128', 'm4a']
     return ['320', '128', 'm4a']
@@ -1942,13 +1953,17 @@ function getQQQualityCandidates(preference, isVip) {
     case 'very-high':
     case 'lossless':
     case 'hi-res': return ['flac', '320', '128', 'm4a']
-    case 'auto':
     default: return ['flac', '320', '128', 'm4a']
   }
 }
 
 function getQQFilename(songMid, quality) {
   const filenameMap = {
+    // AAC 系前缀（已实测校准 2026-10-04：Meting provider 对照 + 下载长度与 track_info.size_* 精确比对）：
+    // C600=192k AAC、C400=96k AAC、C200=48k AAC。m4a 为历史内部名（即 C400/96k），保留给存量兜底链。
+    '192aac': 'C600' + songMid + '.m4a',
+    '96aac': 'C400' + songMid + '.m4a',
+    '48aac': 'C200' + songMid + '.m4a',
     m4a: 'C400' + songMid + '.m4a',
     '128': 'M500' + songMid + '.mp3',
     '320': 'M800' + songMid + '.mp3',
@@ -5769,14 +5784,21 @@ app.get('/api/qq/song/url', async (req, res) => {
       ape: 'size_ape',
       '320': 'size_320mp3',
       '128': 'size_128mp3',
-      m4a: 'size_48aac',
+      '192aac': 'size_192aac',
+      '96aac': 'size_96aac',
+      '48aac': 'size_48aac',
+      // 历史内部名 m4a = C400 = 96k AAC（此前误标为 size_48aac，2026-10-04 按实测修正）
+      m4a: 'size_96aac',
     }
-    const isQQQualityAvailable = quality => {
-      if (!qqFileInfo) return true
+    // size_* 元数据只做日志对照、不做选档门槛：实测它会偶发把平台实际可出的档标成 0
+    // （用户实例上 おとめの肖像 的 size_320mp3 报 0，QQ 官方客户端却显示 8.9M HQ），
+    // 照单全收会把高档直接跳过、解析到低档（音质与平台不一致）。
+    // 取流结果（vkey 是否给 purl）才是事实标准——候选按序全试，拿到的第一个可用流即为准。
+    const metadataSaysUnavailable = quality => {
+      if (!qqFileInfo) return false
       const sizeField = qualitySizeFields[quality]
-      return !sizeField || Number(qqFileInfo[sizeField] || 0) > 0
+      return Boolean(sizeField) && Number(qqFileInfo[sizeField] || 0) <= 0
     }
-    const availableCandidates = candidates.filter(isQQQualityAvailable)
 
     const getActualQQQuality = (url, fallbackQuality) => {
       const pathname = (() => {
@@ -5786,7 +5808,9 @@ app.get('/api/qq/song/url', async (req, res) => {
       if (/\/A000[A-Za-z0-9]+\.ape(?:$|\/)/i.test(pathname)) return 'ape'
       if (/\/M800[A-Za-z0-9]+\.mp3(?:$|\/)/i.test(pathname)) return '320'
       if (/\/M500[A-Za-z0-9]+\.mp3(?:$|\/)/i.test(pathname)) return '128'
-      if (/\/C400[A-Za-z0-9]+\.m4a(?:$|\/)/i.test(pathname)) return 'm4a'
+      if (/\/C600[A-Za-z0-9]+\.m4a(?:$|\/)/i.test(pathname)) return '192aac'
+      if (/\/C400[A-Za-z0-9]+\.m4a(?:$|\/)/i.test(pathname)) return '96aac'
+      if (/\/C200[A-Za-z0-9]+\.m4a(?:$|\/)/i.test(pathname)) return '48aac'
       return fallbackQuality
     }
 
@@ -5822,14 +5846,19 @@ app.get('/api/qq/song/url', async (req, res) => {
       const purl = info?.purl
       if (!purl) return null
       if (info?.songmid && String(info.songmid) !== songMid) return null
+      // 文件大小日志：用于校准 AAC 前缀(C600/C400/C200)与 track_info.size_* 档位的对应关系
+      console.log(`[QQ URL] vkey hit: quality=${quality} file=${info?.filename || ''} filesize=${info?.filesize || 0}`)
       const domains = Array.isArray(responseData?.sip) ? responseData.sip : []
       const domain = domains.find(item => typeof item === 'string' && !item.startsWith('http://ws')) || domains[0] || 'https://dl.stream.qqmusic.qq.com/'
       const url = purl.startsWith('http') ? purl : new URL(purl, domain).toString()
       return { url, quality, actualQuality: getActualQQQuality(url, quality) }
     }
 
-    for (const quality of availableCandidates) {
+    for (const quality of candidates) {
       try {
+        if (metadataSaysUnavailable(quality)) {
+          console.log(`[QQ URL] metadata says ${quality} unavailable (size=0), trying anyway — vkey is the ground truth`)
+        }
         const direct = await requestDirectQQUrl(quality, qqUin ? 1 : 0)
         if (direct) {
           console.log('[QQ URL] direct quality ' + direct.quality + ' succeeded as ' + direct.actualQuality)
@@ -5848,7 +5877,7 @@ app.get('/api/qq/song/url', async (req, res) => {
 
     // The package fallback is slower and uses global library state. Run it only after
     // direct candidates, and only for the two best playable candidates.
-    for (const quality of availableCandidates.slice(0, 2)) {
+    for (const quality of candidates.slice(0, 2)) {
       try {
         const apiResult = await withTimeout(
           qqMusicApi.api('song/url', { id: songMid, type: quality }),
@@ -5914,14 +5943,18 @@ app.get('/api/qq/song/detail', async (req, res) => {
       const pushLevel = (key, label, br) => {
         if (Number(f[key]) > 0) qualityLevels.push({ key, label, br })
       }
-      pushLevel('size_hires', 'Hi-Res 无损', 9216)
-      pushLevel('size_flac', '无损 FLAC', 1024)
+      pushLevel('size_hires', 'Hi-Res 无损（192k）', 9216)
       pushLevel('size_dolby', '杜比全景声', 1536)
-      pushLevel('size_320mp3', '高品质 320k', 320)
-      pushLevel('size_192aac', '192k AAC', 192)
-      pushLevel('size_128mp3', '标准 128k', 128)
-      pushLevel('size_96aac', '96k AAC', 96)
-      pushLevel('size_48aac', '48k AAC', 48)
+      pushLevel('size_flac', 'SQ 无损（1024k）', 1024)
+      pushLevel('size_320mp3', 'HQ 高品（320k）', 320)
+      pushLevel('size_192aac', 'HQ 高品（192k）', 192)
+      pushLevel('size_128mp3', '标准（128k）', 128)
+      // QQ 新档「NAC品质」（自研 AICodes 编码，官方面板标注最高 76kbps）：字段名按官方面板
+      // 口径防御式补充，track_info.file 没有该字段时 pushLevel 自动跳过；取流前缀尚未实现，
+      // 客户端会把它标为「暂未支持」。
+      pushLevel('size_nac', 'NAC品质', 76)
+      pushLevel('size_96aac', '流畅（96k）', 96)
+      pushLevel('size_48aac', '省流（48k）', 48)
       qualityLevels.sort((a, b) => (b.br || 0) - (a.br || 0))
       ti.qualityLevels = qualityLevels
       // 发行日期 / MV / BPM

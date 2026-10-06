@@ -31,12 +31,15 @@ function QualityOptionButton({
   selected,
   playerTheme,
   accentColor,
+  isVip = false,
   onClick,
 }: {
   option: QualityOption
   selected: boolean
   playerTheme: 'light' | 'dark'
   accentColor: string
+  /** 当前账号是否会员：会员档一律金色文字，皇冠只标注给非会员（VIP 用户无需被反复提醒） */
+  isVip?: boolean
   onClick: () => void
 }) {
   const textPrimary = playerTheme === 'dark' ? 'text-white' : 'text-black'
@@ -56,8 +59,8 @@ function QualityOptionButton({
         </div>
         <div className="min-w-0 flex-1">
           <div className={`flex items-center gap-2 ${textPrimary} font-medium`}>
-            <span>{option.label}</span>
-            {option.requiresVip && <Crown className="w-3.5 h-3.5 text-amber-400" aria-label="会员音质" />}
+            <span style={option.requiresVip ? { color: '#fbbf24' } : undefined}>{option.label}</span>
+            {option.requiresVip && !isVip && <Crown className="w-3.5 h-3.5 text-amber-400" aria-label="会员音质" />}
           </div>
           <div className={`${textSecondary} text-xs mt-1 leading-relaxed`}>{option.description}</div>
         </div>
@@ -149,6 +152,7 @@ export default function AudioQualitySettingsModal({
             selected={settings[platform] === option.value}
             playerTheme={playerTheme}
             accentColor={accentColor}
+            isVip={isVip}
             onClick={() => update(platform, option.value)}
           />
         ))}

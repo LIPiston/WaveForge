@@ -8,6 +8,10 @@ export type AudioQualityPreference =
   | 'very-high'
   | 'lossless'
   | 'hi-res'
+  // QQ 专属 AAC 档（192k/96k/48k，官方客户端的逐曲可选档位；服务端已实现 C600/C400/C200 取流前缀）
+  | '192aac'
+  | '96aac'
+  | '48aac'
 
 export type AppleAudioQualityPreference =
   | 'auto'
@@ -44,7 +48,13 @@ const QUALITY_VALUES: AudioQualityPreference[] = [
   'very-high',
   'lossless',
   'hi-res',
+  '192aac',
+  '96aac',
+  '48aac',
 ]
+
+/** QQ 专属 AAC 档：只有 qq 平台允许持久化，其余平台读到/写入时回落默认。 */
+const QQ_ONLY_QUALITY_VALUES: AudioQualityPreference[] = ['192aac', '96aac', '48aac']
 
 const APPLE_QUALITY_VALUES: AppleAudioQualityPreference[] = [
   'auto',
@@ -67,12 +77,18 @@ export function loadAudioQualitySettings(): AudioQualitySettings {
 
   try {
     const parsed = JSON.parse(localStorage.getItem(AUDIO_QUALITY_SETTINGS_KEY) || '{}') as Partial<AudioQualitySettings>
+    // QQ 专属 AAC 档读到其它平台（历史脏数据/人工改写）时回落默认，避免非 QQ 平台带着无效档位请求
+    const readShared = (value: unknown): AudioQualityPreference => (
+      isQualityPreference(value) && !(QQ_ONLY_QUALITY_VALUES as string[]).includes(value)
+        ? value
+        : 'auto'
+    )
     return {
-      netease: isQualityPreference(parsed.netease) ? parsed.netease : DEFAULT_AUDIO_QUALITY_SETTINGS.netease,
+      netease: readShared(parsed.netease),
       qq: isQualityPreference(parsed.qq) ? parsed.qq : DEFAULT_AUDIO_QUALITY_SETTINGS.qq,
-      spotify: isQualityPreference(parsed.spotify) ? parsed.spotify : DEFAULT_AUDIO_QUALITY_SETTINGS.spotify,
-      kugou: isQualityPreference(parsed.kugou) ? parsed.kugou : DEFAULT_AUDIO_QUALITY_SETTINGS.kugou,
-      soda: isQualityPreference(parsed.soda) ? parsed.soda : DEFAULT_AUDIO_QUALITY_SETTINGS.soda,
+      spotify: readShared(parsed.spotify),
+      kugou: readShared(parsed.kugou),
+      soda: readShared(parsed.soda),
       apple: isAppleQualityPreference(parsed.apple) ? parsed.apple : DEFAULT_AUDIO_QUALITY_SETTINGS.apple,
     }
   } catch {
@@ -85,11 +101,18 @@ export function saveAudioQualitySettings(patch: Partial<AudioQualitySettings>): 
     ...loadAudioQualitySettings(),
     ...patch,
   }
+  const resetShared = (value: AudioQualityPreference): AudioQualityPreference => (
+    (QQ_ONLY_QUALITY_VALUES as string[]).includes(value) ? 'auto' : value
+  )
   if (!isQualityPreference(next.netease)) next.netease = DEFAULT_AUDIO_QUALITY_SETTINGS.netease
+  else next.netease = resetShared(next.netease)
   if (!isQualityPreference(next.qq)) next.qq = DEFAULT_AUDIO_QUALITY_SETTINGS.qq
   if (!isQualityPreference(next.spotify)) next.spotify = DEFAULT_AUDIO_QUALITY_SETTINGS.spotify
+  else next.spotify = resetShared(next.spotify)
   if (!isQualityPreference(next.kugou)) next.kugou = DEFAULT_AUDIO_QUALITY_SETTINGS.kugou
+  else next.kugou = resetShared(next.kugou)
   if (!isQualityPreference(next.soda)) next.soda = DEFAULT_AUDIO_QUALITY_SETTINGS.soda
+  else next.soda = resetShared(next.soda)
   if (!isAppleQualityPreference(next.apple)) next.apple = DEFAULT_AUDIO_QUALITY_SETTINGS.apple
 
   if (typeof localStorage !== 'undefined') {
@@ -110,7 +133,11 @@ export function getAudioQualityPreference(platform: MusicPlatform): AudioQuality
 
 export function getPlatformVipState(platform: MusicPlatform): boolean {
   if (typeof localStorage === 'undefined') return false
-  if (platform === 'apple' || platform === 'spotify' || platform === 'soda') return false
+  if (platform === 'apple' || platform === 'spotify') return false
+  if (platform === 'soda') {
+    const tier = getSodaEntitlementTier()
+    return tier === 'vip' || tier === 'svip'
+  }
   if (platform === 'kugou') return localStorage.getItem('kugou_vip') === 'true'
   return localStorage.getItem(platform === 'netease' ? 'netease_vip' : 'qq_vip') === 'true'
 }
@@ -141,34 +168,40 @@ export interface QualityOption {
 }
 
 const NETEASE_OPTIONS: QualityOption[] = [
-  { value: 'auto', label: '自动最高音质', shortLabel: '自动', description: '按账号权限和歌曲可用性自动选择最高音质' },
-  { value: 'standard', label: '标准音质', shortLabel: '标准', description: '兼容性最好，流量占用较低' },
-  { value: 'high', label: '高品质', shortLabel: '高品质', description: '网易云 exhigh，通常约 320 kbps' },
-  { value: 'lossless', label: '无损音质', shortLabel: '无损', description: '优先请求 FLAC 无损音质', requiresVip: true },
-  { value: 'hi-res', label: 'Hi-Res', shortLabel: 'Hi-Res', description: '优先请求网易云 Hi-Res 音质', requiresVip: true },
+  // 档位名对齐网易云官方（标准/极高/无损/Hi-Res），括号标注标称码率；无损类码率随曲目浮动标容器
+  { value: 'auto', label: '自动最高音质', shortLabel: '自动', description: '按当前账号权限和歌曲可用性，自动选到账号可用的最高音质' },
+  { value: 'standard', label: '标准（128k）', shortLabel: '标准', description: '兼容性最好，流量占用较低' },
+  { value: 'high', label: '极高（320k）', shortLabel: '极高', description: '网易云 exhigh，320 kbps' },
+  { value: 'lossless', label: '无损（FLAC）', shortLabel: '无损', description: 'FLAC 无损，码率随曲目浮动（约 1024k）', requiresVip: true },
+  { value: 'hi-res', label: 'Hi-Res 无损（192k）', shortLabel: 'Hi-Res', description: '高解析度无损（24bit/192k）', requiresVip: true },
 ]
 
 const QQ_OPTIONS: QualityOption[] = [
-  { value: 'auto', label: '自动最高音质', shortLabel: '自动', description: '按账号权限和歌曲可用性自动选择最高音质' },
-  { value: 'standard', label: '标准音质', shortLabel: '标准', description: '优先使用 128 kbps MP3 / AAC 备用音源' },
-  { value: 'high', label: '高品质', shortLabel: '高品质', description: '优先使用 320 kbps MP3' },
-  { value: 'lossless', label: '无损音质', shortLabel: '无损', description: '优先使用 FLAC 无损音质', requiresVip: true },
+  { value: 'auto', label: '自动最高音质', shortLabel: '自动', description: '按当前账号权限和歌曲可用性，自动选到账号可用的最高音质' },
+  // 档位名对齐 QQ 音乐官方（SQ 无损 / HQ 高品 / 标准 / 流畅 / 省流），括号标注标称码率；
+  // 192k/96k/48k AAC 是逐曲文件级档位，官方不单列名称，按所属官方档归类
+  { value: 'lossless', label: 'SQ 无损（1024k）', shortLabel: 'SQ', description: 'FLAC 无损（官方 SQ 档），码率随曲目浮动（约 1024k）', requiresVip: true },
+  { value: 'high', label: 'HQ 高品（320k）', shortLabel: 'HQ', description: '320 kbps MP3（官方 HQ 档）' },
+  { value: '192aac', label: 'HQ 高品（192k）', shortLabel: 'HQ', description: '192 kbps AAC（同属官方 HQ 档）', requiresVip: true },
+  { value: 'standard', label: '标准（128k）', shortLabel: '标准', description: '128 kbps MP3（官方标准品质）' },
+  { value: '96aac', label: '流畅（96k）', shortLabel: '流畅', description: '96 kbps AAC 省流档（官方流畅音质）' },
+  { value: '48aac', label: '省流（48k）', shortLabel: '省流', description: '48 kbps AAC 省流档（官方低品质）' },
 ]
 
 /** 新平台音质选项（自身直源受限时走网易云/QQ 载体音质） */
 const GENERIC_OPTIONS: QualityOption[] = [
-  { value: 'auto', label: '自动最高音质', shortLabel: '自动', description: '按账号权限和歌曲可用性自动选择最高音质' },
-  { value: 'standard', label: '标准音质', shortLabel: '标准', description: '优先使用标准码率音源' },
-  { value: 'high', label: '高品质', shortLabel: '高品质', description: '优先使用高码率音源' },
-  { value: 'lossless', label: '无损音质', shortLabel: '无损', description: '优先请求无损音质', requiresVip: true },
+  { value: 'auto', label: '自动最高音质', shortLabel: '自动', description: '按当前账号权限和歌曲可用性，自动选到账号可用的最高音质' },
+  { value: 'standard', label: '标准（128k）', shortLabel: '标准', description: '优先使用标准码率音源' },
+  { value: 'high', label: '高品（320k）', shortLabel: '高品', description: '优先使用高码率音源（约 320 kbps 档）' },
+  { value: 'lossless', label: '无损（FLAC）', shortLabel: '无损', description: '优先请求无损音质', requiresVip: true },
 ]
 
 const APPLE_OPTIONS: QualityOption[] = [
   { value: 'auto', label: '自动', shortLabel: '自动', description: '优先使用当前设备和账号实际可播放的最佳 Apple Music 音频' },
-  { value: 'aac', label: '高品质 AAC', shortLabel: 'AAC', description: '使用 Apple 网页播放当前稳定支持的 AAC HLS 音频' },
-  { value: 'lossless', label: '无损音频', shortLabel: '无损', description: '当前网页 Widevine 播放链路尚未检测到可用的 Apple Lossless 资产', disabled: true },
-  { value: 'hi-res-lossless', label: '高解析度无损', shortLabel: '高解析无损', description: '需要 Apple 提供兼容资产和当前设备具备对应解码能力', disabled: true },
-  { value: 'atmos', label: '杜比全景声与空间音频', shortLabel: '杜比', description: '曲目标签不等于可播放流；检测到兼容 Atmos 资产后才会开放', disabled: true },
+  { value: 'aac', label: 'AAC（256k）', shortLabel: 'AAC', description: '使用 Apple 网页播放当前稳定支持的 256 kbps AAC HLS 音频' },
+  { value: 'lossless', label: '无损（ALAC）', shortLabel: '无损', description: '当前网页 Widevine 播放链路尚未检测到可用的 Apple Lossless 资产', disabled: true },
+  { value: 'hi-res-lossless', label: '高解析度无损（24bit 192k）', shortLabel: '高解析无损', description: '需要 Apple 提供兼容资产和当前设备具备对应解码能力', disabled: true },
+  { value: 'atmos', label: '杜比全景声（Atmos）', shortLabel: '杜比', description: '曲目标签不等于可播放流；检测到兼容 Atmos 资产后才会开放', disabled: true },
 ]
 
 /**
@@ -181,10 +214,10 @@ const APPLE_OPTIONS: QualityOption[] = [
  */
 const buildSodaOptions = (isVip: boolean, tierKnown: boolean): QualityOption[] => [
   { value: 'auto', label: '自动最高音质', shortLabel: '自动', description: '按账号会员档位和歌曲可用性就近选档，无需手动切换' },
-  { value: 'standard', label: '标准音质', shortLabel: '标准', description: '优先使用标准码率音源，流量占用较低' },
-  { value: 'high', label: '高品质', shortLabel: '高品质', description: '优先使用高码率音源（约 320 kbps 档）' },
-  { value: 'lossless', label: '无损音质', shortLabel: '无损', description: '优先请求无损音质；非会员自动落低档', requiresVip: true, disabled: tierKnown && !isVip },
-  { value: 'hi-res', label: 'Hi-Res', shortLabel: 'Hi-Res', description: '优先请求 Hi-Res 音质；非会员自动落低档', requiresVip: true, disabled: tierKnown && !isVip },
+  { value: 'standard', label: '标准（128k）', shortLabel: '标准', description: '优先使用标准码率音源，流量占用较低' },
+  { value: 'high', label: '高品（320k）', shortLabel: '高品', description: '优先使用高码率音源（约 320 kbps 档）' },
+  { value: 'lossless', label: '无损（FLAC）', shortLabel: '无损', description: '优先请求无损音质；非会员自动落低档', requiresVip: true, disabled: tierKnown && !isVip },
+  { value: 'hi-res', label: 'Hi-Res（192k）', shortLabel: 'Hi-Res', description: '优先请求 Hi-Res 音质；非会员自动落低档', requiresVip: true, disabled: tierKnown && !isVip },
 ]
 
 /** 读取汽水会员档位（App 登录流程落盘） */
@@ -203,6 +236,116 @@ export function getQualityOptions(platform: MusicPlatform): QualityOption[] {
     return buildSodaOptions(tier === 'vip' || tier === 'svip', tier !== 'unknown')
   }
   return GENERIC_OPTIONS
+}
+
+/** 服务端「实际解析档」原始值 → 官方档位显示名（本曲列表补挂漏档时用）。
+ *  QQ 的 actualQuality 是内部质量名；网易云是 eapi 的 level 枚举。未知值原样返回。 */
+export function resolvedQualityDisplayName(platform: MusicPlatform, value: string): string {
+  if (platform === 'qq') {
+    switch (value) {
+      case 'flac':
+      case 'ape':
+        return 'SQ 无损（1024k）'
+      case '320':
+        return 'HQ 高品（320k）'
+      case '192aac':
+        return 'HQ 高品（192k）'
+      case '128':
+        return '标准（128k）'
+      case '96aac':
+      case 'm4a':
+        return '流畅（96k）'
+      case '48aac':
+        return '省流（48k）'
+      default:
+        return value
+    }
+  }
+  if (platform === 'netease') {
+    switch (value) {
+      case 'standard':
+        return '标准（128k）'
+      case 'higher':
+        return '较高（192k）'
+      case 'exhigh':
+        return '极高（320k）'
+      case 'lossless':
+        return '无损（FLAC）'
+      case 'hires':
+        return 'Hi-Res 无损（192k）'
+      case 'jyeffect':
+        return '高清臻音'
+      case 'sky':
+        return '沉浸环绕声'
+      case 'jymaster':
+        return '超清母带'
+      case 'dolby':
+        return '杜比全景声'
+      default:
+        return value
+    }
+  }
+  return value
+}
+
+/** 服务端「实际解析档」原始值 → 播放条徽标/「自动（…）」括号短名。
+ *  短名词表：SQ / HQ / 标准 / 流畅 / 省流（QQ），无损 / Hi-Res / 臻音…（网易云）。
+ *  未知原始值回落「自动」。 */
+export function resolvedQualityShortLabel(platform: MusicPlatform, value: string): string {
+  if (platform === 'qq') {
+    switch (value) {
+      case 'flac':
+      case 'ape':
+        return 'SQ'
+      case '320':
+      case '192aac':
+        return 'HQ'
+      case '128':
+        return '标准'
+      case '96aac':
+      case 'm4a':
+        return '流畅'
+      case '48aac':
+        return '省流'
+      default:
+        return '自动'
+    }
+  }
+  if (platform === 'netease') {
+    switch (value) {
+      case 'standard':
+        return '标准'
+      case 'higher':
+        return '较高'
+      case 'exhigh':
+        return '极高'
+      case 'lossless':
+        return '无损'
+      case 'hires':
+        return 'Hi-Res'
+      case 'jyeffect':
+        return '臻音'
+      case 'sky':
+        return '沉浸'
+      case 'jymaster':
+        return '母带'
+      case 'dolby':
+        return '杜比'
+      default:
+        return '自动'
+    }
+  }
+  return '自动'
+}
+
+/** 实际在播档是否属于会员专享档（决定「自动（…）」行是否按会员档渲染：金字 / 非会员加皇冠）。 */
+export function isVipOnlyResolvedQuality(platform: MusicPlatform, value: string): boolean {
+  if (platform === 'qq') return value === 'flac' || value === 'ape' || value === '192aac'
+  if (platform === 'netease') {
+    return value === 'lossless' || value === 'hires' || value === 'jyeffect'
+      || value === 'sky' || value === 'jymaster' || value === 'dolby'
+  }
+  return false
 }
 
 /** 当前偏好在某平台下的短标签（播放条按钮显示用；未知档按自动处理） */

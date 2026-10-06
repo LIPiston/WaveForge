@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Play, Pause, SkipBack, SkipForward, List, Repeat, Repeat1, Shuffle, Volume2, VolumeX, AudioWaveform, Headphones, Check, Crown } from 'lucide-react'
+import { Play, Pause, SkipBack, SkipForward, List, Repeat, Repeat1, Shuffle, Volume2, VolumeX, AudioWaveform, Crown } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDGLabStatus, getDGLabClient, loadDGLabSettings, DGLAB_SETTINGS_EVENT } from '../plugins/clients/DGLabClient'
 import { isPluginEnabled } from '../services/pluginStore'
@@ -11,12 +11,17 @@ import {
 import {
   AUDIO_QUALITY_SETTINGS_EVENT,
   getPlatformQualityPreference,
+  getPlatformVipState,
   getQualityOptions,
+  isVipOnlyResolvedQuality,
   loadAudioQualitySettings,
+  resolvedQualityDisplayName,
+  resolvedQualityShortLabel,
   saveAudioQualitySettings,
   type AudioQualitySettings,
   type QualityOptionValue,
 } from '../services/audioQualitySettings'
+import { getLastResolvedQuality } from '../services/musicApi'
 import type { MusicPlatform } from '../services/platforms'
 import { getApiBase } from '../services/apiConfig'
 import { useTvMode, useRemoteCursorMode } from '../tv/tvCore'
@@ -191,11 +196,119 @@ function mixCssColors(from: string, to: string, progress: number) {
   return `rgb(${mixChannel(fromRgb.r, toRgb.r)}, ${mixChannel(fromRgb.g, toRgb.g)}, ${mixChannel(fromRgb.b, toRgb.b)})`
 }
 
+const ENGINE_LABEL_APPEAR_DELAY_MS = 160
+const ENGINE_LABEL_MIN_VISIBLE_MS = 1400
+
+/**
+ * AutoMix 引擎名（AutoMix / AutoMix Pro / AutoMix Enhanced / Gapless）的稳定化：
+ * - 出现要求条件持续 APPEAR_DELAY 才亮，出现后至少保持 MIN_VISIBLE —— 过渡状态机
+ *   在 armed / running / 视觉窗口之间的瞬时抖动不会再让提示闪进闪出（用户看到的「抽风」）；
+ * - 可见期间锁定文案：引擎名在过渡中切换（如 Enhanced 与 Gapless 交替）不影响已显示的字。
+ */
+function useStableEngineLabel(active: boolean, label: string) {
+  const [visible, setVisible] = useState(false)
+  const [lockedText, setLockedText] = useState('')
+  const visibleRef = useRef(false)
+  const timerRef = useRef<number | null>(null)
+  const shownAtRef = useRef(0)
+  useEffect(() => {
+    const clearTimer = () => {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+    }
+    if (active) {
+      if (visibleRef.current) return clearTimer
+      clearTimer()
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null
+        visibleRef.current = true
+        shownAtRef.current = Date.now()
+        setVisible(true)
+      }, ENGINE_LABEL_APPEAR_DELAY_MS)
+      return clearTimer
+    }
+    if (!visibleRef.current) return clearTimer
+    const remaining = ENGINE_LABEL_MIN_VISIBLE_MS - (Date.now() - shownAtRef.current)
+    clearTimer()
+    if (remaining <= 0) {
+      visibleRef.current = false
+      setVisible(false)
+    } else {
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null
+        visibleRef.current = false
+        setVisible(false)
+      }, remaining)
+    }
+    return clearTimer
+  }, [active])
+  useEffect(() => {
+    if (visible) setLockedText(label)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible])
+  return { visible, text: visible ? (lockedText || label) : label }
+}
+
+/**
+ * 引擎名徽标：显示在小白条上方（悬浮、不进文档流，不顶动条体）。
+ * 配色按引擎档位区分（用户定制）：
+ *   · Gapless / AutoMix 标准 → 白色（可读性投影，无辉光层）
+ *   · AutoMix Pro            → 粉色 + 粉色辉光呼吸
+ *   · AutoMix Enhanced       → 金色 + 金色辉光呼吸
+ * 辉光实现：**强静态 text-shadow（三层）+ 单节点 opacity 呼吸**——不新增模糊图层。
+ * 历史教训（2026-10-05 用户反馈「进入过渡/切到第二首各有一下卡顿」）：上一版用两层
+ * blur 副本做辉光，而标签显隐的时机恰是过渡的两个交界瞬间，新增图层会在这些时刻触发
+ * 整页重新合成 → 卡顿。静态 text-shadow 光栅化一次，呼吸只动 opacity，零额外图层。
+ * 结构：外层只负责显隐（inline opacity + transition），内层负责呼吸（动画只作用于内层）。
+ * 组件常驻挂载，只切换 opacity，避免条件挂载的重新淡入造成闪动。
+ */
+const AUTOMIX_PRO_PINK = '#FF6EC9'
+
+function AutomixEngineLabel({ visible, text, tone, className = '' }: { visible: boolean; text: string; tone: 'dark' | 'light'; className?: string }) {
+  const isPro = text.includes('Pro')
+  const isEnhanced = text.includes('Enhanced')
+  const glowColor = isPro ? AUTOMIX_PRO_PINK : isEnhanced ? AUTOMIX_HUD_GOLD : null
+  const baseColor = glowColor ?? (tone === 'dark' ? 'rgba(255,255,255,0.94)' : 'rgba(15,18,26,0.88)')
+  const textShadow = glowColor
+    ? `0 0 10px ${glowColor}d9, 0 0 24px ${glowColor}80, 0 0 44px ${glowColor}59, 0 2px 8px rgba(0,0,0,0.65)`
+    : tone === 'dark' ? '0 2px 10px rgba(0,0,0,0.65)' : '0 1px 6px rgba(255,255,255,0.55)'
+  return (
+    <span
+      aria-hidden={!visible}
+      className={`pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 -translate-x-1/2 whitespace-nowrap text-xs font-medium leading-none ${className}`}
+      style={{
+        opacity: visible ? 1 : 0,
+        transition: 'opacity 0.28s ease',
+      }}
+    >
+      <span
+        className="block"
+        style={{
+          color: baseColor,
+          letterSpacing: '0.12em',
+          textShadow,
+          // 呼吸只作用于本层：动画激活时覆盖本层 opacity，不影响外层显隐
+          ...(glowColor
+            ? {
+                animation: 'automixGlowBreathe 3.2s ease-in-out infinite',
+                animationPlayState: visible ? 'running' : 'paused',
+              }
+            : {}),
+        }}
+      >
+        {text}
+      </span>
+    </span>
+  )
+}
+
 /**
  * 播放条音质快捷切换：显示当前平台偏好音质的短标签（如 标准/高品质/无损/杜比），
  * 点击弹出档位列表直接切换。QQ 平台弹层会拉取"这首歌实际支持哪些音质"（歌曲详情
- * qualityLevels），支持的档位可选、平台报告但我们暂未实现取流的档位明确置灰标注
- * 「暂未支持」——列表与歌曲对齐，不再只列固定几档还让人猜。
+ * qualityLevels），支持的档位可选；平台报告但确实没有取流实现的档位（Hi-Res/杜比）置灰标注
+ * 「暂未支持」——AAC 三档（192k/96k/48k，C600/C400/C200 前缀）已实现取流，可选。
  * 设置写入走 saveAudioQualitySettings（全端同键同事件，App 侧监听后失效预载缓存；
  * 新音质随新的播放链接生效）。默认开启，可在 快捷设置 → 外观 → 音质快捷切换 关闭。
  */
@@ -207,11 +320,58 @@ type QualityMenuEntry = {
   requiresVip?: boolean
 }
 
-/** QQ 歌曲详情 qualityLevels 的 size_* 键 → 我们已实现的取流档位 */
+/** QQ 歌曲详情 qualityLevels 的 size_* 键 → 我们已实现的取流档位（AAC 前缀映射已实测校准）。 */
 const QQ_QUALITY_LEVEL_TO_PREFERENCE: Record<string, QualityOptionValue> = {
   size_flac: 'lossless',
   size_320mp3: 'high',
+  size_192aac: '192aac',
   size_128mp3: 'standard',
+  size_96aac: '96aac',
+  size_48aac: '48aac',
+}
+
+/** 服务端「实际解析档」原始值 → 本曲 qualityLevels 的 size_* 键：元数据偶发漏档
+ *  （size_*=0 但 vkey 实际能出流）时，把实际在播档补回弹层列表用。 */
+const QQ_RESOLVED_RAW_TO_LEVEL_KEY: Record<string, string> = {
+  flac: 'size_flac',
+  '320': 'size_320mp3',
+  '192aac': 'size_192aac',
+  '128': 'size_128mp3',
+  '96aac': 'size_96aac',
+  m4a: 'size_96aac',
+  '48aac': 'size_48aac',
+}
+
+/** 本曲档位列表的码率序（高→低），与服务端 sort 一致（NAC 76k 位于 96k 与 48k 之间）。 */
+const QQ_LEVEL_SIZE_ORDER = ['size_hires', 'size_dolby', 'size_flac', 'size_320mp3', 'size_192aac', 'size_128mp3', 'size_96aac', 'size_nac', 'size_48aac']
+
+/** QQ 本曲可用音质（qualityLevels）的模块级缓存：切歌即预取，弹层打开时直接命中，
+ *  不再出现「先显示通用档位列表、拉到本曲详情后再换成本曲列表」的闪现。 */
+type QualityLevelEntry = { key: string; label: string }
+const qqSongLevelsCache = new Map<string, { levels: QualityLevelEntry[] | null; at: number }>()
+const QQ_SONG_LEVELS_TTL = 30 * 60 * 1000
+
+async function fetchQQSongLevels(songId: string | number, signal?: AbortSignal): Promise<QualityLevelEntry[] | null> {
+  const res = await fetch(
+    `${getApiBase()}/qq/song/detail?mid=${encodeURIComponent(String(songId))}`,
+    { signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(6000)]) },
+  )
+  const data = await res.json().catch(() => null)
+  const levels = data?.song?.qualityLevels
+  return Array.isArray(levels) && levels.length > 0
+    ? levels.map((level: { key: string; label?: string }) => ({ key: String(level.key), label: String(level.label || level.key) }))
+    : null
+}
+
+/** 偏好档 → 本曲 qualityLevels 的 size_* 键：手动选择的档位不在本曲元数据列表里时
+ *  （服务端会自动回落到本曲可播的最近一档），把它补进列表保持选中态可见。 */
+const QQ_PREFERENCE_TO_LEVEL_KEY: Partial<Record<QualityOptionValue, string>> = {
+  lossless: 'size_flac',
+  high: 'size_320mp3',
+  '192aac': 'size_192aac',
+  standard: 'size_128mp3',
+  '96aac': 'size_96aac',
+  '48aac': 'size_48aac',
 }
 
 function QualityQuickSwitch({
@@ -229,54 +389,130 @@ function QualityQuickSwitch({
 }) {
   const [, forceQualityRefresh] = useState(0)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [songLevels, setSongLevels] = useState<Array<{ key: string; label: string }> | null>(null)
+  const [songLevels, setSongLevels] = useState<QualityLevelEntry[] | null>(null)
+  const [levelsLoading, setLevelsLoading] = useState(false)
   useEffect(() => {
     const handleAudioQualityChange = () => forceQualityRefresh(value => value + 1)
     window.addEventListener(AUDIO_QUALITY_SETTINGS_EVENT, handleAudioQualityChange)
-    return () => window.removeEventListener(AUDIO_QUALITY_SETTINGS_EVENT, handleAudioQualityChange)
+    // 会员状态随登录/登出变化（qq_vip / netease_vip / soda_entitlement 在登录链路落盘）：
+    // 音质弹层的金字/皇冠规则依赖它，auth 事件驱动一次重渲染。
+    const handleAuthChange = () => forceQualityRefresh(value => value + 1)
+    window.addEventListener('waveforge-auth-changed', handleAuthChange)
+    return () => {
+      window.removeEventListener(AUDIO_QUALITY_SETTINGS_EVENT, handleAudioQualityChange)
+      window.removeEventListener('waveforge-auth-changed', handleAuthChange)
+    }
   }, [])
 
-  // 打开弹层时按歌曲拉取实际可用音质（QQ）：后端 song/detail 返回 qualityLevels
-  //（size_flac/size_dolby/size_hires/size_*aac…，已按码率降序），30 分钟缓存、开销小。
+  // 本曲音质：切歌时预取（不等弹层打开），弹层打开时同步读缓存 → 不再闪现通用列表。
   useEffect(() => {
-    if (!menuOpen || platform !== 'qq' || songId == null) { setSongLevels(null); return }
+    if (platform !== 'qq' || songId == null) {
+      setSongLevels(null)
+      setLevelsLoading(false)
+      return
+    }
+    const key = String(songId)
+    const cached = qqSongLevelsCache.get(key)
+    if (cached && Date.now() - cached.at < QQ_SONG_LEVELS_TTL) {
+      setSongLevels(cached.levels)
+      setLevelsLoading(false)
+      return
+    }
     const controller = new AbortController()
-    void (async () => {
-      try {
-        const res = await fetch(
-          `${getApiBase()}/qq/song/detail?mid=${encodeURIComponent(String(songId))}`,
-          { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(6000)]) },
-        )
-        const data = await res.json().catch(() => null)
-        const levels = data?.song?.qualityLevels
-        setSongLevels(Array.isArray(levels) && levels.length > 0
-          ? levels.map((level: { key: string; label?: string }) => ({ key: String(level.key), label: String(level.label || level.key) }))
-          : null)
-      } catch {
+    setLevelsLoading(true)
+    void fetchQQSongLevels(songId, controller.signal)
+      .then(levels => {
+        if (controller.signal.aborted) return
+        qqSongLevelsCache.set(key, { levels, at: Date.now() })
+        // 缓存上限：30 条足够覆盖近期切歌（超出丢最旧）
+        while (qqSongLevelsCache.size > 30) {
+          const oldest = qqSongLevelsCache.keys().next().value
+          if (oldest === undefined) break
+          qqSongLevelsCache.delete(oldest)
+        }
+        setSongLevels(levels)
+        setLevelsLoading(false)
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return
         setSongLevels(null)
-      }
-    })()
+        setLevelsLoading(false)
+      })
     return () => controller.abort()
-  }, [menuOpen, platform, songId])
+  }, [platform, songId])
 
   const isDark = playerTheme === 'dark'
   const options = getQualityOptions(platform)
   const preference = getPlatformQualityPreference(platform)
   const current = options.find(option => option.value === preference) ?? options[0]
+  // QQ 本曲档位在途：先只出「自动」+ 读取提示，避免拿通用列表顶上后又切换（用户看到的"闪一下"）。
+  const qqLevelsPending = platform === 'qq' && songId != null && !songLevels && levelsLoading
 
-  const entries: QualityMenuEntry[] = songLevels && platform === 'qq'
-    ? [
-        { key: 'auto', label: '自动', value: 'auto' },
-        ...songLevels.map(level => {
+  // 会员检测：读各平台登录链路维护的会员状态（qq_vip / netease_vip / soda_entitlement，
+  // 登录与启动恢复时刷新，auth 事件驱动重渲染）——会员档一律金字，非会员才加皇冠。
+  const isVipUser = getPlatformVipState(platform)
+
+  // 「自动（…）」括号与徽标显示当前实际档位短名：取本曲最近一次播放链接解析回的真实档位
+  // （按歌曲记录，无记录则回落偏好档短名）。此前按平台记录，换歌后会残留上一首的档位。
+  const resolvedQuality = getLastResolvedQuality(platform, songId)
+  const autoLabel = resolvedQuality ? `自动（${resolvedQualityShortLabel(platform, resolvedQuality)}）` : '自动'
+  // 实际在播的是会员档（如 SQ）→「自动」行按会员样式渲染（金字；非会员加皇冠）
+  const autoRequiresVip = resolvedQuality ? isVipOnlyResolvedQuality(platform, resolvedQuality) : false
+  // 徽标口径对齐 QQ 官方 bar：显示实际在播档位短名（手动档回落时也如实反映），无记录时显示偏好档
+  const badgeLabel = resolvedQuality
+    ? resolvedQualityShortLabel(platform, resolvedQuality)
+    : current.shortLabel
+
+  // 本曲列表 + 两类补挂：①实际在播档（元数据偶发漏档，服务端已按 vkey 事实解析）；
+  // ②手动偏好档（跨曲持久，服务端自动回落到本曲可播的最近一档，选中态不能丢）。
+  // 均按码率序插回，保证列表顺序稳定。
+  const resolvedLevelKey = platform === 'qq' && resolvedQuality
+    ? QQ_RESOLVED_RAW_TO_LEVEL_KEY[resolvedQuality]
+    : undefined
+  const resolvedPreferenceValue = resolvedLevelKey
+    ? QQ_QUALITY_LEVEL_TO_PREFERENCE[resolvedLevelKey]
+    : undefined
+  const songLevelEntries: QualityMenuEntry[] | null = songLevels && platform === 'qq'
+    ? (() => {
+        const levels = [...songLevels]
+        if (resolvedLevelKey && resolvedPreferenceValue && resolvedQuality
+          && !levels.some(level => level.key === resolvedLevelKey)) {
+          levels.push({ key: resolvedLevelKey, label: resolvedQualityDisplayName(platform, resolvedQuality) })
+        }
+        const preferredLevelKey = preference !== 'auto' ? QQ_PREFERENCE_TO_LEVEL_KEY[preference] : undefined
+        if (preferredLevelKey && !levels.some(level => level.key === preferredLevelKey)) {
+          const preferredOption = options.find(option => option.value === preference)
+          if (preferredOption) levels.push({ key: preferredLevelKey, label: preferredOption.label })
+        }
+        levels.sort((a, b) => {
+          const ia = QQ_LEVEL_SIZE_ORDER.indexOf(a.key)
+          const ib = QQ_LEVEL_SIZE_ORDER.indexOf(b.key)
+          return (ia < 0 ? QQ_LEVEL_SIZE_ORDER.length : ia) - (ib < 0 ? QQ_LEVEL_SIZE_ORDER.length : ib)
+        })
+        return levels.map(level => {
           const value = QQ_QUALITY_LEVEL_TO_PREFERENCE[level.key] ?? null
-          return { key: level.key, label: level.label, value, requiresVip: value === 'lossless' }
-        }),
+          return { key: level.key, label: level.label, value, requiresVip: value === 'lossless' || value === '192aac' }
+        })
+      })()
+    : null
+
+  // 手动档在本曲回落（如选了 SQ 但本曲只出到 320）→ 列表底部一行说明实际在播档
+  const manualFallbackName = preference !== 'auto' && resolvedQuality && resolvedPreferenceValue !== preference
+    ? resolvedQualityDisplayName(platform, resolvedQuality)
+    : null
+
+  const entries: QualityMenuEntry[] = songLevelEntries
+    ? [
+        { key: 'auto', label: autoLabel, value: 'auto', requiresVip: autoRequiresVip },
+        ...songLevelEntries,
       ]
+    : qqLevelsPending
+    ? [{ key: 'auto', label: autoLabel, value: 'auto', requiresVip: autoRequiresVip }]
     : options.map(option => ({
         key: String(option.value),
-        label: option.shortLabel,
+        label: option.value === 'auto' ? autoLabel : option.label,
         value: option.value,
-        requiresVip: option.requiresVip,
+        requiresVip: option.requiresVip || (option.value === 'auto' && autoRequiresVip),
       }))
 
   const select = (value: QualityOptionValue) => {
@@ -290,14 +526,14 @@ function QualityQuickSwitch({
         whileHover={{ scale: 1.06 }}
         whileTap={{ scale: 0.95 }}
         onClick={() => setMenuOpen(open => !open)}
-        className={`${compact ? 'px-2 py-1' : 'px-2.5 py-1'} flex items-center gap-1.5 rounded-full transition-colors ${
+        className={`${compact ? 'px-1.5 py-1' : 'px-2 py-1'} flex items-center justify-center rounded-full transition-colors ${
           playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'
         }`}
-        title={`播放音质：${current.label}（点击切换）`}
+        title={`播放音质：${resolvedQuality ? resolvedQualityDisplayName(platform, resolvedQuality) : current.label}（点击切换）`}
       >
-        <Headphones className={`w-3.5 h-3.5 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />
-        <span className={`max-w-[5.5rem] truncate text-[11px] font-medium leading-none ${playerTheme === 'dark' ? 'text-white/85' : 'text-black/75'}`}>
-          {current.shortLabel}
+        {/* 只显示文字（省位置）：按钮紧贴文案，不做固定宽度——用户反馈长胶囊太占位置 */}
+        <span className={`text-center text-[11px] font-medium leading-none ${playerTheme === 'dark' ? 'text-white/85' : 'text-black/75'}`}>
+          {badgeLabel}
         </span>
       </motion.button>
 
@@ -319,8 +555,8 @@ function QualityQuickSwitch({
               }}
               data-tv-arrows="quality"
             >
-              <div className={`px-2.5 py-1 text-[10px] ${isDark ? 'text-white/40' : 'text-black/40'}`}>
-                {songLevels ? '播放音质（本曲可用）' : '播放音质'}
+              <div className={`px-2.5 py-1 text-center text-[10px] ${isDark ? 'text-white/40' : 'text-black/40'}`}>
+                播放音质
               </div>
               {entries.map(entry => {
                 const unsupported = entry.value === null
@@ -334,20 +570,37 @@ function QualityQuickSwitch({
                     className={`w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] transition-colors disabled:cursor-not-allowed ${
                       unsupported
                         ? 'opacity-45'
+                        : selected
+                        ? /* 选中态 = hover 同款高亮（常驻），主题色叠加在深色菜单上不可见，用户已确认弃用 */
+                          isDark ? 'bg-white/10 text-white/85' : 'bg-black/10 text-black/80'
                         : isDark ? 'text-white/85 hover:bg-white/10' : 'text-black/80 hover:bg-black/10'
                     }`}
                   >
-                    <span className="w-3.5 flex-shrink-0">
-                      {selected ? <Check className="w-3.5 h-3.5" style={{ color: accentColor }} /> : null}
+                    {/* 会员档文字金色（皇冠只在非会员账号显示——VIP 用户不需要被反复提醒） */}
+                    <span
+                      className="flex-1 truncate"
+                      style={entry.requiresVip ? { color: '#fbbf24' } : undefined}
+                    >
+                      {entry.label}
                     </span>
-                    <span className="flex-1 truncate">{entry.label}</span>
                     {unsupported && (
                       <span className={`flex-shrink-0 text-[10px] ${isDark ? 'text-white/35' : 'text-black/35'}`}>暂未支持</span>
                     )}
-                    {entry.requiresVip && <Crown className="w-3 h-3 text-amber-400 flex-shrink-0" />}
+                    {entry.requiresVip && !isVipUser && <Crown className="w-3 h-3 text-amber-400 flex-shrink-0" />}
                   </button>
                 )
               })}
+              {manualFallbackName && (
+                <div className={`flex items-center px-2.5 py-1.5 text-[11px] ${isDark ? 'text-white/45' : 'text-black/45'}`}>
+                  <span className="truncate">本曲无此档，已按 {manualFallbackName} 播放</span>
+                </div>
+              )}
+              {qqLevelsPending && (
+                <div className={`flex items-center gap-2 px-2.5 py-1.5 text-[12px] ${isDark ? 'text-white/45' : 'text-black/45'}`}>
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                  正在读取本曲可用档位…
+                </div>
+              )}
             </motion.div>
           </>
         )}
@@ -789,22 +1042,162 @@ export default function PlayerControls({
   const inTransitionAnimation = isTransitioning && inAnimationWindow
   const showTransitionBadge = inTransitionAnimation || enhancedAutoMixActive
   const engineLabel = transitionEngineLabel || ''
-  const transitionLabel = showTransitionBadge ? engineLabel : ''
+  // 稳压后的引擎名提示（去抖 + 最短驻留 + 文案锁定），渲染在小白条内
+  const engineBadge = useStableEngineLabel(showTransitionBadge, engineLabel)
   
   // 进度条发光强度
 
+  // ---- 展开态右侧控件组（播放列表 / 音量 / 播放模式 / DGLab）----
+  // 此前是绝对定位 right-5 的独立簇 + 进度行 pr-[12rem] 预留：两套宽度必须人肉对齐，
+  // 任何偏差都会变成「时长 ↔ 音质 ↔ 图标」之间的空洞（用户先后两次反馈割裂）。
+  // 现在整组并入进度行（见 renderProgressContent），与时长、音质徽标共享同一套 gap 间距。
+  const renderExpandedSideControls = (compactLayout: boolean, forImmersive: boolean) => (
+    <>
+      <motion.button
+        whileHover={{ scale: 1.1 }}
+        whileTap={{ scale: 0.95 }}
+        onClick={onPlaylistClick}
+        className={`${compactLayout ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${
+          playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'
+        }`}
+      >
+        <List className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />
+      </motion.button>
+
+      {/* 音量控制区域 */}
+      <div className="relative flex items-center">
+        <motion.button
+          whileHover={{ scale: 1.1 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={handleVolumeButtonClick}
+          className={`${compactLayout ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${
+            playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'
+          }`}
+        >
+          {isMuted ? (
+            <VolumeX className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />
+          ) : (
+            <Volume2 className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />
+          )}
+        </motion.button>
+
+        <AnimatePresence>
+          {showVolumeSlider && (
+            <motion.div
+              initial={{ opacity: 0, y: 8, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.95 }}
+              transition={{ duration: 0.15 }}
+              className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex items-center gap-2 px-3 py-2 rounded-full backdrop-blur-3xl whitespace-nowrap"
+              data-tv-arrows="volume"
+              {...(forImmersive ? {
+                onMouseEnter: () => {
+                  if (volumeCloseTimerRef.current !== null) {
+                    window.clearTimeout(volumeCloseTimerRef.current)
+                    volumeCloseTimerRef.current = null
+                  }
+                },
+                onMouseLeave: () => {
+                  if (volumeCloseTimerRef.current !== null) {
+                    window.clearTimeout(volumeCloseTimerRef.current)
+                    volumeCloseTimerRef.current = null
+                  }
+                  volumeCloseTimerRef.current = setTimeout(() => {
+                    volumeCloseTimerRef.current = null
+                    setShowVolumeSlider(false)
+                  }, 800)
+                },
+              } : {})}
+              style={{
+                background: forImmersive
+                  ? (playerTheme === 'dark'
+                      ? 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.4) 100%)'
+                      : 'linear-gradient(135deg, rgba(255,255,255,0.8) 0%, rgba(255,255,255,0.7) 100%)')
+                  : (playerTheme === 'dark'
+                      ? backgroundEffect === 'transparent'
+                        ? 'linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.03) 100%)'
+                        : 'linear-gradient(135deg, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.3) 100%)'
+                      : backgroundEffect === 'transparent'
+                      ? 'linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.05) 100%)'
+                      : 'linear-gradient(135deg, rgba(255,255,255,0.7) 0%, rgba(255,255,255,0.6) 100%)'),
+                backdropFilter: 'blur(40px) saturate(180%)',
+                WebkitBackdropFilter: 'blur(40px) saturate(180%)',
+                boxShadow: playerTheme === 'dark'
+                  ? `0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.1), 0 0 60px ${accentColor}20`
+                  : `0 8px 32px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.1), 0 0 60px ${accentColor}30`,
+              }}
+            >
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={currentVolume}
+                onChange={(e) => onVolumeChange && onVolumeChange(parseFloat(e.target.value))}
+                className="volume-slider-horizontal relative z-10 w-20 h-1.5 rounded-full"
+                style={{
+                  background: `linear-gradient(to right, ${progressFillColor} 0%, ${progressFillColor} ${currentVolume * 100}%, ${volumeTrackColor} ${currentVolume * 100}%, ${volumeTrackColor} 100%)`,
+                  boxShadow: playerTheme === 'dark'
+                    ? 'inset 0 1px 1px rgba(255,255,255,0.2), 0 1px 4px rgba(0,0,0,0.22)'
+                    : 'inset 0 1px 1px rgba(255,255,255,0.52), 0 1px 4px rgba(0,0,0,0.1)',
+                }}
+              />
+              <span
+                className="relative z-10 text-xs font-semibold"
+                style={{
+                  color: playerTheme === 'dark' ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.8)',
+                  textShadow: playerTheme === 'dark' ? '0 1px 2px rgba(0,0,0,0.45)' : '0 1px 1px rgba(255,255,255,0.45)',
+                }}
+              >
+                {Math.round(currentVolume * 100)}%
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      <motion.button
+        whileHover={{ scale: 1.1 }}
+        whileTap={{ scale: 0.95 }}
+        onClick={onPlayModeChange}
+        className={`${compactLayout ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${
+          playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'
+        }`}
+      >
+        {playMode === 'shuffle' && <Shuffle className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
+        {playMode === 'repeat' && <Repeat1 className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
+        {playMode === 'sequential' && <Repeat className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/40' : 'text-black/35'}`} />}
+      </motion.button>
+      {dglabConnected && (
+        <motion.button
+          whileHover={{ scale: 1.1 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={() => { const next = !dglabOutputOn; setDglabOutputOn(next); getDGLabClient().setOutputEnabled(next) }}
+          className={`relative ${compactLayout ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}
+          title={dglabOutputOn ? '暂停波形输出（不断开连接）' : '恢复波形输出'}
+        >
+          <AudioWaveform className={`w-4 h-4 ${dglabOutputOn ? 'text-amber-300' : 'text-white/25'}`} />
+          <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full" style={{ background: dglabOutputOn ? '#FFE89C' : '#64748b' }} />
+        </motion.button>
+      )}
+    </>
+  )
+
   // ---- 进度条 UI（正常模式和沉浸展开共用） ----
-  const renderProgressContent = (sliderWidthClass: string, containerClassName: string = '') => (
-    <div className={`flex flex-col gap-1 ${containerClassName}`}>
-      <div className="flex items-center">
+  // sliderWidthClass 传弹性类（flex-1 min-w-…）：640px 展开条里固定宽度 + 两侧按钮集群
+  // 会结构性溢出（时间文字被下一首/音质按钮压住，2026-10-04 实测间距 -2~2px）。
+  // 现在进度内容跟随可用宽度自适应：展开态左侧用 pl 预留上一首/播放/下一首集群，
+  // 右侧控件组（音质徽标 + 列表/音量/模式）直接并进本行尾部共享 gap —— 右侧不再需要预留。
+  const renderProgressContent = (sliderWidthClass: string, containerClassName: string = '', compactLayout = false, forImmersive = false) => (
+    <div className={`flex flex-col gap-1 w-full ${containerClassName}`}>
+      <div className="flex items-center gap-2">
         <span className={`text-xs font-medium min-w-[38px] text-center leading-none ${
           playerTheme === 'dark' ? 'text-white/80' : 'text-black/70'
         }`}>
           {formatTime(displayTime)}
         </span>
 
-        <div className={`relative ${sliderWidthClass} flex items-center`} data-tv-arrows="seek">
-          <input
+        <div className={`relative ${sliderWidthClass} flex items-center`} data-tv-arrows="seek">          <input
             type="range"
             min="0"
             max={effectiveDuration}
@@ -837,6 +1230,30 @@ export default function PlayerControls({
             formatTime(effectiveDuration)
           )}
         </span>
+
+        {/* 展开态右侧整组控件（音质徽标 + 播放列表/音量/播放模式/DGLab）：
+            与时长、滑轨同处一个 flex 行、共享 gap-2 间距 —— 此前「绝对定位右锚定簇 + 固定预留」
+            两套宽度对不齐，先后出现「时长 ↔ 音质」50px 与「音质 ↔ 图标」~60px 的空洞（用户两次反馈）。
+            淡入时序沿用原簇的 0.25s 延迟，展开时与左侧控制按钮同步出现。 */}
+        {isExpanded && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.22, delay: 0.25, ease: 'easeOut' }}
+            className="flex items-center gap-2"
+          >
+            {songPlatform && qualityQuickSwitchEnabled && (
+              <QualityQuickSwitch
+                platform={songPlatform}
+                songId={songId}
+                playerTheme={playerTheme}
+                accentColor={accentColor}
+                compact={compactLayout}
+              />
+            )}
+            {renderExpandedSideControls(compactLayout, forImmersive)}
+          </motion.div>
+        )}
       </div>
     </div>
   )
@@ -886,6 +1303,9 @@ export default function PlayerControls({
     return (
       <>
         <div className="fixed bottom-0 left-0 right-0 z-50 flex flex-col items-center pointer-events-none">
+          {/* 引擎名：悬浮在小白条/药丸上方（锚定常驻容器——药丸与白条两种状态都显示）。
+              金色仅 AutoMix Enhanced；Pro 粉色辉光呼吸；Gapless/标准白色。稳压防抖见 useStableEngineLabel。 */}
+          <AutomixEngineLabel visible={engineBadge.visible} text={engineBadge.text} tone={playerTheme} />
           <AnimatePresence>
             {(showImmersiveRoman || showImmersiveTranslation) && (
               <motion.div
@@ -924,33 +1344,16 @@ export default function PlayerControls({
                 onMouseEnter={handleImmersivePillEnter}
                 onMouseLeave={handleImmersivePillLeave}
               >
-                {/* 过渡提示：绝对定位挂在药丸上方（不进文档流）——出现/消失不再把药丸/白条顶动；
-                    文案只随引擎名切换（不换 key），因此没有重挂载造成的"抽一下"。 */}
-                {showTransitionBadge && (
-                  <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2">
-                    <motion.span
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ duration: 0.32, ease: 'easeOut' }}
-                      className="block whitespace-nowrap text-xs font-medium"
-                      style={{
-                        // 过渡引擎名金色 + 辉光（Enhanced 档一致）
-                        color: AUTOMIX_HUD_GOLD,
-                        letterSpacing: '0.1em',
-                        textShadow: '0 0 20px rgba(245,196,68,0.55), 0 2px 8px rgba(0,0,0,0.5)',
-                        animation: 'glow 2s ease-in-out infinite',
-                      }}
-                    >
-                      {transitionLabel}
-                    </motion.span>
-                  </div>
-                )}
+                {/* 引擎名提示已改为直接渲染在药丸内顶部（见下方 AutomixEngineLabel），
+                    不再悬挂在条外——位置固定、文案与显隐都做了稳压，不再抖动。 */}
                 <motion.div
                   initial={{ width: tvCompact ? '480px' : '360px' }}
                   animate={{
                     width: tvCompact ? '480px' : isExpanded ? '640px' : '360px',
-                    paddingTop: tvCompact ? '10px' : isExpanded ? '16px' : '12px',
-                    paddingBottom: tvCompact ? '10px' : isExpanded ? '16px' : '12px',
+                    // 药丸总高锁死为原值（TV 紧凑 32px / 展开 44px / 收起 36px）：右侧控件并入进度行后，
+                    // 行高由 32px 图标按钮主导，内边距相应收窄补偿，视觉高度与旧版绝对定位簇完全一致。
+                    paddingTop: tvCompact ? (isExpanded ? '2px' : '10px') : isExpanded ? '6px' : '12px',
+                    paddingBottom: tvCompact ? (isExpanded ? '2px' : '10px') : isExpanded ? '6px' : '12px',
                   }}
                   transition={{ duration: 0.35, delay: isExpanded ? 0 : 0.2, ease: [0.32, 0.72, 0, 1] }}
                   className="relative rounded-full backdrop-blur-3xl px-5"
@@ -965,12 +1368,20 @@ export default function PlayerControls({
                       : `0 8px 32px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.1)`,
                   }}
                 >
-                  <div className="flex items-center justify-center">
+                  {/* 引擎名已恢复悬浮在条上方（锚定外层常驻容器，白条/药丸两种状态都显示） */}
+                  {/* 两侧预留与药丸宽度同步动画（同曲线同延迟）：否则收起时 padding 瞬间清零、
+                      宽度还在 640→360 的动画中，进度内容会突然拉满整条（用户看到的"退出动画变形"） */}
+                  <div
+                    className={`flex items-center justify-center ${isExpanded ? 'pl-[8.25rem]' : ''}`}
+                    style={{ transition: `padding 0.35s ease ${isExpanded ? '0s' : '0.2s'}` }}
+                  >
                     <motion.div
+                      className="w-full"
                       animate={{ scale: 1, opacity: isExpanded ? 1 : 0.7 }}
                       transition={{ duration: 0.3, delay: isExpanded ? 0.15 : 0.15, ease: 'easeInOut' }}
                     >
-                      {renderProgressContent(tvCompact ? 'w-40' : 'w-56', tvCompact ? 'gap-1.5' : 'gap-3')}
+                      {/* TV 紧凑药丸（480px）并入右侧控件后行内固定宽度更大，滑轨下限相应收窄防溢出 */}
+                      {renderProgressContent(tvCompact ? 'flex-1 min-w-[4rem]' : 'flex-1 min-w-[7rem]', tvCompact ? 'gap-1.5' : 'gap-3', tvCompact, true)}
                     </motion.div>
                   </div>
 
@@ -1002,104 +1413,6 @@ export default function PlayerControls({
                     )}
                   </AnimatePresence>
 
-                  <AnimatePresence>
-                    {isExpanded && (
-                      <motion.div
-                        initial={{ opacity: 0, x: -150 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -150 }}
-                        transition={{
-                          opacity: { duration: 0.22, delay: isExpanded ? 0.25 : 0, ease: 'easeOut' },
-                          x: { duration: 0.28, delay: isExpanded ? 0.25 : 0, ease: [0.32, 0.72, 0, 1] },
-                        }}
-                        className={`absolute right-5 top-1/2 -translate-y-1/2 flex items-center ${tvCompact ? 'gap-1.5' : 'gap-2'}`}
-                      >
-                        {songPlatform && qualityQuickSwitchEnabled && (
-                          <QualityQuickSwitch
-                            platform={songPlatform}
-                            songId={songId}
-                            playerTheme={playerTheme}
-                            accentColor={accentColor}
-                            compact={tvCompact}
-                          />
-                        )}
-                        <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.95 }} onClick={onPlaylistClick}
-                          className={`${tvCompact ? 'p-1.5' : 'p-2'} rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}>
-                          <List className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />
-                        </motion.button>
-                        <div className="relative flex items-center">
-                          <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.95 }} onClick={handleVolumeButtonClick}
-                            className={`p-2 rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}>
-                            {isMuted ? <VolumeX className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} /> : <Volume2 className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
-                          </motion.button>
-                          <AnimatePresence>
-                            {showVolumeSlider && (
-                              <motion.div initial={{ opacity: 0, y: 8, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.95 }} transition={{ duration: 0.15 }}
-                                className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex items-center gap-2 px-3 py-2 rounded-full backdrop-blur-3xl whitespace-nowrap"
-                                data-tv-arrows="volume"
-                                onMouseEnter={() => {
-                                  if (volumeCloseTimerRef.current !== null) {
-                                    window.clearTimeout(volumeCloseTimerRef.current)
-                                    volumeCloseTimerRef.current = null
-                                  }
-                                }}
-                                onMouseLeave={() => {
-                                  if (volumeCloseTimerRef.current !== null) {
-                                    window.clearTimeout(volumeCloseTimerRef.current)
-                                    volumeCloseTimerRef.current = null
-                                  }
-                                  volumeCloseTimerRef.current = setTimeout(() => {
-                                    volumeCloseTimerRef.current = null
-                                    setShowVolumeSlider(false)
-                                  }, 800)
-                                }}
-                                style={{
-                                  background: playerTheme === 'dark'
-                                    ? 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.4) 100%)'
-                                    : 'linear-gradient(135deg, rgba(255,255,255,0.8) 0%, rgba(255,255,255,0.7) 100%)',
-                                  backdropFilter: 'blur(40px) saturate(180%)',
-                                  WebkitBackdropFilter: 'blur(40px) saturate(180%)',
-                                  boxShadow: playerTheme === 'dark'
-                                    ? `0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.1), 0 0 60px ${accentColor}20`
-                                    : `0 8px 32px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.1), 0 0 60px ${accentColor}30`,
-                                }}>
-                                <input type="range" min="0" max="1" step="0.01" value={currentVolume} onChange={(e) => onVolumeChange && onVolumeChange(parseFloat(e.target.value))}
-                                  className="volume-slider-horizontal relative z-10 w-20 h-1.5 rounded-full"
-                                  style={{
-                                    background: `linear-gradient(to right, ${progressFillColor} 0%, ${progressFillColor} ${currentVolume * 100}%, ${volumeTrackColor} ${currentVolume * 100}%, ${volumeTrackColor} 100%)`,
-                                    boxShadow: playerTheme === 'dark'
-                                      ? 'inset 0 1px 1px rgba(255,255,255,0.2), 0 1px 4px rgba(0,0,0,0.22)'
-                                      : 'inset 0 1px 1px rgba(255,255,255,0.52), 0 1px 4px rgba(0,0,0,0.1)',
-                                  }} />
-                                <span className="relative z-10 text-xs font-semibold" style={{
-                                  color: playerTheme === 'dark' ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.8)',
-                                  textShadow: playerTheme === 'dark' ? '0 1px 2px rgba(0,0,0,0.45)' : '0 1px 1px rgba(255,255,255,0.45)',
-                                }}>{Math.round(currentVolume * 100)}%</span>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
-                        <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.95 }} onClick={onPlayModeChange}
-                          className={`p-2 rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}>
-                          {playMode === 'shuffle' && <Shuffle className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
-                          {playMode === 'repeat' && <Repeat1 className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
-                          {playMode === 'sequential' && <Repeat className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/40' : 'text-black/35'}`} />}
-                        </motion.button>
-                        {dglabConnected && (
-                          <motion.button
-                            whileHover={{ scale: 1.1 }}
-                            whileTap={{ scale: 0.95 }}
-                            onClick={() => { const next = !dglabOutputOn; setDglabOutputOn(next); getDGLabClient().setOutputEnabled(next) }}
-                            className={`relative p-2 rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}
-                            title={dglabOutputOn ? '暂停波形输出（不断开连接）' : '恢复波形输出'}
-                          >
-                            <AudioWaveform className={`w-4 h-4 ${dglabOutputOn ? 'text-amber-300' : 'text-white/25'}`} />
-                            <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full" style={{ background: dglabOutputOn ? '#FFE89C' : '#64748b' }} />
-                          </motion.button>
-                        )}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
                 </motion.div>
               </motion.div>
             )}
@@ -1256,33 +1569,16 @@ export default function PlayerControls({
       {renderSeekFeedback()}
 
       <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center">
-        {/* 过渡提示：绝对定位挂在药丸上方（不进文档流）——出现/消失不再把药丸顶动，
-            文案只随引擎名切换（不换 key），因此没有重挂载造成的"抽一下"。 */}
-        {showTransitionBadge && (
-          <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2">
-            <motion.span
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.32, ease: 'easeOut' }}
-              className="block whitespace-nowrap text-xs font-medium"
-              style={{
-                color: AUTOMIX_HUD_GOLD,
-                letterSpacing: '0.1em',
-                textShadow: '0 0 20px rgba(245,196,68,0.55), 0 2px 8px rgba(0,0,0,0.5)',
-                animation: 'glow 2s ease-in-out infinite',
-              }}
-            >
-              {transitionLabel}
-            </motion.span>
-          </div>
-        )}
-
+        {/* 引擎名：悬浮在条上方（金色仅 Enhanced；Pro 粉色辉光呼吸；Gapless/标准白色）。稳压防抖见 useStableEngineLabel */}
+        <AutomixEngineLabel visible={engineBadge.visible} text={engineBadge.text} tone={playerTheme} />
         <motion.div
           initial={{ width: '360px' }}
           animate={{
             width: isExpanded ? '640px' : '360px',
-            paddingTop: isExpanded ? '16px' : '12px',
-            paddingBottom: isExpanded ? '16px' : '12px',
+            // 药丸总高锁死为原值（展开 44px / 收起 36px）：右侧控件并入进度行后行高由
+            // 32px 图标按钮主导，内边距收窄补偿，视觉高度与旧版绝对定位簇完全一致。
+            paddingTop: isExpanded ? '6px' : '12px',
+            paddingBottom: isExpanded ? '6px' : '12px',
           }}
           transition={{ 
             duration: 0.35,
@@ -1305,9 +1601,16 @@ export default function PlayerControls({
               : `0 8px 32px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.1)`,
           }}
         >
-          {/* 进度条区域：两侧留出左右按钮集群的宽度，防止新增的音质按钮与剩余时间重叠 */}
-          <div className="flex items-center justify-center pl-36 pr-60">
+          {/* 引擎名已恢复悬浮在条上方（见本容器开头 AutomixEngineLabel） */}
+          {/* 进度条区域：展开态左侧 pl 预留上一首/播放/下一首集群，右侧控件组并入行尾共享 gap，
+              滑块弹性自适应；任何宽度下时间文字都不会再与两侧按钮相压。
+              预留与药丸宽度同步动画（同曲线同延迟），收起中不会出现进度内容拉满整条的中间态 */}
+          <div
+            className={`flex items-center justify-center ${isExpanded ? 'pl-[8.25rem]' : ''}`}
+            style={{ transition: `padding 0.35s ease ${isExpanded ? '0s' : '0.2s'}` }}
+          >
             <motion.div
+              className="w-full"
               animate={{
                 scale: 1,
                 opacity: isExpanded ? 1 : 0.7
@@ -1318,7 +1621,7 @@ export default function PlayerControls({
                 ease: "easeInOut"
               }}
             >
-              {renderProgressContent('w-56', 'gap-3')}
+              {renderProgressContent('flex-1 min-w-[7rem]', 'gap-3')}
             </motion.div>
           </div>
 
@@ -1378,135 +1681,6 @@ export default function PlayerControls({
             )}
           </AnimatePresence>
 
-          {/* 右侧功能按钮 */}
-          <AnimatePresence>
-            {isExpanded && (
-              <motion.div
-                initial={{ opacity: 0, x: -150 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -150 }}
-                transition={{
-                  opacity: { duration: 0.22, delay: isExpanded ? 0.25 : 0, ease: "easeOut" },
-                  x: { duration: 0.28, delay: isExpanded ? 0.25 : 0, ease: [0.32, 0.72, 0, 1] },
-                }}
-                className="absolute right-5 top-1/2 -translate-y-1/2 flex items-center gap-2"
-              >
-                {songPlatform && qualityQuickSwitchEnabled && (
-                  <QualityQuickSwitch
-                    platform={songPlatform}
-                    songId={songId}
-                    playerTheme={playerTheme}
-                    accentColor={accentColor}
-                  />
-                )}
-                <motion.button
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={onPlaylistClick}
-                  className={`p-2 rounded-full transition-colors ${
-                    playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'
-                  }`}
-                >
-                  <List className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />
-                </motion.button>
-
-                {/* 音量控制区域 */}
-                <div className="relative flex items-center">
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={handleVolumeButtonClick}
-                    className={`p-2 rounded-full transition-colors ${
-                      playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'
-                    }`}
-                  >
-                    {isMuted ? (
-                      <VolumeX className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />
-                    ) : (
-                      <Volume2 className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />
-                    )}
-                  </motion.button>
-
-                  <AnimatePresence>
-                    {showVolumeSlider && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 8, scale: 0.95 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: 8, scale: 0.95 }}
-                        transition={{ duration: 0.15 }}
-                        className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex items-center gap-2 px-3 py-2 rounded-full backdrop-blur-3xl whitespace-nowrap"
-                        data-tv-arrows="volume"
-                        style={{
-                          background: playerTheme === 'dark'
-                            ? backgroundEffect === 'transparent'
-                              ? 'linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.03) 100%)'
-                              : 'linear-gradient(135deg, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.3) 100%)'
-                            : backgroundEffect === 'transparent'
-                            ? 'linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.05) 100%)'
-                            : 'linear-gradient(135deg, rgba(255,255,255,0.7) 0%, rgba(255,255,255,0.6) 100%)',
-                          backdropFilter: 'blur(40px) saturate(180%)',
-                          WebkitBackdropFilter: 'blur(40px) saturate(180%)',
-                          boxShadow: playerTheme === 'dark'
-                            ? `0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.1), 0 0 60px ${accentColor}20`
-                            : `0 8px 32px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.1), 0 0 60px ${accentColor}30`,
-                        }}
-                      >
-                        <input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.01"
-                          value={currentVolume}
-                          onChange={(e) => onVolumeChange && onVolumeChange(parseFloat(e.target.value))}
-                          className="volume-slider-horizontal relative z-10 w-20 h-1.5 rounded-full"
-                          style={{
-                            background: `linear-gradient(to right, ${progressFillColor} 0%, ${progressFillColor} ${currentVolume * 100}%, ${volumeTrackColor} ${currentVolume * 100}%, ${volumeTrackColor} 100%)`,
-                            boxShadow: playerTheme === 'dark'
-                              ? 'inset 0 1px 1px rgba(255,255,255,0.2), 0 1px 4px rgba(0,0,0,0.22)'
-                              : 'inset 0 1px 1px rgba(255,255,255,0.52), 0 1px 4px rgba(0,0,0,0.1)',
-                          }}
-                        />
-                        <span
-                          className="relative z-10 text-xs font-semibold"
-                          style={{
-                            color: playerTheme === 'dark' ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.8)',
-                            textShadow: playerTheme === 'dark' ? '0 1px 2px rgba(0,0,0,0.45)' : '0 1px 1px rgba(255,255,255,0.45)',
-                          }}
-                        >
-                          {Math.round(currentVolume * 100)}%
-                        </span>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                <motion.button
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={onPlayModeChange}
-                  className={`p-2 rounded-full transition-colors ${
-                    playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'
-                  }`}
-                >
-                  {playMode === 'shuffle' && <Shuffle className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
-                  {playMode === 'repeat' && <Repeat1 className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/70' : 'text-black/60'}`} />}
-                  {playMode === 'sequential' && <Repeat className={`w-4 h-4 ${playerTheme === 'dark' ? 'text-white/40' : 'text-black/35'}`} />}
-                </motion.button>
-                {dglabConnected && (
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={() => { const next = !dglabOutputOn; setDglabOutputOn(next); getDGLabClient().setOutputEnabled(next) }}
-                    className={`relative p-2 rounded-full transition-colors ${playerTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/10'}`}
-                    title={dglabOutputOn ? '暂停波形输出（不断开连接）' : '恢复波形输出'}
-                  >
-                    <AudioWaveform className={`w-4 h-4 ${dglabOutputOn ? 'text-amber-300' : 'text-white/25'}`} />
-                    <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full" style={{ background: dglabOutputOn ? '#FFE89C' : '#64748b' }} />
-                  </motion.button>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
         </motion.div>
       </div>
     </>
