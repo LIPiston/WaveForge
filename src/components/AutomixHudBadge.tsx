@@ -31,16 +31,39 @@ export interface AutomixHudInfo {
 export const AUTOMIX_HUD_LEAD_SECONDS = 8
 export const AUTOMIX_HUD_GOLD = '#F5C044'
 
-/** 药丸（时间节点）的提示节奏：本曲播放满 5 秒才提示一次，显示 8 秒后自动渐隐。
+/** 药丸（时间节点）的提示节奏：本曲播放满 5 秒才提示一次，完全可见 8 秒后自动渐隐。
+ *  8 秒是「不含淡入淡出」的纯驻留时长（总在场 = 淡入 + 8s + 淡出）。
  *  过渡计划若晚于 5 秒才就绪（冷启动 / 新歌新列表没预载），就绪那一刻立刻提示——
  *  判定写在 shouldShow 里：条件是「播放位置 ≥ 5s」+「计划已就绪」，晚到时后者才成立。 */
 export const AUTOMIX_HUD_NODE_DELAY_SECONDS = 5
 export const AUTOMIX_HUD_NODE_HOLD_SECONDS = 8
 
-export const AUTOMIX_HUD_FADE_IN_SECONDS = 0.22
-export const AUTOMIX_HUD_FADE_OUT_SECONDS = 0.3
-/** CSS 过渡略长于两段淡变，既跟手又能把播放时间轴 ~250ms 的量化台阶抹平 */
-export const AUTOMIX_HUD_FADE_CSS_SECONDS = 0.24
+/** 淡入 / 淡出时长（秒）：JS 计时与 CSS 过渡共用同一值。
+ *  淡出比淡入稍长、且两条曲线分开：进场 ease-out（出现跟手），离场 ease-in（先驻留再离场）。
+ *  此前 0.22s/0.24s 的「快淡变」在观感上等同于瞬现/瞬隐（且单 rAF 淡入常被 React 的
+ *  提交时序吞掉、直接跳到终值），用户反馈割裂 → 放宽到 0.4s / 0.5s 的可感知渐变。
+ *  两段都长于播放时间轴 ~250ms 的量化台阶，进度条上方金色提示的出入场依旧被抹平。 */
+export const AUTOMIX_HUD_FADE_IN_SECONDS = 0.4
+export const AUTOMIX_HUD_FADE_OUT_SECONDS = 0.5
+
+/** 连续两帧后才把不透明度抬到 1：第一帧保证浏览器真的画下 opacity:0 那一帧，第二帧再改值。
+ *  单 rAF 的回调可能抢在首帧绘制之前执行（React 提交时序不保证中间留有一帧绘制）——
+ *  元素第一次被画出来就是 opacity:1，CSS 过渡从不触发，观感为「瞬现」。返回取消函数。 */
+function scheduleOpacityFadeIn(setOpacity: (value: number) => void) {
+  let inner = 0
+  const outer = requestAnimationFrame(() => {
+    inner = requestAnimationFrame(() => setOpacity(1))
+  })
+  return () => {
+    cancelAnimationFrame(outer)
+    cancelAnimationFrame(inner)
+  }
+}
+
+/** 方向相关的 CSS 过渡：不透明度目标为 0 时是离场（ease-in），否则是进场（ease-out）。
+ *  CSS 规范用「变化后的 transition 值」驱动过渡，所以按目标值选曲线是对的。 */
+const fadeTransition = (opacity: number) =>
+  `opacity ${opacity === 0 ? AUTOMIX_HUD_FADE_OUT_SECONDS : AUTOMIX_HUD_FADE_IN_SECONDS}s ${opacity === 0 ? 'ease-in' : 'ease-out'}`
 
 /**
  * 通知播放记忆（模块级，跨播放页切换/组件卸载共享）：
@@ -134,15 +157,14 @@ export const AutomixHudBadge = memo(function AutomixHudBadge({
   const remaining = info.startAt - currentTime
   // 入场条件：本曲播放满 5 秒 + 计划已就绪 + 本曲还没提示过 + 还没到切点。
   // 「计划晚到」的兜底不需要额外分支：那时播放位置早已 ≥5s，计划一就绪这里立刻成立。
-  // 无缝衔接（gapless）没有"开始智能混音"节点 → 不出药丸，只出进度条上方的金色引擎名。
+  // 无缝衔接（gapless）同样出节点：文案为「开始无缝衔接」，切点 = 裁剪后的拼接位置。
   const eligible = info.phase === 'armed'
-    && info.kind !== 'gapless'
     && !memory.notified
     && remaining > 0
     && currentTime >= AUTOMIX_HUD_NODE_DELAY_SECONDS
 
   // 提示会话：一开始提示就落记「本曲已提示」（模块级 → 切播放页卸载重挂也不会对同曲重弹），
-  // 显示满 8 秒自动收起（渐隐由下面的进出场状态机负责）。
+  // 淡入结束后才开始计满 8 秒驻留（淡入/淡出不计入显示时长），到点自动收起（渐隐由下面的进出场状态机负责）。
   const [holding, setHolding] = useState(false)
   // 换歌（当前曲身份变化）：上一首的驻留窗口不延续到新歌，新歌从自己的第 5 秒重新开始计时
   useEffect(() => { setHolding(false) }, [trackKey])
@@ -153,13 +175,17 @@ export const AutomixHudBadge = memo(function AutomixHudBadge({
   }, [eligible])
   useEffect(() => {
     if (!holding) return
-    const timer = window.setTimeout(() => setHolding(false), AUTOMIX_HUD_NODE_HOLD_SECONDS * 1000)
+    // 总驻留计时 = 淡入预算 + 8 秒完全可见；计时到点才开始淡出
+    const timer = window.setTimeout(
+      () => setHolding(false),
+      (AUTOMIX_HUD_FADE_IN_SECONDS + AUTOMIX_HUD_NODE_HOLD_SECONDS) * 1000,
+    )
     return () => window.clearTimeout(timer)
   }, [holding])
   const shouldShow = holding && info.phase === 'armed' && remaining > 0
 
   // 进出场用「状态机 + CSS 过渡」而不是每帧算不透明度：
-  // 出现时先以 0 不透明度挂载，effect 里抬到 1（触发 0.24s ease-out 淡入）；
+  // 出现时先以 0 不透明度挂载，双 rAF 后抬到 1（触发 ease-out 淡入）；
   // 隐藏时先淡出、淡出跑完再卸载 —— 切点到达、用户点关闭都是"滑走"而不是"啪地消失"。
   const [opacity, setOpacity] = useState(0)
   const [mounted, setMounted] = useState(false)
@@ -171,9 +197,8 @@ export const AutomixHudBadge = memo(function AutomixHudBadge({
         unmountTimerRef.current = null
       }
       setMounted(true)
-      // 下一帧再抬升不透明度：保证浏览器先画出 opacity:0 这一帧，过渡才会生效
-      const raf = requestAnimationFrame(() => setOpacity(1))
-      return () => cancelAnimationFrame(raf)
+      // 双 rAF：见 scheduleOpacityFadeIn —— 单 rAF 会抢在首帧绘制前执行，过渡不触发
+      return scheduleOpacityFadeIn(setOpacity)
     }
     if (!mounted) return
     setOpacity(0)
@@ -211,18 +236,20 @@ export const AutomixHudBadge = memo(function AutomixHudBadge({
         borderRadius: 999,
         padding: `${5 * scale}px ${10 * scale}px ${5 * scale}px ${12 * scale}px`,
         opacity,
-        transition: `opacity ${AUTOMIX_HUD_FADE_CSS_SECONDS}s ease-out`,
+        transition: fadeTransition(opacity),
         pointerEvents: opacity > 0.35 ? 'auto' : 'none',
       }}
     >
       <AudioLines style={{ width: 13 * scale, height: 13 * scale, color: colors.text, flexShrink: 0, alignSelf: 'center' }} />
       <span style={{ color: colors.text, fontSize: 11.5 * scale, lineHeight: 1.15, whiteSpace: 'nowrap' }}>
-        即将在 {nodeTime} 开始智能混音
+        {info.kind === 'gapless' ? `即将在 ${nodeTime} 开始无缝衔接` : `即将在 ${nodeTime} 开始智能混音`}
       </span>
       <button
         type="button"
-        title="本曲不做智能混音（完整听完这首歌，末尾只做一次短交叉）"
-        aria-label="本曲不做智能混音，完整播放本曲"
+        title={info.kind === 'gapless'
+          ? '本曲不做无缝衔接（完整播放这首歌，到结尾再自然切换）'
+          : '本曲不做智能混音（完整听完这首歌，末尾只做一次短交叉）'}
+        aria-label={info.kind === 'gapless' ? '本曲不做无缝衔接，完整播放本曲' : '本曲不做智能混音，完整播放本曲'}
         onClick={event => {
           event.stopPropagation()
           // 手动关闭同样算「本曲已提示过」：之后 seek/重排导致 key 变化也不会再弹回来
@@ -270,8 +297,8 @@ export const AutomixHudProgressHint = memo(function AutomixHudProgressHint({
       setOpacity(0)
       return
     }
-    const raf = requestAnimationFrame(() => setOpacity(1))
-    return () => cancelAnimationFrame(raf)
+    // 双 rAF：同药丸 —— 单 rAF 抢在首帧绘制前执行会让入场直接跳到终值（瞬现）
+    return scheduleOpacityFadeIn(setOpacity)
   }, [visible])
   return (
     <div
@@ -289,7 +316,7 @@ export const AutomixHudProgressHint = memo(function AutomixHudProgressHint({
           : `0 0 ${9 * scale}px rgba(245, 196, 68, 0.5)`,
         pointerEvents: 'none',
         opacity: visible ? opacity : 0,
-        transition: `opacity ${AUTOMIX_HUD_FADE_CSS_SECONDS}s ease-out`,
+        transition: fadeTransition(visible ? opacity : 0),
       }}
     >
       {info.engineLabel}

@@ -15,6 +15,9 @@ interface UpNextNotificationProps {
   enhancedLabel?: string;
   /** Pro 过渡风格标签（energetic=高能量 / atmospheric=氛围 / clean=干净） */
   transitionStyle?: 'energetic' | 'atmospheric' | 'clean' | undefined
+  /** 策略文案覆盖（最高优先）：无缝衔接（gapless）时传「即将无缝衔接」，
+   *  替换通用的「即将进入过渡」——gapless 没有混音介入动作，倒计时指下一首开始。 */
+  strategyLabel?: string
 }
 
 const TRANSITION_STYLE_LABEL: Record<string, { text: string; color: string }> = {
@@ -23,7 +26,7 @@ const TRANSITION_STYLE_LABEL: Record<string, { text: string; color: string }> = 
   clean: { text: '干净', color: '#10B981' },
 }
 
-export default function UpNextNotification({ show, nextSong, secondsRemaining, mode = 'play', onSkip, playerTheme = 'dark', enhanced = false, enhancedLabel, transitionStyle }: UpNextNotificationProps) {
+export default function UpNextNotification({ show, nextSong, secondsRemaining, mode = 'play', onSkip, playerTheme = 'dark', enhanced = false, enhancedLabel, transitionStyle, strategyLabel }: UpNextNotificationProps) {
   // 刻意不接管 TV BACK：通知常驻挂载且注册早，BACK 会在无其他处理器时被它抢走——
   // 用户想返回主页却变成跳歌（破坏性误触）。卡片本身 OK 可点（跳下一首），自动消失。
   if (!nextSong) return null
@@ -112,7 +115,7 @@ export default function UpNextNotification({ show, nextSong, secondsRemaining, m
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 mb-1">
                   <div className={`text-xs font-medium ${isDark ? 'text-white/70' : 'text-black/55'}`}>
-                    {isEnhancedTransition ? (enhancedLabel || 'Pro 过渡') : mode === 'transition' ? '即将进入过渡' : '即将播放'} · {Math.max(0, Math.ceil(secondsRemaining))}秒后
+                    {strategyLabel ?? (isEnhancedTransition ? (enhancedLabel || 'Pro 过渡') : mode === 'transition' ? '即将进入过渡' : '即将播放')} · {Math.max(0, Math.ceil(secondsRemaining))}秒后
                   </div>
                   {isEnhancedTransition && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#3B82F6' + '30', color: '#60A5FA' }}>

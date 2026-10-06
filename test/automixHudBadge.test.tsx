@@ -22,10 +22,11 @@ import {
  *   ②「关闭」与主文案同一水平线：整行 items-baseline（文字基线严格对齐）+ 图标 alignSelf:center，
  *      按钮内部 inline-flex + lineHeight 1 + 对称内边距（盒子不再把文字压低）；
  *   ③ 底色用当前封面主题色的淡色（color-mix 混入原底色）；
- *   ④ 渐入/渐出更快（0.22s / 0.3s，CSS 过渡 0.24s ease-out 抹平 250ms 量化台阶），
- *      且隐藏是"先淡出再卸载"（不再啪地消失）；
+ *   ④ 淡入/淡出为可感知的柔和渐变（0.4s ease-out / 0.5s ease-in，双 rAF 保证淡入真的触发），
+ *      且隐藏是"先淡出再卸载"（不再啪地消失）；驻留 8 秒不含淡入淡出（淡入结束才开始计 8 秒）；
  *   ⑤ 引擎名只能是四个之一：AutoMix / AutoMix Pro / AutoMix Enhanced / Gapless；
- *   ⑥ 无缝衔接（gapless）不出药丸（没有"开始智能混音"节点），只出进度条上方的金色引擎名。
+ *   ⑥ 无缝衔接（gapless）同样出药丸：文案为「开始无缝衔接」（切点 = 裁剪后的拼接位置），
+ *      进度条上方仍同时显示引擎名。
  */
 afterEach(() => {
   vi.useRealTimers()
@@ -49,9 +50,12 @@ const badgeProps = (trackKey: string, startAt = 300) => ({
   accentColor: 'rgb(120, 40, 200)',
 })
 
-/** 让淡入 rAF 与 CSS 过渡跑一帧（配合假定时器） */
+/** 让淡入的双 rAF 与 CSS 过渡跑过（配合假定时器）：两帧各推一次 */
 const flushFadeIn = async () => {
-  await act(async () => { vi.advanceTimersByTime(40) })
+  await act(async () => {
+    vi.advanceTimersToNextFrame()
+    vi.advanceTimersToNextFrame()
+  })
 }
 
 describe('AutoMix HUD 药丸', () => {
@@ -68,14 +72,21 @@ describe('AutoMix HUD 药丸', () => {
     expect(formatAutomixHudTime(59.9)).toBe('0:59')
   })
 
-  it('显示满 8 秒后渐隐并卸载；同一首歌换切点重挂也不再提示', async () => {
+  it('显示满 8 秒后渐隐并卸载（驻留不含淡入淡出）；同一首歌换切点重挂也不再提示', async () => {
     vi.useFakeTimers()
     const props = badgeProps('t-hold')
     const { container, rerender } = render(<AutomixHudBadge {...props} currentTime={6} onDismiss={noop} />)
     await flushFadeIn()
     expect(container.firstElementChild).toBeTruthy()
-    // 8 秒到点 → 先淡出（opacity 0），淡出跑完再卸载
+    // 8 秒驻留到点时淡入预算（0.4s）还没走完 → 不能开始淡出（淡入淡出不计入驻留时长）
     await act(async () => { vi.advanceTimersByTime(AUTOMIX_HUD_NODE_HOLD_SECONDS * 1000 + 20) })
+    const shown = container.firstElementChild as HTMLElement | null
+    expect(shown).toBeTruthy()
+    expect(shown!.style.opacity).not.toBe('0')
+    expect(shown!.style.transition).toContain('0.4s')
+    expect(shown!.style.transition).toContain('ease-out')
+    // 淡入结束、驻留计满 → 先淡出（opacity 0），淡出跑完再卸载
+    await act(async () => { vi.advanceTimersByTime(AUTOMIX_HUD_FADE_IN_SECONDS * 1000 + 60) })
     const fading = container.firstElementChild as HTMLElement | null
     expect(fading).toBeTruthy()
     expect(fading!.style.opacity).toBe('0')
@@ -123,27 +134,33 @@ describe('AutoMix HUD 药丸', () => {
     expect(transitionEngineDisplayName('fixed-crossfade', true, 'pro')).toBeNull()
   })
 
-  it('无缝衔接（gapless）不出药丸，只由进度条上方的金色引擎名承担', () => {
+  it('无缝衔接（gapless）同样出药丸：文案为「开始无缝衔接」，引擎名仍由进度条上方承担', async () => {
     const gaplessProps = {
       ...badgeProps('t-gapless'),
       info: { ...badgeProps('t-gapless').info, engineLabel: 'Gapless', kind: 'gapless' as const, key: 'gapless|300' },
     }
-    const { container } = render(<AutomixHudBadge {...gaplessProps} currentTime={42} onDismiss={noop} />)
-    expect(container.firstElementChild).toBeNull()
+    vi.useFakeTimers()
+    const { container } = render(<AutomixHudBadge {...gaplessProps} currentTime={AUTOMIX_HUD_NODE_DELAY_SECONDS + 0.2} onDismiss={noop} />)
+    await flushFadeIn()
+    // 节点文案使用「无缝衔接」而不是「智能混音」
+    expect(container.textContent).toContain('开始无缝衔接')
+    expect(container.textContent).not.toContain('开始智能混音')
     // 进度条提示：等待窗口内 + 过渡中都显示引擎名
     const hint = render(<AutomixHudProgressHint info={gaplessProps.info} currentTime={294} scale={1} />)
     expect(hint.container.textContent).toContain('Gapless')
     expect(AUTOMIX_HUD_LEAD_SECONDS).toBe(8)
   })
 
-  it('底色用当前封面主题色淡色（color-mix），并保留 CSS 过渡为 0.24s ease-out', () => {
+  it('底色用当前封面主题色淡色（color-mix），离场过渡为 0.5s ease-in（先驻留再离场）', () => {
     const props = badgeProps('t-color')
     const { container } = render(<AutomixHudBadge {...props} currentTime={294} onDismiss={noop} />)
     const pill = container.firstElementChild as HTMLElement
     expect(pill).toBeTruthy()
     expect(pill.style.background).toContain('color-mix')
     expect(pill.style.background).toContain(props.accentColor)
-    expect(pill.style.transition).toContain('0.24s')
+    // 初始（opacity 0）挂的是离场曲线；进场曲线在 8 秒驻留用例里断言
+    expect(pill.style.transition).toContain('0.5s')
+    expect(pill.style.transition).toContain('ease-in')
   })
 
   it('「关闭」与主文案同一水平线（整行基线对齐 + 按钮自身盒模型不偏），并触发跳过回调', () => {
@@ -176,9 +193,9 @@ describe('AutoMix HUD 药丸', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1)
   })
 
-  it('渐入渐出预算已收紧（0.22s / 0.3s），切点到达也是淡出后卸载', async () => {
-    expect(AUTOMIX_HUD_FADE_IN_SECONDS).toBeLessThanOrEqual(0.25)
-    expect(AUTOMIX_HUD_FADE_OUT_SECONDS).toBeLessThanOrEqual(0.35)
+  it('淡入淡出为可感知的柔和渐变（≥0.3s / ≥0.4s），切点到达也是淡出后卸载', async () => {
+    expect(AUTOMIX_HUD_FADE_IN_SECONDS).toBeGreaterThanOrEqual(0.3)
+    expect(AUTOMIX_HUD_FADE_OUT_SECONDS).toBeGreaterThanOrEqual(0.4)
     // 换一首当前曲（trackKey 变）→ 记忆复位，重新允许提示
     const props = badgeProps('t-budget')
     const { container, rerender } = render(<AutomixHudBadge {...props} currentTime={294} onDismiss={noop} />)

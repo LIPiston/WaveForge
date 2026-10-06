@@ -1794,9 +1794,27 @@ function App() {
   }, [])
 
   const [automixHudSkippedTrackKey, setAutomixHudSkippedTrackKey] = useState<string | null>(null)
-  // 过渡 HUD 数据（药丸时间节点 + 进度条上方金色引擎名共用）：
+  /**
+   * 无缝衔接边界的开始时间（秒）：药丸时间节点与 UpNext 倒计时共用。
+   *   · 同专辑 → 曲末（直接拼接发生在 source ended 时）；
+   *   · 跨专辑 → 曲末 − 估计窗口（2.5s）——交叉锚定在歌曲最末尾的空白处；
+   *     计划就绪后节点时间会由真实窗口（transitionDebug）覆盖。
+   */
+  const gaplessBoundaryStartAt = useMemo(() => {
+    if (!effectiveGaplessEnabled || effectiveAutoMixEnabled) return null
+    const current = playlist[currentIndex]
+    if (!current) return null
+    const totalSeconds = duration > 0 ? duration : Math.max(0, Number(current.duration) / 1000)
+    if (totalSeconds <= 0) return null
+    const next = playlist[currentIndex + 1]
+    const currentAlbum = current.album?.id ?? current.album?.mid ?? ''
+    const nextAlbum = next?.album?.id ?? next?.album?.mid ?? ''
+    if (currentAlbum && nextAlbum && String(currentAlbum) === String(nextAlbum)) return totalSeconds
+    return Math.max(0, totalSeconds - 2.5)
+  }, [effectiveGaplessEnabled, effectiveAutoMixEnabled, playlist, currentIndex, duration])
+  // 过渡 HUD 数据（药丸时间节点 + 进度条上方引擎名共用）：
   //   · automix：计划就绪（armed）即给出「即将在 m:ss 开始智能混音」的时间节点，直到过渡开跑；
-  //   · gapless：无缝衔接没有"开始混音"节点 —— 只给进度条上方显示「Gapless」，不出药丸；
+  //   · gapless：同样出节点「即将在 m:ss 开始无缝衔接」（跨专辑 = 交叉起点，同专辑 = 曲末）；
   //   · 已降级为普通交叉淡化（fixed-crossfade / none）时不给任何提示，避免误导。
   const automixHud = useMemo(() => {
     if (transitionState !== 'armed' && transitionState !== 'running-transition') return null
@@ -1805,15 +1823,25 @@ function App() {
     if (!engineName) return null
     const phase = (transitionState === 'running-transition' ? 'running' : 'armed') as 'armed' | 'running'
     if (strategy === 'gapless') {
-      if (!(duration > 0)) return null
-      // 边界 = 本曲结尾（无缝拼接发生在 source ended 时）
+      const current = playlist[currentIndex]
+      if (!(duration > 0) || !current) return null
+      // 节点被用户关闭（本曲不做无缝衔接）→ 不再显示
+      const currentKey = getSongKey(current)
+      if (automixHudSkippedTrackKey && currentKey === automixHudSkippedTrackKey) return null
+      // 首选：智能短交叉计划就绪后，节点时间 = 计划窗口起点（分析算出的交叉位置）；
+      // 计划未就绪时退回估算值（跨专辑 = 曲末-裁剪-默认窗；同专辑 = 曲末）
+      const gaplessDbg = transitionDebug
+      const planStart = gaplessDbg && Number.isFinite(gaplessDbg.sourceStartTime) && gaplessDbg.sourceTrackKey === currentKey
+        ? gaplessDbg.sourceStartTime
+        : null
+      const joinAt = planStart ?? gaplessBoundaryStartAt ?? duration
       return {
         phase,
-        startAt: duration,
-        endAt: duration,
+        startAt: joinAt,
+        endAt: joinAt,
         engineLabel: engineName,
         kind: 'gapless' as const,
-        key: `gapless|${duration.toFixed(2)}`,
+        key: `gapless|${joinAt.toFixed(2)}`,
       }
     }
     // 只有"智能过渡"才提示：用户点过关闭（本曲不做智能混音）或已降级为普通交叉淡化时不再打扰
@@ -1835,15 +1863,15 @@ function App() {
       kind: 'automix' as const,
       key: `${dbg.sourceTrackKey}|${dbg.sourceStartTime.toFixed(2)}`,
     }
-  }, [effectiveAutoMixEnabled, transitionState, transitionDebug, transitionStrategy, autoMixEngine, duration, automixHudSkippedTrackKey])
+  }, [effectiveAutoMixEnabled, transitionState, transitionDebug, transitionStrategy, autoMixEngine, duration, automixHudSkippedTrackKey, playlist, currentIndex, gaplessBoundaryStartAt])
   // modern 等流式播放页的过渡徽标：按 HUD 键记忆「关闭」（切歌/重排后自动恢复）。
-  // 药丸只服务于 AutoMix 的时间节点；无缝衔接（gapless）不出药丸，只有进度条上方的引擎名。
+  // 药丸时间节点对 AutoMix 与无缝衔接都可用（gapless 的节点 = 裁剪后的拼接点）。
   // 时间订阅（automixHudTime）在 audioPlayer 声明之后统一挂（依赖 playbackTimeStore）。
   const [dismissedAutomixHudKey, setDismissedAutomixHudKey] = useState<string | null>(null)
   useEffect(() => {
     setDismissedAutomixHudKey(null)
   }, [automixHud?.key])
-  const modernAutomixHud = automixHudEnabled && automixHud && automixHud.kind !== 'gapless' && automixHud.key !== dismissedAutomixHudKey
+  const modernAutomixHud = automixHudEnabled && automixHud && automixHud.key !== dismissedAutomixHudKey
     ? automixHud
     : null
   const modernAutomixHudColors = playerTheme === 'dark'
@@ -4391,7 +4419,15 @@ function App() {
   const getMvPlaybackTimeSecondsStable = useCallback(() => mvPlaybackTimeGettersRef.current.playback(), [])
   const getMvTransitionTargetTimeSecondsStable = useCallback(() => mvPlaybackTimeGettersRef.current.transitionTarget(), [])
   // 看歌模式下视频为唯一时间线：automix/无缝/交叉过渡全部失效
-  const effectiveTransitionStrategy = lyricDisplayMode === 'video' ? 'none' : transitionStrategy
+  // 跨专辑的无缝衔接现在用「智能短交叉」实现（引擎执行策略是 beat-crossfade / fixed-crossfade），
+  // 但对用户而言仍是无缝衔接：显示层归类为 gapless（白色 Gapless 标签），与设置语义一致。
+  // 交叉淡化设置显式打开时（crossfade 优先于 gapless）保持「纯交叉淡化」不显示引擎名。
+  const effectiveTransitionStrategy = lyricDisplayMode === 'video'
+    ? 'none'
+    : ((transitionStrategy === 'fixed-crossfade' || transitionStrategy === 'beat-crossfade')
+      && effectiveGaplessEnabled && !effectiveAutoMixEnabled && !effectiveCrossfadeEnabled
+      ? 'gapless'
+      : transitionStrategy)
   // AutoMix 过渡时，播放页过渡指示显示 AutoMix 以与无缝衔接(Gapless)区分
   const isAutoMixTransition = effectiveAutoMixEnabled && effectiveTransitionStrategy !== 'gapless' && effectiveTransitionStrategy !== 'none'
   // AutoMix Pro（v2）：播放页过渡指示与右上角提示显示独立文案/样式
@@ -4404,6 +4440,16 @@ function App() {
     ? 'AutoMix Enhanced'
     : autoMixEngine === 'pro' ? 'AutoMix Pro' : 'AutoMix'
   const transitionEngineName = transitionEngineDisplayName(effectiveTransitionStrategy, effectiveAutoMixEnabled, autoMixEngine)
+
+  // 播放提示倒计时目标：
+  //  · AutoMix 有介入点 → automixHud.startAt（与药丸时间节点一致）
+  //  · 无缝衔接（gapless）→ gaplessBoundaryStartAt（跨专辑 = 交叉起点，同专辑 = 曲末）；
+  //    否则用动画窗口起点（=原始末尾前 10s），裁剪/交叉生效时卡片会停在「0秒后」等好几秒
+  const upNextEventTime = useMemo(() => {
+    const base = automixHud?.startAt
+      ?? ((effectiveAutoMixEnabled || effectiveGaplessEnabled) ? (transitionStartTime ?? duration) : duration)
+    return gaplessBoundaryStartAt != null ? Math.min(base, gaplessBoundaryStartAt) : base
+  }, [automixHud?.startAt, effectiveAutoMixEnabled, effectiveGaplessEnabled, transitionStartTime, duration, gaplessBoundaryStartAt])
 
   // 过渡调试弹窗：过渡计划就绪（armed）时展示引擎/策略/DJ 效果清单；
   // 受「过渡调试」开关控制（设置 → 开发者选项 → 调试面板），关闭则不显示。
@@ -11311,21 +11357,26 @@ function App() {
 
       {/* 播放提示是全局覆盖层：播放页始终允许显示；探索、简约首页和桌面模式
           只有在“在播放页外显示播放提示”开启时才显示，且三个模式位置一致。 */}
-      {playlist.length > 0 && playMode !== 'repeat' && showUpNext && canShowUpNextOnCurrentSurface && foliaPresentation.useLegacyUpNext && (
+      {playlist.length > 0 && playMode !== 'repeat' && canShowUpNextOnCurrentSurface && foliaPresentation.useLegacyUpNext && (
         <Suspense fallback={null}>
           <LiveUpNextNotification
             playbackTimeStore={audioPlayer.playbackTimeStore}
-            // 倒计时目标 = 各档位「进入 AutoMix 的一瞬间」：优先用 automixHud.startAt
-            //（过渡计划里的介入点，与药丸时间节点同一个值）。此前用 transitionStartTime
-            //（=动画窗口起点），AI 长混音比真正介入晚几十秒 → 卡片倒计时与实际介入对不上（用户反馈）。
-            eventTime={automixHud?.startAt
-              ?? ((effectiveAutoMixEnabled || effectiveGaplessEnabled)
-                ? (transitionStartTime ?? duration)
-                : duration)}
-            show={true}
+            // 倒计时目标见上方 upNextEventTime（AutoMix 用介入点；gapless 用裁剪后的拼接点）
+            // 常驻挂载 + show 下传：出场动画由组件内 AnimatePresence 播（此前直接卸载组件，
+            // exit 永远不会执行——用户反馈「入场出场动画没做」）。
+            show={showUpNext}
             playerTheme={playerTheme}
             nextSong={nextSongToShow}
             mode={effectiveAutoMixEnabled || effectiveGaplessEnabled ? 'transition' : 'play'}
+            // 无缝衔接（gapless）没有混音介入动作：文案用「即将无缝衔接」，不再套「即将进入过渡」
+            strategyLabel={
+              (effectiveGaplessEnabled && !effectiveAutoMixEnabled) || transitionStrategy === 'gapless'
+                ? '即将无缝衔接'
+                : undefined
+            }
+            // 裁剪过尾部静音时，倒计时目标改为「有声内容结束」（拼接点），
+            // 否则卡片会停在「0秒后」数秒直到原始末尾才消失
+            eventTime={upNextEventTime}
             enhanced={effectiveAutoMixEnabled && autoMixEnhanced}
             enhancedLabel={transitionStrategy === 'smart-rendered-qq' ? 'Enhanced 过渡' : 'Pro 过渡'}
             transitionStyle={transitionStrategy === 'smart-rendered-qq' ? undefined : transitionStyle}

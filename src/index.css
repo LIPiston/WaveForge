@@ -738,6 +738,19 @@ input, textarea, [contenteditable="true"] {
   }
 }
 
+/* AutoMix 引擎名辉光呼吸：只动 opacity（文字+静态 text-shadow 一起呼吸，光栅化一次）。
+   2026-10-05 用户反馈「辉光不明显、呼吸偏快」：周期 2.4s → 3.2s；
+   随后因「过渡交界处卡顿」改为单层实现（去掉模糊副本图层），呼吸幅度相应收敛为 0.62–1，
+   避免整行文字随呼吸明显变暗。 */
+@keyframes automixGlowBreathe {
+  0%, 100% {
+    opacity: 0.62;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 /* 进度条样式 - 无滑块，只增强对比度 */
 .lyric-skia-line {
   --lyric-accent: #ffffff;
