@@ -64,6 +64,10 @@ if (windowIcon.isEmpty()) {
 const { fetchAllowedApplePage, readTextWithLimit } = require('./apple-url-policy.cjs')
 const { createDocumentUrlMatcher, createTrustedIpcGuard } = require('./trusted-ipc.cjs')
 const LOCAL_SERVICE_TOKEN = process.env.WAVEFORGE_LOCAL_TOKEN || crypto.randomBytes(32).toString('base64url')
+// 主进程内部模块（audio-download 等）与所有受控子进程统一从环境变量取令牌——
+// 它们访问 3001 本机服务时必须自带 X-WaveForge-Local-Token（渲染层请求由
+// onBeforeSendHeaders 注入，主进程请求拿不到注入，缺头一律 403）。
+process.env.WAVEFORGE_LOCAL_TOKEN = LOCAL_SERVICE_TOKEN
 const {
   loadWindowState,
   saveWindowState,

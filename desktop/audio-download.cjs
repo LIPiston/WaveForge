@@ -430,6 +430,16 @@ class AudioDownloadService {
           'User-Agent': AUDIO_USER_AGENT,
           Accept: AUDIO_ACCEPT,
         }
+        // 本机服务（3001 代理的 QQ/B站 音频流）需要本机服务令牌：渲染层的请求由
+        // Electron onBeforeSendHeaders 统一注入，但本模块跑在主进程（无 webContentsId
+        // 拿不到注入），缺头一律 403 "Unauthorized local service request"（实测 MV 对齐
+        // 的歌曲/MV 分析下载整批被 403 冷却 30s，节拍/包络分析被迫走浏览器兜底）。
+        // 令牌与 local-server 同源（主进程 LOCAL_SERVICE_TOKEN），经环境变量传入。
+        const requestHost = parsed.hostname.toLowerCase()
+        if (requestHost === 'localhost' || requestHost === '127.0.0.1' || requestHost === '[::1]' || requestHost === '::1') {
+          const localToken = process.env.WAVEFORGE_LOCAL_TOKEN
+          if (localToken) headers['X-WaveForge-Local-Token'] = localToken
+        }
         const referer = audioReferer(currentUrl)
         if (referer) headers.Referer = referer
         const responseHandler = (response) => {
