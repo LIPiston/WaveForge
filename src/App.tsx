@@ -227,7 +227,7 @@ const loadSongDetailModal = () => import('./components/SongDetailModal')
 const LazySongDetailModal = lazy(loadSongDetailModal)
 import RemoteCursor from './components/RemoteCursor'
 import PlatformLoginNotice from './components/PlatformLoginNotice'
-import SimilarSongsPanel from './components/SimilarSongsPanel'
+import SimilarSongsPanel, { extractSimilarSongItems, normalizeSimilarSongItems } from './components/SimilarSongsPanel'
 import PluginOverlay from './components/PluginOverlay'
 import { setGlobalAudioAnalyzerStore, setGlobalPlaybackActive, setGlobalAudioAnalysers, dglabClient } from './plugins/clients/DGLabClient'
 import { setChromaAudioAnalyzerStore, setChromaPlaybackActive } from './plugins/clients/ChromaClient'
@@ -4904,7 +4904,7 @@ function App() {
   // 「下一首播放」的插入游标：连点两次时第二首会插到第一首前面（顺序反了），
   // 因为每次都算 currentIndex + 1。这里记住上一首插到哪，当前曲目变了就重置。
   const playNextCursorRef = useRef<{ base: number; at: number }>({ base: -1, at: 0 })
-  const handlePlayNext = (song: Song) => {
+  const handlePlayNext = (song: Song, toastText = '已添加至下一首播放') => {
     audioPlayer.cancelTransition('play-next queue changed', false)
     bumpQueueRevision()
     if (playNextCursorRef.current.base !== currentIndexRef.current) {
@@ -4928,12 +4928,13 @@ function App() {
     }
 
     // 显示全局消息提示
-    addToast('已添加至下一首播放', 'success')
+    addToast(toastText, 'success')
   }
 
-  // 相似歌曲·直接切歌（网易云客户端「相似歌曲」灯泡同款）：
-  // 取第一首相似歌曲，插到当前歌曲之后并立即切换播放；原歌曲仍留在播放列表中。
-  const playSimilarNow = async (song: Song | null) => {
+  // 相似歌曲·插入下一首（网易云客户端「相似歌曲」灯泡同款取歌，但不打断当前播放）：
+  // 取第一首相似歌曲，走「下一首播放」同一条插入链路（游标/队列 revision/引擎重排一致），
+  // 当前歌曲继续播完；列表为空或没有当前曲目时才直接起播。
+  const queueSimilarNext = async (song: Song | null) => {
     if (!song) return
     if (song.platform === 'apple' || song.platform === 'soda') {
       addToast('当前平台暂不支持相似歌曲', 'info')
@@ -4941,9 +4942,13 @@ function App() {
     }
     try {
       const similarId = song.platform === 'qq' ? String(song.id || song.mid) : String(song.id)
-      const similar = await getSimilarSongs(similarId, (song.platform || 'netease') as 'netease' | 'qq')
+      const similarRaw = await getSimilarSongs(similarId, (song.platform || 'netease') as 'netease' | 'qq')
+      // 响应形状按平台不同（网易云 { songs } / QQ { result, data: [...] }），统一归一化——
+      // 直接对整个响应 .find 会在 QQ 上崩（实测 V.find is not a function，387433441）
+      const platform = (song.platform || 'netease') as string
+      const similarList = normalizeSimilarSongItems(extractSimilarSongItems(similarRaw), platform)
       const selfKey = getSongKey(song)
-      const candidate = similar.find((item: Song) => getSongKey(item) !== selfKey)
+      const candidate = similarList.find((item) => getSongKey(item) !== selfKey)
       if (!candidate) {
         addToast('没有找到可播放的相似歌曲', 'info')
         return
@@ -4953,14 +4958,7 @@ function App() {
         handleSongSelect(candidate)
         return
       }
-      const insertAt = idx + 1
-      const nextPlaylist = [...playlist]
-      nextPlaylist.splice(insertAt, 0, candidate)
-      bumpQueueRevision()
-      // 后续「下一首播放」以新的插入点为基准续排
-      playNextCursorRef.current = { base: idx, at: insertAt + 1 }
-      void loadAndPlaySong(candidate, insertAt, nextPlaylist)
-      addToast(`已切到相似歌曲：${candidate.name}`, 'success')
+      handlePlayNext(candidate, `相似歌曲：${candidate.name}，已添加至下一首播放列表`)
     } catch (error) {
       console.error('[相似歌曲] 切歌失败:', error)
       addToast('相似歌曲获取失败，请重试', 'error')
@@ -7504,7 +7502,7 @@ function App() {
   const playSimilarEventRef = useRef<(event: Event) => void>(() => undefined)
   playSimilarEventRef.current = (event) => {
     const detail = (event as CustomEvent<Song | null | undefined>).detail
-    void playSimilarNow(detail || playlist[currentIndexRef.current] || null)
+    void queueSimilarNext(detail || playlist[currentIndexRef.current] || null)
   }
   useEffect(() => {
     const handler = (event: Event) => playSimilarEventRef.current(event)

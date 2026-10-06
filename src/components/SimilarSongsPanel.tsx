@@ -16,6 +16,49 @@ if (typeof window !== 'undefined') {
 }
 const similarCacheKey = (song: Song) => `${song.platform || 'netease'}:${song.mid ?? song.id}`
 
+/**
+ * 相似歌曲响应归一化（QQ/网易云两种包装 → Song[]）。
+ * 响应形状按平台不同：网易云 `{ songs: [...] }`；QQ `{ result, data: [...] }`（data 直接是
+ * 数组，实测 387433441 返回数组——App 的快捷「切到相似歌曲」曾因直接 `.find` 整个响应
+ * 崩溃 `V.find is not a function`）。面板与快捷切歌共用此解析，避免两处形状漂移。
+ */
+export function extractSimilarSongItems(data: unknown): unknown[] {
+  if (!data || typeof data !== 'object') return []
+  const raw = data as { songs?: unknown; data?: unknown }
+  if (Array.isArray(raw.songs)) return raw.songs
+  if (Array.isArray(data)) return data
+  const inner = raw.data as { list?: unknown; songs?: unknown } | unknown[] | undefined
+  if (Array.isArray(inner)) return inner
+  if (inner && typeof inner === 'object') {
+    if (Array.isArray((inner as { list?: unknown }).list)) return (inner as { list: unknown[] }).list
+    if (Array.isArray((inner as { songs?: unknown }).songs)) return (inner as { songs: unknown[] }).songs
+  }
+  return []
+}
+
+export function normalizeSimilarSongItems(raw: unknown[], platform: string): Song[] {
+  return raw.map((entry: any) => {
+    const track = entry?.songInfo || entry?.song || entry || {}
+    const albumPic = track.album?.picUrl || track.album?.picurl || track.album?.cover || track.album?.coverUrl
+      || entry?.album?.picUrl || entry?.album?.picurl
+      || track.picUrl || track.picurl || track.albumpic
+      || ''
+    const albumMid = track.album?.mid || track.albummid || entry?.album?.mid || ''
+    const coverUrl = albumPic || (albumMid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${albumMid.replace(/_\d+$/, '')}.jpg` : '')
+    return {
+      id: track.id || entry?.id || 0,
+      mid: track.mid || entry?.mid,
+      name: track.name || track.title || track.songname || entry?.name || '',
+      artists: Array.isArray(track.singer || track.artists || entry?.artists)
+        ? (track.singer || track.artists || entry?.artists).map((a: any) => ({ name: a.name || a.title || '' }))
+        : [],
+      album: { picUrl: coverUrl },
+      duration: (track.interval || track.dt || 0) * 1000 || track.duration || entry?.dt || 0,
+      platform
+    } as Song
+  })
+}
+
 interface SimilarSongsPanelProps {
   song: Song
   /** 右键菜单回调包（与播放页同一套）。2026-09-27 审计 C4：相似歌曲行原本只有两个按钮。 */
@@ -129,27 +172,7 @@ function SimilarSongsPanel({ song, onClose, onPlayNow, onPlayNext, playerTheme, 
         const id = song.platform === 'qq' ? String(song.id || song.mid) : String(song.id)
         const data = await getSimilarSongs(id, (song.platform || 'netease') as 'netease' | 'qq')
         if (!cancelled && data) {
-          const raw = data.songs || data.data?.list || data.data?.songs || (Array.isArray(data.data) ? data.data : []) || []
-          const normalized = raw.map((s: any) => {
-            const track = s.songInfo || s.song || s
-            const albumPic = track.album?.picUrl || track.album?.picurl || track.album?.cover || track.album?.coverUrl
-              || s.album?.picUrl || s.album?.picurl
-              || track.picUrl || track.picurl || track.albumpic
-              || ''
-            const albumMid = track.album?.mid || track.albummid || s.album?.mid || ''
-            const coverUrl = albumPic || (albumMid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${albumMid.replace(/_\d+$/, '')}.jpg` : '')
-            return {
-              id: track.id || s.id || 0,
-              mid: track.mid || s.mid,
-              name: track.name || track.title || track.songname || s.name || '',
-              artists: Array.isArray(track.singer || track.artists || s.artists)
-                ? (track.singer || track.artists || s.artists).map((a: any) => ({ name: a.name || a.title || '' }))
-                : [],
-              album: { picUrl: coverUrl },
-              duration: (track.interval || track.dt || 0) * 1000 || track.duration || s.dt || 0,
-              platform: song.platform
-            } as Song
-          })
+          const normalized = normalizeSimilarSongItems(extractSimilarSongItems(data), song.platform || 'netease')
           if (!cancelled) { setSongs(normalized); if (normalized.length) similarSongsCache.set(cacheKey, normalized) }
         }
       } catch { /* ignore */ }
