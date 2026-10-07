@@ -228,6 +228,12 @@ jobs:
           cache: npm
 
       - name: 安装依赖
+        # qq-music-api 的嵌套依赖 useragent（被 package.json 的 overrides 指向
+        # useragent-ng@2.4.5）的安装脚本是 ./bin/build.js，Windows 默认的 cmd.exe
+        # 不认 "./" 前缀会直接失败；这里只给这一步指定 Git Bash 作为 npm 脚本 shell。
+        # 不能写进根 .npmrc：ubuntu 作业也读它，Windows 路径会让 Linux 的 npm ci 全部失败。
+        env:
+          npm_config_script_shell: 'C:\Program Files\Git\bin\bash.exe'
         run: npm ci
 
       - name: 写入 nightly 版本号到 package.json + lock（仅工作区，不推回仓库）
@@ -237,7 +243,9 @@ jobs:
           node -e "const fs=require('fs');for(const f of ['./package.json','./package-lock.json']){const j=JSON.parse(fs.readFileSync(f));j.version=process.env.NIGHTLY_VERSION;fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')}"
           node -p "require('./package.json').version"
 
-      - name: 下载 Electron 运行时（npm ci 跳过了其 install 脚本）
+      - name: 下载 Electron 运行时
+        # electron 来自 castLabs 的 git+ssh 源（lock 里该条目没有 hasInstallScript 标记），
+        # npm 不会把它当作带安装脚本的包，因此必须手动跑一次 install.js 下载运行时。
         run: node node_modules/electron/install.js
 
       - name: 重建嵌入式 Python（让打包版自带 beat/loudness/compensation 服务）
