@@ -1,7 +1,7 @@
 # 每日构建（Nightly）：每天北京时间 21:00 自动构建 Android TV + Windows 测试版。
 # - 不 bump 正式版本号，仅在工作区拼 "<基础版本>-nightly.<YYYYMMDD>" 用于产物命名，不推回仓库。
 # - 固定使用 nightly tag/release，每次发布前覆盖上一版，GitHub Release 始终只保留一个当前 nightly。
-# - 自动生成 changelog（自上次 nightly tag 以来的提交），发布 GitHub 预发布。
+# - 自动生成 changelog（自上一个正式版 tag 以来的提交，非 nightly tag），发布 GitHub 预发布。
 # - 不写/推 update.json、不发 Gitee —— 不影响正式版检查更新与正式发版流程。
 # 也可在 Actions 页面手动触发（force=true 可忽略「无新增提交」跳过逻辑强制构建）。
 
@@ -60,14 +60,13 @@ jobs:
           BASE_VERSION=$(node -p "require('./package.json').version")
           NIGHTLY_VERSION="${BASE_VERSION}-nightly.${DATE}"
 
-          # changelog 只覆盖上一次 nightly 构建之后的提交；首次运行（无 nightly tag）时回退最近正式版 tag，两者皆无则回退最近 50 条提交
+          # changelog 覆盖「上一个正式版 tag」之后的全部提交（跨多个 nightly 累积，不因 nightly 覆盖而截断）；
+          # 若仓库里还没有任何正式版 tag，则回退最近 50 条提交。
           LAST_NIGHTLY=$(git tag -l 'nightly' --sort=-creatordate | head -1)
-          LAST_STABLE=$(git tag -l 'v*' --sort=-creatordate | head -1)
-          if [ -n "$LAST_NIGHTLY" ]; then
-            RANGE="${LAST_NIGHTLY}..HEAD"
-          else
-            RANGE="${LAST_STABLE:+${LAST_STABLE}..HEAD}"
-          fi
+          # 上一个正式版：优先取「HEAD 可达的最近 v* tag」（git describe），拿不到再退回版本号排序的最大值
+          LAST_STABLE=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null \
+            || git tag -l 'v*' --sort=-v:refname | head -1)
+          RANGE="${LAST_STABLE:+${LAST_STABLE}..HEAD}"
 
           # 无新增提交判定（仅当存在上一个 nightly tag 且非 force 时生效）
           HAS_CHANGES="true"
@@ -77,23 +76,49 @@ jobs:
             fi
           fi
 
-          # 生成 changelog（排除 merge 提交，取 commit subject + 短哈希）
+          # 生成 changelog（排除 merge 提交；按提交日期分组，最新一天默认展开、其余日期收起为 <details>）
+          if [ -n "$RANGE" ]; then
+            CHANGELOG_SCOPE="自上个正式版 ${LAST_STABLE} 起"
+            LOG=$(TZ=Asia/Shanghai git log $RANGE --no-merges --date=format-local:%Y-%m-%d \
+              --pretty=format:'%ad|%s (%h)' 2>/dev/null \
+              | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' || true)
+          else
+            CHANGELOG_SCOPE="暂无正式版 tag，最近 50 条提交"
+            LOG=$(TZ=Asia/Shanghai git log -50 --no-merges --date=format-local:%Y-%m-%d \
+              --pretty=format:'%ad|%s (%h)' 2>/dev/null \
+              | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' || true)
+          fi
+
           {
             echo "# WaveForge Nightly ${DATE}"
             echo ""
             echo "**版本号：${NIGHTLY_VERSION}（基础 ${BASE_VERSION} + 构建日期，非正式发版，不自动升级版本号）**"
             echo ""
-            if [ -n "$RANGE" ]; then
-              echo "## 代码变动（自上次 Nightly 构建 ${RANGE%%..*} 起）"
-              echo ""
-              LOG=$(git log $RANGE --no-merges --pretty=format:"- %s (%h)" 2>/dev/null)
-              if [ -z "$LOG" ]; then echo "- 无新增提交"; else echo "$LOG"; fi
-            else
-              echo "## 代码变动（暂无 nightly / 正式版 tag，最近 50 条提交）"
-              echo ""
-              git log -50 --no-merges --pretty=format:"- %s (%h)"
-            fi
+            echo "## 代码变动（${CHANGELOG_SCOPE}）"
             echo ""
+            if [ -z "$LOG" ]; then
+              echo "无新增提交"
+            else
+              printf '%s\n' "$LOG" | awk -F'|' '
+                {
+                  d = $1
+                  rest = substr($0, length(d) + 2)
+                  if (!(d in count)) order[++n] = d
+                  count[d]++
+                  lines[d] = lines[d] "- " rest "\n"
+                }
+                END {
+                  printf "共 %d 个提交，按提交日期倒序分组；点击日期展开该日提交。\n\n", NR
+                  for (i = 1; i <= n; i++) {
+                    d = order[i]
+                    if (i == 1) {
+                      printf "### %s（%d 个提交）\n\n%s\n", d, count[d], lines[d]
+                    } else {
+                      printf "<details>\n<summary>%s（%d 个提交）</summary>\n\n%s\n</details>\n\n", d, count[d], lines[d]
+                    }
+                  }
+                }'
+            fi
             echo ""
             echo "---"
             echo "⚠️ 自动构建的每日测试版本，可能不稳定。仅用于测试，不推送 update.json，不影响正式版检查更新。"

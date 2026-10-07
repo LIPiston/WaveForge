@@ -6,6 +6,7 @@ node_modules
 .DS_Store
 Thumbs.db
 *.local
+/tmp
 # 目录规则必须锚定根目录：不带 / 前缀的规则会匹配任意层级的同名目录。
 # 2026-09 事故：`data/` 把 src/data/bilibiliMvDeclarations.ts 连坐忽略，
 # 5a6cc58 提交后文件只在提交者本地存在，master 全新 clone 构建失败。
