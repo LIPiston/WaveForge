@@ -96,7 +96,11 @@ async function findPython(options = {}) {
 
 async function verifyDevelopmentVmp(packageDir, options = {}) {
   const checkedAt = options.now ? options.now() : Date.now()
-  const env = { ...(options.env || process.env), EVS_NO_ASK: '1' }
+  // PYTHONUTF8=1 与 evs-runner.cjs 同源：EVS（Python 实现）在 cp1252 控制台
+  // 打印含中文的包名（如「WaveForge 澜音工坊.exe」）会 UnicodeEncodeError
+  // 非零退出，被 parseVerifyOutput 判成 invalid；正常签名的关键行是 ASCII，
+  // 不受 UTF-8 模式影响。
+  const env = { ...(options.env || process.env), EVS_NO_ASK: '1', PYTHONUTF8: '1' }
   delete env.EVS_ACCOUNT_NAME
   delete env.EVS_PASSWD
   const python = await findPython({ ...options, env })
