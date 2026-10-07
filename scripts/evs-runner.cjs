@@ -33,7 +33,10 @@ function runEvs(command, packageDir, { required = false } = {}) {
     '--min-days', String(MIN_RELEASE_VMP_DAYS),
     ...(command === 'sign-pkg' ? ['--multipart-part-size', '20', '--multipart-max-concurrency', '4', '--multipart-retries', '5'] : []),
     packageDir]
-  const env = { ...process.env, EVS_NO_ASK: process.env.EVS_NO_ASK || '1' }
+  // PYTHONUTF8=1 让 EVS（Python 实现）的 stdout 强制 UTF-8：GitHub 英文 runner
+  // 控制台是 cp1252，包名「WaveForge 澜音工坊.exe」里的中文会导致
+  // UnicodeEncodeError（charmap codec）签名失败；本地 GBK 控制台则一直正常。
+  const env = { ...process.env, EVS_NO_ASK: process.env.EVS_NO_ASK || '1', PYTHONUTF8: '1' }
   const execute = () => spawnSync(python.exe, args, {
     stdio: 'inherit',
     windowsHide: true,
