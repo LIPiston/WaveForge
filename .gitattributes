@@ -5,3 +5,7 @@
 # Windows 批处理必须 CRLF：cmd.exe 解析 LF 换行的 .bat 时会把行首串成错误 token
 # （表现为「'xxx' 不是内部或外部命令」且伴随中文乱码），脚本无法运行。
 *.bat text eol=crlf
+
+# shell 脚本必须保持 LF：CRLF 会让 Git Bash 报 $'\r': command not found。
+# 与 .githooks/* 同理，只做定向规则，不用全局 * 规则。
+*.sh text eol=lf
