@@ -46,6 +46,10 @@
 !ifndef INSTALL_REGISTRY_KEY
   !define INSTALL_REGISTRY_KEY "Software\${PRODUCT_NAME}"
 !endif
+; UNINSTALL_REGISTRY_KEY 由 eb 的 multiUser.nsh（晚于本文件 include）定义；用 /ifndef 兜底保证本文件的宏插入时已可用
+!ifndef UNINSTALL_REGISTRY_KEY
+  !define UNINSTALL_REGISTRY_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}"
+!endif
 
 ; 静默范围补齐要用 UAC 宏（multiUser.nsh 已带，但探针/preview 只包含本文件，需自取）
 !include "UAC.nsh"
@@ -59,7 +63,9 @@
   FileWrite $0 "PRODUCT=" ; 兼容占位：真实产品名经 WF_PRODUCT 环境变量传递
   FileWrite $0 "$\r$\n"
   FileWrite $0 "VERSION=${VERSION}$\r$\n"
-  FileWrite $0 "APP_EXE=${APP_EXECUTABLE_FILENAME}$\r$\n"
+  ; 本文件先于 eb 的 common.nsh 被 include，宏插入展开时 APP_EXECUTABLE_FILENAME 尚未定义（CI warningsAsErrors 直接报错）；
+  ; PRODUCT_FILENAME 由 eb /D 注入且从脚本第 0 行生效，与 common.nsh:16 的拼接等值
+  FileWrite $0 "APP_EXE=${PRODUCT_FILENAME}.exe$\r$\n"
   FileWrite $0 "EXEPATH=$EXEPATH$\r$\n"
   FileWrite $0 "UI_DIR=$PLUGINSDIR\webui\ui$\r$\n"
   !ifdef ESTIMATED_SIZE
@@ -104,11 +110,13 @@
   FileClose $0
 !macroend
 
+; WaveWebUiBootstrap 宏在卸载器（BUILD_UNINSTALLER）侧也会展开并读取此变量，声明必须在 guard 之外
+Var WaveForceAllUsers
+
 !ifndef BUILD_UNINSTALLER
 !define MUI_CUSTOMFUNCTION_GUIINIT WaveGuiInit
 Var WaveTheme
 Var WaveInstallScope
-Var WaveForceAllUsers
 Var WaveIsUpdate
 Var WaveRealSilent
 Var WaveDesktopShortcutState
