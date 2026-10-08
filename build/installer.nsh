@@ -1568,14 +1568,24 @@ Var UnWaveButton
 Var UnWaveButtonImage
 Var UnWaveButton2
 Var UnWaveButtonImage2
+; UnWavePath/UnWaveScope/UnWaveProgress 仅旧确认页/进度页（!ifndef WF_WEBUI）使用，一并条件编译避免 6001
+!ifndef WF_WEBUI
 Var UnWavePath
 Var UnWaveScope
 Var UnWaveProgress
+!endif
 Var UnWaveProgressActive
 Var UnWaveFinishActive
 Var UnWaveFont
 
 !macro customUnInit
+  ; 卸载 pass 下 customInit 不展开（其插入点在 BUILD_UNINSTALLER 的 !else 分支之外），WaveForceAllUsers
+  ; 若无写点会触发 warning 6001（-WX 下即失败）；卸载语义恒为 current，与原空值行为一致
+  StrCpy $WaveForceAllUsers "0"
+  ; 进度/完成页活跃标志的写点在旧 NSIS 页回调（!ifndef WF_WEBUI）内；WebView2 卸载器下两页均不编译，
+  ; 活的 un.WaveCloseClick 仍会读这两个标志 → 显式置 0（恒不活跃，语义不变）避免 6001
+  StrCpy $UnWaveProgressActive 0
+  StrCpy $UnWaveFinishActive 0
   ${IfNot} ${Silent}
     InitPluginsDir
     SetOutPath "$PLUGINSDIR"
@@ -1812,16 +1822,23 @@ Function un.WaveCloseClick
   done:
 FunctionEnd
 
+; 以下两个回调仅被确认页按钮引用（un.WaveUnConfirmCreate 的 NSD_OnClick）；
+; WF_WEBUI=1 时确认页不编译，保留会产生 warning 6010（-WX 下即失败）
+!ifndef WF_WEBUI
 Function un.WaveCancel
   SendMessage $HWNDPARENT ${WM_COMMAND} 2 0
 FunctionEnd
 Function un.WaveStart
   SendMessage $HWNDPARENT ${WM_COMMAND} 1 0
 FunctionEnd
+!endif
 Function un.WaveDone
   Quit
 FunctionEnd
 
+!ifndef WF_WEBUI
+; 旧 NSIS 位图确认页 + 进度页回调：仅 customUnWelcomePage/customUnInstall 的非 WF_WEBUI 分支引用；
+; WF_WEBUI=1 时整组未引用，保留会产生 warning 6010（-WX 下即失败）
 Function un.WaveUnConfirmCreate
   nsDialogs::Create 1018
   Pop $UnWavePage
@@ -1903,6 +1920,7 @@ Function un.WaveUnInstFilesLeave
   StrCpy $UnWaveProgressActive 0
   Call un.WaveReleasePageImages
 FunctionEnd
+!endif
 
 Function un.WaveUnFinishCreate
   Call un.WaveReleasePageImages
