@@ -34,7 +34,7 @@
     "preview": "vite preview",
     "fetch:nodejs-mobile": "node scripts/fetch-nodejs-mobile.mjs",
     "prebuild:android": "node scripts/sync-afdian-sponsors.mjs --optional",
-    "postinstall": "node scripts/patch-airplay-chacha.cjs || true",
+    "postinstall": "node scripts/postinstall.cjs",
     "prepare": "git config core.hooksPath .githooks",
     "check:git": "node scripts/check-ignored-source.mjs",
     "build:android": "node scripts/build-android-assets.mjs",
@@ -188,7 +188,7 @@
     "@types/react-dom": "^19.0.1",
     "@types/three": "^0.184.1",
     "@vitejs/plugin-react": "^5.2.0",
-    "electron": "github:castlabs/electron-releases#v42.8.0+wvcus",
+    "electron": "git+https://github.com/castlabs/electron-releases.git#v42.8.0+wvcus",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.25.12",
     "heic-decode": "^2.1.0",
@@ -213,7 +213,7 @@
           "uglify-js": "^2.8.29"
         }
       },
-      "useragent": "npm:useragent-ng@2.4.5"
+      "useragent": "npm:useragent-ng@2.4.4"
     }
   }
 }

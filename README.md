@@ -5,14 +5,17 @@
 ## 快速开始
 
 ```bash
-npm install                    # 安装依赖
-npm run dev:electron           # 一键启动：Vite(3000) + API(3001) + Electron 窗口
+npm install                    # 安装依赖（postinstall 自动完成 airplay 补丁 + Electron 二进制下载）
+npm run dev:electron           # 一键启动：构建缓存/preview(3000) + API(3001) + Python 服务(3002/3003/3004) + Electron 窗口
 ```
+
+首次 `npm install` 后无需任何手动步骤即可 `npm run dev:electron`；若 Electron 二进制下载因网络失败，修复网络后重跑 `node node_modules/electron/install.js`（离线机器可从其他机器拷贝 `node_modules/electron/dist/` 与 `path.txt`）。
 
 开发命令必须在已确认的 WaveForge 项目根运行。团队允许工作目录本身就是项目根，也允许多项目/AI 工作目录下的 `WaveForge/` 子目录才是项目根；外部自动化应先验证 `package.json`、`scripts/dev-electron.mjs`、`desktop/main.cjs`，再使用 `npm --prefix "<项目根>" run dev:electron`。不要把机器专属绝对路径写入脚本或文档。
 
-- **高级功能（Smart AutoMix 节拍匹配）**：项目已内置 Python 3.13 运行时（`resources/python-embed/`），直接可用；启动 `launchers/start-full.bat` 或先运行 `python-beat-service/start.bat` 启动节拍服务（端口 **3002**）。
-- 节拍服务未启动时，应用自动降级为 Fixed Crossfade，不影响基础播放。
+- **Python 服务（节拍 3002 / 响度 3003 / 频响补偿 3004）**：`resources/python-embed/` 为构建产物（不入库，见 `.gitignore`），新机器需先运行一次 `npm run bundle-python` 构建嵌入式 Python 3.13 运行时。三个服务缺失时**不阻断启动**，应用自动降级（Fixed Crossfade / 原声 / 内置近似补偿），基础播放不受影响。
+- **Smart AutoMix 节拍匹配**：依赖 3002 节拍服务，未启动时自动降级为 Fixed Crossfade。
+- **Apple Music 原生音源（可选）**：`npm run dev:electron` 会校验开发 Electron 的 production streaming VMP；未配置 EVS 签名环境时打印提示并跳过，开发可继续，仅 Apple 原生 CENC 验收不可用（见下文「开发命令」说明）。
 
 ## 核心功能
 
@@ -62,27 +65,28 @@ WaveForge/
 ## 开发命令
 
 ```bash
-npm run dev:electron    # 完整开发（前端+后端+Electron）
-npm run dev             # 仅 Vite（3000）
-npm run dev:api         # 仅 API（3001）
+npm run dev:electron    # 完整开发（前端+后端+Python 服务+Electron；默认用生产构建缓存，改 src/ 后自动重建）
+npm run dev             # 仅 Vite dev server（3000，HMR 热更新；配合后端单独调试前端）
+npm run dev:api         # 仅后端（dev-tv-server.mjs，3001，含 TV 扩展端点）
+WAVEFORGE_LIVE_UI=1 npm run dev:electron   # Vite 实时服务替代构建缓存（完整 HMR，启动较慢）
 npm run lint            # TypeScript 类型检查（tsc --noEmit）
-npm run test            # vitest 单测（41 文件 477 用例，含 v3 引擎 324）
+npm run test            # vitest 单测（2026-10 实测：223 文件 2190 用例 = 2184 过 + 6 跳过）
 npm run build           # 仅构建前端 -> dist/（日常开发，不生成 EXE）
 npm run build:electron  # 发布：目录构建 → EVS production VMP → NSIS（需 EVS secrets）
 npm run build:full      # 完整发布：bundle-python + build:electron
 npm run build:electron:dir  # 发布目录包：构建 + EVS production VMP（需 EVS secrets）
 npm run build:electron:dir:unsigned  # 仅本地诊断，不能发布/不能用于 Apple 原生验收
+npm run bundle-python   # 重建嵌入式 Python 运行时（3.13.15；新机器首次需执行）
 npm run build:android   # 生成 Android TV 前端资产
 npm run fetch:nodejs-mobile  # 拉取 Android 运行时
 npm run publish:release # 一键发布脚本
 npm run version:patch|minor|major  # 版本号更迭（自动 commit/tag/push）
-npm run bundle-python   # 重建嵌入式 Python 运行时（3.13.15）
 npm run test:license    # 设备授权自测
 npm run sync:sponsors   # 刷新爱发电赞助名单（构建前会自动以可选模式运行）
 launchers/test-python-service.bat  # 检测节拍服务（3002）
 ```
 
-`npm run dev:electron` 启动前会快速验证开发 ECS 的 production streaming VMP；签名仍有效时不会重签。只有首次配置、重装或升级 Electron 后才会请求一次 EVS 签名，前端热更新与普通 `npm run build` 不生成 EXE、也不触发签名。开启应用级开发者模式后，可在“开发者选项”查看 VMP 剩余有效天数；剩余不超过 180 天时界面会提示安排续签。
+`npm run dev:electron` 启动前会快速验证开发 ECS 的 production streaming VMP；签名仍有效时不会重签。只有首次配置、重装或升级 Electron 后才会请求一次 EVS 签名，未配置 EVS 环境时打印提示并跳过（开发可继续，Apple 原生 CENC 验收不可用）；普通 `npm run build` 不生成 EXE、也不触发签名。开启应用级开发者模式后，可在“开发者选项”查看 VMP 剩余有效天数；剩余不超过 180 天时界面会提示安排续签。
 
 ## 发布（GitHub Releases）
 
@@ -131,7 +135,7 @@ Windows 发布机/CI 必须配置 `EVS_ACCOUNT_NAME`、`EVS_PASSWD` 并安装 `c
 
 **参数持久化**：localStorage `waveforge:spatial-params`（独立于 HSE 场景快照；400ms 防抖 + 深合并容错，坏数据回默认）；HRTF 活动数据集记录 `waveforge:hrtf-active-dataset`。
 
-**构建**：`npm run build:spatial-worklet`（cargo → wasm base64 内联 → esbuild 单文件 `public/spatial-worklet.js`），predev / prebuild 自动执行；缺失源逐级优雅降级（TS 参考后端兜底 / 合成 HRTF 网格兜底）。融合细节见 `src/services/waveforge-engine-v3/docs/FUSION_GUIDE.md` 第 6 章。
+**实现方式**：空间音频为纯 TS 内联实现（`src/services/waveforge-engine-v3/src/spatial/`，EngineV3 第 15 级复用其纯模块），随 `npm run build:v3-worklet` 打入 `public/v3-worklet.js`，无需独立构建步骤；合成 HRTF 网格内置，无外部数据文件依赖。融合细节见 `src/services/waveforge-engine-v3/docs/FUSION_GUIDE.md` 第 6 章。
 
 ## 已知限制
 
